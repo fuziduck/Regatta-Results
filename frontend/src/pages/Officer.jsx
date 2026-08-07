@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700",
@@ -285,7 +285,26 @@ export default function Officer() {
     const sm = {}; ss.forEach((s) => (sm[s.id] = s)); setSeries(sm);
   }, []);
 
-  useEffect(() => { loadRaces(); api.rrsCodes().then(setRrsCodes); }, [loadRaces]);
+  const [scheduled, setScheduled] = useState([]);
+  const [schedDate, setSchedDate] = useState("");
+
+  const loadScheduled = useCallback(async () => {
+    const list = await api.scheduledRaces();
+    setScheduled(list);
+    setSchedDate((prev) => prev || (list[0] ? list[0].date : new Date().toISOString().slice(0, 10)));
+  }, []);
+
+  useEffect(() => { loadRaces(); loadScheduled(); api.rrsCodes().then(setRrsCodes); }, [loadRaces, loadScheduled]);
+
+  const startScheduled = async (item) => {
+    if (item.race_id) { setSelected(item.race_id); return; }
+    const race = await api.createRace({
+      date: item.date, class_id: item.class_id, series_id: item.series_id,
+      race_number: item.race_number, start_time: item.start_time,
+    });
+    await loadRaces(); await loadScheduled();
+    setSelected(race.id);
+  };
 
   const meta = (r) => ({
     class_id: r.class_id,
@@ -329,6 +348,47 @@ export default function Officer() {
           </div>
           <NewRaceDialog onCreated={(r) => { loadRaces(); setSelected(r.id); }} />
         </div>
+
+        <section className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 mb-8" data-testid="schedule-panel">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <h2 className="text-lg md:text-lg uppercase tracking-tight flex items-center gap-2"><CalendarDays className="w-5 h-5 text-ocean" /> Scheduled races</h2>
+            <div className="flex items-center gap-2">
+              <Label className="text-sm">Race day</Label>
+              <Input type="date" value={schedDate} onChange={(e) => setSchedDate(e.target.value)} data-testid="schedule-date" className="h-9 w-40" />
+            </div>
+          </div>
+          {(() => {
+            const dayItems = scheduled.filter((s) => s.date === schedDate);
+            const dates = [...new Set(scheduled.map((s) => s.date))].sort();
+            if (!dayItems.length) {
+              return (
+                <div className="text-sm text-muted-foreground">
+                  No races scheduled for this date.
+                  {dates[0] && <button className="ml-2 text-ocean font-semibold underline" onClick={() => setSchedDate(dates[0])}>Jump to next race day ({fmtDate(dates[0])})</button>}
+                </div>
+              );
+            }
+            return (
+              <div className="space-y-2" data-testid="scheduled-list">
+                {dayItems.map((item) => (
+                  <button key={`${item.series_id}-${item.race_number}`} data-testid={`scheduled-${item.class_name}-${item.race_number}`}
+                    onClick={() => startScheduled(item)}
+                    className="w-full text-left rounded-lg border border-border bg-card p-3 flex items-center gap-3 hover:border-ocean transition-colors active:scale-[0.99]">
+                    <div className="w-10 h-10 rounded-lg bg-safety/15 grid place-items-center text-safety font-heading">R{item.race_number}</div>
+                    <div className="flex-1">
+                      <div className="font-semibold leading-none">{item.class_name} · {item.series_name}</div>
+                      <div className="text-xs text-muted-foreground mt-1">Start {item.start_time}</div>
+                    </div>
+                    <Badge className={item.status === "scheduled" ? "bg-ocean/10 text-ocean" : STATUS_BADGE[item.status]}>
+                      {item.status === "scheduled" ? "Score now" : item.status}
+                    </Badge>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+        </section>
 
         <h2 className="text-lg md:text-lg uppercase tracking-tight mb-3">In progress</h2>
         <div className="space-y-3">

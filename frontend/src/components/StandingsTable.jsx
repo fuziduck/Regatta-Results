@@ -22,8 +22,12 @@ export function SeriesStandingsTable({ data }) {
     return <p data-testid="no-standings" className="text-muted-foreground text-sm py-6">No results published yet for this series.</p>;
   }
   const races = data.races || [];
-  const totalCols = Math.max(races.length, data.planned_races || 0);
-  const cols = Array.from({ length: totalCols }, (_, i) => races[i] || null);
+  const schedule = data.schedule || [];
+  const totalCols = Math.max(races.length, data.planned_races || 0, schedule.length);
+  const cols = Array.from({ length: totalCols }, (_, i) => ({
+    race_number: races[i]?.race_number ?? i + 1,
+    date: races[i]?.date ?? schedule[i] ?? null,
+  }));
   const fmtScore = (s) => {
     const val = Number.isInteger(s.points) ? s.points : s.points.toFixed(1);
     const label = s.code && s.code !== "FINISHED" ? `${val} ${s.code}` : `${val}`;
@@ -38,8 +42,8 @@ export function SeriesStandingsTable({ data }) {
             <TableHead className="text-white sticky left-0 bg-ocean">Boat</TableHead>
             {cols.map((r, i) => (
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
-                <div>R{r?.race_number ?? i + 1}</div>
-                {r?.date
+                <div>R{r.race_number}</div>
+                {r.date
                   ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>
                   : <div className="text-[10px] font-body font-normal text-white/40 mt-0.5">TBC</div>}
               </TableHead>

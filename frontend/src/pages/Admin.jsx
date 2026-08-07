@@ -163,8 +163,9 @@ function SeriesTab({ classes }) {
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", class_id: "", year: CURRENT_YEAR, discards: 0, included_in_overall: true, order: 0, planned_races: 0 };
+  const blank = { name: "", class_id: "", year: CURRENT_YEAR, discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [] };
   const [form, setForm] = useState(blank);
+  const [schedStart, setSchedStart] = useState("2026-08-08");
 
   useEffect(() => { if (!classFilter && classes[0]) setClassFilter(classes[0].id); }, [classes]); // eslint-disable-line
   const load = useCallback(() => { if (classFilter) api.getSeries({ class_id: classFilter, year: CURRENT_YEAR }).then(setSeries); }, [classFilter]);
@@ -172,10 +173,17 @@ function SeriesTab({ classes }) {
 
   const save = async () => {
     if (!form.name || !form.class_id) return toast.error("Name and class required");
-    const payload = { ...form, discards: Number(form.discards), order: Number(form.order), year: Number(form.year), planned_races: Number(form.planned_races) };
+    const payload = { ...form, discards: Number(form.discards), order: Number(form.order), year: Number(form.year), planned_races: Number(form.planned_races), schedule: form.schedule || [] };
     if (editing) await api.updateSeries(editing, payload); else await api.createSeries(payload);
     toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank, class_id: classFilter }); load();
   };
+  const genSchedule = async () => {
+    if (!editing) return toast.error("Save the series first, then re-open to auto-fill dates");
+    const s = await api.generateSchedule(editing, { start_date: schedStart, count: Number(form.planned_races) || undefined });
+    setForm((f) => ({ ...f, schedule: s.schedule || [], planned_races: s.planned_races }));
+    toast.success("Weekly schedule generated"); load();
+  };
+  const setSchedDate = (idx, val) => setForm((f) => { const sc = [...(f.schedule || [])]; sc[idx] = val; return { ...f, schedule: sc }; });
   const del = async (id) => { await api.deleteSeries(id); toast.success("Deleted"); load(); };
   const quickSet = async (s, patch) => { await api.updateSeries(s.id, { ...s, ...patch }); load(); };
 
@@ -206,6 +214,26 @@ function SeriesTab({ classes }) {
                 <div className="space-y-1.5"><Label>Order</Label><Input type="number" data-testid="series-order-input" value={form.order} onChange={(e) => setForm({ ...form, order: e.target.value })} /></div>
               </div>
               <div className="flex items-center gap-2"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
+
+              <div className="rounded-lg border border-border p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="font-heading uppercase text-sm">Race schedule</Label>
+                  <div className="flex items-center gap-2">
+                    <Input type="date" value={schedStart} onChange={(e) => setSchedStart(e.target.value)} className="h-8 w-36" data-testid="sched-start-input" />
+                    <Button type="button" size="sm" variant="outline" onClick={genSchedule} data-testid="gen-schedule-btn">Auto-fill Sat.</Button>
+                  </div>
+                </div>
+                {!editing && <p className="text-xs text-muted-foreground">Save the series first, then re-open to set dates.</p>}
+                <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                  {(form.schedule || []).map((d, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <span className="font-mono text-xs w-7 text-muted-foreground">R{i + 1}</span>
+                      <Input type="date" value={d || ""} onChange={(e) => setSchedDate(i, e.target.value)} className="h-8" data-testid={`sched-date-${i + 1}`} />
+                    </div>
+                  ))}
+                  {!(form.schedule || []).length && <p className="col-span-2 text-xs text-muted-foreground">No dates yet — set planned races then auto-fill.</p>}
+                </div>
+              </div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-series-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
@@ -221,7 +249,7 @@ function SeriesTab({ classes }) {
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, discards: s.discards, included_in_overall: s.included_in_overall, order: s.order, planned_races: s.planned_races || 0 }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, discards: s.discards, included_in_overall: s.included_in_overall, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}

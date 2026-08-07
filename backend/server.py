@@ -100,6 +100,12 @@ class SeriesInput(BaseModel):
     included_in_overall: bool = True
     order: int = 0
     planned_races: int = 0
+    schedule: Optional[List[str]] = None
+
+
+class GenScheduleInput(BaseModel):
+    start_date: str
+    count: Optional[int] = None
 
 
 class RaceCreateInput(BaseModel):
@@ -251,6 +257,8 @@ async def get_series(class_id: Optional[str] = None, year: Optional[int] = None)
 @api_router.post("/series")
 async def create_series(data: SeriesInput, _: str = Depends(require_admin)):
     doc = data.model_dump()
+    if doc.get("schedule") is None:
+        doc["schedule"] = []
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     await db.series.insert_one(doc)
@@ -260,7 +268,32 @@ async def create_series(data: SeriesInput, _: str = Depends(require_admin)):
 
 @api_router.put("/series/{series_id}")
 async def update_series(series_id: str, data: SeriesInput, _: str = Depends(require_admin)):
-    await db.series.update_one({"id": series_id}, {"$set": data.model_dump()})
+    update = data.model_dump()
+    if update.get("schedule") is None:
+        update.pop("schedule", None)
+    await db.series.update_one({"id": series_id}, {"$set": update})
+    return await db.series.find_one({"id": series_id}, {"_id": 0})
+
+
+def _saturdays_from(start: str, n: int):
+    d0 = datetime.strptime(start, "%Y-%m-%d").date()
+    return [(d0 + timedelta(days=7 * i)).isoformat() for i in range(max(0, n))]
+
+
+@api_router.post("/series/{series_id}/generate-schedule")
+async def generate_schedule(series_id: str, data: GenScheduleInput, _: str = Depends(require_admin)):
+    series = await db.series.find_one({"id": series_id}, {"_id": 0})
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    total = data.count or series.get("planned_races", 0)
+    races = await db.races.find({"series_id": series_id, "status": "published"}, {"_id": 0}).to_list(1000)
+    races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
+    sailed_dates = [r["date"] for r in races]
+    if total < len(sailed_dates):
+        total = len(sailed_dates)
+    future = _saturdays_from(data.start_date, total - len(sailed_dates))
+    schedule = sailed_dates + future
+    await db.series.update_one({"id": series_id}, {"$set": {"schedule": schedule, "planned_races": total}})
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
@@ -552,6 +585,7 @@ async def compute_series_standings(series):
     return {"race_count": race_count, "discards": discards,
             "configured_discards": series.get("discards", 0),
             "planned_races": series.get("planned_races", 0),
+            "schedule": series.get("schedule", []),
             "races": race_meta, "standings": rows}
 
 
@@ -599,6 +633,37 @@ async def overall_standings(class_id: str, year: int):
 @api_router.get("/rrs-codes")
 async def rrs_codes():
     return RRS_CODES
+
+
+@api_router.get("/scheduled-races")
+async def scheduled_races(date: Optional[str] = None):
+    all_series = await db.series.find({}, {"_id": 0}).to_list(1000)
+    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+    out = []
+    for s in all_series:
+        sched = s.get("schedule") or []
+        if not sched:
+            continue
+        races = await db.races.find({"series_id": s["id"]}, {"_id": 0}).to_list(1000)
+        existing = {r.get("race_number"): r for r in races}
+        cls = classes.get(s["class_id"], {})
+        for i, d in enumerate(sched):
+            rn = i + 1
+            r = existing.get(rn)
+            status = r["status"] if r else "scheduled"
+            if status == "published":
+                continue
+            if date and d != date:
+                continue
+            out.append({
+                "series_id": s["id"], "series_name": s["name"],
+                "class_id": s["class_id"], "class_name": cls.get("name"),
+                "race_number": rn, "date": d, "status": status,
+                "race_id": r["id"] if r else None,
+                "start_time": r["start_time"] if r else cls.get("default_start_time", "10:30"),
+            })
+    out.sort(key=lambda x: (x["date"], x["class_name"] or "", x["race_number"]))
+    return out
 
 
 @api_router.get("/")

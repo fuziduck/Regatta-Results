@@ -36,6 +36,8 @@ export const api = {
   createSeries: (d) => client.post("/series", d).then((r) => r.data),
   updateSeries: (id, d) => client.put(`/series/${id}`, d).then((r) => r.data),
   deleteSeries: (id) => client.delete(`/series/${id}`).then((r) => r.data),
+  generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
+  scheduledRaces: (date) => client.get("/scheduled-races", { params: date ? { date } : {} }).then((r) => r.data),
 
   getRaces: (params = {}) => client.get("/races", { params }).then((r) => r.data),
   getRace: (id) => client.get(`/races/${id}`).then((r) => r.data),
