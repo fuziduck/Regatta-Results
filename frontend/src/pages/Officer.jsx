@@ -291,7 +291,7 @@ export default function Officer() {
   const loadScheduled = useCallback(async () => {
     const list = await api.scheduledRaces();
     setScheduled(list);
-    setSchedDate((prev) => prev || (list[0] ? list[0].date : new Date().toISOString().slice(0, 10)));
+    setSchedDate((prev) => prev || new Date().toISOString().slice(0, 10));
   }, []);
 
   useEffect(() => { loadRaces(); loadScheduled(); api.rrsCodes().then(setRrsCodes); }, [loadRaces, loadScheduled]);
