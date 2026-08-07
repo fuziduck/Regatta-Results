@@ -192,11 +192,52 @@ export default function Landing() {
 
       <main className="max-w-6xl mx-auto px-4 py-10">
         {notifications.length > 0 && (
-          <div className="mb-8 rounded-xl border border-safety/30 bg-safety/5 p-4 flex items-start gap-3" data-testid="raceday-notice">
-            <AlertTriangle className="w-5 h-5 text-safety mt-0.5" />
-            <div>
-              <div className="font-heading uppercase tracking-tight text-safety">Racing today</div>
-              <div className="text-sm text-muted-foreground">Scroll the orange ribbon above for course, start times and safety notices. These clear once results are published.</div>
+          <div className="mb-10" data-testid="raceday-notice">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-safety opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-safety"></span>
+              </span>
+              <h2 className="font-heading uppercase tracking-tight text-safety text-xl">Racing today</h2>
+              <span className="text-xs text-muted-foreground">· clears once results are published</span>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {notifications.map((n, idx) => (
+                <div key={idx} data-testid={`notice-card-${n.class_name}`}
+                  className="rounded-xl border border-safety/30 bg-safety/5 p-4 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-1.5 h-full bg-safety" />
+                  <div className="flex items-center justify-between mb-3 pl-2">
+                    <div className="font-heading uppercase tracking-tight text-lg">{n.class_name}</div>
+                    {n.start_time && (
+                      <div className="flex items-center gap-1.5 font-mono font-bold text-ocean">
+                        <Clock className="w-4 h-4" /> {n.start_time}
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2 text-sm pl-2">
+                    {n.course && (
+                      <div className="flex items-start gap-2">
+                        <Flag className="w-4 h-4 text-safety mt-0.5 shrink-0" />
+                        <div><span className="text-muted-foreground">Course: </span><span className="font-semibold">{n.course}</span></div>
+                      </div>
+                    )}
+                    {n.special_rules && (
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-safety mt-0.5 shrink-0" />
+                        <div><span className="text-muted-foreground">Rules: </span><span className="font-semibold">{n.special_rules}</span></div>
+                      </div>
+                    )}
+                    {n.life_jackets && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <Badge className="bg-safety text-white gap-1.5"><LifeBuoy className="w-3.5 h-3.5" /> Life jackets required</Badge>
+                      </div>
+                    )}
+                    {!n.course && !n.special_rules && !n.life_jackets && (
+                      <div className="text-muted-foreground italic">Details to follow — watch this space.</div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
