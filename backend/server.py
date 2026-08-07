@@ -99,6 +99,7 @@ class SeriesInput(BaseModel):
     discards: int = 0
     included_in_overall: bool = True
     order: int = 0
+    planned_races: int = 0
 
 
 class RaceCreateInput(BaseModel):
@@ -550,6 +551,7 @@ async def compute_series_standings(series):
         r.pop("_tb", None)
     return {"race_count": race_count, "discards": discards,
             "configured_discards": series.get("discards", 0),
+            "planned_races": series.get("planned_races", 0),
             "races": race_meta, "standings": rows}
 
 

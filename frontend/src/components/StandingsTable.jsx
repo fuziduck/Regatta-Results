@@ -22,6 +22,8 @@ export function SeriesStandingsTable({ data }) {
     return <p data-testid="no-standings" className="text-muted-foreground text-sm py-6">No results published yet for this series.</p>;
   }
   const races = data.races || [];
+  const totalCols = Math.max(races.length, data.planned_races || 0);
+  const cols = Array.from({ length: totalCols }, (_, i) => races[i] || null);
   const fmtScore = (s) => {
     const val = Number.isInteger(s.points) ? s.points : s.points.toFixed(1);
     const label = s.code && s.code !== "FINISHED" ? `${val} ${s.code}` : `${val}`;
@@ -34,10 +36,12 @@ export function SeriesStandingsTable({ data }) {
           <TableRow className="bg-ocean text-white hover:bg-ocean">
             <TableHead className="text-white w-12">#</TableHead>
             <TableHead className="text-white sticky left-0 bg-ocean">Boat</TableHead>
-            {races.map((r, i) => (
+            {cols.map((r, i) => (
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
-                <div>R{r.race_number ?? i + 1}</div>
-                {r.date && <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>}
+                <div>R{r?.race_number ?? i + 1}</div>
+                {r?.date
+                  ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>
+                  : <div className="text-[10px] font-body font-normal text-white/40 mt-0.5">TBC</div>}
               </TableHead>
             ))}
             <TableHead className="text-white text-center">Net</TableHead>
@@ -56,11 +60,15 @@ export function SeriesStandingsTable({ data }) {
                 <div className="font-semibold leading-tight whitespace-nowrap">{row.boat_name}</div>
                 <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
               </TableCell>
-              {(row.scores || []).map((s, j) => (
-                <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : ""} ${s.code && s.code !== "FINISHED" ? "text-red-600" : ""}`}>
-                  {fmtScore(s)}
-                </TableCell>
-              ))}
+              {cols.map((_, j) => {
+                const s = (row.scores || [])[j];
+                if (!s) return <TableCell key={j} className="text-center text-muted-foreground/30">–</TableCell>;
+                return (
+                  <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : ""} ${s.code && s.code !== "FINISHED" ? "text-red-600" : ""}`}>
+                    {fmtScore(s)}
+                  </TableCell>
+                );
+              })}
               <TableCell className="text-center font-mono font-bold text-ocean">{row.net}</TableCell>
               <TableCell className="text-center font-mono text-muted-foreground hidden sm:table-cell">{row.total}</TableCell>
             </TableRow>
