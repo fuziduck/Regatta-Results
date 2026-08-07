@@ -1,0 +1,57 @@
+import axios from "axios";
+
+const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+const client = axios.create({ baseURL: API });
+
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem("scr_token");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+export function formatApiError(detail) {
+  if (detail == null) return "Something went wrong. Please try again.";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((e) => e?.msg || JSON.stringify(e)).join(" ");
+  if (detail?.msg) return detail.msg;
+  return String(detail);
+}
+
+export const api = {
+  login: (role, pin) => client.post("/auth/login", { role, pin }).then((r) => r.data),
+  me: () => client.get("/auth/me").then((r) => r.data),
+
+  getClasses: () => client.get("/classes").then((r) => r.data),
+  createClass: (d) => client.post("/classes", d).then((r) => r.data),
+  updateClass: (id, d) => client.put(`/classes/${id}`, d).then((r) => r.data),
+  deleteClass: (id) => client.delete(`/classes/${id}`).then((r) => r.data),
+
+  getBoats: (params = {}) => client.get("/boats", { params }).then((r) => r.data),
+  createBoat: (d) => client.post("/boats", d).then((r) => r.data),
+  updateBoat: (id, d) => client.put(`/boats/${id}`, d).then((r) => r.data),
+  deleteBoat: (id) => client.delete(`/boats/${id}`).then((r) => r.data),
+
+  getSeries: (params = {}) => client.get("/series", { params }).then((r) => r.data),
+  createSeries: (d) => client.post("/series", d).then((r) => r.data),
+  updateSeries: (id, d) => client.put(`/series/${id}`, d).then((r) => r.data),
+  deleteSeries: (id) => client.delete(`/series/${id}`).then((r) => r.data),
+
+  getRaces: (params = {}) => client.get("/races", { params }).then((r) => r.data),
+  getRace: (id) => client.get(`/races/${id}`).then((r) => r.data),
+  createRace: (d) => client.post("/races", d).then((r) => r.data),
+  updateNotifications: (id, d) => client.put(`/races/${id}/notifications`, d).then((r) => r.data),
+  selectBoats: (id, boat_ids) => client.post(`/races/${id}/select-boats`, { boat_ids }).then((r) => r.data),
+  recordFinish: (id, boat_id, finish_time) => client.post(`/races/${id}/finish`, { boat_id, finish_time }).then((r) => r.data),
+  undoFinish: (id, boat_id) => client.post(`/races/${id}/undo-finish`, { boat_id }).then((r) => r.data),
+  adjustResult: (id, boat_id, d) => client.put(`/races/${id}/result/${boat_id}`, d).then((r) => r.data),
+  setStatus: (id, status) => client.post(`/races/${id}/status/${status}`).then((r) => r.data),
+  deleteRace: (id) => client.delete(`/races/${id}`).then((r) => r.data),
+
+  getNotifications: () => client.get("/notifications").then((r) => r.data),
+  seriesStandings: (id) => client.get(`/standings/series/${id}`).then((r) => r.data),
+  overallStandings: (class_id, year) => client.get("/standings/overall", { params: { class_id, year } }).then((r) => r.data),
+  rrsCodes: () => client.get("/rrs-codes").then((r) => r.data),
+};
+
+export default client;
