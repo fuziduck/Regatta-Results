@@ -1,6 +1,15 @@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Trophy } from "lucide-react";
 
+const fmtDateShort = (dstr) => {
+  if (!dstr) return "";
+  try {
+    return new Date(dstr + "T00:00:00").toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+  } catch {
+    return dstr;
+  }
+};
+
 const medal = (rank) => {
   if (rank === 1) return "text-amber-500";
   if (rank === 2) return "text-slate-400";
@@ -26,7 +35,10 @@ export function SeriesStandingsTable({ data }) {
             <TableHead className="text-white w-12">#</TableHead>
             <TableHead className="text-white sticky left-0 bg-ocean">Boat</TableHead>
             {races.map((r, i) => (
-              <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap">R{r.race_number ?? i + 1}</TableHead>
+              <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
+                <div>R{r.race_number ?? i + 1}</div>
+                {r.date && <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>}
+              </TableHead>
             ))}
             <TableHead className="text-white text-center">Net</TableHead>
             <TableHead className="text-white text-center hidden sm:table-cell">Total</TableHead>
