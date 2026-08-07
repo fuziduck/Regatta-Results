@@ -1,0 +1,24 @@
+{
+  "summary": "End-to-end verification of the NEW recall/re-publish feature across Officer console and Admin Historic Results tab. Added /app/backend/tests/test_recall.py (3 tests, all passing) covering: officer recall+republish cycle with standings & notifications assertions, admin-role recall permission, and auth-required guard. Playwright UI covered the full Officer flow (published->recall->setup badge->set-provisional-btn shown->publish-btn label switches to 'Publish Results'->back to dashboard shows race under 'In progress'->re-publish restores to Published section) and the full Admin Historic Results flow (hist-recall-btn -> hist-publish-btn toggle with API-level status verification). Also verified via in-browser fetch that /api/races/{id} returns status=setup with published_at=null after recall, /api/notifications includes the race while in setup, and standings drop and restore the race correctly. All data restored to published state after testing.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_recall.py",
+    "/app/test_reports/pytest/recall.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Officer RaceConsole.setStatus only navigates back on 'published'; on 'setup' it stays on the console (correct - lets officer review the recall). Confirmed behaviour matches UI intent.",
+    "POST /api/races/{id}/status/{status} uses require_officer which accepts both officer & admin tokens (verified by test_recall_admin_role_also_allowed). Good.",
+    "Admin HistoricTab correctly refreshes both current race and race list after status change (setStatus function). Good.",
+    "Minor UX note: on Officer console, recall-btn's window.confirm text mentions 'race-day notice will show again' — verified true via /api/notifications. Matches implementation."
+  ],
+  "updated_files": ["/app/backend/tests/test_recall.py"],
+  "success_rate": {"backend": "100% (3/3 recall tests)", "frontend": "100% (all officer + admin recall flows)"},
+  "test_credentials": "Officer PIN sail2026, Admin PIN admin2026",
+  "seed_data_creation": "None. Two races (Sonata Summer R3 id 36db894a... and Sonata Late Spring R6 id f516fcf7...) were recalled and re-published during testing; both restored to 'published' at end.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Recall feature fully verified. Backend endpoint POST /api/races/{id}/status/{status} is the single mutation used by both Officer (recall-btn/publish-btn) and Admin (hist-recall-btn/hist-publish-btn). GET /api/notifications returns objects keyed by 'race_id' (not 'id') — take note when asserting membership. Pytest requires REACT_APP_BACKEND_URL env var and -o addopts='' to bypass xdist requirement in pytest.ini.",
+  "rca of the issue": "N/A — new feature verification, no bugs found."
+}

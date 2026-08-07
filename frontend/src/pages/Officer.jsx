@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700",
@@ -133,7 +133,11 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
   const changePos = async (boatId, position) => { await api.adjustResult(raceId, boatId, { position: Number(position) }); refresh(); };
   const setStatus = async (s) => {
     await api.setStatus(raceId, s);
-    toast.success(s === "published" ? "Results published to landing page!" : `Marked ${s}`);
+    toast.success(
+      s === "published" ? "Results published to landing page!" :
+      s === "setup" ? "Result recalled — race is back in setup" :
+      `Marked ${s}`
+    );
     if (s === "published") onBack(); else refresh();
   };
   const remove = async () => { await api.deleteRace(raceId); toast.success("Race deleted"); onBack(); };
@@ -259,11 +263,18 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
       <div className="fixed bottom-0 inset-x-0 z-40 backdrop-blur-xl bg-white/90 border-t border-border">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
           <Button variant="outline" className="text-destructive border-destructive/40" data-testid="delete-race-btn" onClick={remove}><Trash2 className="w-4 h-4" /></Button>
-          <Button variant="outline" className="flex-1 h-12 border-amber-400 text-amber-700" data-testid="set-provisional-btn" onClick={() => setStatus("provisional")}>
-            <CheckCircle2 className="w-4 h-4 mr-1" /> Mark Provisional
-          </Button>
+          {race.status === "published" ? (
+            <Button variant="outline" className="flex-1 h-12 border-amber-500 text-amber-700" data-testid="recall-btn"
+              onClick={() => { if (window.confirm("Recall the published result and roll this race back to setup? It will be removed from the public results and its race-day notice will show again.")) setStatus("setup"); }}>
+              <RotateCcw className="w-4 h-4 mr-1" /> Recall Result
+            </Button>
+          ) : (
+            <Button variant="outline" className="flex-1 h-12 border-amber-400 text-amber-700" data-testid="set-provisional-btn" onClick={() => setStatus("provisional")}>
+              <CheckCircle2 className="w-4 h-4 mr-1" /> Mark Provisional
+            </Button>
+          )}
           <Button className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-700" data-testid="publish-btn" onClick={() => setStatus("published")}>
-            <Send className="w-4 h-4 mr-1" /> Publish Results
+            <Send className="w-4 h-4 mr-1" /> {race.status === "published" ? "Re-publish" : "Publish Results"}
           </Button>
         </div>
       </div>

@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor } from "lucide-react";
+import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send } from "lucide-react";
 
 function TopBar() {
   const { logout } = useAuth();
@@ -280,6 +280,13 @@ function HistoricTab({ classes, rrsCodes }) {
 
   const openRace = async (id) => setRace(await api.getRace(id));
   const change = async (boatId, patch) => { const r = await api.adjustResult(race.id, boatId, patch); setRace(r); toast.success("Result updated"); };
+  const setStatus = async (s) => {
+    await api.setStatus(race.id, s);
+    const r = await api.getRace(race.id);
+    setRace(r);
+    api.getRaces({ series_id: seriesId }).then(setRaces);
+    toast.success(s === "setup" ? "Result recalled — race rolled back to setup" : s === "published" ? "Results re-published" : `Marked ${s}`);
+  };
 
   return (
     <div>
@@ -308,7 +315,26 @@ function HistoricTab({ classes, rrsCodes }) {
       )}
 
       {race && (
-        <div className="rounded-xl border overflow-hidden overflow-x-auto">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-muted/40 p-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Race {race.race_number} · {fmtDate(race.date)}</span>
+              <Badge className={race.status === "published" ? "bg-emerald-100 text-emerald-800" : race.status === "provisional" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}>{race.status}</Badge>
+            </div>
+            <div className="flex items-center gap-2">
+              {race.status === "published" ? (
+                <Button size="sm" variant="outline" className="border-amber-500 text-amber-700 gap-1.5" data-testid="hist-recall-btn"
+                  onClick={() => { if (window.confirm("Recall this published result and roll the race back to setup? It will be removed from the public results page until re-published.")) setStatus("setup"); }}>
+                  <RotateCcw className="w-4 h-4" /> Recall to setup
+                </Button>
+              ) : (
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 gap-1.5" data-testid="hist-publish-btn" onClick={() => setStatus("published")}>
+                  <Send className="w-4 h-4" /> Publish
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="rounded-xl border overflow-hidden overflow-x-auto">
           <Table data-testid="hist-results-table"><TableHeader><TableRow className="bg-muted"><TableHead>Boat</TableHead><TableHead>Position</TableHead><TableHead>Code</TableHead></TableRow></TableHeader>
             <TableBody>{[...race.results].sort((a, b) => (a.code === "FINISHED" && b.code === "FINISHED") ? a.position - b.position : a.code === "FINISHED" ? -1 : 1).map((r) => {
               const b = boats[r.boat_id] || {};
@@ -327,6 +353,7 @@ function HistoricTab({ classes, rrsCodes }) {
                 </TableRow>
               );
             })}</TableBody></Table>
+          </div>
         </div>
       )}
     </div>
