@@ -1,0 +1,113 @@
+{
+  "theme": "The Performance Pro + Nautical Clarity",
+  "archetype": "ARCHETYPE 2 (THE PERFORMANCE PRO) combined with Marine aesthetics",
+  "typography": {
+    "headings": {
+      "fontFamily": "Oswald",
+      "import_url": "https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&display=swap",
+      "rules": "Use for all H1-H4 headings. Apply uppercase formatting and tight tracking (`tracking-tighter`). Maximum size `text-6xl`. Provides an athletic, highly visible structure."
+    },
+    "body": {
+      "fontFamily": "Manrope",
+      "import_url": "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap",
+      "rules": "Use for all standard text, labels, and table data. Extremely legible geometric sans. Use relaxed line height (`leading-relaxed`)."
+    },
+    "monospace": {
+      "fontFamily": "JetBrains Mono",
+      "import_url": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap",
+      "rules": "Use exclusively for boat sail numbers, race split times, chronometers, and scoring tables to ensure perfect tabular alignment."
+    }
+  },
+  "colors": {
+    "background": {
+      "light": "#F8F9FA",
+      "dark": "#0A0C10"
+    },
+    "surface": {
+      "light": "#FFFFFF",
+      "dark": "#12161E"
+    },
+    "primary": {
+      "DEFAULT": "#0A369D",
+      "foreground": "#FFFFFF",
+      "description": "Oceanic Cobalt. Use for active states and primary headers."
+    },
+    "accent": {
+      "DEFAULT": "#FF4500",
+      "foreground": "#FFFFFF",
+      "description": "Safety Orange. CRITICAL for the Race Officer massive finish buttons and live alerts."
+    },
+    "border": {
+      "light": "rgba(10, 54, 157, 0.15)",
+      "dark": "rgba(255, 255, 255, 0.1)"
+    },
+    "muted": {
+      "light": "#E2E8F0",
+      "dark": "#1E293B"
+    }
+  },
+  "layouts": {
+    "spectator_landing": "Bento Grid layout (`md:grid-cols-8` or `12`). Asymmetric layout. Use wide gaps (`gap-8`). Organize results in clear 'folders' using nested Cards and Tabs.",
+    "race_officer_console": "Mobile-first tactical layout. One-glance = one answer. Sticky top header for active race status. The bottom 40% of the screen MUST be massive thumb-zone buttons (e.g., `h-32` or `h-40`) for one-handed recording of boat finishes while on the water.",
+    "admin_dashboard": "High-density Grid Mode B (`gap-4`). Use maximum screen real estate. Use cardless, dense HTML tables for series and fleet management."
+  },
+  "visual_enhancers": {
+    "marquee": "Use `react-fast-marquee` for the Live Race-Day Notifications banner. Style it as an 'Editorial Ribbon': Safety Orange background, White text, `tracking-wider`, `font-bold`.",
+    "buttons": "The 'Finish' button for the Race Officer must be Neumorphic + Tactile: massive, highly saturated, with a 2px inner stroke, and a deep ambient shadow. On press: distinct scale down (`active:scale-95`).",
+    "glassmorphism": "Use 'Crystal Glass' (`backdrop-blur-xl bg-white/80` or `bg-black/70`) for sticky headers and bottom action sheets so the race context is never fully obscured."
+  },
+  "components": {
+    "tabs": "Shadcn UI Tabs (for Class > Series organization). Customize: `h-auto` and generous padding (`p-4` or `p-6` inside tab content).",
+    "select": "Shadcn UI Select for boat pre-selection (DNC) and RRS Penalty dropdowns. Never use native `<select>`.",
+    "table": "Shadcn UI Table or custom HTML table for Low Point scoring. Use alternating row colors for readability outdoors.",
+    "toast": "Use `sonner` for all notifications (e.g., 'Provisional Results Published', 'Time Recorded')."
+  },
+  "motion": {
+    "micro_interactions": "All interactive elements must have `hover:scale-[1.02] active:scale-[0.98] transition-transform duration-200`.",
+    "lists": "Use staggered Framer Motion entrances for the Provisional Results table rows.",
+    "live_updates": "Subtle pulse animation (`animate-pulse`) on live timing numbers or 'Provisional' badges to indicate live state."
+  },
+  "image_urls": {
+    "hero_backgrounds": [
+      {
+        "url": "https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0dGF8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85",
+        "category": "hero",
+        "description": "White sailboats racing on sea - Use for the main Spectator Landing Page Hero background with a dark `bg-black/40` overlay to ensure text contrast."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1594739201538-838ea94344df?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHw0fHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0dGF8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85",
+        "category": "series_card",
+        "description": "People riding on sailboat close-up - Use for the Summer Series or class category cards (Dragon, Sonata, Wayfarer)."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1512602110-67198e50f815?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwyfHx5YWNodCUyMGNsdWIlMjBtYXJpbmF8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85",
+        "category": "admin_background",
+        "description": "White yacht on dock - Soft background for admin login or setup screens."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Implement a Hybrid Fullstack app accommodating 3 roles: Spectator (public view), Race Officer (action console), and Admin (data dashboard).",
+    "Use a Mobile-first layout heavily weighted towards the Race Officer view. The 'Record Finish Time' button MUST be exceptionally large (e.g., `h-32` or taking up 40% of the viewport width/height) to allow blind/one-handed tapping on a moving, wet boat.",
+    "Use Shadcn UI extensively for Select (RRS dropdowns), Tabs (Classes/Series logic), and Tables (Provisional/Final Results), but override the default aesthetics with the high-contrast Nautical theme.",
+    "Install and integrate `react-fast-marquee` at the top of the Spectator landing page to display live Race-Day Notifications (course, start times, special rules, life jackets). Hide it when results are published.",
+    "Ensure the time capture function grabs the frontend device time immediately upon button press for precise racing accuracy.",
+    "Provide simple PIN/passcode role-based login to separate Spectator from Race Officer from Admin.",
+    "DO NOT use a fully transparent header over images; ALWAYS use a crystal glass effect (`backdrop-blur-xl bg-white/80` or `bg-black/60`).",
+    "Ensure text contrast meets outdoor visibility requirements (APCA/WCAG AA). Do not use low-contrast grays on grays."
+  ],
+  "accessibility": {
+    "contrast": "CRITICAL: The app is used outdoors by officials under direct sunlight. Text on buttons and tables must have a minimum 4.5:1 ratio. Avoid light gray text.",
+    "touch_targets": "Minimum 48x48px for all interactive elements. Race Officer action buttons must be at least 120px tall.",
+    "testing_attributes": "All interactive elements MUST include `data-testid` (e.g., `data-testid=\"record-finish-btn\"`, `data-testid=\"spectator-tabs\"`)."
+  },
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not converge toward generic outputs. Use the defined Oswald + Manrope typography strictly to maintain the athletic, nautical performance feel.",
+    "Create depth through layered design elements. Use crisp 1px borders and distinct ambient shadows rather than muddy blurs.",
+    "Do not center-align the app container. Keep reading flow left-aligned for data-heavy views like scoring and results.",
+    "Use `lucide-react` for clean, technical iconography.",
+    "Never use generic AI emojis (🤖🧠💭). Use SVGs or icons.",
+    "Every interaction needs a micro-animation (hover/active scale).",
+    "Use `sonner` for toast notifications instead of standard alerts."
+  ]
+}
