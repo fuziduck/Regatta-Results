@@ -266,12 +266,26 @@ async def create_series(data: SeriesInput, _: str = Depends(require_admin)):
     return doc
 
 
+async def _sync_race_dates(series_id: str, schedule):
+    """Push edited schedule dates onto existing races of the series, matched by race_number."""
+    if not schedule:
+        return
+    races = await db.races.find({"series_id": series_id}, {"_id": 0}).to_list(1000)
+    for r in races:
+        rn = r.get("race_number")
+        if rn and 1 <= rn <= len(schedule):
+            new_date = schedule[rn - 1]
+            if new_date and new_date != r.get("date"):
+                await db.races.update_one({"id": r["id"]}, {"$set": {"date": new_date}})
+
+
 @api_router.put("/series/{series_id}")
 async def update_series(series_id: str, data: SeriesInput, _: str = Depends(require_admin)):
     update = data.model_dump()
     if update.get("schedule") is None:
         update.pop("schedule", None)
     await db.series.update_one({"id": series_id}, {"$set": update})
+    await _sync_race_dates(series_id, update.get("schedule"))
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
@@ -294,6 +308,7 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, _: str = Dep
     future = _saturdays_from(data.start_date, total - len(sailed_dates))
     schedule = sailed_dates + future
     await db.series.update_one({"id": series_id}, {"$set": {"schedule": schedule, "planned_races": total}})
+    await _sync_race_dates(series_id, schedule)
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 

@@ -1,0 +1,34 @@
+{
+  "summary": "Targeted backend retest for the schedule-sync bug fix. Added /app/backend/tests/test_schedule_sync.py with 3 tests, all passing: (1) PUT /api/series/{id} with edited schedule[0] updates the matching published race document's date AND is reflected in GET /api/standings/series/{id} (both in races[] and schedule[]), while boat totals/net remain unchanged (dates don't affect scoring); (2) editing a schedule slot with no existing race persists the future TBC date on the series without creating/erroring a race; (3) POST /api/series/{id}/generate-schedule preserves already-sailed race dates in the leading slots and appends future Saturdays.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/series", "issue": "Existing regression test expected >=15 series but seed only has 9 for year 2026 (seed data drift; unrelated to this bug fix)."},
+      {"endpoint": "POST /api/races full lifecycle", "issue": "backend_test.py::TestRaceFlow winner assertion now fails - likely leftover Sonata 'Late Spring' race from iteration_1 is affecting standings winner. Unrelated to schedule sync."},
+      {"endpoint": "GET /api/series (Wayfarer)", "issue": "backend_test.py::TestScoring expects series 'Early Autumn' which is not present in the current seed (only 9 series). Unrelated to this bug fix."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_schedule_sync.py",
+    "/app/test_reports/pytest/schedule_sync.xml",
+    "/app/test_reports/pytest/all.xml"
+  ],
+  "action_items": [
+    "Bug fix verified working - no action needed for the schedule-sync bug.",
+    "Optional: reconcile seed data / prior-iteration leftover races so that legacy tests in backend_test.py (test_series>=15, test_full_race_lifecycle winner, test_dnc 'Early Autumn') pass again. These are pre-existing drift, not caused by this change."
+  ],
+  "critical_code_review_comments": [
+    "_sync_race_dates only writes when new_date is truthy and differs - good. Consider also updating races when a schedule slot is cleared (empty string) if that becomes a supported UX; currently a cleared slot leaves the existing race's original date untouched.",
+    "SeriesInput.schedule is Optional[List[str]] but update_series pops it only when None - clients that send [] will overwrite. Documented as intentional per problem statement.",
+    "generate_schedule sorts sailed races by (date, race_number) so re-numbering may occur if race_numbers were originally assigned differently; then _sync_race_dates writes back matching by race_number to the (now sorted) schedule - existing race dates stay stable because sailed_dates[i] corresponds to that race_number's slot only if race_numbers were assigned in date order. Consider matching by race_number consistently."
+  ],
+  "updated_files": ["/app/backend/tests/test_schedule_sync.py"],
+  "success_rate": {"backend": "100% (3/3 targeted); regression suite 15/19 (4 unrelated failures)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "Admin PIN admin2026, Officer PIN sail2026 (from backend/.env).",
+  "seed_data_creation": "None. Modified Sonata 'Early Spring' R1 date to 2026-04-11 (or 2026-04-18 on rerun) and appended future TBC slot 2026-11-28 to its schedule; ran generate-schedule on Dragon 'John Field Trophy' with count = existing+2 starting 2026-10-03. All acceptable per instructions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Schedule-sync bug fix verified via /app/backend/tests/test_schedule_sync.py. Note: /app/backend/tests/backend_test.py has 4 pre-existing failures due to seed/state drift (only 9 series in 2026 seed; 'Early Autumn' absent; leftover races from prior UI tests). Not caused by this bug fix and out of scope. Test file uses REACT_APP_BACKEND_URL env var and requires -o addopts=\"\" to bypass xdist requirement in pytest.ini.",
+  "rca of the issue": "Prior behaviour: PUT /api/series only stored the new schedule on the series doc; the published race documents kept their original 'date', and compute_series_standings returned per-race meta from race.date - so the results table column header date never changed. Fix (verified): _sync_race_dates(series_id, schedule) iterates existing race docs and, for each race with race_number rn in range, updates db.races.date to schedule[rn-1] when non-empty and different. Invoked from both update_series and generate_schedule. Result: GET /api/races and GET /api/standings/series/{id} both surface the edited date immediately, scoring is unaffected."
+}
