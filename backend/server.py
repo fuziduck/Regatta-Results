@@ -482,23 +482,29 @@ def net_from_scores(scores, discards):
 
 
 async def _series_scores(series):
-    """Return dict boat_id -> {'points_list': [floats], 'positions': [int]} for a series (published races)."""
+    """Return (agg, boat_map, race_meta). agg: boat_id -> list of per-race entry dicts, aligned to race_meta."""
     races = await db.races.find({"series_id": series["id"], "status": "published"}, {"_id": 0}).to_list(1000)
+    races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
-    agg = {}
+    race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
+    agg = {bid: [] for bid in boat_map}
     for race in races:
         entries = race.get("entries_count") or len(race.get("results", []))
-        present = {r["boat_id"] for r in race["results"]}
-        for r in race["results"]:
-            pts = result_points(r, entries)
-            discardable = r.get("code") not in NON_DISCARDABLE
-            agg.setdefault(r["boat_id"], []).append((pts, discardable, r.get("position") if r.get("code") == "FINISHED" else None))
-        # boats added after this race existed -> DNC
+        present = {r["boat_id"]: r for r in race["results"]}
         for bid in boat_map:
-            if bid not in present:
-                agg.setdefault(bid, []).append((float(entries + 1), True, None))
-    return agg, boat_map, len(races)
+            r = present.get(bid)
+            if r is None:
+                agg[bid].append({"points": float(entries + 1), "discardable": True, "position": None, "code": "DNC"})
+            else:
+                code = r.get("code")
+                agg[bid].append({
+                    "points": result_points(r, entries),
+                    "discardable": code not in NON_DISCARDABLE,
+                    "position": r.get("position") if code == "FINISHED" else None,
+                    "code": code,
+                })
+    return agg, boat_map, race_meta
 
 
 def _tiebreak_key(positions):
@@ -507,7 +513,8 @@ def _tiebreak_key(positions):
 
 
 async def compute_series_standings(series):
-    agg, boat_map, race_count = await _series_scores(series)
+    agg, boat_map, race_meta = await _series_scores(series)
+    race_count = len(race_meta)
     # Effective discards never remove every race: at least one always counts.
     discards = min(series.get("discards", 0), max(0, race_count - 1))
     rows = []
@@ -515,9 +522,17 @@ async def compute_series_standings(series):
         b = boat_map.get(bid)
         if not b:
             continue
-        scores = [(p, d) for p, d, _ in entries]
-        positions = [pos for _, _, pos in entries]
-        net, total = net_from_scores(scores, discards)
+        # discard the highest-scoring discardable races for this boat
+        discardable_idx = sorted(
+            [i for i, e in enumerate(entries) if e["discardable"]],
+            key=lambda i: entries[i]["points"], reverse=True,
+        )
+        drop = set(discardable_idx[:discards])
+        total = sum(e["points"] for e in entries)
+        net = sum(e["points"] for i, e in enumerate(entries) if i not in drop)
+        positions = [e["position"] for e in entries]
+        scores = [{"points": round(e["points"], 1), "code": e["code"], "discarded": i in drop}
+                  for i, e in enumerate(entries)]
         rows.append({
             "boat_id": bid,
             "boat_name": b["name"],
@@ -525,7 +540,7 @@ async def compute_series_standings(series):
             "helm": b["helm"],
             "net": round(net, 1),
             "total": round(total, 1),
-            "race_points": [round(p, 1) for p, _, _ in entries],
+            "scores": scores,
             "positions": positions,
             "_tb": _tiebreak_key(positions),
         })
@@ -533,7 +548,9 @@ async def compute_series_standings(series):
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)
-    return {"race_count": race_count, "discards": discards, "configured_discards": series.get("discards", 0), "standings": rows}
+    return {"race_count": race_count, "discards": discards,
+            "configured_discards": series.get("discards", 0),
+            "races": race_meta, "standings": rows}
 
 
 @api_router.get("/standings/series/{series_id}")
