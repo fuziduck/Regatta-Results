@@ -81,6 +81,7 @@ class LoginInput(BaseModel):
 class ClassInput(BaseModel):
     name: str
     default_start_time: str = "10:30"
+    scoring_type: str = "fleet"  # fleet | irc | py
 
 
 class BoatInput(BaseModel):
@@ -90,6 +91,7 @@ class BoatInput(BaseModel):
     helm: str
     year: int
     active: bool = True
+    rating: Optional[float] = None  # IRC TCC or Portsmouth Yardstick number
 
 
 class SeriesInput(BaseModel):
@@ -184,7 +186,8 @@ async def get_classes():
 
 @api_router.post("/classes")
 async def create_class(data: ClassInput, _: str = Depends(require_admin)):
-    doc = {"id": new_id(), "name": data.name, "default_start_time": data.default_start_time, "created_at": now_iso()}
+    doc = {"id": new_id(), "name": data.name, "default_start_time": data.default_start_time,
+           "scoring_type": data.scoring_type, "created_at": now_iso()}
     await db.classes.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -192,7 +195,7 @@ async def create_class(data: ClassInput, _: str = Depends(require_admin)):
 
 @api_router.put("/classes/{class_id}")
 async def update_class(class_id: str, data: ClassInput, _: str = Depends(require_admin)):
-    await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name, "default_start_time": data.default_start_time}})
+    await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name, "default_start_time": data.default_start_time, "scoring_type": data.scoring_type}})
     return await db.classes.find_one({"id": class_id}, {"_id": 0})
 
 
@@ -321,6 +324,45 @@ async def delete_series(series_id: str, _: str = Depends(require_admin)):
 # ---------------------------------------------------------------------------
 # Races
 # ---------------------------------------------------------------------------
+def _parse_dt(s):
+    if not s:
+        return None
+    s = s.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+async def _recompute_handicap(results, class_id, date, start_time):
+    """For IRC/PY classes, compute elapsed & corrected time and rank FINISHED boats by corrected time."""
+    cls = await db.classes.find_one({"id": class_id}, {"_id": 0})
+    st = (cls or {}).get("scoring_type", "fleet")
+    if st not in ("irc", "py"):
+        return
+    boats = {b["id"]: b for b in await db.boats.find({"class_id": class_id}, {"_id": 0}).to_list(2000)}
+    start = _parse_dt(f'{date}T{(start_time or "00:00")}:00+00:00')
+    finished = []
+    for r in results:
+        r["elapsed_seconds"] = None
+        r["corrected_seconds"] = None
+        if r.get("code") == "FINISHED" and r.get("finish_time") and start:
+            fin = _parse_dt(r["finish_time"])
+            elapsed = (fin - start).total_seconds() if fin else None
+            if elapsed and elapsed > 0:
+                r["elapsed_seconds"] = round(elapsed, 1)
+                rating = boats.get(r["boat_id"], {}).get("rating")
+                if st == "irc":
+                    corrected = elapsed * (rating or 1.0)
+                else:  # py
+                    corrected = elapsed * 1000.0 / (rating or 1000)
+                r["corrected_seconds"] = round(corrected, 1)
+                finished.append(r)
+    finished.sort(key=lambda r: r["corrected_seconds"])
+    for i, r in enumerate(finished):
+        r["position"] = i + 1
+
+
 async def _class_active_boats(class_id: str, year: int):
     return await db.boats.find({"class_id": class_id, "year": year, "active": True}, {"_id": 0}).to_list(2000)
 
@@ -425,6 +467,7 @@ async def record_finish(race_id: str, data: FinishInput, _: str = Depends(requir
             r["code"] = "FINISHED"
             r["finish_time"] = data.finish_time or now_iso()
             r["position"] = next_pos
+    await _recompute_handicap(results, race["class_id"], race["date"], race.get("start_time"))
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -444,6 +487,7 @@ async def undo_finish(race_id: str, data: FinishInput, _: str = Depends(require_
     finished = sorted([r for r in results if r["code"] == "FINISHED"], key=lambda x: x["finish_time"] or "")
     for i, r in enumerate(finished):
         r["position"] = i + 1
+    await _recompute_handicap(results, race["class_id"], race["date"], race.get("start_time"))
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -467,6 +511,8 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
                 r["finish_time"] = data.finish_time
             if data.penalty_points is not None:
                 r["penalty_points"] = data.penalty_points
+    if data.position is None:
+        await _recompute_handicap(results, race["class_id"], race["date"], race.get("start_time"))
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 

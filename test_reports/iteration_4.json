@@ -1,0 +1,30 @@
+{
+  "summary": "Verified new handicap-scoring feature (IRC/PY) end-to-end. Backend: 5/5 pytest tests pass (test_handicap.py) — class scoring_type persistence, boat.rating CRUD, PY corrected time ranking (Slow PN1300 wins over Fast PN900 despite finishing first / tap-order != position), IRC corrected time ranking with equal elapsed and different TCC, and fleet regression (tap order determines position, undo re-sequences). Series standings for the published handicap race use corrected-time positions (1pt/2pt/3pt as expected). Frontend UI: Admin Classes tab has Scoring column + class-scoring-input dropdown (fleet/irc/py) — WORKS. Admin Boats tab has Rating column + boat-rating-input that correctly hides for fleet-class boats and shows for IRC/PY — WORKS. Landing 'Corrected' column displays correctly on the race folder for a published handicap race (verified 3 rows with corrected times 34:37 / 1:06:40 / 1:12:44 in correct order). BUG: Officer console handicap features NOT implemented in provisional table — no Elapsed column, no Corrected column, position is still editable (pos-input-*) and no 'auto-calculated' note. `handicap` variable is computed (Officer.jsx line 118) but never used in the JSX around lines 232-260.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Officer.jsx RaceConsole > Provisional results table", "issue": "For handicap (IRC/PY) races, the table must show Elapsed and Corrected columns and render position as read-only (not an editable input). Currently the `handicap` flag is computed (const handicap = meta.scoring_type === 'irc' || meta.scoring_type === 'py') but never referenced in the JSX. Officer sees the same editable pos-input-<sail> for handicap classes, contradicting the spec ('position is shown read-only for handicap classes' and 'a note that positions are auto-calculated').", "selector": "[data-testid=adjust-table]", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_handicap.py", "/app/test_reports/pytest/handicap.xml"],
+  "action_items": [
+    "Officer.jsx: use the `handicap` flag around the provisional table (lines ~232-260) to (a) add <th>Elapsed</th> and <th>Corrected</th> headers, (b) render fmtDur(r.elapsed_seconds) and fmtDur(r.corrected_seconds) cells (helpers.fmtDur already exists), (c) render position as read-only text (e.g. <span className='font-mono'>{r.position ?? '–'}</span>) instead of the number Input when handicap is true, and (d) show a small note like 'Positions are auto-calculated from corrected time' near the section header."
+  ],
+  "critical_code_review_comments": [
+    "backend/server.py _recompute_handicap only writes elapsed_seconds/corrected_seconds when code==FINISHED with a finish_time; for non-finished results (DNC/DNS/OCS/RET/DSQ) the fields stay absent. Frontend already tolerates this via the r.corrected_seconds != null check on Landing — good.",
+    "adjust_result skips _recompute_handicap only when data.position is not None (i.e. manual override). Correct: manual position overrides handicap ranking as expected.",
+    "record_finish still sets r.position = next_pos (tap order) BEFORE _recompute_handicap overwrites it for handicap classes. Slightly wasteful but harmless; kept for fleet-class code path.",
+    "Officer.jsx `handicap` variable declared but unused — dead code / missing implementation as flagged above.",
+    "Cleanup verified: 3 seeded classes (Dragon/Sonata/Wayfarer) remain; all TEST_* classes/series/boats/races created during tests were removed."
+  ],
+  "updated_files": ["/app/backend/tests/test_handicap.py"],
+  "success_rate": {"backend": "100% (5/5 handicap tests)", "frontend": "80% — Admin & Landing correct; Officer console handicap columns missing"},
+  "test_credentials": "Admin PIN admin2026, Officer PIN sail2026 (both work via POST /api/auth/login)",
+  "seed_data_creation": "None persisted. Backend pytest and Playwright both created and deleted their own TEST_/UI_ classes/series/boats/races.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend handicap scoring is solid — reuse /app/backend/tests/test_handicap.py for regression. The only remaining work is wiring the Officer.jsx RaceConsole provisional table to the handicap flag (Elapsed/Corrected columns + read-only position + note). Verify by opening a handicap race in the officer console; after main agent fixes, look for th 'Elapsed' and th 'Corrected' and confirm pos-input-<sail> is absent for FINISHED rows when scoring_type is irc/py.",
+  "rca of the issue": "Officer.jsx RaceConsole computes `const handicap = meta.scoring_type === 'irc' || meta.scoring_type === 'py'` on line 118 but the flag is never used in the provisional table JSX. As a result the officer UI does not show Elapsed/Corrected columns for handicap classes and the position number input remains editable, contradicting the feature spec. Reproduce: create an IRC or PY class + boats + race, open the race in the officer console, scroll to 'Provisional results & penalties' — no Elapsed/Corrected headers, position is a numeric Input. Fix scope is UI-only in /app/frontend/src/pages/Officer.jsx around lines 230-260."
+}

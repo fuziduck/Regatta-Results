@@ -115,6 +115,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
   const racing = race.results.filter((r) => r.code !== "DNC");
+  const handicap = meta.scoring_type === "irc" || meta.scoring_type === "py";
   const toFinish = racing.filter((r) => r.code === "DNS").sort((a, b) => (boats[a.boat_id]?.sail_no || "").localeCompare(boats[b.boat_id]?.sail_no || ""));
   const finished = race.results.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
 
@@ -321,6 +322,7 @@ export default function Officer() {
     class_id: r.class_id,
     class_name: classes[r.class_id]?.name || "Class",
     series_name: series[r.series_id]?.name || "Series",
+    scoring_type: classes[r.class_id]?.scoring_type || "fleet",
   });
 
   if (selected) {

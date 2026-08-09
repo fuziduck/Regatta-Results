@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
-import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
+import { CURRENT_YEAR, CODE_COLORS, fmtDate, SCORING_LABELS, RATING_HINT } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,41 +38,54 @@ function TopBar() {
 
 /* ---------------- Classes ---------------- */
 function ClassesTab({ classes, reload }) {
-  const [form, setForm] = useState({ name: "", default_start_time: "10:30" });
+  const [form, setForm] = useState({ name: "", default_start_time: "10:30", scoring_type: "fleet" });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
   const save = async () => {
     if (!form.name) return toast.error("Name required");
     if (editing) await api.updateClass(editing, form); else await api.createClass(form);
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30" }); reload();
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_type: "fleet" }); reload();
   };
   const del = async (id) => { await api.deleteClass(id); toast.success("Deleted"); reload(); };
 
   return (
     <div>
       <div className="flex justify-between items-center mb-4">
-        <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30" }); } }}>
+        <p className="text-sm text-muted-foreground">Fleets racing this season. Choose one-design (fleet) or handicap scoring.</p>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_type: "fleet" }); } }}>
           <DialogTrigger asChild><Button data-testid="add-class-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add class</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} class</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Class name</Label><Input data-testid="class-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dragon" /></div>
               <div className="space-y-1.5"><Label>Default start time</Label><Input type="time" data-testid="class-time-input" value={form.default_start_time} onChange={(e) => setForm({ ...form, default_start_time: e.target.value })} /></div>
+              <div className="space-y-1.5">
+                <Label>Scoring type</Label>
+                <Select value={form.scoring_type} onValueChange={(v) => setForm({ ...form, scoring_type: v })}>
+                  <SelectTrigger data-testid="class-scoring-input"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fleet">Fleet — one-design, finish order</SelectItem>
+                    <SelectItem value="irc">IRC handicap (corrected time)</SelectItem>
+                    <SelectItem value="py">Portsmouth Yardstick (corrected time)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {form.scoring_type !== "fleet" && <p className="text-xs text-muted-foreground">Positions are calculated from corrected time using each boat's rating. Set ratings in the Boats tab.</p>}
+              </div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-class-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Scoring</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{classes.map((c) => (
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
+              <TableCell><Badge variant="outline" className={(c.scoring_type && c.scoring_type !== "fleet") ? "border-safety text-safety" : ""}>{SCORING_LABELS[c.scoring_type || "fleet"]}</Badge></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_type: c.scoring_type || "fleet" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
@@ -88,8 +101,11 @@ function BoatsTab({ classes }) {
   const [boats, setBoats] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true };
+  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true, rating: "" };
   const [form, setForm] = useState(blank);
+
+  const selClass = classes.find((c) => c.id === form.class_id);
+  const scoring = selClass?.scoring_type || "fleet";
 
   const load = useCallback(() => {
     const p = classFilter === "all" ? { year: CURRENT_YEAR } : { class_id: classFilter, year: CURRENT_YEAR };
@@ -130,6 +146,12 @@ function BoatsTab({ classes }) {
                 </Select></div>
               <div className="space-y-1.5"><Label>Helm</Label><Input data-testid="boat-helm-input" value={form.helm} onChange={(e) => setForm({ ...form, helm: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Year</Label><Input type="number" data-testid="boat-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
+              {scoring !== "fleet" && (
+                <div className="space-y-1.5 col-span-2">
+                  <Label>Handicap rating — {RATING_HINT[scoring]}</Label>
+                  <Input type="number" step="0.001" data-testid="boat-rating-input" value={form.rating ?? ""} onChange={(e) => setForm({ ...form, rating: e.target.value })} placeholder={scoring === "irc" ? "e.g. 1.025" : "e.g. 1100"} />
+                </div>
+              )}
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-boat-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
@@ -137,20 +159,21 @@ function BoatsTab({ classes }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>Rating</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{boats.map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
               <TableCell className="font-semibold">{b.name}</TableCell>
               <TableCell>{cname(b.class_id)}</TableCell>
               <TableCell>{b.helm}</TableCell>
+              <TableCell className="font-mono">{b.rating ?? "—"}</TableCell>
               <TableCell>{b.active ? <Badge className="bg-emerald-100 text-emerald-800">Yes</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active, rating: b.rating ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!boats.length && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
+            {!boats.length && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, fmtTime, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtTime, fmtDur, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -64,11 +64,14 @@ function PublishedRaces({ seriesId, classId }) {
               </div>
             </AccordionTrigger>
             <AccordionContent>
+              {(() => {
+                const showCorrected = rows.some((r) => r.corrected_seconds != null);
+                return (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-muted-foreground border-b">
-                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Helm</th><th className="text-center">Code</th><th className="text-right">Finish</th>
+                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Helm</th>{showCorrected && <th className="text-right">Corrected</th>}<th className="text-center">Code</th><th className="text-right">Finish</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -79,6 +82,7 @@ function PublishedRaces({ seriesId, classId }) {
                           <td className="py-2 font-heading text-base">{r.code === "FINISHED" ? r.position : "–"}</td>
                           <td><span className="font-semibold">{b.name}</span> <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
                           <td className="text-muted-foreground">{b.helm}</td>
+                          {showCorrected && <td className="text-right font-mono text-xs font-bold text-ocean">{r.corrected_seconds != null ? fmtDur(r.corrected_seconds) : "—"}</td>}
                           <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[r.code] || ""} text-[10px]`}>{r.code}</Badge></td>
                           <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtTime(r.finish_time) : "—"}</td>
                         </tr>
@@ -87,6 +91,8 @@ function PublishedRaces({ seriesId, classId }) {
                   </tbody>
                 </table>
               </div>
+                );
+              })()}
             </AccordionContent>
           </AccordionItem>
         );
