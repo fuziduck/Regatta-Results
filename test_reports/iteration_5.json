@@ -1,0 +1,20 @@
+{
+  "summary": "Focused retest of Officer console handicap columns fix. Independently verified end-to-end via UI: PY handicap race shows Elapsed & Corrected columns, position is a read-only SPAN (data-testid=pos-input-<sail>) for FINISHED rows, and 'auto-calculated' note is visible. Corrected-time ordering is correct — Slow (PN1300, elapsed 1:12:00, corrected 55:23) is Pos 1 ahead of Fast (PN900, elapsed 1:00:00, corrected 1:06:40) even though Fast finished first on the water. Fleet class regression also verified: NO Elapsed/Corrected columns, pos-input-<sail> remains an editable INPUT, and 3 taps in order produce positions 1,2,3. No 'auto-calculated' note on fleet.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_handicap.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Officer.jsx line 118: `const handicap = meta.scoring_type === 'irc' || meta.scoring_type === 'py'` — this is a fine boolean now that both sides are explicit comparisons. (Previous iteration had a bug `=== 'irc' || 'py'` which always evaluated truthy.) Verified fixed.",
+    "Officer.jsx renders read-only span with same data-testid=pos-input-<sail> as the fleet input — good for test parity, but consumers must inspect tagName (SPAN vs INPUT) to distinguish. Documented in this iteration's tests.",
+    "Fleet race header does NOT include an explicit 'ranked on tap order' hint — minor UX nice-to-have, not a bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (previous 5/5 retained, not rerun per request)", "frontend": "100% — handicap columns, read-only positions, note, corrected-time ordering, fleet regression all pass"},
+  "test_credentials": "Admin PIN admin2026, Officer PIN sail2026 via POST /api/auth/login",
+  "seed_data_creation": "None persisted. Playwright test created TEST_PY_*, TEST_FL_* classes/series/boats/races and deleted them all in the finally block. CLEANUP OK printed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Officer console handicap UI is fully wired. If regressions arise, reuse the flow: seed via API (POST /api/classes with scoring_type=py|irc, POST /api/boats with rating + helm required, POST /api/series with schedule, POST /api/races, /select-boats, /finish with finish_time as ISO WITH tz-offset like 'YYYY-MM-DDTHH:MM:SS+00:00' — naive datetimes break _recompute_handicap on the server), then open the race via /officer route (data-testid=race-item-<id>) and inspect the 'Provisional results & penalties' table: th list should include 'Elapsed' and 'Corrected' for handicap; pos-input-<sail> tagName must be SPAN for FINISHED handicap rows and INPUT for fleet rows.",
+  "rca of the issue": "Previously (iteration_4) Officer.jsx computed but never used the `handicap` flag, so IRC/PY races displayed a fleet-style editable position input and no Elapsed/Corrected columns. Main agent has now wired the flag around the provisional table headers, position cell (span vs Input), Elapsed cell (fmtDur(r.elapsed_seconds)), Corrected cell (fmtDur(r.corrected_seconds)) and the auto-calculated note. Confirmed by independent Playwright test — see screenshot /tmp/py.png showing Pos 1: Slow S5341 · 1300 with Elapsed 1:12:00 and Corrected 55:23; Pos 2: Fast F5341 · 900 with 1:00:00 / 1:06:40."
+}

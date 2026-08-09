@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
-import { fmtDate, fmtTime, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtTime, fmtDur, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -227,10 +227,10 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
 
         {/* Provisional / adjust */}
         <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-heading uppercase tracking-tight mb-3">Provisional results & penalties</h3>
+          <h3 className="font-heading uppercase tracking-tight mb-3">Provisional results & penalties{handicap && <span className="ml-2 text-xs font-body normal-case text-safety">({meta.scoring_type.toUpperCase()} — ranked on corrected time)</span>}</h3>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th><th className="w-40">Code / Penalty (RRS)</th></tr></thead>
+              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th>{handicap && <th className="w-28">Elapsed</th>}{handicap && <th className="w-28">Corrected</th>}<th className="w-40">Code / Penalty (RRS)</th></tr></thead>
               <tbody data-testid="adjust-table">
                 {[...race.results].sort((a, b) => {
                   if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
@@ -239,12 +239,16 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
                   const b = boats[r.boat_id] || {};
                   return (
                     <tr key={r.boat_id} className="border-b last:border-0">
-                      <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
+                      <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>{handicap && b.rating != null && <span className="ml-1 font-mono text-[10px] text-muted-foreground">·{b.rating}</span>}</td>
                       <td>
                         {r.code === "FINISHED"
-                          ? <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />
+                          ? (handicap
+                            ? <span className="font-heading text-base" data-testid={`pos-input-${b.sail_no}`}>{r.position || "–"}</span>
+                            : <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />)
                           : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}
                       </td>
+                      {handicap && <td className="font-mono text-xs">{r.code === "FINISHED" ? fmtDur(r.elapsed_seconds) : "—"}</td>}
+                      {handicap && <td className="font-mono text-xs font-bold text-ocean">{r.code === "FINISHED" ? fmtDur(r.corrected_seconds) : "—"}</td>}
                       <td>
                         <Select value={r.code} onValueChange={(v) => changeCode(r.boat_id, v)}>
                           <SelectTrigger className="h-8" data-testid={`code-select-${b.sail_no}`}><SelectValue /></SelectTrigger>
@@ -257,6 +261,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
               </tbody>
             </table>
           </div>
+          {handicap && <p className="text-xs text-muted-foreground mt-2">Positions are auto-calculated from corrected time — tap order doesn't matter. Set boat ratings & the start time to compute correctly.</p>}
         </section>
       </div>
 
