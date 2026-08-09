@@ -176,8 +176,8 @@ export default function Landing() {
 
       <section className="relative">
         <img
-          src="https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0dGF8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
-          alt="racing" className="absolute inset-0 w-full h-full object-cover" />
+          src="https://static.prod-images.emergentagent.com/jobs/9a281200-d99f-4e2c-a917-cc4479c7c0e0/images/513a9c83841c6acfa0d3c05816b985e8701005ed99f1e193caf2ab4284c14369.jpeg"
+          alt="Fleet racing on the tidal River Medway" className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
         <div className="relative max-w-6xl mx-auto px-4 py-16 md:py-24">
           <Badge className="bg-safety text-white mb-4 uppercase tracking-widest">{CURRENT_YEAR} Season</Badge>

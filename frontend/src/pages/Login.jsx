@@ -33,8 +33,8 @@ export default function Login() {
   return (
     <div className="min-h-screen relative flex items-center justify-center p-4 bg-ocean-dark">
       <img
-        src="https://images.unsplash.com/photo-1512602110-67198e50f815?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwyfHx5YWNodCUyMGNsdWIlMjBtYXJpbmF8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
-        alt="marina"
+        src="https://static.prod-images.emergentagent.com/jobs/9a281200-d99f-4e2c-a917-cc4479c7c0e0/images/f13a53bfbd9ffd7d6e7f2b4915ced1d8ce150c93fb0cb415bca67f65e2bdef09.jpeg"
+        alt="Moored yachts on the River Medway at golden hour"
         className="absolute inset-0 w-full h-full object-cover"
       />
       <div className="absolute inset-0 hero-overlay" />
