@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
-import { fmtDate, fmtTime, fmtDur, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtTime, fmtDur, parseDur, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -247,7 +247,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
                             : <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />)
                           : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}
                       </td>
-                      {handicap && <td className="font-mono text-xs">{r.code === "FINISHED" ? fmtDur(r.elapsed_seconds) : "—"}</td>}
+                      {handicap && <td className="font-mono text-xs">{r.code === "FINISHED" ? <Input key={r.corrected_seconds} defaultValue={fmtDur(r.elapsed_seconds)} data-testid={`elapsed-input-${b.sail_no}`} className="h-8 w-24 font-mono" onBlur={(e) => changeElapsed(r.boat_id, e.target.value)} /> : "—"}</td>}
                       {handicap && <td className="font-mono text-xs font-bold text-ocean">{r.code === "FINISHED" ? fmtDur(r.corrected_seconds) : "—"}</td>}
                       <td>
                         <Select value={r.code} onValueChange={(v) => changeCode(r.boat_id, v)}>

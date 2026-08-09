@@ -52,3 +52,15 @@ export const RATING_HINT = {
   py: "PY number (e.g. 1100)",
   fleet: "",
 };
+
+export function parseDur(str) {
+  if (str == null) return null;
+  const s = String(str).trim();
+  if (!s) return null;
+  if (s.includes(":")) {
+    const parts = s.split(":").map((p) => parseFloat(p) || 0);
+    return parts.reduce((acc, p) => acc * 60 + p, 0);
+  }
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}

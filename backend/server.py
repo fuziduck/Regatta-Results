@@ -139,6 +139,7 @@ class ResultAdjustInput(BaseModel):
     code: Optional[str] = None
     finish_time: Optional[str] = None
     penalty_points: Optional[float] = None
+    elapsed_seconds: Optional[float] = None
 
 
 RRS_CODES = [
@@ -344,20 +345,28 @@ async def _recompute_handicap(results, class_id, date, start_time):
     start = _parse_dt(f'{date}T{(start_time or "00:00")}:00+00:00')
     finished = []
     for r in results:
-        r["elapsed_seconds"] = None
         r["corrected_seconds"] = None
-        if r.get("code") == "FINISHED" and r.get("finish_time") and start:
+        if r.get("code") != "FINISHED":
+            r["elapsed_seconds"] = None
+            continue
+        if r.get("elapsed_manual") and r.get("elapsed_seconds"):
+            elapsed = r["elapsed_seconds"]
+        elif r.get("finish_time") and start:
             fin = _parse_dt(r["finish_time"])
             elapsed = (fin - start).total_seconds() if fin else None
-            if elapsed and elapsed > 0:
-                r["elapsed_seconds"] = round(elapsed, 1)
-                rating = boats.get(r["boat_id"], {}).get("rating")
-                if st == "irc":
-                    corrected = elapsed * (rating or 1.0)
-                else:  # py
-                    corrected = elapsed * 1000.0 / (rating or 1000)
-                r["corrected_seconds"] = round(corrected, 1)
-                finished.append(r)
+        else:
+            elapsed = None
+        if elapsed and elapsed > 0:
+            r["elapsed_seconds"] = round(elapsed, 1)
+            rating = boats.get(r["boat_id"], {}).get("rating")
+            if st == "irc":
+                corrected = elapsed * (rating or 1.0)
+            else:  # py
+                corrected = elapsed * 1000.0 / (rating or 1000)
+            r["corrected_seconds"] = round(corrected, 1)
+            finished.append(r)
+        else:
+            r["elapsed_seconds"] = None
     finished.sort(key=lambda r: r["corrected_seconds"])
     for i, r in enumerate(finished):
         r["position"] = i + 1
@@ -467,6 +476,7 @@ async def record_finish(race_id: str, data: FinishInput, _: str = Depends(requir
             r["code"] = "FINISHED"
             r["finish_time"] = data.finish_time or now_iso()
             r["position"] = next_pos
+            r["elapsed_manual"] = False
     await _recompute_handicap(results, race["class_id"], race["date"], race.get("start_time"))
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
@@ -511,6 +521,9 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
                 r["finish_time"] = data.finish_time
             if data.penalty_points is not None:
                 r["penalty_points"] = data.penalty_points
+            if data.elapsed_seconds is not None:
+                r["elapsed_seconds"] = data.elapsed_seconds
+                r["elapsed_manual"] = True
     if data.position is None:
         await _recompute_handicap(results, race["class_id"], race["date"], race.get("start_time"))
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
-import { CURRENT_YEAR, CODE_COLORS, fmtDate, SCORING_LABELS, RATING_HINT } from "@/lib/helpers";
+import { CURRENT_YEAR, CODE_COLORS, fmtDate, fmtDur, parseDur, SCORING_LABELS, RATING_HINT } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -311,6 +311,9 @@ function HistoricTab({ classes, rrsCodes }) {
     toast.success(s === "setup" ? "Result recalled — race rolled back to setup" : s === "published" ? "Results re-published" : `Marked ${s}`);
   };
 
+  const scoring = classes.find((c) => c.id === classId)?.scoring_type || "fleet";
+  const handicap = scoring === "irc" || scoring === "py";
+
   return (
     <div>
       <p className="text-sm text-muted-foreground mb-4">Correct any historic result. Changes recompute standings immediately.</p>
@@ -358,15 +361,24 @@ function HistoricTab({ classes, rrsCodes }) {
             </div>
           </div>
           <div className="rounded-xl border overflow-hidden overflow-x-auto">
-          <Table data-testid="hist-results-table"><TableHeader><TableRow className="bg-muted"><TableHead>Boat</TableHead><TableHead>Position</TableHead><TableHead>Code</TableHead></TableRow></TableHeader>
+          <Table data-testid="hist-results-table"><TableHeader><TableRow className="bg-muted"><TableHead>Boat</TableHead>{handicap ? <><TableHead>Elapsed</TableHead><TableHead>Corrected</TableHead></> : <TableHead>Position</TableHead>}<TableHead>Code</TableHead></TableRow></TableHeader>
             <TableBody>{[...race.results].sort((a, b) => (a.code === "FINISHED" && b.code === "FINISHED") ? a.position - b.position : a.code === "FINISHED" ? -1 : 1).map((r) => {
               const b = boats[r.boat_id] || {};
               return (
                 <TableRow key={r.boat_id} data-testid={`hist-row-${b.sail_no}`}>
-                  <TableCell className="font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></TableCell>
-                  <TableCell>{r.code === "FINISHED"
-                    ? <Input type="number" min="1" defaultValue={r.position || ""} className="h-8 w-20 font-mono" data-testid={`hist-pos-${b.sail_no}`} onBlur={(e) => change(r.boat_id, { position: Number(e.target.value) })} />
-                    : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}</TableCell>
+                  <TableCell className="font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>{handicap && b.rating != null && <span className="ml-1 font-mono text-[10px] text-muted-foreground">·{b.rating}</span>}</TableCell>
+                  {handicap ? (
+                    <>
+                      <TableCell>{r.code === "FINISHED"
+                        ? <Input key={r.corrected_seconds} defaultValue={fmtDur(r.elapsed_seconds)} className="h-8 w-24 font-mono" data-testid={`hist-elapsed-${b.sail_no}`} onBlur={(e) => change(r.boat_id, { elapsed_seconds: parseDur(e.target.value) })} />
+                        : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}</TableCell>
+                      <TableCell className="font-mono text-xs font-bold text-ocean">{r.code === "FINISHED" ? fmtDur(r.corrected_seconds) : "—"}</TableCell>
+                    </>
+                  ) : (
+                    <TableCell>{r.code === "FINISHED"
+                      ? <Input type="number" min="1" defaultValue={r.position || ""} className="h-8 w-20 font-mono" data-testid={`hist-pos-${b.sail_no}`} onBlur={(e) => change(r.boat_id, { position: Number(e.target.value) })} />
+                      : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}</TableCell>
+                  )}
                   <TableCell>
                     <Select value={r.code} onValueChange={(v) => change(r.boat_id, { code: v })}>
                       <SelectTrigger className="h-8 w-28" data-testid={`hist-code-${b.sail_no}`}><SelectValue /></SelectTrigger>
