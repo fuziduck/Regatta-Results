@@ -163,7 +163,7 @@ function SeriesTab({ classes }) {
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", class_id: "", year: CURRENT_YEAR, discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [] };
+  const blank = { name: "", class_id: "", year: CURRENT_YEAR, discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false };
   const [form, setForm] = useState(blank);
   const [schedStart, setSchedStart] = useState("2026-08-08");
 
@@ -214,6 +214,7 @@ function SeriesTab({ classes }) {
                 <div className="space-y-1.5"><Label>Order</Label><Input type="number" data-testid="series-order-input" value={form.order} onChange={(e) => setForm({ ...form, order: e.target.value })} /></div>
               </div>
               <div className="flex items-center gap-2"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
+              <div className="flex items-center gap-2"><Switch checked={form.use_a5_3} onCheckedChange={(v) => setForm({ ...form, use_a5_3: v })} data-testid="series-a53-switch" /><Label>RRS A5.3 — boats that came to the start area score as starters + 1</Label></div>
 
               <div className="rounded-lg border border-border p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
@@ -240,7 +241,7 @@ function SeriesTab({ classes }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
@@ -248,12 +249,13 @@ function SeriesTab({ classes }) {
               <TableCell className="font-mono">{s.discards}</TableCell>
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
+              <TableCell><Switch checked={!!s.use_a5_3} onCheckedChange={(v) => quickSet(s, { use_a5_3: v })} data-testid={`a53-toggle-${s.name}`} /></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, discards: s.discards, included_in_overall: s.included_in_overall, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!series.length && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>

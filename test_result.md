@@ -101,3 +101,154 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## 2026-08-20 — Live timing + day-level flows + ZFP (main agent)
+## user_problem_statement: "Add live timer/clock to Race Officer finish screen (device-time capture at tap); day-level boat selection & confirm-full-day results; RRS ZFP penalty."
+## backend:
+##   - task: "POST /api/races/{id}/start — set/clear actual_start (gun)"
+##     implemented: true
+##     working: "NA"   # code verified by import + scoring unit checks; NOT deployed to preview yet
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Verified server.py imports cleanly; StartRaceInput accepts ISO string or null."
+##   - task: "ZFP / UFD / BFD RRS codes + ZFP 20% scoring (A5.2)"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Unit-checked zfp_points + result_points via venv import: ZFP(9)=2, DSQ=DNC=entries+1, RDG=manual, FINISHED=place."
+## frontend:
+##   - task: "Officer console timing strip (live clock, count-up/countdown, start gun, per-boat elapsed)"
+##     implemented: true
+##     working: true
+##     file: "frontend/src/pages/Officer.jsx"
+##     stuck_count: 0
+##     priority: "high"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Production build passes; all new data-testids present in bundle (timing-strip, start-gun-btn, clear-gun-btn). Visual check not possible in this env (no persistent dev server)."
+##   - task: "Apply boat selection to all races on the day + confirm full day results"
+##     implemented: true
+##     working: true
+##     file: "frontend/src/pages/Officer.jsx"
+##     stuck_count: 0
+##     priority: "medium"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "apply-day-btn and confirm-day-btn in bundle; apply-to-day guards against overwriting races with finishes."
+## metadata:
+##   created_by: "main_agent"
+##   test_sequence: 1
+##   run_ui: false
+## test_plan:
+##   current_focus:
+##     - "Live timing strip (gun, reset, countdown, elapsed per finish)"
+##     - "Apply day selection / confirm full day"
+##     - "ZFP scoring in standings"
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+## agent_communication:
+##     -agent: "main"
+##     -message: "New features implemented and compile-verified. Existing suite: 19 pass / 3 fail against live preview — failures are DATA DRIFT (live DB has 10 series not 15; Wayfarer has no series), pre-existing on old code. Need deploy of updated backend before end-to-end testing of start endpoint + ZFP."
+
+## 2026-08-20 — RRS Low Point scoring engine audit & fixes (main agent)
+## user_problem_statement: "Check the RRS low point scoring rules and update the scoring engine as it currently is not correct."
+## backend:
+##   - task: "A8 series-tie break (score lists best-to-worst, excluded scores excluded; last-race fallback)"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Verified against RRS 2025-2028 Appendix A text. Old code compared raw finish positions (DNCs ignored; empty position list sorted first). Applied to series + overall."
+##   - task: "ZFP/SCP per rule 44.3(c) (place + 20% of DNF, rounded half-up, capped at DNF); add SCP/NSC/DPI codes"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Old '20% of fleet' formula was outdated. New formula matches 44.3(c). Unit tested."
+##   - task: "A6.1 re-sequencing when a finisher becomes DSQ/RET/DNE etc."
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "select-boats + adjust-result re-sequence by finish_time; ZFP/SCP/RDG/DPI keep their finishing place."
+##   - task: "Optional RRS A5.3 scoring mode (per-series flag)"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py, frontend/src/pages/Admin.jsx"
+##     stuck_count: 0
+##     priority: "medium"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Admin Series form toggle + table switch; standings echo use_a5_3; public table footer notes it. Verified in live preview UI."
+## frontend:
+##   - task: "A5.3 admin toggle, new CODE_COLORS, standings footer note"
+##     implemented: true
+##     working: true
+##     file: "frontend/src/pages/Admin.jsx, frontend/src/lib/helpers.js, frontend/src/components/StandingsTable.jsx"
+##     stuck_count: 0
+##     priority: "medium"
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Production build passes; verified in live preview (admin login, Series tab, edit dialog)."
+## metadata:
+##   created_by: "main_agent"
+##   test_sequence: 2
+##   run_ui: false
+## test_plan:
+##   current_focus:
+##     - "A8 tie-break with real tied data (needs DB / deploy)"
+##     - "ZFP/SCP values in published standings"
+##     - "A6.1 re-sequencing on DSQ in the Officer console"
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+## agent_communication:
+##     -agent: "main"
+##     -message: "Scoring engine rewritten per RRS 2025-2028 (A5.2/A5.3, 44.3(c), A6.1, A7, A8). 19 new pure unit tests pass. Deployed backend still runs old code — needs deploy before live end-to-end verification."
+
+## 2026-08-20 — User feedback on A5.3 toggle (main agent)
+## agent_communication:
+##     -agent: "user"
+##     -message: "Toggle doesn't change results; label should say 'boats that came to the start area score as starters + 1'."
+##     -agent: "main"
+##     -message: "Root cause: the DEPLOYED backend (fleet-timer-1.preview) runs pre-change code — /rrs-codes lacks UFD/BFD/ZFP/SCP, series docs have no use_a5_3, standings never echo it — so it silently drops the field. Local engine is correct: added end-to-end tests (fake DB layer) proving the same race scores DNS=5 under A5.2 vs DNS=4 under A5.3 (4 boats entered, 3 in start area). Label fixed to 'RRS A5.3 — boats that came to the start area score as starters + 1' and verified in preview. Needs backend deploy before the toggle can affect results."
+
+## 2026-08-20 — Frontend docker image rebuilt against local backend
+
+- Rebuilt `regatta-frontend` image: added `frontend/.dockerignore` (node_modules/build/.env* excluded — 443MB mac node_modules was breaking Linux images) and changed Dockerfile to `npm install --legacy-peer-deps --no-audit --no-fund` (react 19 + CRA 5 peer conflict would fail a plain install).
+- Recreated container with `-e REACT_APP_BACKEND_URL=http://127.0.0.1:8000` (same network `regatta-network`, port 3000:3000, wget healthcheck). api.js has no default — env is required.
+- Root cause of "bundle showed deployed preview URL": the earlier static preview server (`python3 -m http.server` serving `frontend/build`, built against the deployed preview) was still bound to 127.0.0.1:3000 and shadowed the container. Killed pid; container now serves.
+- Verified end-to-end: container dev bundle inlines 127.0.0.1:8000, new A5.3 label + timing strip present, preview URL absent; Dragon Overall table in preview shows fractional scores (11.1/17.7/29.2) from new ZFP/SCP engine on local backend. No console errors.
+
+## 2026-08-20 — docker-compose.yml added (full stack, /tmp fragility eliminated)
+
+- Created `docker-compose.yml` at project root: mongo (mongo:7 + named volume), backend (python:3.11-slim + `./backend:/app` mount + `--reload`), frontend (node:20 + `REACT_APP_BACKEND_URL=http://127.0.0.1:8000`). All on `regatta-network` (external). Healthcheck chain: mongo → backend → frontend.
+- Created `backend/.dockerignore` (excludes .venv, __pycache__, tests/ — keeps build context ~50KB instead of ~50MB).
+- Removed dead `emergentintegrations==0.2.0` from `requirements.txt` (private package, never imported, blocked image build).
+- Verified end-to-end: `docker compose up --build -d` starts all three containers healthy; API returns 15 RRS codes; frontend bundle inlines `127.0.0.1:8000` and contains new A5.3/timing-strip UI; `--reload` confirmed (uvicorn restarts on server.py edit); mongo data persists in named volume `mongo-data`.
+- Gotcha resolved: the old `/tmp/regatta/backend` mount (fragile — wiped by macOS reboot and tooling) is replaced by `./backend:/app` (workspace mount — survives reboots). System site-packages live outside /app so the mount only shadows source code, not pip-installed packages.

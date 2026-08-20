@@ -1,0 +1,95 @@
+# docker-compose.yml — Sailing Club Racing App
+# Usage: docker compose up --build
+#
+# First run: builds all images (~3-5 min for frontend npm install).
+# Subsequent runs: only rebuilds if Dockerfiles or package files change.
+#
+# Prerequisite: stop any legacy containers that use the same names/ports:
+#   docker stop regatta-backend regatta-frontend regatta-mongodb 2>/dev/null
+#   docker rm   regatta-backend regatta-frontend regatta-mongodb 2>/dev/null
+
+services:
+  # ── MongoDB ──────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: regatta-mongodb
+    networks:
+      - regatta-network
+    volumes:
+      - mongo-data:/data/db          # named volume — data survives down/up
+    healthcheck:
+      test: mongosh --eval 'db.adminCommand("ping")' --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Backend (FastAPI + Motor) ────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: regatta-backend
+    networks:
+      - regatta-network
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mount source code into the image.  The image's system
+      # site-packages (fastapi, motor, …) live outside /app, so they
+      # survive the mount.  --reload makes edits to server.py take
+      # effect immediately.
+      - ./backend:/app
+    environment:
+      MONGO_URL: mongodb://mongodb:27017/regatta
+      DB_NAME: regatta
+      JWT_SECRET: change-me-to-a-long-random-string   # override via .env
+      RACE_OFFICER_PIN: race2026
+      RACE_ADMIN_PIN: admin2026
+      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Frontend (React dev server via CRA + craco) ─────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: regatta-frontend
+    networks:
+      - regatta-network
+    ports:
+      - "3000:3000"
+    environment:
+      # Baked into the JS bundle at compile time by CRA.  Must be a
+      # host-accessible URL because the bundle runs in the browser,
+      # not inside the container.
+      REACT_APP_BACKEND_URL: http://127.0.0.1:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+# ── Persistent storage ────────────────────────────────────────────────
+volumes:
+  mongo-data:
+
+# ── Networking ────────────────────────────────────────────────────────
+networks:
+  regatta-network:
+    name: regatta-network            # matches existing manual containers
+    external: true

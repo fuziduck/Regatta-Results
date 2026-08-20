@@ -101,6 +101,10 @@ class SeriesInput(BaseModel):
     order: int = 0
     planned_races: int = 0
     schedule: Optional[List[str]] = None
+    # Sailing-instruction option: apply RRS A5.3 so boats that came to the
+    # starting area but did not finish score start-area entries + 1 (better
+    # than DNC), instead of the A5.2 default of series entries + 1 for all.
+    use_a5_3: bool = False
 
 
 class GenScheduleInput(BaseModel):
@@ -123,6 +127,10 @@ class RaceNotificationInput(BaseModel):
     start_time: Optional[str] = None
 
 
+class StartRaceInput(BaseModel):
+    start_time: Optional[str] = None  # ISO timestamp; null clears the gun
+
+
 class SelectBoatsInput(BaseModel):
     boat_ids: List[str]
 
@@ -139,19 +147,30 @@ class ResultAdjustInput(BaseModel):
     penalty_points: Optional[float] = None
 
 
+# RRS Appendix A10 scoring abbreviations (2025-2028).
 RRS_CODES = [
     {"code": "FINISHED", "label": "Finished (use position)"},
-    {"code": "DNC", "label": "DNC — Did Not Come to starting area"},
-    {"code": "DNS", "label": "DNS — Did Not Start"},
-    {"code": "OCS", "label": "OCS — On Course Side at start"},
-    {"code": "DNF", "label": "DNF — Did Not Finish"},
+    {"code": "DNC", "label": "DNC — Did not come to starting area"},
+    {"code": "DNS", "label": "DNS — Did not start"},
+    {"code": "OCS", "label": "OCS — On course side at start"},
+    {"code": "UFD", "label": "UFD — Disqualification under rule 30.3"},
+    {"code": "BFD", "label": "BFD — Disqualification under rule 30.4"},
+    {"code": "ZFP", "label": "ZFP — 20% penalty under rule 30.2 (scored per rule 44.3(c))"},
+    {"code": "SCP", "label": "SCP — Scoring penalty taken (rule 44.3)"},
+    {"code": "NSC", "label": "NSC — Did not sail the course"},
+    {"code": "DNF", "label": "DNF — Did not finish"},
     {"code": "RET", "label": "RET — Retired"},
     {"code": "DSQ", "label": "DSQ — Disqualified"},
     {"code": "DNE", "label": "DNE — Disqualification not excludable"},
+    {"code": "DPI", "label": "DPI — Discretionary penalty imposed (manual points)"},
     {"code": "RDG", "label": "RDG — Redress given (manual points)"},
 ]
+# Rule A2.1: only DNE may not be excluded from a series score.
 NON_DISCARDABLE = {"DNE"}
 FINISH_CODES = {"FINISHED"}
+# Codes that mean the boat did not finish (or never started): scoring them on a
+# boat that had finished triggers RRS A6.1 (boats behind move up one place).
+POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC"}
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +391,7 @@ async def create_race(data: RaceCreateInput, _: str = Depends(require_officer)):
         "year": year,
         "race_number": data.race_number,
         "start_time": data.start_time or cls.get("default_start_time", "10:30"),
+        "actual_start": None,
         "course": "",
         "special_rules": "",
         "life_jackets": False,
@@ -383,6 +403,19 @@ async def create_race(data: RaceCreateInput, _: str = Depends(require_officer)):
     await db.races.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api_router.post("/races/{race_id}/start")
+async def start_race(race_id: str, data: StartRaceInput, _: str = Depends(require_officer)):
+    """Set (or clear) the actual start time ('gun'). Device time is captured on
+    the client and sent here; the timer runs from this instant."""
+    race = await db.races.find_one({"id": race_id}, {"_id": 0})
+    if not race:
+        raise HTTPException(status_code=404, detail="Race not found")
+    actual_start = data.start_time or None
+    await db.races.update_one({"id": race_id}, {"$set": {"actual_start": actual_start}})
+    updated = await db.races.find_one({"id": race_id}, {"_id": 0})
+    return updated
 
 
 @api_router.put("/races/{race_id}/notifications")
@@ -399,6 +432,7 @@ async def select_boats(race_id: str, data: SelectBoatsInput, _: str = Depends(re
         raise HTTPException(status_code=404, detail="Race not found")
     selected = set(data.boat_ids)
     results = race["results"]
+    previously_finished = {r["boat_id"] for r in results if r.get("code") == "FINISHED"}
     for r in results:
         if r["boat_id"] in selected:
             if r["code"] == "DNC":
@@ -407,6 +441,10 @@ async def select_boats(race_id: str, data: SelectBoatsInput, _: str = Depends(re
             r["code"] = "DNC"
             r["finish_time"] = None
             r["position"] = None
+    # RRS A6.1: a boat scored as not racing after having finished moves the
+    # boats behind her up one place.
+    if any(r["boat_id"] in previously_finished and r["code"] != "FINISHED" for r in results):
+        _resequence_finished(results)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -455,18 +493,26 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     if not race:
         raise HTTPException(status_code=404, detail="Race not found")
     results = race["results"]
-    for r in results:
-        if r["boat_id"] == boat_id:
-            if data.code is not None:
-                r["code"] = data.code
-                if data.code != "FINISHED":
-                    r["position"] = None
-            if data.position is not None:
-                r["position"] = data.position
-            if data.finish_time is not None:
-                r["finish_time"] = data.finish_time
-            if data.penalty_points is not None:
-                r["penalty_points"] = data.penalty_points
+    target = next((r for r in results if r["boat_id"] == boat_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Boat not in race")
+    prev_code = target.get("code")
+    if data.code is not None:
+        target["code"] = data.code
+        # ZFP/SCP/DPI/RDG boats finished (or were scored by the jury), so their
+        # finishing place is kept; only true non-finishers lose their place.
+        if data.code not in ("FINISHED", "ZFP", "SCP", "RDG", "DPI"):
+            target["position"] = None
+    if data.position is not None:
+        target["position"] = data.position
+    if data.finish_time is not None:
+        target["finish_time"] = data.finish_time
+    if data.penalty_points is not None:
+        target["penalty_points"] = data.penalty_points
+    # RRS A6.1: a boat that finished and is later scored as not finishing,
+    # retiring or disqualified moves the boats behind her up one place.
+    if data.code is not None and prev_code == "FINISHED" and data.code in POST_FINISH_RETIRE_CODES:
+        _resequence_finished(results)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -508,63 +554,130 @@ async def get_notifications():
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Scoring — RRS Appendix A (Low Point System) + rule 44.3(c)
 # ---------------------------------------------------------------------------
-def result_points(r, entries_count):
+def round_half_up(x: float) -> int:
+    """RRS 44.3(c): round to the nearest whole number, 0.5 rounded upward."""
+    return int(x + 0.5)
+
+
+def _start_area_entries(results) -> int:
+    """Boats that came to the starting area = those selected to race (not DNC)."""
+    return len([r for r in results if r.get("code") != "DNC"])
+
+
+def result_points(r, series_entries, start_area_entries, use_a5_3=False):
+    """Points for one boat in one race under RRS Appendix A.
+
+    series_entries:    boats entered in the series.
+    start_area_entries: boats that came to the starting area (selected to race).
+    use_a5_3:          sailing instructions opted into rule A5.3, so boats that
+                       came to the starting area but did not finish score
+                       start-area entries + 1 (better than DNC).
+    """
     code = r.get("code")
-    if code == "FINISHED" and r.get("position"):
-        base = float(r["position"])
-    elif code == "RDG":
-        base = float(r.get("penalty_points") or (entries_count + 1))
-    else:
-        base = float(entries_count + 1)
-    base += float(r.get("penalty_points") or 0) if code == "FINISHED" else 0
-    return base
+    # Score for DNF under the active mode: A5.2 default = series entries + 1;
+    # A5.3 = start-area entries + 1.
+    dnf = (start_area_entries + 1) if use_a5_3 else (series_entries + 1)
+    if code == "FINISHED":
+        base = float(r["position"]) if r.get("position") else float(dnf)
+        base += float(r.get("penalty_points") or 0)
+        return base
+    if code in ("RDG", "DPI"):
+        pts = r.get("penalty_points")
+        return float(pts) if pts is not None else float(dnf)
+    if code in ("ZFP", "SCP"):
+        # Rule 44.3(c): her score without the penalty (her finishing place) made
+        # worse by 20% of the DNF score, rounded half-up, never worse than DNF.
+        place = r.get("position")
+        if not place:
+            return float(dnf)
+        penalty = round_half_up(0.2 * dnf)
+        return min(float(place) + penalty, float(dnf))
+    # A5.2 (default): DNC, DNS, OCS, UFD, BFD, DNF, RET, DSQ, DNE and NSC all
+    # score one more than the number of boats entered in the series.
+    # A5.3 (SI option): only DNC uses the series total; the other codes use the
+    # number of boats that came to the starting area.
+    if use_a5_3 and code != "DNC":
+        return float(start_area_entries + 1)
+    return float(series_entries + 1)
 
 
-def net_from_scores(scores, discards):
-    """scores: list of (points, discardable). Returns (net, total, sorted_points_list)."""
-    total = sum(p for p, _ in scores)
-    discardable = sorted([p for p, d in scores if d], reverse=True)
-    drop = sum(discardable[:discards]) if discards > 0 else 0
-    return total - drop, total
+def _resequence_finished(results):
+    """RRS A6.1: after a finisher is disqualified or retires post-finish, boats
+    with a worse finishing place move up one place."""
+    finished = sorted(
+        [r for r in results if r.get("code") == "FINISHED"],
+        key=lambda x: x.get("finish_time") or "",
+    )
+    for i, r in enumerate(finished):
+        r["position"] = i + 1
+
+
+def _a8_tiebreak(entries, drop):
+    """RRS A8 series-tie keys.
+
+    A8.1: each boat's counting race scores listed best to worst; the boat with
+          the best score at the first difference wins. Excluded scores are not
+          used.
+    A8.2: if still tied, scores in the last race, then next-to-last, and so on
+          (excluded scores ARE used).
+    """
+    a8_1 = sorted([e["points"] for i, e in enumerate(entries) if i not in drop])
+    a8_2 = [e["points"] for e in reversed(entries)]
+    return a8_1, a8_2
 
 
 async def _series_scores(series):
-    """Return (agg, boat_map, race_meta). agg: boat_id -> list of per-race entry dicts, aligned to race_meta."""
+    """Return (agg, boat_map, race_meta, use_a5_3). agg: boat_id -> list of
+    per-race entry dicts, aligned to race_meta."""
     races = await db.races.find({"series_id": series["id"], "status": "published"}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
+    use_a5_3 = bool(series.get("use_a5_3", False))
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     agg = {bid: [] for bid in boat_map}
     for race in races:
-        entries = race.get("entries_count") or len(race.get("results", []))
-        present = {r["boat_id"]: r for r in race["results"]}
+        results = race.get("results", [])
+        series_entries = race.get("entries_count") or len(results)
+        start_entries = _start_area_entries(results)
+        present = {r["boat_id"]: r for r in results}
+        per_boat = {}
         for bid in boat_map:
             r = present.get(bid)
             if r is None:
-                agg[bid].append({"points": float(entries + 1), "discardable": True, "position": None, "code": "DNC"})
+                per_boat[bid] = {"points": float(series_entries + 1), "discardable": True,
+                                 "position": None, "code": "DNC"}
             else:
                 code = r.get("code")
-                agg[bid].append({
-                    "points": result_points(r, entries),
+                per_boat[bid] = {
+                    "points": result_points(r, series_entries, start_entries, use_a5_3),
                     "discardable": code not in NON_DISCARDABLE,
                     "position": r.get("position") if code == "FINISHED" else None,
                     "code": code,
-                })
-    return agg, boat_map, race_meta
-
-
-def _tiebreak_key(positions):
-    # RRS A8: count of 1sts, 2nds, ... lower count-sorted wins. Build sorted position list.
-    return sorted([p for p in positions if p])
+                }
+        # RRS A7: boats tied on the finishing line (equal stored position) split
+        # the points of the tied place(s) and the place(s) immediately below.
+        by_pos = {}
+        for bid, e in per_boat.items():
+            if e["code"] == "FINISHED" and e.get("position"):
+                by_pos.setdefault(e["position"], []).append(bid)
+        for pos, bids in by_pos.items():
+            if len(bids) > 1:
+                shared = sum(range(pos, pos + len(bids))) / len(bids)
+                for bid in bids:
+                    per_boat[bid]["points"] = shared
+        for bid, e in per_boat.items():
+            agg[bid].append(e)
+    return agg, boat_map, race_meta, use_a5_3
 
 
 async def compute_series_standings(series):
-    agg, boat_map, race_meta = await _series_scores(series)
+    agg, boat_map, race_meta, use_a5_3 = await _series_scores(series)
     race_count = len(race_meta)
     # Effective discards never remove every race: at least one always counts.
+    # Rule A2.1 also discards the earliest of equal worst scores (stable sort).
     discards = min(series.get("discards", 0), max(0, race_count - 1))
     rows = []
     for bid, entries in agg.items():
@@ -579,7 +692,7 @@ async def compute_series_standings(series):
         drop = set(discardable_idx[:discards])
         total = sum(e["points"] for e in entries)
         net = sum(e["points"] for i, e in enumerate(entries) if i not in drop)
-        positions = [e["position"] for e in entries]
+        a8_1, a8_2 = _a8_tiebreak(entries, drop)
         scores = [{"points": round(e["points"], 1), "code": e["code"], "discarded": i in drop}
                   for i, e in enumerate(entries)]
         rows.append({
@@ -590,15 +703,16 @@ async def compute_series_standings(series):
             "net": round(net, 1),
             "total": round(total, 1),
             "scores": scores,
-            "positions": positions,
-            "_tb": _tiebreak_key(positions),
+            "positions": [e["position"] for e in entries],
+            "_tb": (a8_1, a8_2),
         })
-    rows.sort(key=lambda x: (x["net"], x["_tb"]))
+    rows.sort(key=lambda x: (x["net"], x["_tb"][0], x["_tb"][1]))
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)
     return {"race_count": race_count, "discards": discards,
             "configured_discards": series.get("discards", 0),
+            "use_a5_3": use_a5_3,
             "planned_races": series.get("planned_races", 0),
             "schedule": series.get("schedule", []),
             "races": race_meta, "standings": rows}
@@ -618,30 +732,38 @@ async def overall_standings(class_id: str, year: int):
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
     totals = {}
+    per_series_nets = {}
     series_names = []
     for series in sorted(all_series, key=lambda s: s.get("order", 0)):
         series_names.append(series["name"])
         result = await compute_series_standings(series)
         for row in result["standings"]:
-            totals.setdefault(row["boat_id"], {"total": 0.0, "per_series": {}})
-            totals[row["boat_id"]]["total"] += row["net"]
-            totals[row["boat_id"]]["per_series"][series["name"]] = row["net"]
+            totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + row["net"]
+            per_series_nets.setdefault(row["boat_id"], {})[series["name"]] = row["net"]
     rows = []
-    for bid, data in totals.items():
+    for bid, total in totals.items():
         b = boat_map.get(bid)
         if not b:
             continue
+        nets = [per_series_nets[bid].get(name) for name in series_names]
+        counting = [v for v in nets if v is not None]
+        # A8 applied to the championship: best series results first, then the
+        # most recent series backwards.
+        a8_1 = sorted(counting)
+        a8_2 = list(reversed(counting))
         rows.append({
             "boat_id": bid,
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
-            "net": round(data["total"], 1),
-            "per_series": {k: round(v, 1) for k, v in data["per_series"].items()},
+            "net": round(total, 1),
+            "per_series": {k: round(v, 1) for k, v in per_series_nets[bid].items()},
+            "_tb": (a8_1, a8_2),
         })
-    rows.sort(key=lambda x: x["net"])
+    rows.sort(key=lambda x: (x["net"], x["_tb"][0], x["_tb"][1]))
     for i, r in enumerate(rows):
         r["rank"] = i + 1
+        r.pop("_tb", None)
     return {"series_names": series_names, "standings": rows}
 
 

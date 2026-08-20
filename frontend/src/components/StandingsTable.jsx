@@ -82,6 +82,7 @@ export function SeriesStandingsTable({ data }) {
       <div className="text-xs text-muted-foreground px-3 py-2 bg-muted/30">
         {data.race_count} race{data.race_count !== 1 ? "s" : ""} sailed
         {data.discards > 0 ? ` · ${data.discards} discard${data.discards !== 1 ? "s" : ""} applied (shown in brackets)` : " · no discards yet"}
+        {data.use_a5_3 ? " · RRS A5.3 start-area scoring in effect" : ""}
       </div>
     </div>
   );

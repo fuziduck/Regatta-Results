@@ -46,6 +46,7 @@ export const api = {
   selectBoats: (id, boat_ids) => client.post(`/races/${id}/select-boats`, { boat_ids }).then((r) => r.data),
   recordFinish: (id, boat_id, finish_time) => client.post(`/races/${id}/finish`, { boat_id, finish_time }).then((r) => r.data),
   undoFinish: (id, boat_id) => client.post(`/races/${id}/undo-finish`, { boat_id }).then((r) => r.data),
+  startRace: (id, start_time) => client.post(`/races/${id}/start`, { start_time }).then((r) => r.data),
   adjustResult: (id, boat_id, d) => client.put(`/races/${id}/result/${boat_id}`, d).then((r) => r.data),
   setStatus: (id, status) => client.post(`/races/${id}/status/${status}`).then((r) => r.data),
   deleteRace: (id) => client.delete(`/races/${id}`).then((r) => r.data),

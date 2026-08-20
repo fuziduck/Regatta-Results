@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
-import { fmtDate, fmtTime, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,13 +12,34 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700",
   provisional: "bg-amber-100 text-amber-800 animate-pulse",
   published: "bg-emerald-100 text-emerald-800",
 };
+
+function useNow(intervalMs = 250) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
+function startRefMs(race) {
+  // Timer reference: the actual gun if fired, otherwise today's scheduled start.
+  if (!race) return null;
+  if (race.actual_start) {
+    const ms = Date.parse(race.actual_start);
+    if (!Number.isNaN(ms)) return ms;
+  }
+  if (!race.date || !race.start_time) return null;
+  const d = new Date(`${race.date}T${race.start_time}:00`);
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+}
 
 function TopBar() {
   const { role, logout } = useAuth();
@@ -96,10 +117,11 @@ function NewRaceDialog({ onCreated }) {
   );
 }
 
-function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
+function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [notif, setNotif] = useState({ course: "", special_rules: "", life_jackets: false, start_time: "" });
+  const now = useNow();
 
   const refresh = useCallback(async () => {
     const r = await api.getRace(raceId);
@@ -114,6 +136,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
 
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
+  const startRef = startRefMs(race);
   const racing = race.results.filter((r) => r.code !== "DNC");
   const toFinish = racing.filter((r) => r.code === "DNS").sort((a, b) => (boats[a.boat_id]?.sail_no || "").localeCompare(boats[b.boat_id]?.sail_no || ""));
   const finished = race.results.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
@@ -141,6 +164,32 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
     if (s === "published") onBack(); else refresh();
   };
   const remove = async () => { await api.deleteRace(raceId); toast.success("Race deleted"); onBack(); };
+  const gun = async () => {
+    await api.startRace(raceId, new Date().toISOString());
+    toast.success("Race started — timer running");
+    refresh();
+  };
+  const clearGun = async () => {
+    await api.startRace(raceId, null);
+    toast.success("Timer reset to scheduled start");
+    refresh();
+  };
+  const applyToDay = async () => {
+    const selected = racing.map((r) => r.boat_id);
+    let applied = 0;
+    for (const other of dayRaces) {
+      const fresh = await api.getRace(other.id);
+      if (fresh.results.some((r) => r.code === "FINISHED")) continue; // never clobber a scored race
+      await api.selectBoats(other.id, selected);
+      applied += 1;
+    }
+    toast.success(
+      applied
+        ? `Selection applied to ${applied} other race${applied > 1 ? "s" : ""} on ${fmtDateShort(race.date)}`
+        : "No other races today can be updated (they already have finishes)"
+    );
+    refresh();
+  };
 
   return (
     <div className="pb-40">
@@ -156,6 +205,46 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
       </div>
 
       <div className="max-w-5xl mx-auto px-4 pt-5 space-y-6">
+        {/* Live timing */}
+        <section className="rounded-2xl overflow-hidden bg-ocean-dark text-white relative" data-testid="timing-strip">
+          <div className="absolute inset-0 bg-gradient-to-br from-ocean-dark via-ocean to-ocean-light opacity-90" />
+          <div className="relative p-4 sm:p-5 flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-4">
+              <div className="text-center">
+                <div className="flex items-center gap-1 text-[10px] uppercase tracking-widest text-white/60"><Clock className="w-3.5 h-3.5" /> Clock</div>
+                <div className="font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none mt-1">{fmtClock(now)}</div>
+              </div>
+              <div className="w-px h-10 bg-white/20" />
+              <div className="text-center">
+                <div className="text-[10px] uppercase tracking-widest text-white/60">{race.actual_start ? "Race time" : "To start"}</div>
+                {(() => {
+                  const elapsed = startRef ? now - startRef : null;
+                  if (elapsed == null) {
+                    return <div className="font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none text-white/40 mt-1">--:--</div>;
+                  }
+                  const live = race.actual_start || elapsed >= 0;
+                  const cls = live ? (race.actual_start ? "text-safety" : "text-white") : "text-amber-300";
+                  return <div className={`font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none mt-1 ${cls} ${race.actual_start ? "animate-pulse" : ""}`}>{fmtElapsed(elapsed)}</div>;
+                })()}
+                <div className="text-[10px] text-white/60 mt-0.5">
+                  {race.actual_start ? `Gun ${fmtClock(Date.parse(race.actual_start))}` : `Scheduled ${race.start_time}`}
+                </div>
+              </div>
+            </div>
+            <div className="flex-1" />
+            <div className="flex items-center gap-2">
+              {race.actual_start && (
+                <Button size="sm" variant="outline" className="border-white/30 text-white hover:bg-white/10" onClick={clearGun} data-testid="clear-gun-btn">
+                  <RotateCcw className="w-4 h-4" /> Reset
+                </Button>
+              )}
+              <Button className="gap-2 bg-safety hover:bg-safety-dark text-white" onClick={gun} data-testid="start-gun-btn" disabled={race.status === "published"}>
+                <Play className="w-4 h-4" /> {race.actual_start ? "Re-start" : "Start race"}
+              </Button>
+            </div>
+          </div>
+        </section>
+
         {/* Race day notice */}
         <section className="rounded-xl border border-border bg-card p-4">
           <h3 className="font-heading uppercase tracking-tight text-ocean flex items-center gap-2 mb-3"><Flag className="w-4 h-4" /> Race-day notice</h3>
@@ -187,6 +276,11 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
               );
             })}
           </div>
+          {dayRaces.length > 0 && (
+            <Button variant="outline" size="sm" className="mt-3 gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" onClick={applyToDay} data-testid="apply-day-btn">
+              <Copy className="w-4 h-4" /> Apply selection to all {dayRaces.length + 1} races on {fmtDateShort(race.date)}
+            </Button>
+          )}
         </section>
 
         {/* Finish recording */}
@@ -215,7 +309,10 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes }) {
                   <div key={r.boat_id} className="flex items-center gap-3 p-3">
                     <div className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-800 grid place-items-center font-heading text-lg">{r.position}</div>
                     <div className="flex-1"><div className="font-semibold leading-none">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></div>
-                      <div className="font-mono text-xs text-muted-foreground mt-0.5">{fmtTime(r.finish_time)}</div></div>
+                      <div className="font-mono text-xs text-muted-foreground mt-0.5">{fmtTime(r.finish_time)}{(() => {
+                        const e = startRef ? Date.parse(r.finish_time) - startRef : null;
+                        return e != null && e >= 0 ? <span className="text-ocean font-bold"> · +{fmtElapsed(e)}</span> : null;
+                      })()}</div></div>
                     <Button size="sm" variant="outline" data-testid={`undo-btn-${b.sail_no}`} onClick={() => undo(r.boat_id)}><Undo2 className="w-4 h-4" /></Button>
                   </div>
                 );
@@ -323,15 +420,22 @@ export default function Officer() {
     series_name: series[r.series_id]?.name || "Series",
   });
 
+  const selectedRace = races.find((r) => r.id === selected);
+
   if (selected) {
+    const dayRaces = selectedRace ? races.filter((r) => r.id !== selectedRace.id && r.date === selectedRace.date) : [];
     return (
       <div className="min-h-screen bg-background">
         <TopBar />
-        <RaceConsole raceId={selected} meta={meta(races.find((r) => r.id === selected) || {})} rrsCodes={rrsCodes}
+        <RaceConsole raceId={selected} meta={meta(selectedRace || {})} rrsCodes={rrsCodes} dayRaces={dayRaces}
           onBack={() => { setSelected(null); loadRaces(); }} />
       </div>
     );
   }
+
+  const dayItems = scheduled.filter((s) => s.date === schedDate);
+  const dayCreated = dayItems.filter((i) => i.race_id);
+  const dayUnpublished = dayCreated.filter((i) => i.status !== "published");
 
   const active = races.filter((r) => r.status !== "published");
   const done = races.filter((r) => r.status === "published");
@@ -369,7 +473,6 @@ export default function Officer() {
             </div>
           </div>
           {(() => {
-            const dayItems = scheduled.filter((s) => s.date === schedDate);
             const dates = [...new Set(scheduled.map((s) => s.date))].sort();
             if (!dayItems.length) {
               return (
@@ -399,6 +502,20 @@ export default function Officer() {
               </div>
             );
           })()}
+          {dayCreated.length > 0 && dayUnpublished.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-ocean/15 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">{dayUnpublished.length} race{dayUnpublished.length > 1 ? "s" : ""} today not yet confirmed</span>
+              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 gap-1.5" data-testid="confirm-day-btn"
+                onClick={async () => {
+                  if (!window.confirm(`Publish all ${dayUnpublished.length} results for ${fmtDate(schedDate)}? Race-day notices for these races will clear from the landing page.`)) return;
+                  for (const item of dayUnpublished) await api.setStatus(item.race_id, "published");
+                  toast.success("All results for the day confirmed & published");
+                  loadRaces(); loadScheduled();
+                }}>
+                <CheckCircle2 className="w-4 h-4" /> Confirm full day results
+              </Button>
+            </div>
+          )}
         </section>
 
         <h2 className="text-lg md:text-lg uppercase tracking-tight mb-3">In progress</h2>
