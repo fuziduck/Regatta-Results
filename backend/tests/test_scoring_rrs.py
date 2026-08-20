@@ -352,3 +352,20 @@ class TestIrcA7EndToEnd:
         assert by_id["b2"]["net"] == 1.5
         # b3 is placed 3rd -> 3 points
         assert by_id["b3"]["net"] == 3.0
+
+
+class TestElapsedCorrection:
+    """Correcting a finish by entering the elapsed time (adjust-result flow)."""
+
+    def test_finish_time_from_elapsed(self):
+        ft = server._finish_time_from_elapsed("2026-05-02T10:00:00Z", 1800)
+        assert server._elapsed_seconds(ft, "2026-05-02T10:00:00Z") == 1800
+
+    def test_elapsed_roundtrip_whole_seconds(self):
+        ft = server._finish_time_from_elapsed("2026-05-02T10:00:00Z", 1865.5)
+        # 1865.5 s elapsed -> finish time carries sub-second precision
+        assert server._elapsed_seconds(ft, "2026-05-02T10:00:00Z") == 1865.5
+
+    def test_unparseable_start_returns_none(self):
+        assert server._finish_time_from_elapsed("not-a-date", 100) is None
+        assert server._finish_time_from_elapsed(None, 100) is None

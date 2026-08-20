@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -154,6 +155,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   const undo = async (boatId) => { await api.undoFinish(raceId, boatId); refresh(); };
   const changeCode = async (boatId, code) => { await api.adjustResult(raceId, boatId, { code }); refresh(); };
   const changePos = async (boatId, position) => { await api.adjustResult(raceId, boatId, { position: Number(position) }); refresh(); };
+  const changeElapsed = async (boatId, seconds) => { await api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }); refresh(); };
   const setStatus = async (s) => {
     await api.setStatus(raceId, s);
     toast.success(
@@ -326,7 +328,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
           <h3 className="font-heading uppercase tracking-tight mb-3">Provisional results & penalties</h3>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th><th className="w-40">Code / Penalty (RRS)</th></tr></thead>
+              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th><th className="w-28">Elapsed</th><th className="w-40">Code / Penalty (RRS)</th></tr></thead>
               <tbody data-testid="adjust-table">
                 {[...race.results].sort((a, b) => {
                   if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
@@ -340,6 +342,11 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
                         {r.code === "FINISHED"
                           ? <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />
                           : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}
+                      </td>
+                      <td>
+                        {r.code === "FINISHED"
+                          ? <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => changeElapsed(r.boat_id, secs)} data-testid={`elapsed-input-${b.sail_no}`} className="[&_input]:w-12" />
+                          : <span className="text-muted-foreground">—</span>}
                       </td>
                       <td>
                         <Select value={r.code} onValueChange={(v) => changeCode(r.boat_id, v)}>

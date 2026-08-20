@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, fmtTime, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -32,11 +32,16 @@ function NotificationBanner({ items }) {
 function PublishedRaces({ seriesId, classId }) {
   const [races, setRaces] = useState([]);
   const [boats, setBoats] = useState({});
+  const [scoringMode, setScoringMode] = useState("one_design");
 
   useEffect(() => {
     api.getRaces({ series_id: seriesId, status: "published" }).then(setRaces);
     api.getBoats({ class_id: classId }).then((bs) => {
       const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m);
+    });
+    api.getClasses().then((cs) => {
+      const c = (cs || []).find((x) => x.id === classId);
+      if (c) setScoringMode(c.scoring_mode || "one_design");
     });
   }, [seriesId, classId]);
 
@@ -68,7 +73,8 @@ function PublishedRaces({ seriesId, classId }) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-muted-foreground border-b">
-                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Helm</th><th className="text-center">Code</th><th className="text-right">Finish</th>
+                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Helm</th><th className="text-center">Code</th>
+                      {scoringMode === "irc" && <><th>Type</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
                     </tr>
                   </thead>
                   <tbody>
@@ -80,7 +86,11 @@ function PublishedRaces({ seriesId, classId }) {
                           <td><span className="font-semibold">{b.name}</span> <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
                           <td className="text-muted-foreground">{b.helm}</td>
                           <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[r.code] || ""} text-[10px]`}>{r.code}</Badge></td>
-                          <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtTime(r.finish_time) : "—"}</td>
+                          {scoringMode === "irc" && <>
+                            <td className="text-muted-foreground">{b.boat_type || "—"}</td>
+                            <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(elapsedSecondsOf(r.finish_time, race)) : "—"}</td>
+                            <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(r.finish_time, race, b.tcc)) : "—"}</td>
+                          </>}
                         </tr>
                       );
                     })}

@@ -44,6 +44,48 @@ export function fmtElapsed(ms) {
   return neg ? `−${body}` : body;
 }
 
+// Best known race start instant (mirrors the backend _race_start_time):
+// the start gun, else the scheduled class start on the race date.
+export function raceStart(race) {
+  if (!race) return null;
+  if (race.actual_start) return race.actual_start;
+  // Scheduled start is timezone-less; treat it as UTC to match the backend.
+  if (race.date && race.start_time) return `${race.date}T${race.start_time}:00Z`;
+  return null;
+}
+
+// Whole-second elapsed time of a recorded finish vs the race start (null if
+// either is missing). Used to prefill the editable elapsed-time input.
+export function elapsedSecondsOf(finishTime, race) {
+  const start = raceStart(race);
+  if (!finishTime || !start) return null;
+  const e = Date.parse(finishTime) - Date.parse(start);
+  return Number.isFinite(e) && e >= 0 ? Math.round(e / 1000) : null;
+}
+
+// Corrected time in seconds per IRC Rule 12.2 (elapsed x TCC, rounded to the
+// nearest second, 0.5 up) — mirrors the backend _corrected_time_sec. Returns
+// null when the elapsed time or TCC is missing.
+export function correctedSecondsOf(finishTime, race, tcc) {
+  const el = elapsedSecondsOf(finishTime, race);
+  if (el == null || !tcc) return null;
+  return Math.round(el * tcc);
+}
+
+// Format whole seconds as H:MM:SS (or MM:SS under an hour).
+export function fmtSeconds(total) {
+  if (total == null || Number.isNaN(total)) return "—";
+  const neg = total < 0;
+  let t = Math.round(Math.abs(total));
+  const h = Math.floor(t / 3600);
+  t %= 3600;
+  const m = Math.floor(t / 60);
+  const s = t % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  const body = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  return neg ? `−${body}` : body;
+}
+
 export const CODE_COLORS = {
   FINISHED: "bg-emerald-100 text-emerald-800 border-emerald-300",
   DNC: "bg-slate-100 text-slate-600 border-slate-300",

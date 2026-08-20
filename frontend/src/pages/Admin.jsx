@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
+import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -99,7 +100,7 @@ function BoatsTab({ classes }) {
   const [boats, setBoats] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true, tcc: "" };
+  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", boat_type: "" };
   const [form, setForm] = useState(blank);
 
   const load = useCallback(() => {
@@ -141,6 +142,7 @@ function BoatsTab({ classes }) {
                 </Select></div>
               <div className="space-y-1.5"><Label>Helm</Label><Input data-testid="boat-helm-input" value={form.helm} onChange={(e) => setForm({ ...form, helm: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Year</Label><Input type="number" data-testid="boat-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Boat type</Label><Input data-testid="boat-type-input" value={form.boat_type} onChange={(e) => setForm({ ...form, boat_type: e.target.value })} placeholder="e.g. Bavaria 34 — cruisers only" /></div>
               <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank for one-design" /></div>
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
             </div>
@@ -149,17 +151,18 @@ function BoatsTab({ classes }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>TCC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{boats.map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
               <TableCell className="font-semibold">{b.name}</TableCell>
               <TableCell>{cname(b.class_id)}</TableCell>
               <TableCell>{b.helm}</TableCell>
+              <TableCell className="text-muted-foreground">{b.boat_type || "—"}</TableCell>
               <TableCell className="font-mono">{b.tcc ? b.tcc.toFixed(3) : "—"}</TableCell>
               <TableCell>{b.active ? <Badge className="bg-emerald-100 text-emerald-800">Yes</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "", boat_type: b.boat_type ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
@@ -350,7 +353,7 @@ function HistoricTab({ classes, rrsCodes }) {
             </div>
           </div>
           <div className="rounded-xl border overflow-hidden overflow-x-auto">
-          <Table data-testid="hist-results-table"><TableHeader><TableRow className="bg-muted"><TableHead>Boat</TableHead><TableHead>Position</TableHead><TableHead>Code</TableHead></TableRow></TableHeader>
+          <Table data-testid="hist-results-table"><TableHeader><TableRow className="bg-muted"><TableHead>Boat</TableHead><TableHead>Position</TableHead><TableHead>Elapsed</TableHead><TableHead>Code</TableHead></TableRow></TableHeader>
             <TableBody>{[...race.results].sort((a, b) => (a.code === "FINISHED" && b.code === "FINISHED") ? a.position - b.position : a.code === "FINISHED" ? -1 : 1).map((r) => {
               const b = boats[r.boat_id] || {};
               return (
@@ -359,6 +362,9 @@ function HistoricTab({ classes, rrsCodes }) {
                   <TableCell>{r.code === "FINISHED"
                     ? <Input type="number" min="1" defaultValue={r.position || ""} className="h-8 w-20 font-mono" data-testid={`hist-pos-${b.sail_no}`} onBlur={(e) => change(r.boat_id, { position: Number(e.target.value) })} />
                     : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}</TableCell>
+                  <TableCell>{r.code === "FINISHED"
+                    ? <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => change(r.boat_id, { elapsed_seconds: secs })} data-testid={`hist-elapsed-${b.sail_no}`} className="[&_input]:w-12" />
+                    : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell>
                     <Select value={r.code} onValueChange={(v) => change(r.boat_id, { code: v })}>
                       <SelectTrigger className="h-8 w-28" data-testid={`hist-code-${b.sail_no}`}><SelectValue /></SelectTrigger>

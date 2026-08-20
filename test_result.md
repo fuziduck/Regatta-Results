@@ -289,3 +289,36 @@
   Verified in the live preview (admin → Classes shows Cruiser=IRC; edit dialog pre-fills IRC).
 - NOTE: existing races keep their stored positions; only new finishes / result edits trigger
   corrected-time re-sequencing. Historic IRC races can be re-touched (edit a result) to re-sequence.
+
+## 2026-08-20 — Editable elapsed time (Officer + Admin Historic)
+
+- Backend: `ResultAdjustInput.elapsed_seconds` (float, seconds). `adjust_result` resolves the
+  race start (start gun `actual_start`, else scheduled class start anchored to UTC) and converts
+  elapsed -> finish_time via new `_finish_time_from_elapsed`, marks the boat FINISHED, clears
+  position, and re-sequences the race (one-design by finish time, IRC by corrected time).
+  400 if no start time is resolvable. `_race_start_time` now returns explicit `+00:00` for the
+  scheduled fallback so elapsed math is TZ-deterministic.
+- Frontend: new helpers `raceStart(race)` and `elapsedSecondsOf(finishTime, race)` (client treats
+  the scheduled-start fallback as UTC to match the backend). Officer "Provisional results &
+  penalties" table and Admin "Historic Results" table both gained an **Elapsed** column with a
+  seconds input (prefilled from finish - start) that submits `elapsed_seconds` on blur.
+- Tests: 3 new (TestElapsedCorrection) — 32 total, all pass. Frontend builds.
+- Live-verified: API scratch race — start gun 10:30Z, finishes 10:50/10:55; correcting B1 to
+  elapsed 1380s moved its finish to 10:53:00+00:00 exactly and kept positions. UI verified in
+  preview (Officer Dragon race: Elapsed 3660/3720/3780/3840; Admin Historic Cruiser R1 shows the
+  Elapsed column). Note: Cruiser R1's finish times were button-tap captures from Aug 20 vs race
+  date Apr 18, so its prefills (~10750705s) surface exactly the wrong durations this feature exists
+  to fix.
+
+## H:M:S elapsed input (Aug 20)
+- Replaced the seconds-only elapsed input with a 3-field hours:minutes:seconds component (`frontend/src/components/ElapsedInput.jsx`), used in both the Race Officer console and the Admin Historic Results tab. Commits the whole H:M:S as seconds on blur; prefills from recorded finish − race start.
+- Verified live in preview: Officer console shows `2986 : 18 : 25`, Admin Historic shows the same 3-field input; editing hours committed the change and the backend re-sequenced. Restored the demo race's original finish afterwards via direct mongo patch.
+- Frontend image rebuilt (`docker compose up -d --build frontend`); 32/32 scoring tests pass.
+
+## Landing page: Elapsed + Corrected columns (Aug 20)
+- Replaced the Finish column in the published-race results table with Elapsed and Corrected.
+- `frontend/src/lib/helpers.js`: added `correctedSecondsOf` (IRC Rule 12.2: elapsed x TCC, rounded half-up — mirrors backend `_corrected_time_sec`) and `fmtSeconds` (H:MM:SS).
+- `frontend/src/pages/Landing.jsx`: fetches the class scoring_mode; IRC classes show elapsed x TCC, one-design classes show elapsed as corrected. Non-finished boats show "—".
+- Verified live: Dragon (one-design) shows equal Elapsed/Corrected; Cruiser (IRC) shows real corrected times — Aquila 2:11:03, Countdown 2:11:37, Zephyros 2:11:52, ordered by corrected time (Zephyros beat Countdown on elapsed but places 3rd). Frontend image rebuilt.
+- Follow-up: Elapsed/Corrected columns now render only for IRC classes; one-design race tables show Pos/Boat/Helm/Code only (verified live on Dragon vs Cruiser).
+- Added `boat_type` end-to-end: backend BoatInput, Admin boat form + Type column, and a Type column on the landing race table shown only for IRC classes (cruisers). Populated types for the 5 demo cruisers (Bavaria 34, Hanse 315, Jeanneau Sun Odyssey 32, Beneteau First 31.7, Dehler 34). One-design tables unchanged (Pos/Boat/Helm/Code).

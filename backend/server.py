@@ -97,6 +97,8 @@ class BoatInput(BaseModel):
     # IRC Time Correction Coefficient (rating certificate); None for
     # one-design classes. Corrected time = elapsed x TCC.
     tcc: Optional[float] = None
+    # Boat make/model (used mainly for the cruiser fleet, e.g. "Bavaria 34").
+    boat_type: Optional[str] = None
 
 
 class SeriesInput(BaseModel):
@@ -152,6 +154,10 @@ class ResultAdjustInput(BaseModel):
     code: Optional[str] = None
     finish_time: Optional[str] = None
     penalty_points: Optional[float] = None
+    # Corrected elapsed time in seconds for a finished boat (e.g. when the
+    # finish-button tap recorded the wrong duration). Converts to finish_time
+    # from the race start and re-sequences the race.
+    elapsed_seconds: Optional[float] = None
 
 
 # RRS Appendix A10 scoring abbreviations (2025-2028).
@@ -515,11 +521,25 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
         target["position"] = data.position
     if data.finish_time is not None:
         target["finish_time"] = data.finish_time
+    if data.elapsed_seconds is not None:
+        start = await _resolve_race_start(race)
+        if start is None:
+            raise HTTPException(status_code=400,
+                                detail="No start time recorded for this race — set the start (start gun or class start time) before entering elapsed times")
+        ft = _finish_time_from_elapsed(start, data.elapsed_seconds)
+        if ft is None:
+            raise HTTPException(status_code=400, detail="Start time could not be parsed")
+        target["finish_time"] = ft
+        target["code"] = "FINISHED"
+        target["position"] = None  # recomputed by re-sequencing below
     if data.penalty_points is not None:
         target["penalty_points"] = data.penalty_points
-    # RRS A6.1: a boat that finished and is later scored as not finishing,
-    # retiring or disqualified moves the boats behind her up one place.
+    # Re-sequence when the finishing order may have changed: RRS A6.1 (a
+    # finisher scored as not finishing/retiring/DSQ) or an elapsed-time edit.
+    resequence = data.elapsed_seconds is not None
     if data.code is not None and prev_code == "FINISHED" and data.code in POST_FINISH_RETIRE_CODES:
+        resequence = True
+    if resequence:
         await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
@@ -661,8 +681,26 @@ def _race_start_time(race, cls=None):
     date = race.get("date")
     st = (cls or {}).get("default_start_time") or race.get("start_time")
     if date and st:
-        return f"{date}T{st}:00"
+        # Scheduled start is timezone-less club time; anchor it to UTC so the
+        # elapsed math is deterministic regardless of the server's TZ.
+        return f"{date}T{st}:00+00:00"
     return None
+
+
+def _finish_time_from_elapsed(start, elapsed_seconds):
+    """Finish ISO timestamp = start + elapsed seconds (UTC). None if the start
+    cannot be parsed."""
+    base = _parse_iso(start)
+    if base is None:
+        return None
+    return datetime.fromtimestamp(base + elapsed_seconds, tz=timezone.utc).isoformat()
+
+
+async def _resolve_race_start(race):
+    """Resolve the race start instant, fetching the class for the scheduled
+    start fallback (see _race_start_time)."""
+    cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
+    return _race_start_time(race, cls)
 
 
 def _resequence_finished(results, scoring_mode="one_design", start_time=None, boat_tccs=None):
