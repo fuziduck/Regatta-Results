@@ -38,14 +38,14 @@ function TopBar() {
 
 /* ---------------- Classes ---------------- */
 function ClassesTab({ classes, reload }) {
-  const [form, setForm] = useState({ name: "", default_start_time: "10:30" });
+  const [form, setForm] = useState({ name: "", default_start_time: "10:30", scoring_mode: "one_design" });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
   const save = async () => {
     if (!form.name) return toast.error("Name required");
     if (editing) await api.updateClass(editing, form); else await api.createClass(form);
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30" }); reload();
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); reload();
   };
   const del = async (id) => { await api.deleteClass(id); toast.success("Deleted"); reload(); };
 
@@ -53,26 +53,37 @@ function ClassesTab({ classes, reload }) {
     <div>
       <div className="flex justify-between items-center mb-4">
         <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30" }); } }}>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); } }}>
           <DialogTrigger asChild><Button data-testid="add-class-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add class</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} class</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Class name</Label><Input data-testid="class-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dragon" /></div>
               <div className="space-y-1.5"><Label>Default start time</Label><Input type="time" data-testid="class-time-input" value={form.default_start_time} onChange={(e) => setForm({ ...form, default_start_time: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Scoring system</Label>
+                <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
+                  <SelectTrigger data-testid="class-scoring-input"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="one_design">One-design (finish order)</SelectItem>
+                    <SelectItem value="irc">IRC (corrected time)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {form.scoring_mode === "irc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × TCC, rounded to nearest second); boats need a TCC.</p>}
+              </div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-class-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Scoring</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{classes.map((c) => (
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
+              <TableCell>{c.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
@@ -88,7 +99,7 @@ function BoatsTab({ classes }) {
   const [boats, setBoats] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true };
+  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true, tcc: "" };
   const [form, setForm] = useState(blank);
 
   const load = useCallback(() => {
@@ -99,7 +110,7 @@ function BoatsTab({ classes }) {
 
   const save = async () => {
     if (!form.name || !form.sail_no || !form.class_id || !form.helm) return toast.error("All fields required");
-    const payload = { ...form, year: Number(form.year) };
+    const payload = { ...form, year: Number(form.year), tcc: form.tcc === "" ? null : Number(form.tcc) };
     if (editing) await api.updateBoat(editing, payload); else await api.createBoat(payload);
     toast.success("Saved"); setOpen(false); setEditing(null); setForm(blank); load();
   };
@@ -130,6 +141,7 @@ function BoatsTab({ classes }) {
                 </Select></div>
               <div className="space-y-1.5"><Label>Helm</Label><Input data-testid="boat-helm-input" value={form.helm} onChange={(e) => setForm({ ...form, helm: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Year</Label><Input type="number" data-testid="boat-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank for one-design" /></div>
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-boat-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
@@ -137,20 +149,21 @@ function BoatsTab({ classes }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>TCC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{boats.map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
               <TableCell className="font-semibold">{b.name}</TableCell>
               <TableCell>{cname(b.class_id)}</TableCell>
               <TableCell>{b.helm}</TableCell>
+              <TableCell className="font-mono">{b.tcc ? b.tcc.toFixed(3) : "—"}</TableCell>
               <TableCell>{b.active ? <Badge className="bg-emerald-100 text-emerald-800">Yes</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!boats.length && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
+            {!boats.length && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>

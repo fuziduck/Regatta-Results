@@ -6,9 +6,10 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 import uuid
 import jwt
+import re
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -81,6 +82,9 @@ class LoginInput(BaseModel):
 class ClassInput(BaseModel):
     name: str
     default_start_time: str = "10:30"
+    # Scoring system for the class: "one_design" (finish order) or "irc"
+    # (corrected time = elapsed x TCC, rounded per IRC Rule 12.2).
+    scoring_mode: Literal["one_design", "irc"] = "one_design"
 
 
 class BoatInput(BaseModel):
@@ -90,6 +94,9 @@ class BoatInput(BaseModel):
     helm: str
     year: int
     active: bool = True
+    # IRC Time Correction Coefficient (rating certificate); None for
+    # one-design classes. Corrected time = elapsed x TCC.
+    tcc: Optional[float] = None
 
 
 class SeriesInput(BaseModel):
@@ -203,7 +210,8 @@ async def get_classes():
 
 @api_router.post("/classes")
 async def create_class(data: ClassInput, _: str = Depends(require_admin)):
-    doc = {"id": new_id(), "name": data.name, "default_start_time": data.default_start_time, "created_at": now_iso()}
+    doc = {"id": new_id(), "name": data.name, "default_start_time": data.default_start_time,
+           "scoring_mode": data.scoring_mode, "created_at": now_iso()}
     await db.classes.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -211,7 +219,8 @@ async def create_class(data: ClassInput, _: str = Depends(require_admin)):
 
 @api_router.put("/classes/{class_id}")
 async def update_class(class_id: str, data: ClassInput, _: str = Depends(require_admin)):
-    await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name, "default_start_time": data.default_start_time}})
+    await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name,
+                                  "default_start_time": data.default_start_time, "scoring_mode": data.scoring_mode}})
     return await db.classes.find_one({"id": class_id}, {"_id": 0})
 
 
@@ -444,7 +453,7 @@ async def select_boats(race_id: str, data: SelectBoatsInput, _: str = Depends(re
     # RRS A6.1: a boat scored as not racing after having finished moves the
     # boats behind her up one place.
     if any(r["boat_id"] in previously_finished and r["code"] != "FINISHED" for r in results):
-        _resequence_finished(results)
+        await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -455,14 +464,13 @@ async def record_finish(race_id: str, data: FinishInput, _: str = Depends(requir
     if not race:
         raise HTTPException(status_code=404, detail="Race not found")
     results = race["results"]
-    # next position = count of currently finished boats + 1
-    finished = [r for r in results if r["code"] == "FINISHED"]
-    next_pos = len(finished) + 1
     for r in results:
         if r["boat_id"] == data.boat_id:
             r["code"] = "FINISHED"
             r["finish_time"] = data.finish_time or now_iso()
-            r["position"] = next_pos
+            r["position"] = None  # set by re-sequencing below
+    # Re-sequence all finishers: one-design by finish time, IRC by corrected time.
+    await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -512,7 +520,7 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     # RRS A6.1: a boat that finished and is later scored as not finishing,
     # retiring or disqualified moves the boats behind her up one place.
     if data.code is not None and prev_code == "FINISHED" and data.code in POST_FINISH_RETIRE_CODES:
-        _resequence_finished(results)
+        await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -603,15 +611,116 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False):
     return float(series_entries + 1)
 
 
-def _resequence_finished(results):
-    """RRS A6.1: after a finisher is disqualified or retires post-finish, boats
-    with a worse finishing place move up one place."""
-    finished = sorted(
-        [r for r in results if r.get("code") == "FINISHED"],
-        key=lambda x: x.get("finish_time") or "",
-    )
-    for i, r in enumerate(finished):
-        r["position"] = i + 1
+def _parse_iso(s):
+    """ISO timestamp -> epoch seconds, or None if missing/unparseable."""
+    if not s:
+        return None
+    s = str(s).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except (ValueError, TypeError):
+        pass
+    # Python <3.11 cannot parse fractional seconds; drop the fraction and
+    # retry (sub-second precision is then lost, but whole-second corrected
+    # times remain correct).
+    frac = s.find(".")
+    if frac != -1:
+        tz = s.find("+", frac)
+        if tz == -1:
+            tz = s.find("-", frac)
+        s = s[:frac] + (s[tz:] if tz != -1 else "")
+        try:
+            return datetime.fromisoformat(s).timestamp()
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _elapsed_seconds(finish_time, start_time):
+    """Elapsed seconds between start and finish; None if either is missing."""
+    f, st = _parse_iso(finish_time), _parse_iso(start_time)
+    if f is None or st is None:
+        return None
+    return f - st
+
+
+def _corrected_time_sec(finish_time, start_time, tcc):
+    """IRC Rule 12.2: corrected time = elapsed x TCC, rounded to the nearest
+    second with 0.5 seconds rounding up. None if not computable."""
+    el = _elapsed_seconds(finish_time, start_time)
+    if el is None or not tcc:
+        return None
+    return round_half_up(el * tcc)
+
+
+def _race_start_time(race, cls=None):
+    """Best known start instant for a race: the start gun (actual_start), else
+    the scheduled class start on the race date. None if neither resolves."""
+    if race.get("actual_start"):
+        return race["actual_start"]
+    date = race.get("date")
+    st = (cls or {}).get("default_start_time") or race.get("start_time")
+    if date and st:
+        return f"{date}T{st}:00"
+    return None
+
+
+def _resequence_finished(results, scoring_mode="one_design", start_time=None, boat_tccs=None):
+    """Assign finishing places 1..n to finished boats.
+
+    one_design: by recorded finish time.
+    irc: by corrected time (elapsed x TCC, rounded per IRC Rule 12.2); boats
+    with equal corrected time share a place, and RRS A7 later splits the points
+    of the tied places and the place immediately below. Boats whose corrected
+    time cannot be computed (no TCC / no start time) fall back to finish time
+    and rank after the computable boats.
+    """
+    finished = [r for r in results if r.get("code") == "FINISHED"]
+    if not finished:
+        return
+    if scoring_mode == "irc" and start_time:
+        tccs = boat_tccs or {}
+
+        def ct(r):
+            return _corrected_time_sec(r.get("finish_time"), start_time, tccs.get(r.get("boat_id")))
+
+        pairs = [(r, ct(r)) for r in finished]
+        pairs.sort(key=lambda rc: (rc[1] is None,
+                                   rc[1] if rc[1] is not None else 0,
+                                   rc[0].get("finish_time") or "",
+                                   rc[0].get("position") or 0))
+        # Group equal corrected times; each group of N tied boats occupies
+        # places pos..pos+N-1, so the next group starts at pos+N (RRS A7).
+        groups = []
+        for r, c in pairs:
+            if c is None:
+                groups.append((None, [r]))
+            elif groups and groups[-1][0] is not None and groups[-1][0] == c:
+                groups[-1][1].append(r)
+            else:
+                groups.append((c, [r]))
+        pos = 0
+        for c, rs in groups:
+            pos += 1
+            for r in rs:
+                r["position"] = pos
+            pos += len(rs) - 1
+    else:
+        finished.sort(key=lambda x: x.get("finish_time") or "")
+        for i, r in enumerate(finished):
+            r["position"] = i + 1
+
+
+async def _resequence_race(race):
+    """Re-sequence a race's finished boats per its class scoring mode. Fetches
+    the class (scoring mode + scheduled start) and boats (TCCs) when IRC."""
+    cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
+    if cls.get("scoring_mode") != "irc":
+        _resequence_finished(race.get("results", []))
+        return
+    boats = await db.boats.find({"class_id": race.get("class_id")}, {"_id": 0}).to_list(2000)
+    tccs = {b["id"]: b.get("tcc") for b in boats}
+    _resequence_finished(race.get("results", []), "irc", _race_start_time(race, cls), tccs)
 
 
 def _a8_tiebreak(entries, drop):

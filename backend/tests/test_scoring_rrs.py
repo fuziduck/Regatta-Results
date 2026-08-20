@@ -220,3 +220,135 @@ class TestA53EndToEnd:
         # Start area = 3 (b1, b2, b3) -> DNS scores 4; DNC still 5
         assert by_id["b3"]["net"] == 4.0
         assert by_id["b4"]["net"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# IRC: corrected time (IRC Rule 12.2) and tie handling (RRS A3 + A7)
+# ---------------------------------------------------------------------------
+
+class TestIrcCorrectedTime:
+    """IRC Rule 12.2: corrected = elapsed x TCC, rounded to nearest second,
+    0.5 seconds rounding up."""
+
+    START = "2026-05-02T10:00:00Z"
+
+    def test_elapsed_times_tcc(self):
+        # 1800 s elapsed x 1.015 -> 1827.0 -> 1827 s
+        assert server._corrected_time_sec("2026-05-02T10:30:00Z", self.START, 1.015) == 1827
+
+    def test_rounds_to_nearest_second_half_up(self):
+        # 10 s elapsed x 1.05 = 10.5 -> rounds up to 11 (IRC 12.2, 0.5 up)
+        assert server._corrected_time_sec("2026-05-02T10:00:10Z", self.START, 1.05) == 11
+        # 10 s x 1.049 = 10.49 -> rounds down to 10
+        assert server._corrected_time_sec("2026-05-02T10:00:10Z", self.START, 1.049) == 10
+        # 10 s x 1.06 = 10.6 -> rounds up to 11
+        assert server._corrected_time_sec("2026-05-02T10:00:10Z", self.START, 1.06) == 11
+
+    def test_missing_start_or_tcc_returns_none(self):
+        assert server._corrected_time_sec("2026-05-02T10:30:00Z", None, 1.015) is None
+        assert server._corrected_time_sec("2026-05-02T10:30:00Z", self.START, None) is None
+        assert server._corrected_time_sec(None, self.START, 1.015) is None
+
+
+def _finished(bid, ft, tcc=None):
+    return {"boat_id": bid, "code": "FINISHED", "finish_time": ft,
+            "position": None, "penalty_points": 0, "tcc": tcc}
+
+
+def _irc_positions(results, start, tccs):
+    """Run the IRC re-sequencer and return {boat_id: position}."""
+    import copy
+    rs = copy.deepcopy(results)
+    server._resequence_finished(rs, "irc", start, tccs)
+    return {r["boat_id"]: r["position"] for r in rs if r["code"] == "FINISHED"}
+
+
+class TestIrcResequence:
+    """Finishing places under IRC are determined by corrected time (RRS A3)."""
+
+    START = "2026-05-02T10:00:00Z"
+
+    def test_orders_by_corrected_time_not_elapsed(self):
+        # b1 finishes first but is slow-rated; b3 finishes last but fast-rated.
+        results = [
+            _finished("b1", "2026-05-02T10:30:00Z"),  # elapsed 1800
+            _finished("b2", "2026-05-02T10:29:30Z"),  # elapsed 1770
+            _finished("b3", "2026-05-02T10:20:00Z"),  # elapsed 1200
+        ]
+        tccs = {"b1": 1.100, "b2": 1.100, "b3": 0.850}
+        pos = _irc_positions(results, self.START, tccs)
+        # corrected: b3 1020, b2 1947, b1 1980 -> order b3, b2, b1
+        assert pos["b3"] == 1 and pos["b2"] == 2 and pos["b1"] == 3
+
+    def test_equal_corrected_time_shares_place_and_next_jumps(self):
+        results = [
+            _finished("b1", "2026-05-02T10:30:00Z"),   # 1800 x 1.000 = 1800
+            _finished("b2", "2026-05-02T10:33:20Z"),   # 2000 x 0.900 = 1800
+            _finished("b3", "2026-05-02T10:40:00Z"),   # 2400 x 1.000 = 2400
+        ]
+        tccs = {"b1": 1.000, "b2": 0.900, "b3": 1.000}
+        pos = _irc_positions(results, self.START, tccs)
+        # b1 and b2 tie for 1st; b3 is 3rd (place 2 is occupied by the tie)
+        assert pos["b1"] == 1 and pos["b2"] == 1 and pos["b3"] == 3
+
+    def test_missing_tcc_falls_back_after_computable(self):
+        results = [
+            _finished("b1", "2026-05-02T10:30:00Z"),  # has TCC
+            _finished("b2", "2026-05-02T10:20:00Z"),  # no TCC
+            _finished("b3", "2026-05-02T10:10:00Z"),  # no TCC
+        ]
+        tccs = {"b1": 1.000}
+        pos = _irc_positions(results, self.START, tccs)
+        # b1 computable -> 1st; b2/b3 fall back to finish time:
+        # b3 (10:10) before b2 (10:20) -> 2nd, 3rd
+        assert pos["b1"] == 1 and pos["b3"] == 2 and pos["b2"] == 3
+
+    def test_no_start_time_falls_back_to_finish_order(self):
+        results = [
+            _finished("b1", "2026-05-02T10:30:00Z"),
+            _finished("b2", "2026-05-02T10:20:00Z"),
+        ]
+        tccs = {"b1": 1.0, "b2": 0.5}
+        pos = _irc_positions(results, None, tccs)
+        assert pos["b1"] == 2 and pos["b2"] == 1  # plain finish-time order
+
+
+class TestIrcA7EndToEnd:
+    """Equal corrected times -> shared place -> RRS A7 splits the points."""
+
+    def test_tied_corrected_time_splits_points(self):
+        import asyncio
+        import types
+        start = "2026-05-02T10:00:00Z"
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0}
+        boats = [
+            {"id": "b1", "name": "A", "sail_no": "1", "helm": "H",
+             "class_id": "c1", "year": 2026, "tcc": 1.000},
+            {"id": "b2", "name": "B", "sail_no": "2", "helm": "H",
+             "class_id": "c1", "year": 2026, "tcc": 0.900},
+            {"id": "b3", "name": "C", "sail_no": "3", "helm": "H",
+             "class_id": "c1", "year": 2026, "tcc": 1.000},
+        ]
+        results = [
+            {"boat_id": "b1", "code": "FINISHED", "finish_time": "2026-05-02T10:30:00Z",
+             "position": None, "penalty_points": 0},
+            {"boat_id": "b2", "code": "FINISHED", "finish_time": "2026-05-02T10:33:20Z",
+             "position": None, "penalty_points": 0},
+            {"boat_id": "b3", "code": "FINISHED", "finish_time": "2026-05-02T10:40:00Z",
+             "position": None, "penalty_points": 0},
+        ]
+        tccs = {b["id"]: b["tcc"] for b in boats}
+        server._resequence_finished(results, "irc", start, tccs)
+        race = {
+            "id": "r1", "series_id": "s1", "class_id": "c1", "year": 2026,
+            "race_number": 1, "date": "2026-05-02", "status": "published",
+            "entries_count": 3, "results": results,
+        }
+        server.db = types.SimpleNamespace(races=_Coll([race]), boats=_Coll(boats))
+        st = asyncio.run(server.compute_series_standings(series))
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        # b1/b2 tied on corrected time -> share 1st -> (1+2)/2 = 1.5 each
+        assert by_id["b1"]["net"] == 1.5
+        assert by_id["b2"]["net"] == 1.5
+        # b3 is placed 3rd -> 3 points
+        assert by_id["b3"]["net"] == 3.0

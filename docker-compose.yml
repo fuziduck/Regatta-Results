@@ -86,7 +86,12 @@ services:
 
 # ── Persistent storage ────────────────────────────────────────────────
 volumes:
+  # The club's real data lives in the pre-compose volume created by the
+  # original `docker run` mongo container. Mark it external so compose
+  # reuses it instead of creating a fresh empty one.
   mongo-data:
+    external: true
+    name: regatta_mongodb_data
 
 # ── Networking ────────────────────────────────────────────────────────
 networks:

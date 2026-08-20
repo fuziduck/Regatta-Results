@@ -252,3 +252,40 @@
 - Removed dead `emergentintegrations==0.2.0` from `requirements.txt` (private package, never imported, blocked image build).
 - Verified end-to-end: `docker compose up --build -d` starts all three containers healthy; API returns 15 RRS codes; frontend bundle inlines `127.0.0.1:8000` and contains new A5.3/timing-strip UI; `--reload` confirmed (uvicorn restarts on server.py edit); mongo data persists in named volume `mongo-data`.
 - Gotcha resolved: the old `/tmp/regatta/backend` mount (fragile — wiped by macOS reboot and tooling) is replaced by `./backend:/app` (workspace mount — survives reboots). System site-packages live outside /app so the mount only shadows source code, not pip-installed packages.
+
+## 2026-08-20 — Data restored: compose now uses the real mongo volume
+
+- Symptom: after switching to docker compose, races/results vanished (0 races).
+- Cause: compose created a fresh volume `regatta-results_mongo-data`; the real
+  2026 data (14 series, 23 races, 18 boats) was in the pre-compose named volume
+  `regatta_mongodb_data`, which survives container removal.
+- Fix: docker-compose.yml now marks `mongo-data` external with
+  `name: regatta_mongodb_data`. Verified live: Dragon Overall standings render
+  (OCD 7, Repeat Offender 19, Taniwha 19.1, Tempest 24.7, …).
+- Note: the empty `regatta-results_mongo-data` volume is now orphaned (sample
+  seed only) — safe to `docker volume rm regatta-results_mongo-data`.
+
+## 2026-08-20 — IRC scoring implemented (TCC + corrected time + A7 ties)
+
+- Backend: `ClassInput.scoring_mode` (Literal one_design|irc, default one_design) persisted on classes;
+  `BoatInput.tcc` (Optional float) persisted on boats.
+- `_corrected_time_sec`: elapsed x TCC rounded to nearest second, 0.5 up (IRC Rule 12.2).
+  `_parse_iso` handles fractional seconds on Python 3.9 (drops fraction, keeping tz) and full precision on 3.11+.
+- `_resequence_finished(results, scoring_mode, start_time, boat_tccs)`: one-design sorts by finish time;
+  IRC sorts by corrected time, groups equal corrected times so tied boats share a place and the next
+  distinct place jumps by the tie size (RRS A7 semantics: 1,1,3 not 1,1,2). Boats without TCC/start
+  fall back to finish time after computable boats.
+- `_resequence_race(race)` (async) fetches class + boat TCCs; wired into record_finish (re-sequences
+  after every finish), select_boats, undo_finish, adjust_result. Start time = actual_start (start gun),
+  else race date + class default_start_time.
+- Standings need no change: they use stored positions and the existing A7 split.
+- Tests: 10 new (TestIrcCorrectedTime, TestIrcResequence, TestIrcA7EndToEnd) — 29 total, all pass.
+- Live-verified via API on the compose stack with scratch data (created + deleted):
+  - IRC class, TCCs on boats; finish order B(10:40), A(10:50), C(11:00) with TCCs 2.0/1.0/0.6 →
+    positions 2,2,1 (C wins corrected 1080; A,B tie at 1200) — reordered vs elapsed, ties share place.
+  - Published standings with a 2-boat tie scenario: winner net 1.0, loser 2.0 (corrected ordering).
+- Frontend: Classes tab — Scoring system select (One-design/IRC) in add/edit dialog + Scoring column
+  with IRC/One-design badges; Boats tab — TCC number input (step 0.001) + TCC column (3 decimals).
+  Verified in the live preview (admin → Classes shows Cruiser=IRC; edit dialog pre-fills IRC).
+- NOTE: existing races keep their stored positions; only new finishes / result edits trigger
+  corrected-time re-sequencing. Historic IRC races can be re-touched (edit a result) to re-sequence.

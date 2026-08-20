@@ -52,6 +52,11 @@ macOS wipes `/tmp` on reboot and various tooling recreates the dirs empty.
 - **Don't run the static preview server** (`python3 -m http.server 3000`)
   while the compose stack is up — it binds 127.0.0.1:3000 first and shadows
   the frontend container.
+- **Mongo data volume**: the real club data lives in the EXTERNAL volume
+  `regatta_mongodb_data` (from the original `docker run` mongo container),
+  referenced in compose as `mongo-data: {external: true, name: regatta_mongodb_data}`.
+  Do NOT swap this for a fresh volume — a fresh mongo would only contain the
+  starter seed (no races/results). Recover with `docker run -v regatta_mongodb_data:/data/db mongo:7`.
 - **Backend mount**: `./backend:/app` works because pip installs to system
   site-packages (outside /app), so the mount only shadows source code, not
   dependencies. The workspace `.venv` is inert inside the container.

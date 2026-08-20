@@ -35,6 +35,13 @@ Club-level sailing web app with 3 users. Spectator (public landing page, results
   - **A5.3 SI option**: per-series `use_a5_3` flag (admin Series form) — when set, boats that came to the starting area but did not finish score start-area entries + 1 (better than DNC). Default remains A5.2 (all non-finish codes = series entries + 1).
   - **A7**: boats tied on an equal stored position split the points of the tied places and the places immediately below.
   - `use_a5_3` is echoed in standings responses and shown on the public standings table footer.
+- **IRC scoring** (per-class `scoring_mode`, default one-design): boats carry a TCC
+  (rating certificate); corrected time = elapsed × TCC rounded to the nearest second
+  with 0.5 s rounding up (IRC Rule 12.2). Finishes are re-sequenced by corrected time
+  on every finish/edit (start = start gun, else scheduled class start); equal corrected
+  times share a place and RRS A7 splits the points (e.g. two tied for 1st → 1.5 each,
+  next boat 3rd). Boats without TCC/start fall back to finish order. Admin UI: class
+  scoring-mode selector + boat TCC field.
 - Unit tests: `backend/tests/test_scoring_rrs.py` — 19 tests covering A4/A5.2/A5.3/A6.1/A7/A8/44.3(c) math (pure functions, no DB). All pass.
 - Frontend builds cleanly with `ajv@^8` added to deps (schema-utils@4 requires ajv 8 at top level; without it the CRA build fails).
 
