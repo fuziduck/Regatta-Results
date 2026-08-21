@@ -424,8 +424,12 @@ async def clubs_directory(year: Optional[int] = None):
                               for x in finished],
                 }
             planned_series = []
-            if year:
-                series = await db.series.find({"class_id": c["id"], "year": year},
+            # Show the season's planned series for the current year too — so a
+            # class whose series hasn't started yet lists what's set up instead
+            # of just "No published races yet".
+            series_year = year or datetime.now(tz=timezone.utc).year
+            if series_year:
+                series = await db.series.find({"class_id": c["id"], "year": series_year},
                                               {"_id": 0, "name": 1, "planned_races": 1,
                                                "order": 1, "schedule": 1}).to_list(50)
 
