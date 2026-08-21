@@ -91,7 +91,12 @@ function NewRaceDialog({ onCreated, clubId }) {
   const create = async () => {
     if (!form.class_id || !form.series_id) return toast.error("Pick a class and series");
     try {
-      const race = await api.createRace({ ...form, race_number: Number(form.race_number), start_time: form.start_time || null });
+      const race = await api.createRace({
+        ...form,
+        race_number: Number(form.race_number),
+        start_time: form.start_time || null,
+        start_tz_offset_minutes: -new Date().getTimezoneOffset(),
+      });
       toast.success("Race created");
       setOpen(false);
       onCreated(race);
@@ -156,7 +161,12 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   const toFinish = racing.filter((r) => r.code === "DNS").sort((a, b) => (boats[a.boat_id]?.sail_no || "").localeCompare(boats[b.boat_id]?.sail_no || ""));
   const finished = race.results.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
 
-  const saveNotif = async () => { await api.updateNotifications(raceId, notif); toast.success("Notice updated & published to landing page"); refresh(); };
+  const saveNotif = async () => {
+    // Re-capture the device offset so a notice start-time change keeps the
+    // scheduled-start fallback aligned with device-UTC finish times.
+    await api.updateNotifications(raceId, { ...notif, start_tz_offset_minutes: -new Date().getTimezoneOffset() });
+    toast.success("Notice updated & published to landing page"); refresh();
+  };
   const toggleBoat = async (boatId) => {
     const selected = new Set(racing.map((r) => r.boat_id));
     if (selected.has(boatId)) selected.delete(boatId); else selected.add(boatId);
@@ -450,6 +460,7 @@ export default function Officer() {
     const race = await api.createRace({
       date: item.date, class_id: item.class_id, series_id: item.series_id,
       race_number: item.race_number, start_time: item.start_time,
+      start_tz_offset_minutes: -new Date().getTimezoneOffset(),
     });
     await loadRaces(); await loadScheduled();
     setSelected(race.id);

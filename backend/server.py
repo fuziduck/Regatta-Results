@@ -249,6 +249,10 @@ class RaceCreateInput(BaseModel):
     series_id: str
     race_number: int
     start_time: Optional[str] = None
+    # Officer's device UTC offset (minutes east of UTC, e.g. 60 for BST)
+    # captured when the race is created, so the scheduled-start fallback lines
+    # up with the device-UTC finish times recorded on tap.
+    start_tz_offset_minutes: Optional[int] = None
 
 
 class RaceNotificationInput(BaseModel):
@@ -256,6 +260,7 @@ class RaceNotificationInput(BaseModel):
     special_rules: Optional[str] = None
     life_jackets: Optional[bool] = None
     start_time: Optional[str] = None
+    start_tz_offset_minutes: Optional[int] = None
 
 
 class StartRaceInput(BaseModel):
@@ -764,6 +769,7 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
         "year": year,
         "race_number": data.race_number,
         "start_time": data.start_time or cls.get("default_start_time", "10:30"),
+        "start_tz_offset_minutes": data.start_tz_offset_minutes,
         "actual_start": None,
         "course": "",
         "special_rules": "",
@@ -1025,11 +1031,16 @@ def _parse_iso(s):
 
 
 def _elapsed_seconds(finish_time, start_time):
-    """Elapsed seconds between start and finish; None if either is missing."""
+    """Elapsed seconds between start and finish; None if either is missing.
+
+    A finish recorded before the start (stray tap, device clock skew, or a
+    mis-set scheduled start) is treated as unknown rather than a negative
+    elapsed time, which would otherwise outrank every real finisher."""
     f, st = _parse_iso(finish_time), _parse_iso(start_time)
     if f is None or st is None:
         return None
-    return f - st
+    el = f - st
+    return el if el >= 0 else None
 
 
 def _corrected_time_sec(finish_time, start_time, tcc):
@@ -1057,11 +1068,20 @@ def _race_start_time(race, cls=None):
     if race.get("actual_start"):
         return race["actual_start"]
     date = race.get("date")
-    st = (cls or {}).get("default_start_time") or race.get("start_time")
+    # The race's own scheduled start wins over the class default: the officer
+    # sets start_time per race on the day.
+    st = race.get("start_time") or (cls or {}).get("default_start_time")
     if date and st:
-        # Scheduled start is timezone-less club time; anchor it to UTC so the
-        # elapsed math is deterministic regardless of the server's TZ.
-        return f"{date}T{st}:00+00:00"
+        # Scheduled start is timezone-less club time. Finish times are captured
+        # from the officer's device as UTC, so anchor the scheduled start to the
+        # device's UTC offset (captured at race creation) to keep the elapsed
+        # math consistent. Falls back to UTC when no offset was recorded.
+        off = race.get("start_tz_offset_minutes")
+        if off is None:
+            return f"{date}T{st}:00+00:00"
+        sign = "+" if off >= 0 else "-"
+        m = abs(int(off))
+        return f"{date}T{st}:00{sign}{m // 60:02d}:{m % 60:02d}"
     return None
 
 

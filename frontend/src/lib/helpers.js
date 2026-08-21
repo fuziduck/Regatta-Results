@@ -49,8 +49,21 @@ export function fmtElapsed(ms) {
 export function raceStart(race) {
   if (!race) return null;
   if (race.actual_start) return race.actual_start;
-  // Scheduled start is timezone-less; treat it as UTC to match the backend.
-  if (race.date && race.start_time) return `${race.date}T${race.start_time}:00Z`;
+  if (race.date && race.start_time) {
+    // Scheduled start is timezone-less club time. Finish times are captured
+    // from the officer's device as UTC, so anchor the scheduled start to the
+    // device's UTC offset (captured at race creation) to keep the elapsed
+    // math consistent. Falls back to UTC when no offset was recorded.
+    const off = race.start_tz_offset_minutes;
+    if (off != null) {
+      const sign = off >= 0 ? "+" : "-";
+      const m = Math.abs(off);
+      const hh = String(Math.floor(m / 60)).padStart(2, "0");
+      const mm = String(m % 60).padStart(2, "0");
+      return `${race.date}T${race.start_time}:00${sign}${hh}:${mm}`;
+    }
+    return `${race.date}T${race.start_time}:00Z`;
+  }
   return null;
 }
 
@@ -68,8 +81,14 @@ export function elapsedSecondsOf(finishTime, race) {
 // (Portsmouth Yardstick): elapsed x 1000 / PY. Both rounded to the nearest
 // second, 0.5 up. Returns null when the elapsed time or rating is missing.
 export function correctedSecondsOf(finishTime, race, rating, mode = "irc") {
-  const el = elapsedSecondsOf(finishTime, race);
-  if (el == null || !rating) return null;
+  // Use the exact elapsed (not the whole-second-rounded display value) so the
+  // corrected time matches the backend's official calculation — e.g. two
+  // finishes 0.6s apart can score different corrected times.
+  const start = raceStart(race);
+  if (!finishTime || !start || !rating) return null;
+  const e = Date.parse(finishTime) - Date.parse(start);
+  if (!Number.isFinite(e) || e < 0) return null;
+  const el = e / 1000;
   if (mode === "py") return Math.round((el * 1000) / rating);
   return Math.round(el * rating);
 }

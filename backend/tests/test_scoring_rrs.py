@@ -557,6 +557,55 @@ class TestElapsedCorrection:
         assert server._finish_time_from_elapsed(None, 100) is None
 
 
+class TestScheduledStartFallback:
+    """_race_start_time: the gun first, then the race's own scheduled start
+    (anchored to the officer's device UTC offset), then the class default."""
+
+    RACE = {"date": "2026-08-21", "start_time": "22:00"}
+    CLS = {"default_start_time": "10:30"}
+
+    def test_gun_wins(self):
+        r = {**self.RACE, "actual_start": "2026-08-21T21:00:00+00:00"}
+        assert server._race_start_time(r, self.CLS) == "2026-08-21T21:00:00+00:00"
+
+    def test_race_start_time_beats_class_default(self):
+        assert server._race_start_time(self.RACE, self.CLS) == "2026-08-21T22:00:00+00:00"
+
+    def test_class_default_when_race_has_none(self):
+        assert server._race_start_time({"date": "2026-08-21"}, self.CLS) == "2026-08-21T10:30:00+00:00"
+
+    def test_missing_date_or_start_returns_none(self):
+        assert server._race_start_time({}) is None
+        assert server._race_start_time({"date": "2026-08-21"}) is None
+
+    def test_utc_offset_applied(self):
+        r = {**self.RACE, "start_tz_offset_minutes": 60}
+        assert server._race_start_time(r, self.CLS) == "2026-08-21T22:00:00+01:00"
+
+    def test_negative_utc_offset_applied(self):
+        r = {**self.RACE, "start_tz_offset_minutes": -240}
+        assert server._race_start_time(r, self.CLS) == "2026-08-21T22:00:00-04:00"
+
+    def test_offset_makes_device_finish_elapsed_positive(self):
+        # Officer's device on BST: a scheduled 22:00 local start == 21:00Z.
+        # A finish tapped at 21:06:30Z is a real 6m30s elapsed — previously the
+        # offset-less anchor made it negative and the results showed "—".
+        start = server._race_start_time({**self.RACE, "start_tz_offset_minutes": 60}, self.CLS)
+        assert server._elapsed_seconds("2026-08-21T21:06:30+00:00", start) == 390
+        assert server._py_corrected_sec("2026-08-21T21:06:30+00:00", start, 1104) == 353
+
+    def test_finish_before_start_is_unknown_not_negative(self):
+        # A stray tap recorded before the start must not produce a negative
+        # elapsed that outranks every real finisher.
+        start = server._race_start_time({**self.RACE, "start_tz_offset_minutes": 60}, self.CLS)
+        assert server._elapsed_seconds("2026-08-21T10:31:06+00:00", start) is None
+        assert server._py_corrected_sec("2026-08-21T10:31:06+00:00", start, 1104) is None
+
+    def test_elapsed_ignores_offsets_in_epoch_terms(self):
+        start = server._race_start_time({**self.RACE, "start_tz_offset_minutes": 60}, self.CLS)
+        assert server._elapsed_seconds("2026-08-21T22:06:30+01:00", start) == 390
+
+
 # ---------------------------------------------------------------------------
 # Multi-club: slug generation, club-scoped tokens, access guards
 # ---------------------------------------------------------------------------
