@@ -28,7 +28,9 @@ load_dotenv(Path(__file__).parent / ".env")
 db = MongoClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
 
 YEAR = 2026
-CLUB_NAME = "Bough Beach Sailing Club"
+# Resolve the club by its stable slug (matches the display name "Bough
+# Beech Sailing Club").
+CLUB_SLUG = "bough-beech-sailing-club"
 # R6 of the file is 05 July 2026; the event weekend is Sat 4 + Sun 5 July.
 RACE_DATES = ["2026-07-04"] * 4 + ["2026-07-05"] * 4
 PY = 1104.0
@@ -71,9 +73,9 @@ def parse_cell(cell):
 
 
 def main(path):
-    club = db.clubs.find_one({"name": CLUB_NAME})
+    club = db.clubs.find_one({"slug": CLUB_SLUG})
     if not club:
-        raise SystemExit(f"club '{CLUB_NAME}' not found in DB")
+        raise SystemExit(f"club '{CLUB_SLUG}' not found in DB")
     club_id = club["id"]
 
     # ---- clean previous seed (idempotent) ----

@@ -231,6 +231,11 @@ class SeriesInput(BaseModel):
     # starting area but did not finish score start-area entries + 1 (better
     # than DNC), instead of the A5.2 default of series entries + 1 for all.
     use_a5_3: bool = False
+    # RYA/Sailwave convention used by many clubs (mutually exclusive with
+    # use_a5_3): boats that came to the starting area but did not finish score
+    # one more than the number of boats that FINISHED the race. DNC always
+    # scores series entries + 1 regardless of this flag.
+    use_finishers: bool = False
 
 
 class GenScheduleInput(BaseModel):
@@ -946,7 +951,8 @@ def _start_area_entries(results) -> int:
     return len([r for r in results if r.get("code") != "DNC"])
 
 
-def result_points(r, series_entries, start_area_entries, use_a5_3=False):
+def result_points(r, series_entries, start_area_entries, use_a5_3=False,
+                  use_finishers=False, finishers=0):
     """Points for one boat in one race under RRS Appendix A.
 
     series_entries:    boats entered in the series.
@@ -954,11 +960,21 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False):
     use_a5_3:          sailing instructions opted into rule A5.3, so boats that
                        came to the starting area but did not finish score
                        start-area entries + 1 (better than DNC).
+    use_finishers:     RYA/Sailwave convention: boats that came to the starting
+                       area but did not finish score finishers + 1 (DNC still
+                       scores series entries + 1). Takes precedence over
+                       use_a5_3 when both are set.
+    finishers:         boats that finished the race (for use_finishers).
     """
     code = r.get("code")
-    # Score for DNF under the active mode: A5.2 default = series entries + 1;
-    # A5.3 = start-area entries + 1.
-    dnf = (start_area_entries + 1) if use_a5_3 else (series_entries + 1)
+    # Base DNF score under the active convention: A5.2 default = series
+    # entries + 1; A5.3 = start-area entries + 1; finishers = finishers + 1.
+    if use_finishers:
+        dnf = finishers + 1
+    elif use_a5_3:
+        dnf = start_area_entries + 1
+    else:
+        dnf = series_entries + 1
     if code == "FINISHED":
         base = float(r["position"]) if r.get("position") else float(dnf)
         base += float(r.get("penalty_points") or 0)
@@ -976,10 +992,10 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False):
         return min(float(place) + penalty, float(dnf))
     # A5.2 (default): DNC, DNS, OCS, UFD, BFD, DNF, RET, DSQ, DNE and NSC all
     # score one more than the number of boats entered in the series.
-    # A5.3 (SI option): only DNC uses the series total; the other codes use the
-    # number of boats that came to the starting area.
-    if use_a5_3 and code != "DNC":
-        return float(start_area_entries + 1)
+    # A5.3 (SI option) / finishers convention: only DNC uses the series total;
+    # the other codes use the active base (start-area or finishers).
+    if code != "DNC" and (use_a5_3 or use_finishers):
+        return float(dnf)
     return float(series_entries + 1)
 
 
@@ -1182,12 +1198,14 @@ async def _series_scores(series):
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
     use_a5_3 = bool(series.get("use_a5_3", False))
+    use_finishers = bool(series.get("use_finishers", False))
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     agg = {bid: [] for bid in boat_map}
     for race in races:
         results = race.get("results", [])
         series_entries = race.get("entries_count") or len(results)
         start_entries = _start_area_entries(results)
+        finishers = len([r for r in results if r.get("code") == "FINISHED"])
         present = {r["boat_id"]: r for r in results}
         per_boat = {}
         for bid in boat_map:
@@ -1198,7 +1216,8 @@ async def _series_scores(series):
             else:
                 code = r.get("code")
                 per_boat[bid] = {
-                    "points": result_points(r, series_entries, start_entries, use_a5_3),
+                    "points": result_points(r, series_entries, start_entries, use_a5_3,
+                                             use_finishers, finishers),
                     "discardable": code not in NON_DISCARDABLE,
                     "position": r.get("position") if code == "FINISHED" else None,
                     "code": code,
@@ -1216,11 +1235,11 @@ async def _series_scores(series):
                     per_boat[bid]["points"] = shared
         for bid, e in per_boat.items():
             agg[bid].append(e)
-    return agg, boat_map, race_meta, use_a5_3
+    return agg, boat_map, race_meta, use_a5_3, use_finishers
 
 
 async def compute_series_standings(series):
-    agg, boat_map, race_meta, use_a5_3 = await _series_scores(series)
+    agg, boat_map, race_meta, use_a5_3, use_finishers = await _series_scores(series)
     club_name = await _club_name_of_class(series.get("class_id"))
     race_count = len(race_meta)
     # Effective discards never remove every race: at least one always counts.
@@ -1261,6 +1280,7 @@ async def compute_series_standings(series):
     return {"race_count": race_count, "discards": discards,
             "configured_discards": series.get("discards", 0),
             "use_a5_3": use_a5_3,
+            "use_finishers": use_finishers,
             "planned_races": series.get("planned_races", 0),
             "schedule": series.get("schedule", []),
             "races": race_meta, "standings": rows}

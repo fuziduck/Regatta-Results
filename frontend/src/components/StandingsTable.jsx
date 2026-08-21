@@ -85,6 +85,7 @@ export function SeriesStandingsTable({ data }) {
         {data.race_count} race{data.race_count !== 1 ? "s" : ""} sailed
         {data.discards > 0 ? ` · ${data.discards} discard${data.discards !== 1 ? "s" : ""} applied (shown in brackets)` : " · no discards yet"}
         {data.use_a5_3 ? " · RRS A5.3 start-area scoring in effect" : ""}
+        {data.use_finishers ? " · finishers + 1 scoring in effect" : ""}
       </div>
     </div>
   );

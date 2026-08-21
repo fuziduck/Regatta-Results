@@ -241,7 +241,7 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
                 <p className="text-xs text-muted-foreground">Defaults to {clubName || "your club"} — shown on published results. Type any name, e.g. a visiting boat's home club.</p></div>
               <div className="space-y-1.5"><Label>Helm</Label><Input data-testid="boat-helm-input" value={form.helm} onChange={(e) => setForm({ ...form, helm: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Year</Label><Input type="number" data-testid="boat-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Boat type</Label><Input data-testid="boat-type-input" value={form.boat_type} onChange={(e) => setForm({ ...form, boat_type: e.target.value })} placeholder="e.g. Bavaria 34 — cruisers only" /></div>
+              <div className="space-y-1.5"><Label>Boat type</Label><Input data-testid="boat-type-input" value={form.boat_type} onChange={(e) => setForm({ ...form, boat_type: e.target.value })} placeholder="e.g. Bavaria 34" /></div>
               <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank if not IRC-rated" /></div>
               <div className="space-y-1.5"><Label>PY (Portsmouth)</Label><Input type="number" step="1" min="0" data-testid="boat-py-input" value={form.py} onChange={(e) => setForm({ ...form, py: e.target.value })} placeholder="e.g. 1013 — blank if not PY-rated" /></div>
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
@@ -286,7 +286,7 @@ function SeriesTab({ classes, clubId }) {
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false };
+  const blank = { name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false };
   const [form, setForm] = useState(blank);
   const [schedStart, setSchedStart] = useState("2026-08-08");
 
@@ -365,6 +365,7 @@ function SeriesTab({ classes, clubId }) {
               </div>
               <div className="flex items-center gap-2"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
               <div className="flex items-center gap-2"><Switch checked={form.use_a5_3} onCheckedChange={(v) => setForm({ ...form, use_a5_3: v })} data-testid="series-a53-switch" /><Label>RRS A5.3 — boats that came to the start area score as starters + 1</Label></div>
+              <div className="flex items-center gap-2"><Switch checked={form.use_finishers} onCheckedChange={(v) => setForm({ ...form, use_finishers: v })} data-testid="series-fins-switch" /><Label>Score DNF/RET/DSQ as finishers + 1 (RYA convention)</Label></div>
 
               <div className="rounded-lg border border-border p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
@@ -391,7 +392,7 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead>Fin+1</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
@@ -402,12 +403,13 @@ function SeriesTab({ classes, clubId }) {
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
               <TableCell><Switch checked={!!s.use_a5_3} onCheckedChange={(v) => quickSet(s, { use_a5_3: v })} data-testid={`a53-toggle-${s.name}`} /></TableCell>
+              <TableCell><Switch checked={!!s.use_finishers} onCheckedChange={(v) => quickSet(s, { use_finishers: v })} data-testid={`fins-toggle-${s.name}`} /></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!series.length && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>

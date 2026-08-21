@@ -72,7 +72,10 @@ export default function Clubs() {
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Anchor className="w-5 h-5 text-white" /></div>
-            <div className="font-heading text-xl uppercase tracking-tight leading-none">Club Race Results</div>
+            <div>
+              <div className="font-heading text-xl uppercase tracking-tight leading-none">SailScore</div>
+              <div className="text-[11px] text-muted-foreground leading-tight">Connecting sailing, one club at a time.</div>
+            </div>
           </div>
           <Link to="/login">
             <Button variant="outline" size="sm" data-testid="officials-login-btn" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
@@ -174,7 +177,9 @@ export default function Clubs() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        Scored under the RRS Low Point System · {year}
+        <div className="font-heading uppercase tracking-tight">SailScore</div>
+        <p className="mt-1">Connecting sailing, one club at a time.</p>
+        <p className="mt-2 text-xs">Scored under the RRS Low Point System · {year}</p>
       </footer>
     </div>
   );

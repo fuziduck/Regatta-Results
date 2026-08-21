@@ -171,16 +171,35 @@ class _Coll:
         return _Cursor(self.items)
 
 
-def _standings(use_a5_3):
+class TestFinishersOption:
+    """RYA/Sailwave convention: non-finish codes score finishers + 1 (DNC
+    still scores series entries + 1). Takes precedence over use_a5_3."""
+
+    def test_dnc_still_series_plus_1(self):
+        assert server.result_points(_res("DNC"), 6, 3, False, True, 2) == 7.0
+
+    def test_non_finish_codes_score_finishers_plus_1(self):
+        # 6 entered, 3 came to the start area, 2 finished -> DNF = 3.0
+        for code in ("DNF", "RET", "DSQ", "OCS", "UFD", "DNS"):
+            assert server.result_points(_res(code), 6, 3, False, True, 2) == 3.0, code
+
+    def test_finishers_takes_precedence_over_a5_3(self):
+        assert server.result_points(_res("DNF"), 6, 3, True, True, 2) == 3.0
+
+    def test_finished_without_position_falls_back_to_finishers_plus_1(self):
+        assert server.result_points(_res("FINISHED"), 6, 3, False, True, 2) == 3.0
+
+
+def _standings(use_a5_3, use_finishers=False):
     """Compute series standings with the DB layer faked out.
 
     4 boats entered; race: b1 1st, b2 2nd, b3 DNS (came to the start area),
-    b4 DNC (did not come). Start area = 3 boats.
+    b4 DNC (did not come). Start area = 3 boats, finishers = 2.
     """
     import asyncio
     import types
     series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
-              "use_a5_3": use_a5_3}
+              "use_a5_3": use_a5_3, "use_finishers": use_finishers}
     boats = [{"id": f"b{i}", "name": f"Boat {i}", "sail_no": str(i),
               "helm": "H", "class_id": "c1", "year": 2026} for i in range(1, 5)]
     race = {
@@ -220,6 +239,90 @@ class TestA53EndToEnd:
         # Start area = 3 (b1, b2, b3) -> DNS scores 4; DNC still 5
         assert by_id["b3"]["net"] == 4.0
         assert by_id["b4"]["net"] == 5.0
+
+
+class TestFinishersEndToEnd:
+    """The finishers+1 series flag must change how DNS (start-area codes)
+    score, while DNC keeps the series total."""
+
+    def test_dns_scores_finishers_plus_1_dnc_series_plus_1(self):
+        st = _standings(False, True)
+        assert st["use_finishers"] is True
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        # 2 boats finished -> DNS = 3; DNC = series (4) + 1 = 5
+        assert by_id["b3"]["net"] == 3.0
+        assert by_id["b4"]["net"] == 5.0
+
+
+class TestFinishersLateSummerHandicap:
+    """Reproduces the Bough Beech Late Summer PM Handicap: 6 entries, 4 races,
+    1 discard. R9's DNF scores finishers + 1 (3.0) while DNC scores 7.0, and
+    the nett totals match the Sailwave file exactly."""
+
+    def _run(self):
+        import asyncio
+        import types
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 1,
+                  "use_a5_3": False, "use_finishers": True}
+        boats = [
+            {"id": "b1", "name": "21003", "sail_no": "21003", "helm": "Rory Moppett / Sarah Seddon",
+             "class_id": "c1", "year": 2026, "py": 1122, "boat_type": "2000"},
+            {"id": "b2", "name": "32083", "sail_no": "32083", "helm": "Richard Smith / Peter Wolstenholme",
+             "class_id": "c1", "year": 2026, "py": 1104, "boat_type": "SNIPE"},
+            {"id": "b3", "name": "9611", "sail_no": "9611", "helm": "Peter Wolstenholme / Matt Wolstenholme",
+             "class_id": "c1", "year": 2026, "py": 1104, "boat_type": "SNIPE"},
+            {"id": "b4", "name": "28541", "sail_no": "28541", "helm": "Matthew Wolstenholme / Eiichi Higuchi",
+             "class_id": "c1", "year": 2026, "py": 1104, "boat_type": "SNIPE"},
+            {"id": "b5", "name": "29408", "sail_no": "29408", "helm": "John Reed / Emma Reed",
+             "class_id": "c1", "year": 2026, "py": 1104, "boat_type": "SNIPE"},
+            {"id": "b6", "name": "434", "sail_no": "434", "helm": "Leigh Clark",
+             "class_id": "c1", "year": 2026, "py": 1112, "boat_type": "SOLUTION"},
+        ]
+
+        def fin(bid, pos=None, code="FINISHED"):
+            return {"boat_id": bid, "code": code, "position": pos,
+                    "finish_time": None, "penalty_points": 0}
+
+        dnc = lambda bid: fin(bid, code="DNC")  # noqa: E731
+        races = [
+            {"id": "r7", "series_id": "s1", "class_id": "c1", "year": 2026, "race_number": 7,
+             "date": "2026-07-19", "status": "published", "entries_count": 6,
+             "results": [fin("b1", 3), fin("b2", 2), fin("b4", 1), fin("b5", 4), fin("b6", 5), dnc("b3")]},
+            {"id": "r8", "series_id": "s1", "class_id": "c1", "year": 2026, "race_number": 8,
+             "date": "2026-07-19", "status": "published", "entries_count": 6,
+             "results": [dnc(b) for b in ("b1", "b2", "b3", "b4", "b5", "b6")]},
+            {"id": "r9", "series_id": "s1", "class_id": "c1", "year": 2026, "race_number": 9,
+             "date": "2026-07-26", "status": "published", "entries_count": 6,
+             "results": [fin("b3", 1), fin("b1", 2), fin("b2", code="DNF"),
+                          dnc("b4"), dnc("b5"), dnc("b6")]},
+            {"id": "r10", "series_id": "s1", "class_id": "c1", "year": 2026, "race_number": 10,
+             "date": "2026-07-26", "status": "published", "entries_count": 6,
+             "results": [fin("b3", 1), fin("b1", 2), fin("b2", 3), dnc("b4"), dnc("b5"), dnc("b6")]},
+        ]
+        server.db = types.SimpleNamespace(races=_Coll(races), boats=_Coll(boats))
+        st = asyncio.run(server.compute_series_standings(series))
+        return {r["boat_id"]: r for r in st["standings"]}
+
+    def test_nett_and_total_match_sailwave(self):
+        by_id = self._run()
+        assert by_id["b1"]["net"] == 7.0 and by_id["b1"]["total"] == 14.0
+        assert by_id["b2"]["net"] == 8.0 and by_id["b2"]["total"] == 15.0
+        assert by_id["b3"]["net"] == 9.0 and by_id["b3"]["total"] == 16.0
+        assert by_id["b4"]["net"] == 15.0 and by_id["b4"]["total"] == 22.0
+        assert by_id["b5"]["net"] == 18.0 and by_id["b5"]["total"] == 25.0
+        assert by_id["b6"]["net"] == 19.0 and by_id["b6"]["total"] == 26.0
+
+    def test_ranking_matches_sailwave(self):
+        by_id = self._run()
+        order = [r["boat_id"] for r in sorted(by_id.values(), key=lambda r: r["rank"])]
+        assert order == ["b1", "b2", "b3", "b4", "b5", "b6"]
+
+    def test_r9_dnf_scored_finishers_plus_1(self):
+        by_id = self._run()
+        # R9 has 2 finishers -> DNF = 3.0; the discard (7.0 DNC from R8) is dropped
+        assert by_id["b2"]["scores"][2]["points"] == 3.0
+        assert by_id["b2"]["scores"][2]["code"] == "DNF"
+        assert by_id["b2"]["scores"][1]["discarded"] is True
 
 
 # ---------------------------------------------------------------------------

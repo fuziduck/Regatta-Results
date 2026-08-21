@@ -126,6 +126,7 @@ export default function Login() {
             </Button>
           </form>
         </div>
+        <p className="mt-6 text-center text-sm text-white/80">SailScore — Connecting sailing, one club at a time.</p>
       </div>
     </div>
   );

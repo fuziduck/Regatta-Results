@@ -337,7 +337,9 @@ export default function Landing() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        {club.name} · Scored under the RRS Low Point System · {year}
+        <div className="font-heading uppercase tracking-tight">SailScore</div>
+        <p className="mt-1">Connecting sailing, one club at a time.</p>
+        <p className="mt-2 text-xs">{club.name} · Scored under the RRS Low Point System · {year}</p>
       </footer>
     </div>
   );
