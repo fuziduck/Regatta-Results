@@ -181,9 +181,10 @@ class ClubInput(BaseModel):
 class ClassInput(BaseModel):
     name: str
     default_start_time: str = "10:30"
-    # Scoring system for the class: "one_design" (finish order) or "irc"
-    # (corrected time = elapsed x TCC, rounded per IRC Rule 12.2).
-    scoring_mode: Literal["one_design", "irc"] = "one_design"
+    # Scoring system for the class: "one_design" (finish order), "irc"
+    # (corrected = elapsed x TCC, per IRC Rule 12.2) or "py" (Portsmouth
+    # Yardstick: corrected = elapsed x 1000 / PY).
+    scoring_mode: Literal["one_design", "irc", "py"] = "one_design"
     # Required when a webmaster creates a class (officer/admin default to
     # their own club).
     club_id: Optional[str] = None
@@ -199,14 +200,27 @@ class BoatInput(BaseModel):
     # IRC Time Correction Coefficient (rating certificate); None for
     # one-design classes. Corrected time = elapsed x TCC.
     tcc: Optional[float] = None
+    # RYA Portsmouth Yardstick number (e.g. 1013); None for one-design
+    # classes. Corrected time = elapsed x 1000 / PY. A boat may carry both
+    # TCC and PY and the class's scoring mode decides which is used.
+    py: Optional[float] = None
     # Boat make/model (used mainly for the cruiser fleet, e.g. "Bavaria 34").
     boat_type: Optional[str] = None
+    # Home club label shown on results (defaults to the club that set up the
+    # fleet; free text so visiting boats from other clubs can be named).
+    home_club: Optional[str] = ""
 
 
 class SeriesInput(BaseModel):
     name: str
     class_id: str
     year: int
+    # Scoring system for THIS series: "one_design" (finish order), "irc"
+    # (corrected = elapsed x TCC) or "py" (Portsmouth: corrected =
+    # elapsed x 1000 / PY). The choice lives on the series, not the class or
+    # boat, so a fleet can race IRC one series and PY the next. Races without
+    # a series (legacy) fall back to the class's legacy scoring_mode.
+    scoring_mode: Literal["one_design", "irc", "py"] = "one_design"
     discards: int = 0
     included_in_overall: bool = True
     order: int = 0
@@ -385,9 +399,14 @@ async def clubs_directory(year: Optional[int] = None):
                 )[:3]
                 bids = [x["boat_id"] for x in finished]
                 boats = {b["id"]: b for b in await db.boats.find({"id": {"$in": bids}}, {"_id": 0}).to_list(50)}
+                mode = None
+                if r.get("series_id"):
+                    ser = await db.series.find_one({"id": r["series_id"]}, {"_id": 0, "scoring_mode": 1})
+                    mode = (ser or {}).get("scoring_mode")
                 latest = {
                     "race_number": r.get("race_number"),
                     "date": r.get("date"),
+                    "scoring_mode": mode or c.get("scoring_mode") or "one_design",
                     "top3": [{"position": x["position"],
                                "boat": boats.get(x["boat_id"], {}).get("name", "?"),
                                "sail_no": boats.get(x["boat_id"], {}).get("sail_no", "")}
@@ -788,10 +807,9 @@ async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(requ
             r["code"] = "DNS"
             r["finish_time"] = None
             r["position"] = None
-    # re-sequence remaining finished positions by finish_time
-    finished = sorted([r for r in results if r["code"] == "FINISHED"], key=lambda x: x["finish_time"] or "")
-    for i, r in enumerate(finished):
-        r["position"] = i + 1
+    # Re-sequence the remaining finishers per the class scoring mode (finish
+    # time for one-design, corrected time for IRC/PY handicap classes).
+    await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
@@ -976,6 +994,16 @@ def _corrected_time_sec(finish_time, start_time, tcc):
     return round_half_up(el * tcc)
 
 
+def _py_corrected_sec(finish_time, start_time, py):
+    """Portsmouth Yardstick: corrected time = elapsed x 1000 / PY, rounded to
+    the nearest second with 0.5 seconds rounding up (same convention as IRC).
+    None if not computable."""
+    el = _elapsed_seconds(finish_time, start_time)
+    if el is None or not py:
+        return None
+    return round_half_up(el * 1000.0 / py)
+
+
 def _race_start_time(race, cls=None):
     """Best known start instant for a race: the start gun (actual_start), else
     the scheduled class start on the race date. None if neither resolves."""
@@ -1006,24 +1034,28 @@ async def _resolve_race_start(race):
     return _race_start_time(race, cls)
 
 
-def _resequence_finished(results, scoring_mode="one_design", start_time=None, boat_tccs=None):
+def _resequence_finished(results, scoring_mode="one_design", start_time=None, boat_ratings=None):
     """Assign finishing places 1..n to finished boats.
 
     one_design: by recorded finish time.
-    irc: by corrected time (elapsed x TCC, rounded per IRC Rule 12.2); boats
-    with equal corrected time share a place, and RRS A7 later splits the points
-    of the tied places and the place immediately below. Boats whose corrected
-    time cannot be computed (no TCC / no start time) fall back to finish time
-    and rank after the computable boats.
+    irc: by corrected time (elapsed x TCC, rounded per IRC Rule 12.2).
+    py: by corrected time (elapsed x 1000 / PY, Portsmouth Yardstick).
+    Handicap modes: boats with equal corrected time share a place, and RRS A7
+    later splits the points of the tied places and the place immediately
+    below. Boats whose corrected time cannot be computed (no rating / no start
+    time) fall back to finish time and rank after the computable boats.
     """
     finished = [r for r in results if r.get("code") == "FINISHED"]
     if not finished:
         return
-    if scoring_mode == "irc" and start_time:
-        tccs = boat_tccs or {}
+    if scoring_mode in ("irc", "py") and start_time:
+        ratings = boat_ratings or {}
 
         def ct(r):
-            return _corrected_time_sec(r.get("finish_time"), start_time, tccs.get(r.get("boat_id")))
+            bid = r.get("boat_id")
+            if scoring_mode == "py":
+                return _py_corrected_sec(r.get("finish_time"), start_time, ratings.get(bid))
+            return _corrected_time_sec(r.get("finish_time"), start_time, ratings.get(bid))
 
         pairs = [(r, ct(r)) for r in finished]
         pairs.sort(key=lambda rc: (rc[1] is None,
@@ -1052,16 +1084,32 @@ def _resequence_finished(results, scoring_mode="one_design", start_time=None, bo
             r["position"] = i + 1
 
 
+async def _race_scoring_mode(race, cls=None):
+    """Scoring mode for a race: the mode set on its series (the source of
+    truth), falling back to the class's legacy mode for races without a
+    series."""
+    if race.get("series_id"):
+        ser = await db.series.find_one({"id": race["series_id"]}, {"_id": 0, "scoring_mode": 1})
+        mode = (ser or {}).get("scoring_mode")
+        if mode:
+            return mode
+    cls = cls if cls is not None else await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
+    return cls.get("scoring_mode") or "one_design"
+
+
 async def _resequence_race(race):
-    """Re-sequence a race's finished boats per its class scoring mode. Fetches
-    the class (scoring mode + scheduled start) and boats (TCCs) when IRC."""
+    """Re-sequence a race's finished boats per the race's series scoring mode
+    (legacy races fall back to the class mode). Fetches the class (scheduled
+    start) and boats (TCC or PY ratings) when the series is handicap-scored."""
     cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
-    if cls.get("scoring_mode") != "irc":
+    mode = await _race_scoring_mode(race, cls)
+    if mode not in ("irc", "py"):
         _resequence_finished(race.get("results", []))
         return
     boats = await db.boats.find({"class_id": race.get("class_id")}, {"_id": 0}).to_list(2000)
-    tccs = {b["id"]: b.get("tcc") for b in boats}
-    _resequence_finished(race.get("results", []), "irc", _race_start_time(race, cls), tccs)
+    key = "tcc" if mode == "irc" else "py"
+    ratings = {b["id"]: b.get(key) for b in boats}
+    _resequence_finished(race.get("results", []), mode, _race_start_time(race, cls), ratings)
 
 
 def _a8_tiebreak(entries, drop):
@@ -1076,6 +1124,23 @@ def _a8_tiebreak(entries, drop):
     a8_1 = sorted([e["points"] for i, e in enumerate(entries) if i not in drop])
     a8_2 = [e["points"] for e in reversed(entries)]
     return a8_1, a8_2
+
+
+async def _club_name_of_class(class_id):
+    """Name of the club that owns a class (for defaulting a boat's home club).
+    Defensive about missing collections so pure scoring unit tests with a
+    stubbed DB still work."""
+    cls_col = getattr(db, "classes", None)
+    if cls_col is None:
+        return ""
+    cls = await cls_col.find_one({"id": class_id}, {"_id": 0, "club_id": 1})
+    if not cls:
+        return ""
+    club_col = getattr(db, "clubs", None)
+    if club_col is None:
+        return ""
+    club = await club_col.find_one({"id": cls.get("club_id")}, {"_id": 0, "name": 1})
+    return (club or {}).get("name", "")
 
 
 async def _series_scores(series):
@@ -1125,6 +1190,7 @@ async def _series_scores(series):
 
 async def compute_series_standings(series):
     agg, boat_map, race_meta, use_a5_3 = await _series_scores(series)
+    club_name = await _club_name_of_class(series.get("class_id"))
     race_count = len(race_meta)
     # Effective discards never remove every race: at least one always counts.
     # Rule A2.1 also discards the earliest of equal worst scores (stable sort).
@@ -1150,6 +1216,7 @@ async def compute_series_standings(series):
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
+            "home_club": b.get("home_club") or club_name,
             "net": round(net, 1),
             "total": round(total, 1),
             "scores": scores,
@@ -1187,6 +1254,7 @@ async def overall_standings(class_id: str, year: int, request: Request, club_id:
 
     all_series = await db.series.find({"class_id": class_id, "year": year, "included_in_overall": True}, {"_id": 0}).to_list(1000)
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
+    club_name = await _club_name_of_class(class_id)
     boat_map = {b["id"]: b for b in boats}
     totals = {}
     per_series_nets = {}
@@ -1213,6 +1281,7 @@ async def overall_standings(class_id: str, year: int, request: Request, club_id:
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
+            "home_club": b.get("home_club") or club_name,
             "net": round(total, 1),
             "per_series": {k: round(v, 1) for k, v in per_series_nets[bid].items()},
             "_tb": (a8_1, a8_2),

@@ -63,13 +63,15 @@ export function elapsedSecondsOf(finishTime, race) {
   return Number.isFinite(e) && e >= 0 ? Math.round(e / 1000) : null;
 }
 
-// Corrected time in seconds per IRC Rule 12.2 (elapsed x TCC, rounded to the
-// nearest second, 0.5 up) — mirrors the backend _corrected_time_sec. Returns
-// null when the elapsed time or TCC is missing.
-export function correctedSecondsOf(finishTime, race, tcc) {
+// Corrected time in seconds for a handicap class — mirrors the backend
+// _corrected_time_sec / _py_corrected_sec. "irc": elapsed x TCC; "py"
+// (Portsmouth Yardstick): elapsed x 1000 / PY. Both rounded to the nearest
+// second, 0.5 up. Returns null when the elapsed time or rating is missing.
+export function correctedSecondsOf(finishTime, race, rating, mode = "irc") {
   const el = elapsedSecondsOf(finishTime, race);
-  if (el == null || !tcc) return null;
-  return Math.round(el * tcc);
+  if (el == null || !rating) return null;
+  if (mode === "py") return Math.round((el * 1000) / rating);
+  return Math.round(el * rating);
 }
 
 // Format whole seconds as H:MM:SS (or MM:SS under an hour).

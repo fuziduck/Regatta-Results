@@ -30,19 +30,14 @@ function NotificationBanner({ items }) {
   );
 }
 
-function PublishedRaces({ seriesId, classId, clubId }) {
+function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" }) {
   const [races, setRaces] = useState([]);
   const [boats, setBoats] = useState({});
-  const [scoringMode, setScoringMode] = useState("one_design");
 
   useEffect(() => {
     api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then(setRaces);
     api.getBoats({ class_id: classId, club_id: clubId }).then((bs) => {
       const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m);
-    });
-    api.getClasses({ club_id: clubId }).then((cs) => {
-      const c = (cs || []).find((x) => x.id === classId);
-      if (c) setScoringMode(c.scoring_mode || "one_design");
     });
   }, [seriesId, classId, clubId]);
 
@@ -74,8 +69,8 @@ function PublishedRaces({ seriesId, classId, clubId }) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-muted-foreground border-b">
-                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Helm</th><th className="text-center">Code</th>
-                      {scoringMode === "irc" && <><th>Type</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
+                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
+                      {scoringMode !== "one_design" && <><th>{scoringMode === "py" ? "PY" : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
                     </tr>
                   </thead>
                   <tbody>
@@ -85,12 +80,13 @@ function PublishedRaces({ seriesId, classId, clubId }) {
                         <tr key={r.boat_id} className="border-b last:border-0">
                           <td className="py-2 font-heading text-base">{r.code === "FINISHED" ? r.position : "–"}</td>
                           <td><span className="font-semibold">{b.name}</span> <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
+                          <td className="text-muted-foreground whitespace-nowrap">{b.home_club || "—"}</td>
                           <td className="text-muted-foreground">{b.helm}</td>
                           <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[r.code] || ""} text-[10px]`}>{r.code}</Badge></td>
-                          {scoringMode === "irc" && <>
-                            <td className="text-muted-foreground">{b.boat_type || "—"}</td>
+                          {scoringMode !== "one_design" && <>
+                            <td className="text-muted-foreground">{scoringMode === "py" ? (b.py ? Math.round(b.py) : "—") : (b.boat_type || "—")}</td>
                             <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(elapsedSecondsOf(r.finish_time, race)) : "—"}</td>
-                            <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(r.finish_time, race, b.tcc)) : "—"}</td>
+                            <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(r.finish_time, race, scoringMode === "py" ? b.py : b.tcc, scoringMode)) : "—"}</td>
                           </>}
                         </tr>
                       );
@@ -162,7 +158,7 @@ function ClassResults({ classId, clubId, year }) {
         <TabsContent key={s.id} value={s.id} className="pt-5">
           <h3 className="text-xl uppercase tracking-tight mb-3">{s.name} Series</h3>
           <SeriesStandingsTable data={seriesData[s.id]} />
-          {tab === s.id && <PublishedRaces seriesId={s.id} classId={classId} clubId={clubId} />}
+          {tab === s.id && <PublishedRaces seriesId={s.id} classId={classId} clubId={clubId} scoringMode={s.scoring_mode || "one_design"} />}
         </TabsContent>
       ))}
     </Tabs>

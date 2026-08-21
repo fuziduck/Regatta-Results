@@ -258,14 +258,19 @@ class TestPublic:
 class TestAdminCRUD:
     def test_boat_crud(self, test_class, club_admin_token):
         payload = {"name": "TEST_Boat", "sail_no": "TEST99", "class_id": test_class["id"],
-                   "helm": "TEST helm", "year": YEAR, "active": True}
+                   "helm": "TEST helm", "year": YEAR, "active": True, "home_club": "TEST Home Club",
+                   "tcc": 1.015, "py": 1013}
         r = requests.post(f"{API}/boats", json=payload, headers=h(club_admin_token))
         assert r.status_code == 200, r.text
+        assert r.json()["home_club"] == "TEST Home Club"
+        assert r.json()["tcc"] == 1.015 and r.json()["py"] == 1013
         bid = r.json()["id"]
         payload["name"] = "TEST_Boat2"
+        payload["home_club"] = "TEST Home Club 2"
         r = requests.put(f"{API}/boats/{bid}", json=payload, headers=h(club_admin_token))
         assert r.status_code == 200
         assert r.json()["name"] == "TEST_Boat2"
+        assert r.json()["home_club"] == "TEST Home Club 2"
         r = requests.delete(f"{API}/boats/{bid}", headers=h(club_admin_token))
         assert r.status_code == 200
 
@@ -313,7 +318,7 @@ class TestRaceFlow:
         for i, (name, sail) in enumerate([("Alpha", "A1"), ("Bravo", "B2"), ("Charlie", "C3")], start=1):
             r = requests.post(f"{API}/boats", json={
                 "name": name, "sail_no": sail, "class_id": cls["id"],
-                "helm": f"Helm {i}", "year": YEAR, "active": True}, headers=h(club_admin_token))
+                "helm": f"Helm {i}", "year": YEAR, "active": True, "home_club": f"{name} SC"}, headers=h(club_admin_token))
             assert r.status_code == 200, r.text
             boats.append(r.json())
         return cls, series, boats
@@ -387,6 +392,8 @@ class TestRaceFlow:
         st = requests.get(f"{API}/standings/series/{sid}").json()
         assert st["race_count"] == 1
         assert st["standings"][0]["boat_id"] == b[1]
+        # home club label flows into standings (Bravo SC won this race)
+        assert st["standings"][0]["home_club"] == "Bravo SC"
 
         # Overall: only the included series appears
         r = requests.get(f"{API}/standings/overall", params={"class_id": cls["id"], "year": YEAR})
@@ -430,3 +437,61 @@ class TestScoring:
         assert all(row["total"] == entries + 1 for row in non_sel)
 
         requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+
+
+# ---------- Scoring mode lives on the series, not the class/boat ----------
+class TestSeriesScoringMode:
+    """The one_design/IRC/PY choice is made per series: two series on the same
+    class and boats can score the identical race differently."""
+
+    def test_series_mode_drives_finish_order(self, club_officer_token, club_admin_token):
+        import datetime
+        r = requests.post(f"{API}/classes", json={"name": "Mode Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200
+        cls = r.json()
+        boats = []
+        # PY ratings chosen so corrected order differs from finish order:
+        # finishes M1(1800s), M3(1900s), M2(2000s); corrected M2 1667, M3 1900, M1 2000
+        for i, (nm, sl, py) in enumerate([("M One", "M1", 900), ("M Two", "M2", 1200), ("M Three", "M3", 1000)]):
+            r = requests.post(f"{API}/boats", json={
+                "name": nm, "sail_no": sl, "class_id": cls["id"],
+                "helm": f"H{i}", "year": YEAR, "active": True, "py": py}, headers=h(club_admin_token))
+            assert r.status_code == 200
+            boats.append(r.json())
+
+        def make_series(name, mode):
+            r = requests.post(f"{API}/series", json={
+                "name": name, "class_id": cls["id"], "year": YEAR,
+                "scoring_mode": mode, "discards": 0, "included_in_overall": False,
+                "order": 10}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            return r.json()
+
+        one_design = make_series("Mode One-Design", "one_design")
+        py = make_series("Mode PY", "py")
+        assert py["scoring_mode"] == "py"
+
+        def race_positions(series):
+            rid = requests.post(f"{API}/races", json={
+                "date": f"{YEAR}-08-21", "class_id": cls["id"], "series_id": series["id"],
+                "race_number": 1, "start_time": "10:30"}, headers=h(club_officer_token)).json()["id"]
+            requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": [b["id"] for b in boats]},
+                          headers=h(club_officer_token))
+            base = datetime.datetime(YEAR, 8, 21, 10, 30, 0)
+            for b, secs in [(boats[0], 1800), (boats[2], 1900), (boats[1], 2000)]:
+                ft = (base + datetime.timedelta(seconds=secs)).isoformat()
+                r = requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b["id"], "finish_time": ft},
+                                  headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+            race = requests.get(f"{API}/races/{rid}").json()
+            pos = {next(b["sail_no"] for b in boats if b["id"] == x["boat_id"]): x["position"]
+                   for x in race["results"] if x["code"] == "FINISHED"}
+            requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            return pos
+
+        # one-design: pure finish order M1, M3, M2
+        assert race_positions(one_design) == {"M1": 1, "M3": 2, "M2": 3}
+        # PY: corrected order (M2 1667 < M3 1900 < M1 2000) — the last boat over
+        # the line wins because it is rated much faster
+        assert race_positions(py) == {"M2": 1, "M3": 2, "M1": 3}

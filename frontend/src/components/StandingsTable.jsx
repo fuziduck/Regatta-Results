@@ -40,6 +40,7 @@ export function SeriesStandingsTable({ data }) {
           <TableRow className="bg-ocean text-white hover:bg-ocean">
             <TableHead className="text-white w-12">#</TableHead>
             <TableHead className="text-white sticky left-0 bg-ocean">Boat</TableHead>
+            <TableHead className="text-white">Club</TableHead>
             {cols.map((r, i) => (
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
                 <div>R{r.race_number}</div>
@@ -64,6 +65,7 @@ export function SeriesStandingsTable({ data }) {
                 <div className="font-semibold leading-tight whitespace-nowrap">{row.boat_name}</div>
                 <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
               </TableCell>
+              <TableCell className="text-muted-foreground whitespace-nowrap">{row.home_club || "—"}</TableCell>
               {cols.map((_, j) => {
                 const s = (row.scores || [])[j];
                 if (!s) return <TableCell key={j} className="text-center text-muted-foreground/30">–</TableCell>;
@@ -99,6 +101,7 @@ export function OverallStandingsTable({ data }) {
           <TableRow className="bg-ocean-dark text-white hover:bg-ocean-dark">
             <TableHead className="text-white w-12">#</TableHead>
             <TableHead className="text-white">Boat</TableHead>
+            <TableHead className="text-white">Club</TableHead>
             {data.series_names.map((s) => (
               <TableHead key={s} className="text-white text-center hidden md:table-cell whitespace-nowrap">{s}</TableHead>
             ))}
@@ -117,6 +120,7 @@ export function OverallStandingsTable({ data }) {
                 <div className="font-semibold leading-tight">{row.boat_name}</div>
                 <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
               </TableCell>
+              <TableCell className="text-muted-foreground whitespace-nowrap">{row.home_club || "—"}</TableCell>
               {data.series_names.map((s) => (
                 <TableCell key={s} className="text-center font-mono text-sm text-muted-foreground hidden md:table-cell">
                   {row.per_series[s] ?? "—"}

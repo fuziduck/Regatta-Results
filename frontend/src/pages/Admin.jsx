@@ -53,14 +53,14 @@ function TopBar({ clubName, onSwitchClub }) {
 
 /* ---------------- Classes ---------------- */
 function ClassesTab({ classes, reload, clubId }) {
-  const [form, setForm] = useState({ name: "", default_start_time: "10:30", scoring_mode: "one_design" });
+  const [form, setForm] = useState({ name: "", default_start_time: "10:30" });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
   const save = async () => {
     if (!form.name) return toast.error("Name required");
     if (editing) await api.updateClass(editing, form); else await api.createClass({ ...form, club_id: clubId });
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); reload();
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30" }); reload();
   };
   const del = async (id) => { await api.deleteClass(id); toast.success("Deleted"); reload(); };
 
@@ -68,37 +68,26 @@ function ClassesTab({ classes, reload, clubId }) {
     <div>
       <div className="flex justify-between items-center mb-4">
         <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); } }}>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30" }); } }}>
           <DialogTrigger asChild><Button data-testid="add-class-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add class</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} class</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Class name</Label><Input data-testid="class-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dragon" /></div>
               <div className="space-y-1.5"><Label>Default start time</Label><Input type="time" data-testid="class-time-input" value={form.default_start_time} onChange={(e) => setForm({ ...form, default_start_time: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Scoring system</Label>
-                <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
-                  <SelectTrigger data-testid="class-scoring-input"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="one_design">One-design (finish order)</SelectItem>
-                    <SelectItem value="irc">IRC (corrected time)</SelectItem>
-                  </SelectContent>
-                </Select>
-                {form.scoring_mode === "irc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × TCC, rounded to nearest second); boats need a TCC.</p>}
-              </div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-class-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Scoring</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{classes.map((c) => (
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
-              <TableCell>{c.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
@@ -109,13 +98,13 @@ function ClassesTab({ classes, reload, clubId }) {
 }
 
 /* ---------------- Boats ---------------- */
-function BoatsTab({ classes, clubId }) {
+function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   const [classFilter, setClassFilter] = useState("all");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
   const [boats, setBoats] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", sail_no: "", class_id: "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", boat_type: "" };
+  const blank = { name: "", sail_no: "", class_id: "", home_club: clubName || "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", py: "", boat_type: "" };
   const [form, setForm] = useState(blank);
 
   const load = useCallback(() => {
@@ -127,12 +116,24 @@ function BoatsTab({ classes, clubId }) {
 
   const save = async () => {
     if (!form.name || !form.sail_no || !form.class_id || !form.helm) return toast.error("All fields required");
-    const payload = { ...form, year: Number(form.year), tcc: form.tcc === "" ? null : Number(form.tcc) };
+    const payload = {
+      name: form.name, sail_no: form.sail_no, class_id: form.class_id, helm: form.helm,
+      year: Number(form.year), active: form.active,
+      tcc: form.tcc === "" ? null : Number(form.tcc),
+      py: form.py === "" ? null : Number(form.py), boat_type: form.boat_type,
+      home_club: (form.home_club || "").trim(),
+    };
     if (editing) await api.updateBoat(editing, payload); else await api.createBoat(payload);
     toast.success("Saved"); setOpen(false); setEditing(null); setForm(blank); load();
   };
   const del = async (id) => { await api.deleteBoat(id); toast.success("Deleted"); load(); };
   const cname = (id) => classes.find((c) => c.id === id)?.name || "—";
+  // Fallback for boats created before home_club existed: derive from the class's club.
+  const clubOf = (b) => {
+    const cl = classes.find((c) => c.id === b.class_id);
+    return clubs.find((c) => c.id === cl?.club_id)?.name || "—";
+  };
+  const showClub = (b) => b.home_club || clubOf(b);
 
   return (
     <div>
@@ -163,10 +164,15 @@ function BoatsTab({ classes, clubId }) {
                   <SelectTrigger data-testid="boat-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
+              <div className="space-y-1.5 col-span-2"><Label>Home club</Label>
+                <Input data-testid="boat-home-club-input" value={form.home_club} onChange={(e) => setForm({ ...form, home_club: e.target.value })} placeholder={clubName || "Club this boat sails for"} list="home-club-options" />
+                <datalist id="home-club-options">{clubs.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+                <p className="text-xs text-muted-foreground">Defaults to {clubName || "your club"} — shown on published results. Type any name, e.g. a visiting boat's home club.</p></div>
               <div className="space-y-1.5"><Label>Helm</Label><Input data-testid="boat-helm-input" value={form.helm} onChange={(e) => setForm({ ...form, helm: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Year</Label><Input type="number" data-testid="boat-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Boat type</Label><Input data-testid="boat-type-input" value={form.boat_type} onChange={(e) => setForm({ ...form, boat_type: e.target.value })} placeholder="e.g. Bavaria 34 — cruisers only" /></div>
-              <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank for one-design" /></div>
+              <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank if not IRC-rated" /></div>
+              <div className="space-y-1.5"><Label>PY (Portsmouth)</Label><Input type="number" step="1" min="0" data-testid="boat-py-input" value={form.py} onChange={(e) => setForm({ ...form, py: e.target.value })} placeholder="e.g. 1013 — blank if not PY-rated" /></div>
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-boat-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
@@ -174,22 +180,24 @@ function BoatsTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Helm</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Club</TableHead><TableHead>Helm</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>PY</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{boats.map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
               <TableCell className="font-semibold">{b.name}</TableCell>
               <TableCell>{cname(b.class_id)}</TableCell>
+              <TableCell className="text-muted-foreground">{showClub(b)}</TableCell>
               <TableCell>{b.helm}</TableCell>
               <TableCell className="text-muted-foreground">{b.boat_type || "—"}</TableCell>
               <TableCell className="font-mono">{b.tcc ? b.tcc.toFixed(3) : "—"}</TableCell>
+              <TableCell className="font-mono">{b.py ? Math.round(b.py) : "—"}</TableCell>
               <TableCell>{b.active ? <Badge className="bg-emerald-100 text-emerald-800">Yes</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "", boat_type: b.boat_type ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, home_club: b.home_club || clubName || "", helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "", py: b.py ?? "", boat_type: b.boat_type ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!boats.length && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
+            {!boats.length && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>
@@ -207,7 +215,7 @@ function SeriesTab({ classes, clubId }) {
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", class_id: "", year: CURRENT_YEAR, discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false };
+  const blank = { name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false };
   const [form, setForm] = useState(blank);
   const [schedStart, setSchedStart] = useState("2026-08-08");
 
@@ -256,7 +264,7 @@ function SeriesTab({ classes, clubId }) {
           </Select>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank, class_id: classFilter }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank, class_id: classFilter, order: series.length + 1 })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
+          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank, class_id: classFilter, order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} series</DialogTitle></DialogHeader>
             <div className="space-y-3">
@@ -266,6 +274,18 @@ function SeriesTab({ classes, clubId }) {
                   <SelectTrigger data-testid="series-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
+              <div className="space-y-1.5"><Label>Scoring system</Label>
+                <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
+                  <SelectTrigger data-testid="series-scoring-input"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="one_design">One-design (finish order)</SelectItem>
+                    <SelectItem value="irc">IRC (corrected time)</SelectItem>
+                    <SelectItem value="py">PY (Portsmouth Yardstick)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {form.scoring_mode === "irc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × TCC); boats need a TCC.</p>}
+                {form.scoring_mode === "py" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ PY); boats need a PY number.</p>}
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5"><Label>Year</Label><Input type="number" min="2000" max="2100" data-testid="series-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
                 <div className="space-y-1.5"><Label>Discards</Label><Input type="number" min="0" data-testid="series-discards-input" value={form.discards} onChange={(e) => setForm({ ...form, discards: e.target.value })} /></div>
@@ -300,22 +320,23 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
+              <TableCell>{s.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : s.scoring_mode === "py" ? <Badge className="bg-emerald-100 text-emerald-800">PY</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
               <TableCell className="font-mono">{s.discards}</TableCell>
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
               <TableCell><Switch checked={!!s.use_a5_3} onCheckedChange={(v) => quickSet(s, { use_a5_3: v })} data-testid={`a53-toggle-${s.name}`} /></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!series.length && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>
@@ -524,6 +545,10 @@ export default function Admin() {
 
   const switchClub = isWebmaster ? () => setSearchParams({}) : null;
 
+  // Club options for the boat form: the webmaster sees every club (override
+  // allowed); club staff only ever see their own club.
+  const boatClubs = isWebmaster ? clubs : (clubId && clubName ? [{ id: clubId, name: clubName }] : []);
+
   if (isWebmaster && !clubParam) {
     return (
       <div className="min-h-screen bg-background">
@@ -551,7 +576,7 @@ export default function Admin() {
             <TabsTrigger value="historic" data-testid="tab-historic">Historic Results</TabsTrigger>
             {isWebmaster && <TabsTrigger value="clubs" data-testid="tab-clubs">Clubs</TabsTrigger>}
           </TabsList>
-          <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubId={clubId} /></TabsContent>
+          <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>

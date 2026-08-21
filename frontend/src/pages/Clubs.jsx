@@ -153,7 +153,8 @@ export default function Clubs() {
                     <div key={c.id} className="rounded-xl bg-muted/40 border border-border/60 p-3">
                       <div className="flex items-center justify-between">
                         <div className="font-heading uppercase tracking-tight text-sm">{c.name}</div>
-                        {c.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50">IRC</Badge>}
+                        {c.latest?.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50">IRC</Badge>}
+                        {c.latest?.scoring_mode === "py" && <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-300 bg-emerald-50">PY</Badge>}
                       </div>
                       {c.latest ? (
                         <LatestResults latest={c.latest} />
