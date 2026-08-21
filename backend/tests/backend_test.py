@@ -1,80 +1,186 @@
-"""Backend API tests for sailing club racing app."""
-import os
-import pytest
+"""Backend API tests: auth, webmaster club management, club isolation,
+admin CRUD, the full race lifecycle, and RRS scoring — all inside a
+dedicated test club (see conftest.py) so the suite never depends on or
+mutates a real club's data."""
+
 import requests
 from datetime import datetime, timezone
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://fleet-timer-1.preview.emergentagent.com").rstrip("/")
-API = f"{BASE}/api"
+from conftest import API, WEBMASTER_PIN, TEST_OFFICER_PIN, TEST_ADMIN_PIN, login, h
+
 YEAR = datetime.now(timezone.utc).year
 
 
-@pytest.fixture(scope="session")
-def officer_token():
-    r = requests.post(f"{API}/auth/login", json={"role": "officer", "pin": "sail2026"})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
+def _all_clubs():
+    return requests.get(f"{API}/clubs").json()
 
 
-@pytest.fixture(scope="session")
-def admin_token():
-    r = requests.post(f"{API}/auth/login", json={"role": "admin", "pin": "admin2026"})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
-
-
-def h(tok):
-    return {"Authorization": f"Bearer {tok}"}
+def _other_club_id(test_club):
+    return next(c["id"] for c in _all_clubs() if c["id"] != test_club["id"])
 
 
 # ---------- Auth ----------
 class TestAuth:
-    def test_officer_login(self):
-        r = requests.post(f"{API}/auth/login", json={"role": "officer", "pin": "sail2026"})
+    def test_webmaster_login(self):
+        r = requests.post(f"{API}/auth/login", json={"role": "webmaster", "pin": WEBMASTER_PIN})
         assert r.status_code == 200
-        assert r.json()["role"] == "officer"
-        assert isinstance(r.json()["token"], str)
+        body = r.json()
+        assert body["role"] == "webmaster"
+        assert body["club_id"] is None
+        assert isinstance(body["token"], str)
 
-    def test_admin_login(self):
-        r = requests.post(f"{API}/auth/login", json={"role": "admin", "pin": "admin2026"})
-        assert r.status_code == 200
-        assert r.json()["role"] == "admin"
-
-    def test_bad_pin(self):
-        r = requests.post(f"{API}/auth/login", json={"role": "officer", "pin": "wrong"})
+    def test_webmaster_bad_pin(self):
+        r = requests.post(f"{API}/auth/login", json={"role": "webmaster", "pin": "wrong"})
         assert r.status_code == 401
 
-    def test_me(self, officer_token):
-        r = requests.get(f"{API}/auth/me", headers=h(officer_token))
+    def test_unknown_role(self):
+        r = requests.post(f"{API}/auth/login", json={"role": "crew", "pin": "x"})
+        assert r.status_code == 401
+
+    def test_club_login(self, test_club):
+        for role, pin in (("officer", TEST_OFFICER_PIN), ("admin", TEST_ADMIN_PIN)):
+            r = requests.post(f"{API}/auth/login", json={"role": role, "pin": pin, "club_id": test_club["id"]})
+            assert r.status_code == 200, r.text
+            assert r.json()["role"] == role
+            assert r.json()["club_id"] == test_club["id"]
+            assert r.json()["club_name"] == test_club["name"]
+
+    def test_club_login_wrong_pin(self, test_club):
+        r = requests.post(f"{API}/auth/login", json={"role": "officer", "pin": "nope", "club_id": test_club["id"]})
+        assert r.status_code == 401
+
+    def test_club_login_unknown_club(self):
+        r = requests.post(f"{API}/auth/login", json={
+            "role": "officer", "pin": TEST_OFFICER_PIN, "club_id": "00000000-0000-0000-0000-000000000000"})
+        assert r.status_code == 404
+
+    def test_me(self, club_officer_token, test_club):
+        r = requests.get(f"{API}/auth/me", headers=h(club_officer_token))
         assert r.status_code == 200
         assert r.json()["role"] == "officer"
+        assert r.json()["club_id"] == test_club["id"]
+        assert r.json()["club_name"] == test_club["name"]
 
     def test_no_auth_protected(self):
         r = requests.post(f"{API}/classes", json={"name": "x"})
         assert r.status_code == 401
 
-    def test_officer_cannot_admin(self, officer_token):
-        r = requests.post(f"{API}/classes", json={"name": "x"}, headers=h(officer_token))
+    def test_officer_cannot_admin(self, club_officer_token):
+        r = requests.post(f"{API}/classes", json={"name": "x"}, headers=h(club_officer_token))
         assert r.status_code == 403
+
+
+# ---------- Webmaster club management ----------
+class TestWebmaster:
+    def test_clubs_public_never_leaks_pins(self, test_club):
+        clubs = _all_clubs()
+        assert any(c["id"] == test_club["id"] for c in clubs)
+        for c in clubs:
+            assert "officer_pin" not in c and "admin_pin" not in c
+
+    def test_clubs_manage_webmaster_only(self, webmaster_token, club_admin_token, test_club):
+        r = requests.get(f"{API}/clubs/manage", headers=h(webmaster_token))
+        assert r.status_code == 200
+        mine = next(c for c in r.json() if c["id"] == test_club["id"])
+        assert mine["officer_pin"] == TEST_OFFICER_PIN
+        assert mine["admin_pin"] == TEST_ADMIN_PIN
+        # a club admin may not read the passcodes
+        r = requests.get(f"{API}/clubs/manage", headers=h(club_admin_token))
+        assert r.status_code == 403
+
+    def test_admin_cannot_create_update_delete_club(self, club_admin_token, test_club):
+        for method, url, body in (
+            ("POST", f"{API}/clubs", {"name": "Nope", "officer_pin": "1", "admin_pin": "2"}),
+            ("PUT", f"{API}/clubs/{test_club['id']}", {"name": "Nope", "color": "#000000", "officer_pin": "1", "admin_pin": "2"}),
+            ("DELETE", f"{API}/clubs/{test_club['id']}", None),
+        ):
+            r = requests.request(method, url, json=body, headers=h(club_admin_token))
+            assert r.status_code == 403, f"{method} {url} should be 403 for admin"
+
+    def test_webmaster_crud_club(self, webmaster_token):
+        r = requests.post(f"{API}/clubs", json={
+            "name": "Tmp Club", "color": "#111111", "officer_pin": "1111", "admin_pin": "2222"},
+            headers=h(webmaster_token))
+        assert r.status_code == 200, r.text
+        cid = r.json()["id"]
+        r = requests.put(f"{API}/clubs/{cid}", json={
+            "name": "Tmp Club 2", "color": "#222222", "officer_pin": "3333", "admin_pin": "4444"},
+            headers=h(webmaster_token))
+        assert r.status_code == 200
+        assert r.json()["name"] == "Tmp Club 2"
+        # PINs are only readable via /clubs/manage (webmaster-only), never on /clubs
+        manage = requests.get(f"{API}/clubs/manage", headers=h(webmaster_token)).json()
+        updated = next(c for c in manage if c["id"] == cid)
+        assert updated["officer_pin"] == "3333" and updated["admin_pin"] == "4444"
+        r = requests.delete(f"{API}/clubs/{cid}", headers=h(webmaster_token))
+        assert r.status_code == 200
+
+    def test_webmaster_has_admin_and_officer_access(self, webmaster_token, test_class):
+        # webmaster can mutate any club's data (admin-level boat create here)
+        r = requests.post(f"{API}/boats", json={
+            "name": "WM Boat", "sail_no": "WM1", "class_id": test_class["id"],
+            "helm": "WM", "year": YEAR, "active": True},
+            headers=h(webmaster_token))
+        assert r.status_code == 200, r.text
+        requests.delete(f"{API}/boats/{r.json()['id']}", headers=h(webmaster_token))
+
+
+# ---------- Club isolation ----------
+class TestIsolation:
+    def test_admin_scope_ignores_club_param(self, test_club, test_class, club_admin_token):
+        """An admin asking for another club's data via ?club_id gets only their own club."""
+        other = _other_club_id(test_club)
+        r = requests.get(f"{API}/classes", params={"club_id": other}, headers=h(club_admin_token))
+        assert r.status_code == 200
+        ids = {c["id"] for c in r.json()}
+        assert test_class["id"] in ids
+        # never any class belonging to another club
+        other_classes = requests.get(f"{API}/classes", params={"club_id": other}).json()
+        assert not any(c["id"] in ids for c in other_classes)
+
+    def test_officer_cannot_read_other_club_race(self, test_club, club_officer_token, other_club_with_data):
+        oc = other_club_with_data["classes"][0]
+        races = requests.get(f"{API}/races", params={"class_id": oc["id"]}).json()
+        assert races, "expected the other club to have races"
+        r = requests.get(f"{API}/races/{races[0]['id']}", headers=h(club_officer_token))
+        assert r.status_code == 404
+
+    def test_admin_cannot_create_class_in_other_club(self, club_admin_token, other_club_with_data):
+        other = other_club_with_data["id"]
+        r = requests.post(f"{API}/classes", json={"name": "Sneaky", "club_id": other}, headers=h(club_admin_token))
+        assert r.status_code == 403
+
+    def test_officer_cannot_mutate_other_club_series(self, test_club, club_officer_token, other_club_with_data):
+        oc = other_club_with_data["classes"][0]
+        series = requests.get(f"{API}/series", params={"class_id": oc["id"]}).json()
+        assert series
+        r = requests.delete(f"{API}/series/{series[0]['id']}", headers=h(club_officer_token))
+        assert r.status_code == 403
+
+    def test_standings_scoped_to_own_club(self, club_admin_token, other_club_with_data):
+        oc = other_club_with_data["classes"][0]
+        r = requests.get(f"{API}/standings/overall", params={"class_id": oc["id"], "year": YEAR},
+                         headers=h(club_admin_token))
+        assert r.status_code == 404  # other club's class looks like it doesn't exist
 
 
 # ---------- Public reads ----------
 class TestPublic:
-    def test_classes(self):
+    def test_classes(self, test_class):
         r = requests.get(f"{API}/classes")
         assert r.status_code == 200
         names = [c["name"] for c in r.json()]
-        assert "Dragon" in names and "Sonata" in names and "Wayfarer" in names
+        assert "Test Fleet" in names
 
-    def test_series(self):
-        r = requests.get(f"{API}/series")
+    def test_series(self, test_club, test_class):
+        r = requests.get(f"{API}/series", params={"class_id": test_class["id"]})
         assert r.status_code == 200
-        assert len(r.json()) >= 15
+        assert isinstance(r.json(), list)
 
     def test_boats(self):
         r = requests.get(f"{API}/boats")
         assert r.status_code == 200
-        assert len(r.json()) >= 10
+        assert len(r.json()) >= 1
 
     def test_rrs(self):
         r = requests.get(f"{API}/rrs-codes")
@@ -87,71 +193,105 @@ class TestPublic:
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
-
-# ---------- Admin CRUD ----------
-class TestAdminCRUD:
-    def test_boat_crud(self, admin_token):
-        classes = requests.get(f"{API}/classes").json()
-        cid = classes[0]["id"]
-        payload = {"name": "TEST_Boat", "sail_no": "TEST99", "class_id": cid, "helm": "TEST helm", "year": YEAR, "active": True}
-        r = requests.post(f"{API}/boats", json=payload, headers=h(admin_token))
+    def test_club_directory(self):
+        r = requests.get(f"{API}/clubs/directory")
         assert r.status_code == 200
+        clubs = r.json()
+        assert clubs
+        for c in clubs:
+            assert "officer_pin" not in c and "admin_pin" not in c
+
+    def test_club_directory_year_filter(self):
+        full = requests.get(f"{API}/clubs/directory").json()
+        ids = {c["id"] for c in full}
+        r = requests.get(f"{API}/clubs/directory", params={"year": YEAR})
+        assert r.status_code == 200
+        for c in r.json():
+            assert c["id"] in ids  # year-filtered directory is a subset
+            # clubs are omitted entirely when they have no results that year
+            assert any(ci.get("latest") for ci in c["classes"])
+        # a future year has no racing anywhere
+        r2 = requests.get(f"{API}/clubs/directory", params={"year": 2100})
+        assert r2.status_code == 200 and r2.json() == []
+
+
+# ---------- Admin CRUD (inside the test club) ----------
+class TestAdminCRUD:
+    def test_boat_crud(self, test_class, club_admin_token):
+        payload = {"name": "TEST_Boat", "sail_no": "TEST99", "class_id": test_class["id"],
+                   "helm": "TEST helm", "year": YEAR, "active": True}
+        r = requests.post(f"{API}/boats", json=payload, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
         bid = r.json()["id"]
-        # update
         payload["name"] = "TEST_Boat2"
-        r = requests.put(f"{API}/boats/{bid}", json=payload, headers=h(admin_token))
+        r = requests.put(f"{API}/boats/{bid}", json=payload, headers=h(club_admin_token))
         assert r.status_code == 200
         assert r.json()["name"] == "TEST_Boat2"
-        # delete
-        r = requests.delete(f"{API}/boats/{bid}", headers=h(admin_token))
+        r = requests.delete(f"{API}/boats/{bid}", headers=h(club_admin_token))
         assert r.status_code == 200
 
-    def test_class_crud(self, admin_token):
-        r = requests.post(f"{API}/classes", json={"name": "TEST_Class", "default_start_time": "12:00"}, headers=h(admin_token))
+    def test_class_crud(self, test_club, club_admin_token):
+        r = requests.post(f"{API}/classes", json={"name": "TEST_Class", "default_start_time": "12:00"},
+                          headers=h(club_admin_token))
         assert r.status_code == 200
         cid = r.json()["id"]
-        r = requests.put(f"{API}/classes/{cid}", json={"name": "TEST_Class2", "default_start_time": "13:00"}, headers=h(admin_token))
+        assert r.json()["club_id"] == test_club["id"]
+        r = requests.put(f"{API}/classes/{cid}", json={"name": "TEST_Class2", "default_start_time": "13:00"},
+                         headers=h(club_admin_token))
         assert r.status_code == 200
         assert r.json()["default_start_time"] == "13:00"
-        r = requests.delete(f"{API}/classes/{cid}", headers=h(admin_token))
+        r = requests.delete(f"{API}/classes/{cid}", headers=h(club_admin_token))
         assert r.status_code == 200
 
-    def test_series_crud(self, admin_token):
-        classes = requests.get(f"{API}/classes").json()
-        cid = classes[0]["id"]
-        payload = {"name": "TEST_Series", "class_id": cid, "year": YEAR, "discards": 0, "included_in_overall": False, "order": 99}
-        r = requests.post(f"{API}/series", json=payload, headers=h(admin_token))
+    def test_series_crud(self, test_class, club_admin_token):
+        payload = {"name": "TEST_Series", "class_id": test_class["id"], "year": YEAR,
+                   "discards": 0, "included_in_overall": False, "order": 99}
+        r = requests.post(f"{API}/series", json=payload, headers=h(club_admin_token))
         assert r.status_code == 200
         sid = r.json()["id"]
         payload["discards"] = 2
-        r = requests.put(f"{API}/series/{sid}", json=payload, headers=h(admin_token))
+        r = requests.put(f"{API}/series/{sid}", json=payload, headers=h(club_admin_token))
         assert r.status_code == 200
         assert r.json()["discards"] == 2
-        r = requests.delete(f"{API}/series/{sid}", headers=h(admin_token))
+        r = requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
         assert r.status_code == 200
 
 
-# ---------- Full race flow ----------
+# ---------- Full race flow (inside the test club) ----------
 class TestRaceFlow:
-    def test_full_race_lifecycle(self, officer_token):
-        classes = requests.get(f"{API}/classes").json()
-        # pick Sonata to avoid touching demo Dragon Early Spring race
-        cls = next(c for c in classes if c["name"] == "Sonata")
-        series_list = requests.get(f"{API}/series", params={"class_id": cls["id"], "year": YEAR}).json()
-        series = next(s for s in series_list if s["name"] == "Late Spring")
-        boats = requests.get(f"{API}/boats", params={"class_id": cls["id"], "year": YEAR}).json()
-        assert len(boats) >= 3
+    def _make_series_and_boats(self, club_admin_token):
+        # A dedicated class so no other test's boats inflate this fleet
+        r = requests.post(f"{API}/classes", json={"name": "Race Flow Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Race Flow Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": True, "order": 1}, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        series = r.json()
+        boats = []
+        for i, (name, sail) in enumerate([("Alpha", "A1"), ("Bravo", "B2"), ("Charlie", "C3")], start=1):
+            r = requests.post(f"{API}/boats", json={
+                "name": name, "sail_no": sail, "class_id": cls["id"],
+                "helm": f"Helm {i}", "year": YEAR, "active": True}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json())
+        return cls, series, boats
+
+    def test_full_race_lifecycle(self, club_officer_token, club_admin_token):
+        cls, series, boats = self._make_series_and_boats(club_admin_token)
+        sid, b = series["id"], [x["id"] for x in boats]
 
         # Create race
         r = requests.post(f"{API}/races", json={
-            "date": f"{YEAR}-05-15", "class_id": cls["id"], "series_id": series["id"],
-            "race_number": 1, "start_time": "10:45"
-        }, headers=h(officer_token))
+            "date": f"{YEAR}-05-15", "class_id": cls["id"], "series_id": sid,
+            "race_number": 1, "start_time": "10:45"}, headers=h(club_officer_token))
         assert r.status_code == 200, r.text
         race = r.json()
         rid = race["id"]
         assert race["status"] == "setup"
-        assert len(race["results"]) == len(boats)
+        assert len(race["results"]) == len(b)
         assert all(res["code"] == "DNC" for res in race["results"])
 
         # Notifications appear
@@ -160,114 +300,94 @@ class TestRaceFlow:
 
         # Update notifications
         r = requests.put(f"{API}/races/{rid}/notifications", json={
-            "course": "Windward-leeward", "life_jackets": True, "special_rules": "No spinnakers"
-        }, headers=h(officer_token))
+            "course": "Windward-leeward", "life_jackets": True, "special_rules": "No spinnakers"},
+            headers=h(club_officer_token))
         assert r.status_code == 200
         assert r.json()["life_jackets"] is True
 
-        # Select boats (all)
-        boat_ids = [b["id"] for b in boats]
-        r = requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": boat_ids}, headers=h(officer_token))
+        # Select all boats
+        r = requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": b}, headers=h(club_officer_token))
         assert r.status_code == 200
         codes = {res["boat_id"]: res["code"] for res in r.json()["results"]}
         assert all(c == "DNS" for c in codes.values())
 
-        # Record finishes for first 2
-        r = requests.post(f"{API}/races/{rid}/finish", json={"boat_id": boat_ids[0]}, headers=h(officer_token))
+        # Record finishes for first two
+        requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b[0]}, headers=h(club_officer_token))
+        r = requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b[1]}, headers=h(club_officer_token))
         assert r.status_code == 200
-        r = requests.post(f"{API}/races/{rid}/finish", json={"boat_id": boat_ids[1]}, headers=h(officer_token))
-        assert r.status_code == 200
-        race = r.json()
-        positions = {res["boat_id"]: res["position"] for res in race["results"] if res["code"] == "FINISHED"}
-        assert positions[boat_ids[0]] == 1 and positions[boat_ids[1]] == 2
+        positions = {res["boat_id"]: res["position"] for res in r.json()["results"] if res["code"] == "FINISHED"}
+        assert positions[b[0]] == 1 and positions[b[1]] == 2
 
-        # Undo first finish - re-sequence
-        r = requests.post(f"{API}/races/{rid}/undo-finish", json={"boat_id": boat_ids[0]}, headers=h(officer_token))
-        assert r.status_code == 200
+        # Undo first finish -> re-sequence
+        r = requests.post(f"{API}/races/{rid}/undo-finish", json={"boat_id": b[0]}, headers=h(club_officer_token))
         race = r.json()
         finished = [res for res in race["results"] if res["code"] == "FINISHED"]
         assert len(finished) == 1
-        assert finished[0]["position"] == 1
-        assert finished[0]["boat_id"] == boat_ids[1]
+        assert finished[0]["position"] == 1 and finished[0]["boat_id"] == b[1]
 
-        # Re-finish boat 0
-        requests.post(f"{API}/races/{rid}/finish", json={"boat_id": boat_ids[0]}, headers=h(officer_token))
-        # finish third boat if available
-        if len(boat_ids) >= 3:
-            requests.post(f"{API}/races/{rid}/finish", json={"boat_id": boat_ids[2]}, headers=h(officer_token))
+        # Re-finish and finish third
+        requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b[0]}, headers=h(club_officer_token))
+        requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b[2]}, headers=h(club_officer_token))
 
-        # Adjust: set boat[0] position to 3 and change code
-        r = requests.put(f"{API}/races/{rid}/result/{boat_ids[0]}",
-                         json={"position": 3, "code": "FINISHED"}, headers=h(officer_token))
+        # Adjust: DSQ boat[0]
+        r = requests.put(f"{API}/races/{rid}/result/{b[0]}", json={"code": "DSQ"}, headers=h(club_officer_token))
         assert r.status_code == 200
-        # Apply DSQ to boat[0]
-        r = requests.put(f"{API}/races/{rid}/result/{boat_ids[0]}",
-                         json={"code": "DSQ"}, headers=h(officer_token))
-        assert r.status_code == 200
-        assert next(res for res in r.json()["results"] if res["boat_id"] == boat_ids[0])["code"] == "DSQ"
+        assert next(res for res in r.json()["results"] if res["boat_id"] == b[0])["code"] == "DSQ"
 
-        # provisional
-        r = requests.post(f"{API}/races/{rid}/status/provisional", headers=h(officer_token))
-        assert r.status_code == 200
-        assert r.json()["status"] == "provisional"
+        # provisional -> publish
+        r = requests.post(f"{API}/races/{rid}/status/provisional", headers=h(club_officer_token))
+        assert r.status_code == 200 and r.json()["status"] == "provisional"
+        r = requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+        assert r.status_code == 200 and r.json()["status"] == "published"
 
-        # publish
-        r = requests.post(f"{API}/races/{rid}/status/published", headers=h(officer_token))
-        assert r.status_code == 200
-        assert r.json()["status"] == "published"
-
-        # Notification should no longer include it
+        # Notification cleared
         notifs = requests.get(f"{API}/notifications").json()
         assert not any(n["race_id"] == rid for n in notifs)
 
-        # Standings
-        r = requests.get(f"{API}/standings/series/{series['id']}")
-        assert r.status_code == 200
-        st = r.json()
-        assert st["race_count"] >= 1
-        assert len(st["standings"]) >= len(boats)
-        # Boat b[1] should be rank 1 (won since b[0] DSQ'd)
-        winner = st["standings"][0]
-        assert winner["boat_id"] == boat_ids[1]
+        # Series standings: boat[1] won (b[0] DSQ'd, b[2] finished 3rd-ish)
+        st = requests.get(f"{API}/standings/series/{sid}").json()
+        assert st["race_count"] == 1
+        assert st["standings"][0]["boat_id"] == b[1]
 
-        # Overall
+        # Overall: only the included series appears
         r = requests.get(f"{API}/standings/overall", params={"class_id": cls["id"], "year": YEAR})
         assert r.status_code == 200
         overall = r.json()
-        assert "Summer" not in overall["series_names"]  # excluded from overall
-        assert "Late Spring" in overall["series_names"]
+        assert "Race Flow Series" in overall["series_names"]
 
-        # cleanup - delete race
-        r = requests.delete(f"{API}/races/{rid}", headers=h(officer_token))
-        assert r.status_code == 200
+        # cleanup
+        requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
 
 
 # ---------- Scoring specifics ----------
 class TestScoring:
-    def test_dnc_points_equal_entries_plus_1(self, officer_token):
-        classes = requests.get(f"{API}/classes").json()
-        cls = next(c for c in classes if c["name"] == "Wayfarer")
-        series_list = requests.get(f"{API}/series", params={"class_id": cls["id"], "year": YEAR}).json()
-        series = next(s for s in series_list if s["name"] == "Early Autumn")
-        boats = requests.get(f"{API}/boats", params={"class_id": cls["id"], "year": YEAR}).json()
-        r = requests.post(f"{API}/races", json={
-            "date": f"{YEAR}-09-10", "class_id": cls["id"], "series_id": series["id"], "race_number": 1
-        }, headers=h(officer_token))
-        rid = r.json()["id"]
-        # select 2 boats
-        selected = [b["id"] for b in boats[:2]]
-        requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": selected}, headers=h(officer_token))
-        # finish first
-        requests.post(f"{API}/races/{rid}/finish", json={"boat_id": selected[0]}, headers=h(officer_token))
-        requests.post(f"{API}/races/{rid}/status/published", headers=h(officer_token))
+    def test_dnc_points_equal_entries_plus_1(self, club_officer_token, club_admin_token):
+        # dedicated class so the fleet is exactly the 3 boats created here
+        r = requests.post(f"{API}/classes", json={"name": "Scoring Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Scoring Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": True, "order": 2}, headers=h(club_admin_token))
+        series = r.json()
+        boats = []
+        for i, (name, sail) in enumerate([("One", "S1"), ("Two", "S2"), ("Three", "S3")]):
+            r = requests.post(f"{API}/boats", json={
+                "name": name, "sail_no": sail, "class_id": cls["id"],
+                "helm": f"H{i}", "year": YEAR, "active": True}, headers=h(club_admin_token))
+            boats.append(r.json()["id"])
+        rid = requests.post(f"{API}/races", json={
+            "date": f"{YEAR}-09-10", "class_id": cls["id"], "series_id": series["id"],
+            "race_number": 1}, headers=h(club_officer_token)).json()["id"]
+        selected = boats[:2]
+        requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": selected}, headers=h(club_officer_token))
+        requests.post(f"{API}/races/{rid}/finish", json={"boat_id": selected[0]}, headers=h(club_officer_token))
+        requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
 
         st = requests.get(f"{API}/standings/series/{series['id']}").json()
         entries = len(boats)
-        dnc_pts = entries + 1
-        # non-selected boats should have net including DNC = entries+1
-        winner = [row for row in st["standings"] if row["boat_id"] == selected[0]][0]
-        assert winner["net"] == 1.0 or winner["net"] == winner["total"]  # only race
         non_sel = [row for row in st["standings"] if row["boat_id"] not in selected]
-        assert all(row["total"] == dnc_pts for row in non_sel)
+        assert non_sel, "expected non-selected boats in standings"
+        assert all(row["total"] == entries + 1 for row in non_sel)
 
-        requests.delete(f"{API}/races/{rid}", headers=h(officer_token))
+        requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))

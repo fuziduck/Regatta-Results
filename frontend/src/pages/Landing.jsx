@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, MAX_YEAR, CODE_COLORS } from "@/lib/helpers";
+import YearSwitcher from "@/components/YearSwitcher";
 import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle } from "lucide-react";
+import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle, ArrowLeft } from "lucide-react";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -29,21 +30,21 @@ function NotificationBanner({ items }) {
   );
 }
 
-function PublishedRaces({ seriesId, classId }) {
+function PublishedRaces({ seriesId, classId, clubId }) {
   const [races, setRaces] = useState([]);
   const [boats, setBoats] = useState({});
   const [scoringMode, setScoringMode] = useState("one_design");
 
   useEffect(() => {
-    api.getRaces({ series_id: seriesId, status: "published" }).then(setRaces);
-    api.getBoats({ class_id: classId }).then((bs) => {
+    api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then(setRaces);
+    api.getBoats({ class_id: classId, club_id: clubId }).then((bs) => {
       const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m);
     });
-    api.getClasses().then((cs) => {
+    api.getClasses({ club_id: clubId }).then((cs) => {
       const c = (cs || []).find((x) => x.id === classId);
       if (c) setScoringMode(c.scoring_mode || "one_design");
     });
-  }, [seriesId, classId]);
+  }, [seriesId, classId, clubId]);
 
   if (!races.length) return null;
   const sorted = [...races].sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -105,26 +106,41 @@ function PublishedRaces({ seriesId, classId }) {
   );
 }
 
-function ClassResults({ classId }) {
+function ClassResults({ classId, clubId, year }) {
   const [series, setSeries] = useState([]);
   const [tab, setTab] = useState("overall");
   const [overall, setOverall] = useState(null);
   const [seriesData, setSeriesData] = useState({});
 
   useEffect(() => {
-    api.getSeries({ class_id: classId, year: CURRENT_YEAR }).then((s) => {
+    setSeries([]); setOverall(null); setSeriesData({});
+    api.getSeries({ class_id: classId, year, club_id: clubId }).then((s) => {
       setSeries(s); setTab("overall");
     });
-    api.overallStandings(classId, CURRENT_YEAR).then(setOverall).catch(() => setOverall(null));
-  }, [classId]);
+    api.overallStandings(classId, year, clubId).then(setOverall).catch(() => setOverall(null));
+  }, [classId, clubId, year]);
 
   useEffect(() => {
     if (tab !== "overall" && !seriesData[tab]) {
-      api.seriesStandings(tab).then((d) => setSeriesData((prev) => ({ ...prev, [tab]: d })));
+      api.seriesStandings(tab, clubId).then((d) => setSeriesData((prev) => ({ ...prev, [tab]: d })));
     }
   }, [tab]); // eslint-disable-line
 
   const active = series.find((s) => s.id === tab);
+  const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
+
+  if (year !== CURRENT_YEAR && !hasData) {
+    return (
+      <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center" data-testid="no-results-year">
+        <p className="font-heading text-xl uppercase tracking-tight">No results recorded for {year} yet</p>
+        <p className="text-muted-foreground text-sm mt-1">
+          {year > CURRENT_YEAR
+            ? `The ${year} season hasn't started — series and results will appear here once set up.`
+            : "Nothing was raced in this season — switch back to the current year to see live results."}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="mt-4">
@@ -146,7 +162,7 @@ function ClassResults({ classId }) {
         <TabsContent key={s.id} value={s.id} className="pt-5">
           <h3 className="text-xl uppercase tracking-tight mb-3">{s.name} Series</h3>
           <SeriesStandingsTable data={seriesData[s.id]} />
-          {tab === s.id && <PublishedRaces seriesId={s.id} classId={classId} />}
+          {tab === s.id && <PublishedRaces seriesId={s.id} classId={classId} clubId={clubId} />}
         </TabsContent>
       ))}
     </Tabs>
@@ -154,17 +170,49 @@ function ClassResults({ classId }) {
 }
 
 export default function Landing() {
+  const { slug } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const yearParam = Number(searchParams.get("year"));
+  const year = Number.isInteger(yearParam) && yearParam > 2000 && yearParam <= MAX_YEAR ? yearParam : CURRENT_YEAR;
+  const setYear = (y) => setSearchParams(y === CURRENT_YEAR ? {} : { year: String(y) });
+  const [club, setClub] = useState(null);
+  const [loadingClub, setLoadingClub] = useState(true);
   const [classes, setClasses] = useState([]);
   const [activeClass, setActiveClass] = useState(null);
   const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
-    api.getClasses().then((c) => { setClasses(c); if (c[0]) setActiveClass(c[0].id); });
-    const load = () => api.getNotifications().then(setNotifications).catch(() => {});
+    api.getClubs().then((cs) => {
+      const found = (cs || []).find((c) => c.slug === slug) || (cs || [])[0];
+      setClub(found || null);
+      setLoadingClub(false);
+    }).catch(() => setLoadingClub(false));
+  }, [slug]);
+
+  const clubId = club?.id;
+
+  useEffect(() => {
+    if (!clubId) return;
+    api.getClasses({ club_id: clubId }).then((c) => { setClasses(c); if (c[0]) setActiveClass(c[0].id); });
+    const load = () => api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
     load();
     const t = setInterval(load, 20000);
     return () => clearInterval(t);
-  }, []);
+  }, [clubId]);
+
+  if (loadingClub) {
+    return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
+  }
+  if (!club) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">
+        <div className="text-center space-y-3">
+          <p>Club not found.</p>
+          <Link to="/"><Button variant="outline" className="gap-2 border-ocean text-ocean"><ArrowLeft className="w-4 h-4" /> Back to all clubs</Button></Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -174,29 +222,39 @@ export default function Landing() {
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Anchor className="w-5 h-5 text-white" /></div>
-            <div className="font-heading text-xl uppercase tracking-tight leading-none">Club Race Results</div>
+            <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
           </div>
-          <Link to="/login">
-            <Button variant="outline" size="sm" data-testid="officials-login-btn" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
-              <LogIn className="w-4 h-4" /> Officials
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link to="/">
+              <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
+                <ArrowLeft className="w-4 h-4" /> All clubs
+              </Button>
+            </Link>
+            <Link to={`/login?club=${club.slug}`}>
+              <Button variant="outline" size="sm" data-testid="officials-login-btn" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
+                <LogIn className="w-4 h-4" /> Officials
+              </Button>
+            </Link>
+          </div>
         </div>
       </header>
 
       <section className="relative">
         <img
-          src="https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0dGF8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
+          src="https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0YXR8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
           alt="racing" className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
         <div className="relative max-w-6xl mx-auto px-4 py-16 md:py-24">
-          <Badge className="bg-safety text-white mb-4 uppercase tracking-widest">{CURRENT_YEAR} Season</Badge>
+          <Badge className={`mb-4 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
+            {year} Season
+          </Badge>
           <h1 className="text-4xl sm:text-5xl lg:text-6xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
-            Live club racing results & standings
+            {club.name} · {year === CURRENT_YEAR ? "live" : year} results & standings
           </h1>
           <p className="text-white/80 mt-4 max-w-xl leading-relaxed">
             Follow every fleet across the season. Provisional and confirmed results, series championships and race-day notices — all in one place.
           </p>
+          <YearSwitcher value={year} onChange={setYear} className="mt-5" />
         </div>
       </section>
 
@@ -270,7 +328,7 @@ export default function Landing() {
             </TabsList>
             {classes.map((c) => (
               <TabsContent key={c.id} value={c.id}>
-                <ClassResults classId={c.id} />
+                <ClassResults classId={c.id} clubId={clubId} year={year} />
               </TabsContent>
             ))}
           </Tabs>
@@ -278,7 +336,7 @@ export default function Landing() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        Scored under the RRS Low Point System · {CURRENT_YEAR}
+        {club.name} · Scored under the RRS Low Point System · {year}
       </footer>
     </div>
   );

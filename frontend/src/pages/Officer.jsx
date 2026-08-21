@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
+import ClubPicker from "@/components/ClubPicker";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2 } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700",
@@ -42,18 +43,31 @@ function startRefMs(race) {
   return Number.isNaN(d.getTime()) ? null : d.getTime();
 }
 
-function TopBar() {
+function TopBar({ clubName, onSwitchClub }) {
   const { role, logout } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const clubQuery = searchParams.get("club");
   return (
     <header className="sticky top-0 z-40 backdrop-blur-xl bg-ocean/95 text-white">
       <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-lg bg-white/15 grid place-items-center"><Radio className="w-5 h-5" /></div>
           <div className="font-heading text-xl uppercase tracking-tight leading-none">Race Officer</div>
+          {clubName && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs bg-white/15 rounded-full px-3 py-1 font-semibold">
+              <Building2 className="w-3.5 h-3.5" /> {clubName}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          {role === "admin" && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate("/admin")}>Admin</Button>}
+          {(role === "admin" || role === "webmaster") && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate(clubQuery ? `/admin?club=${clubQuery}` : "/admin")}>Admin</Button>}
+          {role === "webmaster" && (
+            <>
+              {onSwitchClub && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={onSwitchClub}><Building2 className="w-4 h-4 mr-1" /> Switch club</Button>}
+              <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate("/webmaster")}>Webmaster</Button>
+            </>
+          )}
           <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="logout-btn" onClick={() => { logout(); navigate("/"); }}>
             <LogOut className="w-4 h-4 mr-1" /> Exit
           </Button>
@@ -63,16 +77,16 @@ function TopBar() {
   );
 }
 
-function NewRaceDialog({ onCreated }) {
+function NewRaceDialog({ onCreated, clubId }) {
   const [open, setOpen] = useState(false);
   const [classes, setClasses] = useState([]);
   const [series, setSeries] = useState([]);
   const [form, setForm] = useState({ class_id: "", series_id: "", date: new Date().toISOString().slice(0, 10), race_number: 1, start_time: "" });
 
-  useEffect(() => { if (open) api.getClasses().then(setClasses); }, [open]);
+  useEffect(() => { if (open) api.getClasses(clubId ? { club_id: clubId } : {}).then(setClasses); }, [open, clubId]);
   useEffect(() => {
-    if (form.class_id) api.getSeries({ class_id: form.class_id, year: CURRENT_YEAR }).then(setSeries);
-  }, [form.class_id]);
+    if (form.class_id) api.getSeries({ class_id: form.class_id, year: CURRENT_YEAR, ...(clubId ? { club_id: clubId } : {}) }).then(setSeries);
+  }, [form.class_id, clubId]);
 
   const create = async () => {
     if (!form.class_id || !form.series_id) return toast.error("Pick a class and series");
@@ -387,6 +401,21 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
 }
 
 export default function Officer() {
+  const { role, clubId: authClubId, clubName: authClubName } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const isWebmaster = role === "webmaster";
+  const clubParam = searchParams.get("club");
+  const [clubs, setClubs] = useState([]);
+
+  useEffect(() => {
+    if (isWebmaster) api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
+  }, [isWebmaster]);
+
+  const clubId = isWebmaster ? clubParam : authClubId;
+  const clubName = isWebmaster
+    ? (clubs.find((c) => c.id === clubParam)?.name || null)
+    : (authClubName || null);
+
   const [races, setRaces] = useState([]);
   const [classes, setClasses] = useState({});
   const [series, setSeries] = useState({});
@@ -394,20 +423,25 @@ export default function Officer() {
   const [rrsCodes, setRrsCodes] = useState([]);
 
   const loadRaces = useCallback(async () => {
-    const [rs, cs, ss] = await Promise.all([api.getRaces(), api.getClasses(), api.getSeries({ year: CURRENT_YEAR })]);
+    const params = clubId ? { club_id: clubId } : {};
+    const [rs, cs, ss] = await Promise.all([
+      api.getRaces(params),
+      api.getClasses(params),
+      api.getSeries({ year: CURRENT_YEAR, ...params }),
+    ]);
     setRaces(rs);
     const cm = {}; cs.forEach((c) => (cm[c.id] = c)); setClasses(cm);
     const sm = {}; ss.forEach((s) => (sm[s.id] = s)); setSeries(sm);
-  }, []);
+  }, [clubId]);
 
   const [scheduled, setScheduled] = useState([]);
   const [schedDate, setSchedDate] = useState("");
 
   const loadScheduled = useCallback(async () => {
-    const list = await api.scheduledRaces();
+    const list = await api.scheduledRaces(clubId ? { club_id: clubId } : {});
     setScheduled(list);
     setSchedDate((prev) => prev || new Date().toISOString().slice(0, 10));
-  }, []);
+  }, [clubId]);
 
   useEffect(() => { loadRaces(); loadScheduled(); api.rrsCodes().then(setRrsCodes); }, [loadRaces, loadScheduled]);
 
@@ -428,12 +462,26 @@ export default function Officer() {
   });
 
   const selectedRace = races.find((r) => r.id === selected);
+  const switchClub = isWebmaster ? () => setSearchParams({}) : null;
+
+  if (isWebmaster && !clubParam) {
+    return (
+      <div className="min-h-screen bg-background">
+        <TopBar />
+        <ClubPicker
+          title="Race Officer console"
+          subtitle="Pick the club you're officiating for today."
+          onPick={(c) => setSearchParams({ club: c.id })}
+        />
+      </div>
+    );
+  }
 
   if (selected) {
     const dayRaces = selectedRace ? races.filter((r) => r.id !== selectedRace.id && r.date === selectedRace.date) : [];
     return (
       <div className="min-h-screen bg-background">
-        <TopBar />
+        <TopBar clubName={clubName} onSwitchClub={switchClub} />
         <RaceConsole raceId={selected} meta={meta(selectedRace || {})} rrsCodes={rrsCodes} dayRaces={dayRaces}
           onBack={() => { setSelected(null); loadRaces(); }} />
       </div>
@@ -461,14 +509,14 @@ export default function Officer() {
 
   return (
     <div className="min-h-screen bg-background">
-      <TopBar />
+      <TopBar clubName={clubName} onSwitchClub={switchClub} />
       <main className="max-w-3xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-3xl uppercase tracking-tighter">Race day</h1>
             <p className="text-muted-foreground text-sm">Set up races, record finishes and publish.</p>
           </div>
-          <NewRaceDialog onCreated={(r) => { loadRaces(); setSelected(r.id); }} />
+          <NewRaceDialog onCreated={(r) => { loadRaces(); setSelected(r.id); }} clubId={clubId} />
         </div>
 
         <section className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 mb-8" data-testid="schedule-panel">

@@ -46,6 +46,7 @@ services:
       JWT_SECRET: change-me-to-a-long-random-string   # override via .env
       RACE_OFFICER_PIN: race2026
       RACE_ADMIN_PIN: admin2026
+      WEBMASTER_PIN: master2026   # global role — manages clubs, access to all
       CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
     command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
     depends_on:

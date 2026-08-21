@@ -24,6 +24,8 @@ api_router = APIRouter(prefix="/api")
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
+# Global role PIN for the Webmaster — the one role not bound to a single club.
+WEBMASTER_PIN = os.environ.get("WEBMASTER_PIN", "9999")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,39 +38,127 @@ def new_id():
     return str(uuid.uuid4())
 
 
-def create_token(role: str) -> str:
+def create_token(role: str, club_id: str) -> str:
     payload = {
         "role": role,
+        "club_id": club_id,
         "exp": datetime.now(timezone.utc) + timedelta(days=30),
         "type": "access",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-async def get_current_role(request: Request) -> str:
+async def get_current_user(request: Request):
+    """Decode the bearer token -> {role, club_id}, or None if absent/invalid."""
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        return None
     token = auth_header[7:]
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload.get("role")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Session expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        return {"role": payload.get("role"), "club_id": payload.get("club_id")}
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
 
 
-def require_admin(role: str = Depends(get_current_role)) -> str:
-    if role != "admin":
+async def require_admin(request: Request) -> dict:
+    user = await get_current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.get("role") not in ("admin", "webmaster"):
         raise HTTPException(status_code=403, detail="Race Admin access required")
-    return role
+    return user
 
 
-def require_officer(role: str = Depends(get_current_role)) -> str:
-    if role not in ("officer", "admin"):
+async def require_officer(request: Request) -> dict:
+    user = await get_current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.get("role") not in ("officer", "admin", "webmaster"):
         raise HTTPException(status_code=403, detail="Race Officer access required")
-    return role
+    return user
+
+
+async def require_webmaster(request: Request) -> dict:
+    user = await get_current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.get("role") != "webmaster":
+        raise HTTPException(status_code=403, detail="Webmaster access required")
+    return user
+
+
+def _ensure_club(user: dict, club_id):
+    """Guard: an authenticated user may only touch their own club's data.
+    The webmaster is the one role that may touch any club."""
+    if not user:
+        raise HTTPException(status_code=403, detail="Access to this club's data denied")
+    if user.get("role") == "webmaster":
+        return
+    if not club_id or user.get("club_id") != club_id:
+        raise HTTPException(status_code=403, detail="Access to this club's data denied")
+
+
+async def _resolve_club_id(request: Request, club_id: Optional[str] = None) -> Optional[str]:
+    """The club scope for a request.
+
+    - Anonymous callers (public pages): the explicit club_id query param.
+    - Race Officer / Race Admin: always their own club — the param can never
+      widen access to another club.
+    - Webmaster: any club_id param (or None for all clubs).
+    """
+    user = await get_current_user(request)
+    if not user:
+        return club_id
+    if user.get("role") == "webmaster":
+        return club_id
+    return user.get("club_id")
+
+
+async def _club_class_ids(club_id: Optional[str]):
+    """ids of all classes belonging to a club (None when unscoped)."""
+    if not club_id:
+        return None
+    classes = await db.classes.find({"club_id": club_id}, {"_id": 0, "id": 1}).to_list(1000)
+    return [c["id"] for c in classes]
+
+
+async def _class_club_id(class_id) -> Optional[str]:
+    cls = await db.classes.find_one({"id": class_id}, {"_id": 0, "club_id": 1})
+    return (cls or {}).get("club_id")
+
+
+async def _class_of_club(class_id: str, user: dict):
+    """Return the class if it belongs to the user's club, else raise."""
+    cls = await db.classes.find_one({"id": class_id}, {"_id": 0})
+    if not cls:
+        raise HTTPException(status_code=404, detail="Class not found")
+    _ensure_club(user, cls.get("club_id"))
+    return cls
+
+
+async def _series_of_club(series_id: str, user: dict):
+    series = await db.series.find_one({"id": series_id}, {"_id": 0})
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    _ensure_club(user, await _class_club_id(series.get("class_id")))
+    return series
+
+
+async def _boat_of_club(boat_id: str, user: dict):
+    boat = await db.boats.find_one({"id": boat_id}, {"_id": 0})
+    if not boat:
+        raise HTTPException(status_code=404, detail="Boat not found")
+    _ensure_club(user, await _class_club_id(boat.get("class_id")))
+    return boat
+
+
+async def _race_of_club(race_id: str, user: dict):
+    race = await db.races.find_one({"id": race_id}, {"_id": 0})
+    if not race:
+        raise HTTPException(status_code=404, detail="Race not found")
+    _ensure_club(user, await _class_club_id(race.get("class_id")))
+    return race
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +167,15 @@ def require_officer(role: str = Depends(get_current_role)) -> str:
 class LoginInput(BaseModel):
     role: str
     pin: str
+    club_id: Optional[str] = None
+
+
+class ClubInput(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    color: str = "#0A369D"
+    officer_pin: str = ""
+    admin_pin: str = ""
 
 
 class ClassInput(BaseModel):
@@ -85,6 +184,9 @@ class ClassInput(BaseModel):
     # Scoring system for the class: "one_design" (finish order) or "irc"
     # (corrected time = elapsed x TCC, rounded per IRC Rule 12.2).
     scoring_mode: Literal["one_design", "irc"] = "one_design"
+    # Required when a webmaster creates a class (officer/admin default to
+    # their own club).
+    club_id: Optional[str] = None
 
 
 class BoatInput(BaseModel):
@@ -193,30 +295,170 @@ POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DS
 async def login(data: LoginInput):
     role = data.role
     pin = data.pin.strip()
-    if role == "officer" and pin == os.environ["RACE_OFFICER_PIN"]:
-        return {"token": create_token("officer"), "role": "officer"}
-    if role == "admin" and pin == os.environ["RACE_ADMIN_PIN"]:
-        return {"token": create_token("admin"), "role": "admin"}
-    raise HTTPException(status_code=401, detail="Incorrect passcode")
+    if role == "webmaster":
+        if pin != WEBMASTER_PIN:
+            raise HTTPException(status_code=401, detail="Incorrect passcode")
+        return {"token": create_token("webmaster", None), "role": "webmaster",
+                "club_id": None, "club_name": None}
+    if role not in ("officer", "admin"):
+        raise HTTPException(status_code=401, detail="Unknown role")
+    club = None
+    if data.club_id:
+        club = await db.clubs.find_one({"id": data.club_id}, {"_id": 0})
+    else:
+        # No club chosen: only unambiguous if exactly one club exists.
+        clubs = await db.clubs.find({}, {"_id": 0}).to_list(100)
+        if len(clubs) == 1:
+            club = clubs[0]
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found — choose your club")
+    expected = club.get("admin_pin") if role == "admin" else club.get("officer_pin")
+    if not expected or pin != expected:
+        raise HTTPException(status_code=401, detail="Incorrect passcode")
+    return {"token": create_token(role, club["id"]), "role": role,
+            "club_id": club["id"], "club_name": club.get("name")}
 
 
 @api_router.get("/auth/me")
-async def me(role: str = Depends(get_current_role)):
-    return {"role": role}
+async def me(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    name = None
+    if user.get("club_id"):
+        club = await db.clubs.find_one({"id": user["club_id"]}, {"_id": 0, "name": 1})
+        name = (club or {}).get("name")
+    return {"role": user.get("role"), "club_id": user.get("club_id"), "club_name": name}
+
+# ---------------------------------------------------------------------------
+# Clubs
+# ---------------------------------------------------------------------------
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "club"
+
+
+def _club_public(club: dict) -> dict:
+    """Club without the PIN fields (never leak passcodes)."""
+    return {k: v for k, v in club.items() if k not in ("officer_pin", "admin_pin")}
+
+
+@api_router.get("/clubs")
+async def get_clubs():
+    clubs = await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
+    return [_club_public(c) for c in clubs]
+
+
+@api_router.get("/clubs/manage")
+async def clubs_manage(user: dict = Depends(require_webmaster)):
+    """Webmaster-only: full club documents including passcodes, so the
+    webmaster can edit (and change) them. Public /clubs never leaks PINs."""
+    return await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
+
+
+@api_router.get("/clubs/directory")
+async def clubs_directory(year: Optional[int] = None):
+    """Front-page data: every club with its classes and each class's most
+    recent published race's top three finishers.
+
+    Pass `year` to view a past season: the latest result is scoped to that
+    year and clubs with no results that year are omitted (so the page reads
+    "all clubs that raced that season")."""
+    clubs = await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
+    out = []
+    for club in clubs:
+        classes = await db.classes.find({"club_id": club["id"]}, {"_id": 0}).sort("name", 1).to_list(200)
+        class_info = []
+        for c in classes:
+            latest = None
+            q = {"class_id": c["id"], "status": "published"}
+            if year:
+                q["year"] = year
+            races = await db.races.find(q, {"_id": 0})\
+                .sort("date", -1).sort("race_number", -1).limit(1).to_list(1)
+            if races:
+                r = races[0]
+                finished = sorted(
+                    [x for x in r.get("results", []) if x.get("code") == "FINISHED" and x.get("position")],
+                    key=lambda x: x["position"],
+                )[:3]
+                bids = [x["boat_id"] for x in finished]
+                boats = {b["id"]: b for b in await db.boats.find({"id": {"$in": bids}}, {"_id": 0}).to_list(50)}
+                latest = {
+                    "race_number": r.get("race_number"),
+                    "date": r.get("date"),
+                    "top3": [{"position": x["position"],
+                               "boat": boats.get(x["boat_id"], {}).get("name", "?"),
+                               "sail_no": boats.get(x["boat_id"], {}).get("sail_no", "")}
+                              for x in finished],
+                }
+            class_info.append({"id": c["id"], "name": c["name"],
+                               "scoring_mode": c.get("scoring_mode", "one_design"),
+                               "latest": latest})
+        if year and not any(ci["latest"] for ci in class_info):
+            continue  # no published results that season — omit the club
+        out.append({"id": club["id"], "name": club["name"], "slug": club.get("slug"),
+                    "color": club.get("color", "#0A369D"), "classes": class_info})
+    return out
+
+
+@api_router.post("/clubs")
+async def create_club(data: ClubInput, user: dict = Depends(require_webmaster)):
+    slug = (data.slug or slugify(data.name)).lower()
+    if await db.clubs.find_one({"slug": slug}, {"_id": 0}):
+        slug = f"{slug}-{new_id()[:4]}"
+    doc = {"id": new_id(), "name": data.name, "slug": slug, "color": data.color,
+           "officer_pin": data.officer_pin, "admin_pin": data.admin_pin,
+           "created_at": now_iso()}
+    await db.clubs.insert_one(doc)
+    doc.pop("_id", None)
+    return _club_public(doc)
+
+
+@api_router.put("/clubs/{club_id}")
+async def update_club(club_id: str, data: ClubInput, user: dict = Depends(require_webmaster)):
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
+    update = {"name": data.name, "color": data.color,
+              "officer_pin": data.officer_pin, "admin_pin": data.admin_pin}
+    if data.slug:
+        update["slug"] = data.slug.lower()
+    await db.clubs.update_one({"id": club_id}, {"$set": update})
+    return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
+
+
+@api_router.delete("/clubs/{club_id}")
+async def delete_club(club_id: str, user: dict = Depends(require_webmaster)):
+    n = await db.classes.count_documents({"club_id": club_id})
+    if n:
+        raise HTTPException(status_code=400,
+                            detail="Club still has classes — delete its classes first")
+    await db.clubs.delete_one({"id": club_id})
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
 # Classes
 # ---------------------------------------------------------------------------
 @api_router.get("/classes")
-async def get_classes():
-    items = await db.classes.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+async def get_classes(request: Request, club_id: Optional[str] = None):
+    q = {}
+    club = await _resolve_club_id(request, club_id)
+    if club:
+        q["club_id"] = club
+    items = await db.classes.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
     return items
 
 
 @api_router.post("/classes")
-async def create_class(data: ClassInput, _: str = Depends(require_admin)):
-    doc = {"id": new_id(), "name": data.name, "default_start_time": data.default_start_time,
+async def create_class(data: ClassInput, user: dict = Depends(require_admin)):
+    club_id = data.club_id or user.get("club_id")
+    if not club_id:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    _ensure_club(user, club_id)
+    doc = {"id": new_id(), "club_id": club_id, "name": data.name,
+           "default_start_time": data.default_start_time,
            "scoring_mode": data.scoring_mode, "created_at": now_iso()}
     await db.classes.insert_one(doc)
     doc.pop("_id", None)
@@ -224,14 +466,16 @@ async def create_class(data: ClassInput, _: str = Depends(require_admin)):
 
 
 @api_router.put("/classes/{class_id}")
-async def update_class(class_id: str, data: ClassInput, _: str = Depends(require_admin)):
+async def update_class(class_id: str, data: ClassInput, user: dict = Depends(require_admin)):
+    cls = await _class_of_club(class_id, user)
     await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name,
                                   "default_start_time": data.default_start_time, "scoring_mode": data.scoring_mode}})
     return await db.classes.find_one({"id": class_id}, {"_id": 0})
 
 
 @api_router.delete("/classes/{class_id}")
-async def delete_class(class_id: str, _: str = Depends(require_admin)):
+async def delete_class(class_id: str, user: dict = Depends(require_admin)):
+    await _class_of_club(class_id, user)
     await db.classes.delete_one({"id": class_id})
     return {"ok": True}
 
@@ -240,10 +484,17 @@ async def delete_class(class_id: str, _: str = Depends(require_admin)):
 # Boats
 # ---------------------------------------------------------------------------
 @api_router.get("/boats")
-async def get_boats(class_id: Optional[str] = None, year: Optional[int] = None, active_only: bool = False):
+async def get_boats(request: Request, class_id: Optional[str] = None, year: Optional[int] = None,
+                   active_only: bool = False, club_id: Optional[str] = None):
     q = {}
+    club = await _resolve_club_id(request, club_id)
     if class_id:
         q["class_id"] = class_id
+    elif club:
+        ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
     if year:
         q["year"] = year
     if active_only:
@@ -253,7 +504,8 @@ async def get_boats(class_id: Optional[str] = None, year: Optional[int] = None, 
 
 
 @api_router.post("/boats")
-async def create_boat(data: BoatInput, _: str = Depends(require_admin)):
+async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
+    await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
@@ -263,13 +515,16 @@ async def create_boat(data: BoatInput, _: str = Depends(require_admin)):
 
 
 @api_router.put("/boats/{boat_id}")
-async def update_boat(boat_id: str, data: BoatInput, _: str = Depends(require_admin)):
+async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(require_admin)):
+    await _boat_of_club(boat_id, user)
+    await _class_of_club(data.class_id, user)
     await db.boats.update_one({"id": boat_id}, {"$set": data.model_dump()})
     return await db.boats.find_one({"id": boat_id}, {"_id": 0})
 
 
 @api_router.delete("/boats/{boat_id}")
-async def delete_boat(boat_id: str, _: str = Depends(require_admin)):
+async def delete_boat(boat_id: str, user: dict = Depends(require_admin)):
+    await _boat_of_club(boat_id, user)
     await db.boats.delete_one({"id": boat_id})
     return {"ok": True}
 
@@ -278,10 +533,17 @@ async def delete_boat(boat_id: str, _: str = Depends(require_admin)):
 # Series
 # ---------------------------------------------------------------------------
 @api_router.get("/series")
-async def get_series(class_id: Optional[str] = None, year: Optional[int] = None):
+async def get_series(request: Request, class_id: Optional[str] = None, year: Optional[int] = None,
+                    club_id: Optional[str] = None):
     q = {}
+    club = await _resolve_club_id(request, club_id)
     if class_id:
         q["class_id"] = class_id
+    elif club:
+        ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
     if year:
         q["year"] = year
     items = await db.series.find(q, {"_id": 0}).sort("order", 1).to_list(1000)
@@ -289,7 +551,8 @@ async def get_series(class_id: Optional[str] = None, year: Optional[int] = None)
 
 
 @api_router.post("/series")
-async def create_series(data: SeriesInput, _: str = Depends(require_admin)):
+async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
+    await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     if doc.get("schedule") is None:
         doc["schedule"] = []
@@ -314,7 +577,9 @@ async def _sync_race_dates(series_id: str, schedule):
 
 
 @api_router.put("/series/{series_id}")
-async def update_series(series_id: str, data: SeriesInput, _: str = Depends(require_admin)):
+async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(require_admin)):
+    await _series_of_club(series_id, user)
+    await _class_of_club(data.class_id, user)
     update = data.model_dump()
     if update.get("schedule") is None:
         update.pop("schedule", None)
@@ -329,10 +594,8 @@ def _saturdays_from(start: str, n: int):
 
 
 @api_router.post("/series/{series_id}/generate-schedule")
-async def generate_schedule(series_id: str, data: GenScheduleInput, _: str = Depends(require_admin)):
-    series = await db.series.find_one({"id": series_id}, {"_id": 0})
-    if not series:
-        raise HTTPException(status_code=404, detail="Series not found")
+async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict = Depends(require_admin)):
+    series = await _series_of_club(series_id, user)
     total = data.count or series.get("planned_races", 0)
     races = await db.races.find({"series_id": series_id, "status": "published"}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
@@ -347,7 +610,8 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, _: str = Dep
 
 
 @api_router.delete("/series/{series_id}")
-async def delete_series(series_id: str, _: str = Depends(require_admin)):
+async def delete_series(series_id: str, user: dict = Depends(require_admin)):
+    await _series_of_club(series_id, user)
     await db.series.delete_one({"id": series_id})
     return {"ok": True}
 
@@ -360,13 +624,20 @@ async def _class_active_boats(class_id: str, year: int):
 
 
 @api_router.get("/races")
-async def get_races(status: Optional[str] = None, class_id: Optional[str] = None,
-                    series_id: Optional[str] = None, date: Optional[str] = None):
+async def get_races(request: Request, status: Optional[str] = None, class_id: Optional[str] = None,
+                    series_id: Optional[str] = None, date: Optional[str] = None,
+                    club_id: Optional[str] = None):
     q = {}
+    club = await _resolve_club_id(request, club_id)
     if status:
         q["status"] = status
     if class_id:
         q["class_id"] = class_id
+    elif club:
+        ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
     if series_id:
         q["series_id"] = series_id
     if date:
@@ -376,19 +647,28 @@ async def get_races(status: Optional[str] = None, class_id: Optional[str] = None
 
 
 @api_router.get("/races/{race_id}")
-async def get_race(race_id: str):
+async def get_race(race_id: str, request: Request):
     race = await db.races.find_one({"id": race_id}, {"_id": 0})
     if not race:
         raise HTTPException(status_code=404, detail="Race not found")
+    # Published races are public; but staff may never view another club's
+    # race (which would expose unpublished results and notices). 404 (not
+    # 403) so the existence of another club's race is never revealed.
+    user = await get_current_user(request)
+    if user and user.get("role") != "webmaster":
+        if user.get("club_id") != await _class_club_id(race.get("class_id")):
+            raise HTTPException(status_code=404, detail="Race not found")
     return race
 
 
 @api_router.post("/races")
-async def create_race(data: RaceCreateInput, _: str = Depends(require_officer)):
+async def create_race(data: RaceCreateInput, user: dict = Depends(require_officer)):
     series = await db.series.find_one({"id": data.series_id}, {"_id": 0})
     cls = await db.classes.find_one({"id": data.class_id}, {"_id": 0})
     if not series or not cls:
         raise HTTPException(status_code=400, detail="Invalid class or series")
+    _ensure_club(user, cls.get("club_id"))
+    _ensure_club(user, await _class_club_id(series.get("class_id")))
     year = series["year"]
     boats = await _class_active_boats(data.class_id, year)
     results = [{
@@ -421,12 +701,10 @@ async def create_race(data: RaceCreateInput, _: str = Depends(require_officer)):
 
 
 @api_router.post("/races/{race_id}/start")
-async def start_race(race_id: str, data: StartRaceInput, _: str = Depends(require_officer)):
+async def start_race(race_id: str, data: StartRaceInput, user: dict = Depends(require_officer)):
     """Set (or clear) the actual start time ('gun'). Device time is captured on
     the client and sent here; the timer runs from this instant."""
-    race = await db.races.find_one({"id": race_id}, {"_id": 0})
-    if not race:
-        raise HTTPException(status_code=404, detail="Race not found")
+    race = await _race_of_club(race_id, user)
     actual_start = data.start_time or None
     await db.races.update_one({"id": race_id}, {"$set": {"actual_start": actual_start}})
     updated = await db.races.find_one({"id": race_id}, {"_id": 0})
@@ -434,17 +712,16 @@ async def start_race(race_id: str, data: StartRaceInput, _: str = Depends(requir
 
 
 @api_router.put("/races/{race_id}/notifications")
-async def update_notifications(race_id: str, data: RaceNotificationInput, _: str = Depends(require_officer)):
+async def update_notifications(race_id: str, data: RaceNotificationInput, user: dict = Depends(require_officer)):
+    await _race_of_club(race_id, user)
     update = {k: v for k, v in data.model_dump().items() if v is not None}
     await db.races.update_one({"id": race_id}, {"$set": update})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
 @api_router.post("/races/{race_id}/select-boats")
-async def select_boats(race_id: str, data: SelectBoatsInput, _: str = Depends(require_officer)):
-    race = await db.races.find_one({"id": race_id}, {"_id": 0})
-    if not race:
-        raise HTTPException(status_code=404, detail="Race not found")
+async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depends(require_officer)):
+    race = await _race_of_club(race_id, user)
     selected = set(data.boat_ids)
     results = race["results"]
     previously_finished = {r["boat_id"] for r in results if r.get("code") == "FINISHED"}
@@ -465,10 +742,8 @@ async def select_boats(race_id: str, data: SelectBoatsInput, _: str = Depends(re
 
 
 @api_router.post("/races/{race_id}/finish")
-async def record_finish(race_id: str, data: FinishInput, _: str = Depends(require_officer)):
-    race = await db.races.find_one({"id": race_id}, {"_id": 0})
-    if not race:
-        raise HTTPException(status_code=404, detail="Race not found")
+async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(require_officer)):
+    race = await _race_of_club(race_id, user)
     results = race["results"]
     for r in results:
         if r["boat_id"] == data.boat_id:
@@ -482,10 +757,8 @@ async def record_finish(race_id: str, data: FinishInput, _: str = Depends(requir
 
 
 @api_router.post("/races/{race_id}/undo-finish")
-async def undo_finish(race_id: str, data: FinishInput, _: str = Depends(require_officer)):
-    race = await db.races.find_one({"id": race_id}, {"_id": 0})
-    if not race:
-        raise HTTPException(status_code=404, detail="Race not found")
+async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(require_officer)):
+    race = await _race_of_club(race_id, user)
     results = race["results"]
     for r in results:
         if r["boat_id"] == data.boat_id:
@@ -502,10 +775,8 @@ async def undo_finish(race_id: str, data: FinishInput, _: str = Depends(require_
 
 @api_router.put("/races/{race_id}/result/{boat_id}")
 async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
-                        _: str = Depends(require_officer)):
-    race = await db.races.find_one({"id": race_id}, {"_id": 0})
-    if not race:
-        raise HTTPException(status_code=404, detail="Race not found")
+                        user: dict = Depends(require_officer)):
+    race = await _race_of_club(race_id, user)
     results = race["results"]
     target = next((r for r in results if r["boat_id"] == boat_id), None)
     if target is None:
@@ -546,15 +817,17 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
 
 
 @api_router.post("/races/{race_id}/status/{status}")
-async def set_race_status(race_id: str, status: str, _: str = Depends(require_officer)):
+async def set_race_status(race_id: str, status: str, user: dict = Depends(require_officer)):
     if status not in ("setup", "provisional", "published"):
         raise HTTPException(status_code=400, detail="Invalid status")
+    await _race_of_club(race_id, user)
     await db.races.update_one({"id": race_id}, {"$set": {"status": status, "published_at": now_iso() if status == "published" else None}})
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
 @api_router.delete("/races/{race_id}")
-async def delete_race(race_id: str, _: str = Depends(require_officer)):
+async def delete_race(race_id: str, user: dict = Depends(require_officer)):
+    await _race_of_club(race_id, user)
     await db.races.delete_one({"id": race_id})
     return {"ok": True}
 
@@ -563,8 +836,15 @@ async def delete_race(race_id: str, _: str = Depends(require_officer)):
 # Notifications (public banner)
 # ---------------------------------------------------------------------------
 @api_router.get("/notifications")
-async def get_notifications():
-    races = await db.races.find({"status": {"$in": ["setup", "provisional"]}}, {"_id": 0}).to_list(500)
+async def get_notifications(request: Request, club_id: Optional[str] = None):
+    q = {"status": {"$in": ["setup", "provisional"]}}
+    club = await _resolve_club_id(request, club_id)
+    if club:
+        ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
+    races = await db.races.find(q, {"_id": 0}).to_list(500)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
     out = []
     for r in races:
@@ -866,15 +1146,22 @@ async def compute_series_standings(series):
 
 
 @api_router.get("/standings/series/{series_id}")
-async def series_standings(series_id: str):
+async def series_standings(series_id: str, request: Request, club_id: Optional[str] = None):
     series = await db.series.find_one({"id": series_id}, {"_id": 0})
     if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    club = await _resolve_club_id(request, club_id)
+    if club and (await _class_club_id(series.get("class_id"))) != club:
         raise HTTPException(status_code=404, detail="Series not found")
     return await compute_series_standings(series)
 
 
 @api_router.get("/standings/overall")
-async def overall_standings(class_id: str, year: int):
+async def overall_standings(class_id: str, year: int, request: Request, club_id: Optional[str] = None):
+    club = await _resolve_club_id(request, club_id)
+    if club and (await _class_club_id(class_id)) != club:
+        raise HTTPException(status_code=404, detail="Class not found")
+
     all_series = await db.series.find({"class_id": class_id, "year": year, "included_in_overall": True}, {"_id": 0}).to_list(1000)
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
@@ -920,8 +1207,15 @@ async def rrs_codes():
 
 
 @api_router.get("/scheduled-races")
-async def scheduled_races(date: Optional[str] = None):
-    all_series = await db.series.find({}, {"_id": 0}).to_list(1000)
+async def scheduled_races(request: Request, date: Optional[str] = None, club_id: Optional[str] = None):
+    q = {}
+    club = await _resolve_club_id(request, club_id)
+    if club:
+        ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
+    all_series = await db.series.find(q, {"_id": 0}).to_list(1000)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
     out = []
     for s in all_series:
@@ -959,13 +1253,37 @@ async def root():
 # Seed sample data
 # ---------------------------------------------------------------------------
 @api_router.post("/seed")
-async def seed(_: str = Depends(require_admin)):
+async def seed(user: dict = Depends(require_admin)):
     return await run_seed()
+
+
+async def ensure_default_club():
+    """Multi-club migration: create a first club (from env PINs) if none exists,
+    and attach any classes that predate clubs to it."""
+    clubs = await db.clubs.find({}, {"_id": 0}).to_list(10)
+    if clubs:
+        default = clubs[0]
+    else:
+        default = {
+            "id": new_id(),
+            "name": os.environ.get("CLUB_NAME", "Sailing Club"),
+            "slug": slugify(os.environ.get("CLUB_NAME", "Sailing Club")),
+            "color": "#0A369D",
+            "officer_pin": os.environ.get("RACE_OFFICER_PIN", "1234"),
+            "admin_pin": os.environ.get("RACE_ADMIN_PIN", "5678"),
+            "created_at": now_iso(),
+        }
+        await db.clubs.insert_one(default)
+    # Pre-club data (or any orphaned classes) belong to the default club.
+    await db.classes.update_many({"club_id": {"$exists": False}}, {"$set": {"club_id": default["id"]}})
+    return default
 
 
 async def run_seed():
     if await db.classes.count_documents({}) > 0:
         return {"seeded": False, "message": "Data already present"}
+    default = await ensure_default_club()
+    club_id = default["id"]
     year = datetime.now(timezone.utc).year
     class_defs = [
         ("Dragon", "10:30"),
@@ -976,7 +1294,8 @@ async def run_seed():
     for name, st in class_defs:
         cid = new_id()
         class_ids[name] = cid
-        await db.classes.insert_one({"id": cid, "name": name, "default_start_time": st, "created_at": now_iso()})
+        await db.classes.insert_one({"id": cid, "club_id": club_id, "name": name,
+                                    "default_start_time": st, "created_at": now_iso()})
     series_defs = [
         ("Early Spring", 1, True),
         ("Late Spring", 2, True),
@@ -1020,6 +1339,7 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup():
+    await ensure_default_club()
     await run_seed()
 
 

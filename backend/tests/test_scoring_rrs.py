@@ -369,3 +369,45 @@ class TestElapsedCorrection:
     def test_unparseable_start_returns_none(self):
         assert server._finish_time_from_elapsed("not-a-date", 100) is None
         assert server._finish_time_from_elapsed(None, 100) is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-club: slug generation, club-scoped tokens, access guards
+# ---------------------------------------------------------------------------
+
+class TestMultiClub:
+    def test_slugify(self):
+        assert server.slugify("Seafarers Sailing Club") == "seafarers-sailing-club"
+        assert server.slugify("  A.P. & Co  ") == "a-p-co"
+        assert server.slugify("!!!") == "club"
+        assert server.slugify("Dragon") == "dragon"
+
+    def test_token_carries_club_id(self):
+        payload = server.jwt.decode(server.create_token("admin", "club-1"),
+                                    server.JWT_SECRET, algorithms=["HS256"])
+        assert payload["role"] == "admin"
+        assert payload["club_id"] == "club-1"
+
+    def test_officer_and_admin_tokens_keep_their_club(self):
+        payload = server.jwt.decode(server.create_token("officer", "club-b"),
+                                    server.JWT_SECRET, algorithms=["HS256"])
+        assert payload["role"] == "officer"
+        assert payload["club_id"] == "club-b"
+
+    def test_ensure_club_allows_own_club_only(self):
+        import pytest
+        # Same club: no exception.
+        server._ensure_club({"role": "admin", "club_id": "a"}, "a")
+        # Another club: blocked.
+        with pytest.raises(Exception):
+            server._ensure_club({"role": "admin", "club_id": "a"}, "b")
+        # A user without a club is blocked.
+        with pytest.raises(Exception):
+            server._ensure_club(None, "a")
+
+    def test_club_public_strips_pins(self):
+        club = {"id": "c1", "name": "X", "slug": "x",
+                "officer_pin": "1234", "admin_pin": "5678"}
+        pub = server._club_public(club)
+        assert "officer_pin" not in pub and "admin_pin" not in pub
+        assert pub["name"] == "X"

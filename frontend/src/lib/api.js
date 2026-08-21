@@ -19,10 +19,17 @@ export function formatApiError(detail) {
 }
 
 export const api = {
-  login: (role, pin) => client.post("/auth/login", { role, pin }).then((r) => r.data),
+  login: (role, pin, club_id) => client.post("/auth/login", { role, pin, club_id }).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
 
-  getClasses: () => client.get("/classes").then((r) => r.data),
+  getClubs: () => client.get("/clubs").then((r) => r.data),
+  getClubDirectory: (year) => client.get("/clubs/directory", { params: year ? { year } : {} }).then((r) => r.data),
+  getClubsManage: () => client.get("/clubs/manage").then((r) => r.data),
+  createClub: (d) => client.post("/clubs", d).then((r) => r.data),
+  updateClub: (id, d) => client.put(`/clubs/${id}`, d).then((r) => r.data),
+  deleteClub: (id) => client.delete(`/clubs/${id}`).then((r) => r.data),
+
+  getClasses: (params = {}) => client.get("/classes", { params }).then((r) => r.data),
   createClass: (d) => client.post("/classes", d).then((r) => r.data),
   updateClass: (id, d) => client.put(`/classes/${id}`, d).then((r) => r.data),
   deleteClass: (id) => client.delete(`/classes/${id}`).then((r) => r.data),
@@ -51,9 +58,9 @@ export const api = {
   setStatus: (id, status) => client.post(`/races/${id}/status/${status}`).then((r) => r.data),
   deleteRace: (id) => client.delete(`/races/${id}`).then((r) => r.data),
 
-  getNotifications: () => client.get("/notifications").then((r) => r.data),
-  seriesStandings: (id) => client.get(`/standings/series/${id}`).then((r) => r.data),
-  overallStandings: (class_id, year) => client.get("/standings/overall", { params: { class_id, year } }).then((r) => r.data),
+  getNotifications: (params = {}) => client.get("/notifications", { params }).then((r) => r.data),
+  seriesStandings: (id, club_id) => client.get(`/standings/series/${id}`, { params: club_id ? { club_id } : {} }).then((r) => r.data),
+  overallStandings: (class_id, year, club_id) => client.get("/standings/overall", { params: { class_id, year, ...(club_id ? { club_id } : {}) } }).then((r) => r.data),
   rrsCodes: () => client.get("/rrs-codes").then((r) => r.data),
 };
 

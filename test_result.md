@@ -322,3 +322,20 @@
 - Verified live: Dragon (one-design) shows equal Elapsed/Corrected; Cruiser (IRC) shows real corrected times — Aquila 2:11:03, Countdown 2:11:37, Zephyros 2:11:52, ordered by corrected time (Zephyros beat Countdown on elapsed but places 3rd). Frontend image rebuilt.
 - Follow-up: Elapsed/Corrected columns now render only for IRC classes; one-design race tables show Pos/Boat/Helm/Code only (verified live on Dragon vs Cruiser).
 - Added `boat_type` end-to-end: backend BoatInput, Admin boat form + Type column, and a Type column on the landing race table shown only for IRC classes (cruisers). Populated types for the 5 demo cruisers (Bavaria 34, Hanse 315, Jeanneau Sun Odyssey 32, Beneteau First 31.7, Dehler 34). One-design tables unchanged (Pos/Boat/Helm/Code).
+
+## Multi-club support (2026-08-21)
+- New `clubs` collection: name, slug, color, officer_pin, admin_pin. Migration
+  `ensure_default_club()` creates "Sailing Club" from env PINs and attaches all
+  pre-existing classes; seed attaches new classes to the default club.
+- Auth: tokens now carry `club_id`; login validates the PIN against the chosen
+  club's stored pins. All mutation endpoints guard `_ensure_club` (cross-club
+  access → 403, verified live). Public GETs scope by explicit `club_id` param,
+  else the token's club.
+- Front page is now a club directory (`/` → Clubs.jsx): cards with club icon,
+  classes, and each class's latest published race top-3 (from `/clubs/directory`).
+  Clicking a card goes to `/club/:slug` (Landing.jsx, club-scoped).
+- Login page has a club selector (preselected from `?club=<slug>`).
+- Admin console: new "Clubs" tab to add/delete clubs (each with own passcodes).
+- Verified live: directory renders real top-3s; harbour test club saw zero
+  Sailing Club data, cross-club class edit returned 403; test club cleaned up.
+- 37 unit tests pass; frontend builds.

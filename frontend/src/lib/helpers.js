@@ -105,3 +105,7 @@ export const CODE_COLORS = {
 };
 
 export const CURRENT_YEAR = new Date().getFullYear();
+
+// The furthest season ahead that can be set up and viewed (year buttons and
+// the ?year= URL param both stop here).
+export const MAX_YEAR = CURRENT_YEAR + 2;

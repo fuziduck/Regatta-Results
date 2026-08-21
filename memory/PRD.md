@@ -6,12 +6,14 @@ Club-level sailing web app with 3 users. Spectator (public landing page, results
 ## Architecture
 - **Backend**: FastAPI + MongoDB (motor). uuid string ids. JWT role tokens (PIN-per-role auth). Endpoints under `/api`.
 - **Frontend**: React + Tailwind + shadcn/ui. Oswald/Manrope/JetBrains Mono. react-fast-marquee for notice banner. Nautical theme (Oceanic Cobalt + Safety Orange).
-- **Auth**: shared PIN per role (Race Officer `sail2026`, Race Admin `admin2026`) in backend/.env. Spectator = no login.
+- **Auth**: shared PIN per role (Race Officer `sail2026`, Race Admin `admin2026`, Webmaster `WEBMASTER_PIN` env, default `9999`) in backend/.env. Spectator = no login.
+- **Multi-club**: each club stores its own officer/admin PINs and its own classes/boats/series/races. Officer & Admin tokens carry the club id and are hard-scoped to it — a `club_id` query param can never widen access. The Webmaster token carries no club and may manage clubs and enter any club's consoles.
 
 ## User Personas
-- Spectator — public viewer of results/standings.
-- Race Officer — runs race day on a phone/tablet.
-- Race Admin — sets up season, fleet, corrects history (superset of officer).
+- Spectator — public viewer of results/standings (no login; club directory + per-club landing pages).
+- Race Officer — runs race day on a phone/tablet (own club only).
+- Race Admin — sets up season, fleet, corrects history (own club only).
+- Webmaster — adds/removes/edits clubs and their passcodes, and has full Officer + Admin access to every club via per-club console launcher (`/webmaster`, then pick club).
 
 ## Core Requirements (static)
 - Public results by Class > Series (Overall + sub-series), folders per race.
@@ -43,6 +45,11 @@ Club-level sailing web app with 3 users. Spectator (public landing page, results
   next boat 3rd). Boats without TCC/start fall back to finish order. Admin UI: class
   scoring-mode selector + boat TCC field.
 - Unit tests: `backend/tests/test_scoring_rrs.py` — 19 tests covering A4/A5.2/A5.3/A6.1/A7/A8/44.3(c) math (pure functions, no DB). All pass.
+
+## Implemented (2026-08, multi-club + webmaster)
+- **Webmaster role**: third login (`role: "webmaster"` vs `WEBMASTER_PIN` env, default `9999`; docker-compose sets `master2026`). Token carries no club. New `require_webmaster` gates club CRUD (`/clubs`, `/clubs/manage` returns clubs incl. passcodes — the public `/clubs` never leaks PINs). Webmaster passes `require_admin`/`require_officer` and bypasses `_ensure_club`, so it can run any club's consoles.
+- **Club isolation**: `_resolve_club_id` now forces Officer/Admin to their token's club regardless of any `club_id` query param (previously spoofable); `get_race` 404s staff from other clubs; `create_class` takes an explicit `club_id` (required for webmaster, enforced to the caller's own club otherwise); `me()` now returns `club_name`.
+- **Frontend**: Webmaster page (`/webmaster`) — club cards with add/edit/delete (name, colour, officer & admin passcodes) and per-club **Officer console** / **Admin console** launchers; Officer/Admin pages accept `?club=` (webmaster) and show a club picker when none is chosen; Admin's Clubs tab is webmaster-only.
 - Frontend builds cleanly with `ajv@^8` added to deps (schema-utils@4 requires ajv 8 at top level; without it the CRA build fails).
 
 ## Backlog / Remaining
