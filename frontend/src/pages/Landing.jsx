@@ -180,6 +180,7 @@ export default function Landing() {
   const [classes, setClasses] = useState([]);
   const [activeClass, setActiveClass] = useState(null);
   const [notifications, setNotifications] = useState([]);
+  const [seasons, setSeasons] = useState([]);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -194,11 +195,15 @@ export default function Landing() {
   useEffect(() => {
     if (!clubId) return;
     api.getClasses({ club_id: clubId }).then((c) => { setClasses(c); if (c[0]) setActiveClass(c[0].id); });
+    api.getSeasons(clubId).then((d) => setSeasons(d?.years || [])).catch(() => {});
     const load = () => api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
     load();
     const t = setInterval(load, 20000);
     return () => clearInterval(t);
   }, [clubId]);
+
+  // Future years only appear once this club has set up a series for them.
+  const futureYears = seasons.filter((y) => y > CURRENT_YEAR && y <= MAX_YEAR);
 
   if (loadingClub) {
     return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
@@ -254,7 +259,7 @@ export default function Landing() {
           <p className="text-white/80 mt-4 max-w-xl leading-relaxed">
             Follow every fleet across the season. Provisional and confirmed results, series championships and race-day notices — all in one place.
           </p>
-          <YearSwitcher value={year} onChange={setYear} className="mt-5" />
+          <YearSwitcher value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-5" />
         </div>
       </section>
 

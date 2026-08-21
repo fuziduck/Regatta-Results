@@ -5,7 +5,7 @@ import { CURRENT_YEAR, MAX_YEAR, fmtDateShort } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Anchor, LogIn, Sailboat, Trophy } from "lucide-react";
+import { Anchor, CalendarDays, LogIn, Sailboat, Trophy } from "lucide-react";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
   return (
@@ -57,12 +57,20 @@ export default function Clubs() {
   const future = year > CURRENT_YEAR;
   const [directory, setDirectory] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [seasons, setSeasons] = useState([]);
+
+  useEffect(() => {
+    api.getSeasons().then((d) => setSeasons(d?.years || [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     setLoading(true);
     api.getClubDirectory(year === CURRENT_YEAR ? undefined : year)
       .then(setDirectory).catch(() => {}).finally(() => setLoading(false));
   }, [year]);
+
+  // Future years only appear once a club has set up a series for them.
+  const futureYears = seasons.filter((y) => y > CURRENT_YEAR && y <= MAX_YEAR);
 
   return (
     <div className="min-h-screen bg-background">
@@ -99,7 +107,7 @@ export default function Clubs() {
                 ? `See what's already set up for ${year} — pick a club to view its upcoming season.`
                 : `Every club that raced in ${year} — pick a club to see its full season.`}
           </p>
-          <YearSwitcher grouped value={year} onChange={setYear} className="mt-5" />
+          <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-5" />
         </div>
       </section>
 
@@ -117,7 +125,7 @@ export default function Clubs() {
               <p className="font-heading text-xl uppercase tracking-tight">No results recorded in {year}</p>
               <p className="text-muted-foreground text-sm mt-1">
                 {future
-                  ? `The ${year} season hasn't started yet — clubs appear here once results are published.`
+                  ? `The ${year} season hasn't started yet — clubs appear here once a series or results are set up.`
                   : "No clubs published results for that season."}
               </p>
             </div>
@@ -147,7 +155,20 @@ export default function Clubs() {
                         <div className="font-heading uppercase tracking-tight text-sm">{c.name}</div>
                         {c.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50">IRC</Badge>}
                       </div>
-                      <LatestResults latest={c.latest} />
+                      {c.latest ? (
+                        <LatestResults latest={c.latest} />
+                      ) : c.planned_series?.length ? (
+                        <div className="mt-3 rounded-lg bg-ocean/5 border border-ocean/20 p-2.5">
+                          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-ocean">
+                            <CalendarDays className="w-3.5 h-3.5" /> Series planned
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {c.planned_series.map((s) => `${s.name}${s.planned_races ? ` · ${s.planned_races} races` : ""}`).join(", ")}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground mt-1">No published races yet.</p>
+                      )}
                     </div>
                   ))}
                 </div>

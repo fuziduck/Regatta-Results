@@ -36,13 +36,14 @@ function YearGroup({ label, years, value, onChange }) {
 /**
  * Year selector for results pages, oldest-to-newest. The selected year always
  * renders as an orange (safety) pill; all other seasons render as muted
- * translucent pills that work over the hero photo. Future years are included
- * so pre-set series for the coming seasons are viewable before racing starts.
+ * translucent pills that work over the hero photo. Pass the years to show;
+ * future years are typically supplied by the caller from `/seasons` so only
+ * years with a series set up appear.
  *
  * `grouped` renders the pills under Past / Current / Future headings instead
  * of one flat row.
  */
-export default function YearSwitcher({ value, onChange, years = [CURRENT_YEAR - 1, CURRENT_YEAR + 1, CURRENT_YEAR + 2], className = "", grouped = false }) {
+export default function YearSwitcher({ value, onChange, years = [CURRENT_YEAR - 1], className = "", grouped = false }) {
   const all = [...new Set([CURRENT_YEAR, ...years])].filter((y) => y >= 2000 && y <= MAX_YEAR).sort((a, b) => a - b);
 
   if (grouped) {

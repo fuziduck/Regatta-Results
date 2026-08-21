@@ -208,11 +208,50 @@ class TestPublic:
         assert r.status_code == 200
         for c in r.json():
             assert c["id"] in ids  # year-filtered directory is a subset
-            # clubs are omitted entirely when they have no results that year
-            assert any(ci.get("latest") for ci in c["classes"])
-        # a future year has no racing anywhere
+            # clubs are omitted entirely when they have nothing that year
+            assert any(ci.get("latest") or ci.get("planned_series") for ci in c["classes"])
+        # a future year has nothing set up anywhere
         r2 = requests.get(f"{API}/clubs/directory", params={"year": 2100})
         assert r2.status_code == 200 and r2.json() == []
+
+    def test_club_directory_shows_planned_future_series(self, test_club, test_class, club_admin_token):
+        """A club with a series set up (but no races) appears on that year's
+        directory, marked as planned."""
+        future = YEAR + 1
+        st = requests.post(f"{API}/series", json={
+            "name": "Planned Future Series", "class_id": test_class["id"], "year": future,
+            "discards": 0, "included_in_overall": True, "order": 1, "planned_races": 6,
+        }, headers=h(club_admin_token))
+        assert st.status_code == 200, st.text
+        sid = st.json()["id"]
+        try:
+            r = requests.get(f"{API}/clubs/directory", params={"year": future})
+            assert r.status_code == 200
+            club = next((c for c in r.json() if c["id"] == test_club["id"]), None)
+            assert club, f"test club missing from {future} directory"
+            assert any(ci.get("planned_series") for ci in club["classes"])
+            assert not any(ci.get("latest") for ci in club["classes"])
+        finally:
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+
+    def test_seasons(self, test_club, test_class, club_admin_token):
+        """/seasons reports only years that actually have series (all clubs,
+        or scoped to one club)."""
+        future = YEAR + 1
+        st = requests.post(f"{API}/series", json={
+            "name": "Seasons Test Series", "class_id": test_class["id"], "year": future,
+            "discards": 0, "included_in_overall": True, "order": 1, "planned_races": 3,
+        }, headers=h(club_admin_token))
+        assert st.status_code == 200, st.text
+        sid = st.json()["id"]
+        try:
+            all_years = requests.get(f"{API}/seasons").json()["years"]
+            assert isinstance(all_years, list) and all_years == sorted(all_years)
+            assert future in all_years
+            club_years = requests.get(f"{API}/seasons", params={"club_id": test_club["id"]}).json()["years"]
+            assert future in club_years
+        finally:
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
 
 
 # ---------- Admin CRUD (inside the test club) ----------

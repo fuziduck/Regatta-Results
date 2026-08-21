@@ -24,6 +24,7 @@ export const api = {
 
   getClubs: () => client.get("/clubs").then((r) => r.data),
   getClubDirectory: (year) => client.get("/clubs/directory", { params: year ? { year } : {} }).then((r) => r.data),
+  getSeasons: (club_id) => client.get("/seasons", { params: club_id ? { club_id } : {} }).then((r) => r.data),
   getClubsManage: () => client.get("/clubs/manage").then((r) => r.data),
   createClub: (d) => client.post("/clubs", d).then((r) => r.data),
   updateClub: (id, d) => client.put(`/clubs/${id}`, d).then((r) => r.data),

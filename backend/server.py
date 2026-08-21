@@ -361,9 +361,10 @@ async def clubs_directory(year: Optional[int] = None):
     """Front-page data: every club with its classes and each class's most
     recent published race's top three finishers.
 
-    Pass `year` to view a past season: the latest result is scoped to that
-    year and clubs with no results that year are omitted (so the page reads
-    "all clubs that raced that season")."""
+    Pass `year` to view a specific season: the latest result is scoped to that
+    year, and a club is included when any of its classes has either published
+    results or a series set up ("planned") for that year — so clubs with a
+    pre-arranged future season appear before any racing has happened."""
     clubs = await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
     out = []
     for club in clubs:
@@ -392,14 +393,36 @@ async def clubs_directory(year: Optional[int] = None):
                                "sail_no": boats.get(x["boat_id"], {}).get("sail_no", "")}
                               for x in finished],
                 }
+            planned_series = []
+            if year:
+                series = await db.series.find({"class_id": c["id"], "year": year},
+                                              {"_id": 0, "name": 1, "planned_races": 1})\
+                    .sort("order", 1).to_list(50)
+                planned_series = [{"name": s.get("name", ""),
+                                   "planned_races": s.get("planned_races", 0)} for s in series]
             class_info.append({"id": c["id"], "name": c["name"],
                                "scoring_mode": c.get("scoring_mode", "one_design"),
-                               "latest": latest})
-        if year and not any(ci["latest"] for ci in class_info):
-            continue  # no published results that season — omit the club
+                               "latest": latest, "planned_series": planned_series})
+        if year and not any(ci["latest"] or ci["planned_series"] for ci in class_info):
+            continue  # nothing raced or planned that season — omit the club
         out.append({"id": club["id"], "name": club["name"], "slug": club.get("slug"),
                     "color": club.get("color", "#0A369D"), "classes": class_info})
     return out
+
+
+@api_router.get("/seasons")
+async def seasons(club_id: Optional[str] = None):
+    """Distinct years that have any series set up. Public — the front page
+    uses it to show only the future-year buttons that actually have a
+    planned season (optionally scoped to one club's series)."""
+    q = {}
+    if club_id:
+        ids = await _club_class_ids(club_id)
+        if not ids:
+            return {"years": []}  # club has no classes, so no series
+        q["class_id"] = {"$in": ids}
+    years = await db.series.distinct("year", q)
+    return {"years": sorted(y for y in years if isinstance(y, int))}
 
 
 @api_router.post("/clubs")
