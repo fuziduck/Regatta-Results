@@ -47,7 +47,7 @@ services:
       RACE_OFFICER_PIN: race2026
       RACE_ADMIN_PIN: admin2026
       WEBMASTER_PIN: master2026   # global role — manages clubs, access to all
-      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1:3100"
     command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       mongodb:
@@ -82,6 +82,11 @@ services:
       # host-accessible URL because the bundle runs in the browser,
       # not inside the container.
       REACT_APP_BACKEND_URL: http://127.0.0.1:8000
+      # Bind-mounts don't always propagate inotify events into the
+      # container on Docker for Mac, so CRA's watcher can miss host-side
+      # edits and keep serving stale bundles.  Poll instead of watching.
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "1000"
     depends_on:
       backend:
         condition: service_healthy

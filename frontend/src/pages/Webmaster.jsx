@@ -18,7 +18,7 @@ function ClubCard({ club, onEdit, onDelete, onConsole }) {
       <div className="flex items-center gap-4">
         <ClubBadge club={club} />
         <div className="min-w-0">
-          <div className="font-heading text-2xl uppercase tracking-tight leading-none truncate">{club.name}</div>
+          <div className="font-heading text-2xl uppercase tracking-tight leading-tight break-words">{club.name}</div>
           <div className="text-xs text-muted-foreground mt-1 font-mono">/{club.slug}</div>
         </div>
         <div className="ml-auto flex items-center gap-1">

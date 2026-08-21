@@ -426,10 +426,25 @@ async def clubs_directory(year: Optional[int] = None):
             planned_series = []
             if year:
                 series = await db.series.find({"class_id": c["id"], "year": year},
-                                              {"_id": 0, "name": 1, "planned_races": 1})\
-                    .sort("order", 1).to_list(50)
+                                              {"_id": 0, "name": 1, "planned_races": 1,
+                                               "order": 1, "schedule": 1}).to_list(50)
+
+                def _series_first_date(s):
+                    dates = sorted(d for d in (s.get("schedule") or []) if isinstance(d, str))
+                    return dates[0] if dates else None
+
+                def _series_sort_key(s):
+                    # Soonest series first: by the first scheduled date; series
+                    # without a schedule fall back to their display order.
+                    first = _series_first_date(s)
+                    if first:
+                        return (0, first)
+                    return (1, s.get("order") or 0)
+
+                series.sort(key=_series_sort_key)
                 planned_series = [{"name": s.get("name", ""),
-                                   "planned_races": s.get("planned_races", 0)} for s in series]
+                                   "planned_races": s.get("planned_races", 0),
+                                   "first_date": _series_first_date(s)} for s in series]
             class_info.append({"id": c["id"], "name": c["name"],
                                "scoring_mode": c.get("scoring_mode", "one_design"),
                                "latest": latest, "planned_series": planned_series})

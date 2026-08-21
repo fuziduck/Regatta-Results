@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Anchor, ShieldCheck, Radio, ArrowLeft, Building2, Globe } from "lucide-react";
+import { Anchor, ShieldCheck, Radio, ArrowLeft, Globe, ChevronDown } from "lucide-react";
 
 export default function Login() {
   const { login } = useAuth();
@@ -18,6 +18,7 @@ export default function Login() {
   const [role, setRole] = useState("officer");
   const [pin, setPin] = useState("");
   const [loading, setLoading] = useState(false);
+  const [clubOpen, setClubOpen] = useState(false);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -26,6 +27,34 @@ export default function Login() {
       setClubId((fromUrl || (cs || [])[0])?.id || "");
     }).catch(() => {});
   }, [searchParams]);
+
+  // Close the club dropdown on outside click / Escape
+  useEffect(() => {
+    if (!clubOpen) return;
+    const onDown = (e) => {
+      if (!(e.target instanceof Element)) return;
+      if (e.target.closest("[data-testid=club-select]") || e.target.closest("[data-testid=club-option]")) return;
+      setClubOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [clubOpen]);
+
+  const onClubKeyDown = (e) => {
+    if (e.key === "Escape") {
+      setClubOpen(false);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!clubOpen) {
+        setClubOpen(true);
+        return;
+      }
+      const opts = [...document.querySelectorAll('[data-testid="club-option"]')];
+      const idx = opts.indexOf(document.activeElement);
+      const next = e.key === "ArrowDown" ? Math.min(idx + 1, opts.length - 1) : Math.max(idx - 1, 0);
+      opts[next]?.focus();
+    }
+  };
 
   const selectedClub = clubs.find((c) => c.id === clubId);
 
@@ -76,17 +105,41 @@ export default function Login() {
             <div className="mt-6 space-y-2">
               <Label htmlFor="club">Club</Label>
               <div className="relative">
-                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <select
+                <button
+                  type="button"
                   id="club"
                   data-testid="club-select"
-                  value={clubId}
-                  onChange={(e) => setClubId(e.target.value)}
-                  className="w-full h-12 pl-11 pr-8 rounded-lg border border-input bg-background text-base font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  aria-haspopup="listbox"
+                  aria-expanded={clubOpen}
+                  onClick={() => setClubOpen((o) => !o)}
+                  onKeyDown={onClubKeyDown}
+                  className="w-full h-12 pl-3 pr-3 rounded-lg border border-input bg-background text-base flex items-center justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 >
-                  {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  {!clubs.length && <option value="">No clubs available</option>}
-                </select>
+                  <span className={selectedClub ? "font-semibold text-foreground" : "text-muted-foreground"}>
+                    {selectedClub ? selectedClub.name : (clubs.length ? "Select a club" : "No clubs available")}
+                  </span>
+                  <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                </button>
+                {clubOpen && (
+                  <ul
+                    role="listbox"
+                    aria-label="Clubs"
+                    className="absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-lg border border-border bg-background shadow-xl"
+                  >
+                    {clubs.map((c) => (
+                      <li key={c.id} role="option" aria-selected={c.id === clubId}>
+                        <button
+                          type="button"
+                          data-testid="club-option"
+                          onClick={() => { setClubId(c.id); setClubOpen(false); }}
+                          className={`w-full text-left px-4 py-3 text-sm sm:text-base transition-colors hover:bg-muted/70 ${c.id === clubId ? "font-semibold text-ocean" : "text-foreground"}`}
+                        >
+                          {c.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           ) : (

@@ -191,11 +191,16 @@ export default function Landing() {
   useEffect(() => {
     if (!clubId) return;
     api.getClasses({ club_id: clubId }).then((c) => { setClasses(c); if (c[0]) setActiveClass(c[0].id); });
-    api.getSeasons(clubId).then((d) => setSeasons(d?.years || [])).catch(() => {});
-    const load = () => api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
+    const load = () => {
+      api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
+      // Keep the future-year buttons current when the admin sets up a new season.
+      api.getSeasons(clubId).then((d) => setSeasons(d?.years || [])).catch(() => {});
+    };
     load();
     const t = setInterval(load, 20000);
-    return () => clearInterval(t);
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, [clubId]);
 
   // Future years only appear once this club has set up a series for them.

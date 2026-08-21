@@ -218,7 +218,7 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
         </div>
         <div className="flex items-center gap-2">
           <Label className="text-sm">Year</Label>
-          <Select value={yearFilter} onValueChange={(v) => setYearFilter(Number(v))}>
+          <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(Number(v))}>
             <SelectTrigger className="w-28" data-testid="boat-year-filter"><SelectValue /></SelectTrigger>
             <SelectContent>{YEAR_OPTIONS.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
@@ -329,7 +329,7 @@ function SeriesTab({ classes, clubId }) {
         </div>
         <div className="flex items-center gap-2">
           <Label className="text-sm">Year</Label>
-          <Select value={yearFilter} onValueChange={(v) => setYearFilter(Number(v))}>
+          <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(Number(v))}>
             <SelectTrigger className="w-28" data-testid="series-year-filter"><SelectValue /></SelectTrigger>
             <SelectContent>{YEAR_OPTIONS.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
@@ -461,7 +461,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
           <SelectTrigger className="w-40" data-testid="hist-class"><SelectValue placeholder="Class" /></SelectTrigger>
           <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
         </Select>
-        <Select value={yearFilter} onValueChange={(v) => { setYearFilter(Number(v)); setSeriesId(""); setRace(null); }}>
+        <Select value={String(yearFilter)} onValueChange={(v) => { setYearFilter(Number(v)); setSeriesId(""); setRace(null); }}>
           <SelectTrigger className="w-28" data-testid="hist-year"><SelectValue /></SelectTrigger>
           <SelectContent>{YEAR_OPTIONS.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
         </Select>

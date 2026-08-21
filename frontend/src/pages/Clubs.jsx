@@ -53,14 +53,21 @@ export default function Clubs() {
   const [loading, setLoading] = useState(true);
   const [seasons, setSeasons] = useState([]);
 
+  // Refresh when new series may have been set up elsewhere (page re-focus or a
+  // 30s poll): the future-year buttons and the per-year club directory must
+  // pick up newly added series without a manual reload.
   useEffect(() => {
-    api.getSeasons().then((d) => setSeasons(d?.years || [])).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    setLoading(true);
-    api.getClubDirectory(year === CURRENT_YEAR ? undefined : year)
-      .then(setDirectory).catch(() => {}).finally(() => setLoading(false));
+    const refresh = () => {
+      api.getSeasons().then((d) => setSeasons(d?.years || [])).catch(() => {});
+      setLoading(true);
+      api.getClubDirectory(year === CURRENT_YEAR ? undefined : year)
+        .then(setDirectory).catch(() => {}).finally(() => setLoading(false));
+    };
+    refresh();
+    const t = setInterval(refresh, 30000);
+    const onVis = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, [year]);
 
   // Future years only appear once a club has set up a series for them.
@@ -160,8 +167,14 @@ export default function Clubs() {
                           <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-ocean">
                             <CalendarDays className="w-3.5 h-3.5" /> Series planned
                           </div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {c.planned_series.map((s) => `${s.name}${s.planned_races ? ` · ${s.planned_races} races` : ""}`).join(", ")}
+                          <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                            {c.planned_series.map((s) => (
+                              <div key={s.name}>
+                                <span className="font-semibold text-foreground">{s.name}</span>
+                                {s.planned_races ? ` · ${s.planned_races} races` : ""}
+                                {s.first_date ? ` · starts ${fmtDateShort(s.first_date)}` : ""}
+                              </div>
+                            ))}
                           </div>
                         </div>
                       ) : (
