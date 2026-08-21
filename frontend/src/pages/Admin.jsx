@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
+import ClubBadge from "@/components/ClubBadge";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,77 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2 } from "lucide-react";
+import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff } from "lucide-react";
+
+function ClubIconField({ clubId }) {
+  const [icon, setIcon] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const load = useCallback(() => {
+    if (!clubId) return;
+    api.getClubs().then((cs) => setIcon((cs || []).find((c) => c.id === clubId)?.icon || null)).catch(() => {});
+  }, [clubId]);
+  useEffect(() => { load(); }, [load]);
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 512 * 1024) {
+      toast.error("Icon must be 512 KB or smaller");
+      e.target.value = "";
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.uploadClubIcon(clubId, file);
+      toast.success("Club icon updated");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not upload icon");
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await api.deleteClubIcon(clubId);
+      toast.success("Club icon removed — back to the letter");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not remove icon");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 mb-6 flex flex-wrap items-center gap-4">
+      <ClubBadge club={{ icon, name: "Club" }} size="w-16 h-16" textSize="text-3xl" />
+      <div className="min-w-0 flex-1">
+        <div className="font-heading text-lg uppercase tracking-tight">Club icon</div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Shown on the results pages, club directory and pickers in place of the first letter.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" data-testid="club-icon-file" onChange={pick} />
+        <Button variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" disabled={busy}
+          onClick={() => fileRef.current?.click()} data-testid="club-icon-upload">
+          <Upload className="w-4 h-4" /> {icon ? "Change" : "Upload"} icon
+        </Button>
+        {icon && (
+          <Button variant="ghost" className="text-destructive" disabled={busy} onClick={remove} data-testid="club-icon-remove">
+            <ImageOff className="w-4 h-4" /> Remove
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function TopBar({ clubName, onSwitchClub }) {
   const { role, logout } = useAuth();
@@ -507,7 +578,7 @@ function ClubsTab() {
           <TableBody>{clubs.map((c) => (
             <TableRow key={c.id} data-testid={`club-row-${c.slug}`}>
               <TableCell className="flex items-center gap-3">
-                <span className="w-8 h-8 rounded-lg grid place-items-center text-white font-heading" style={{ backgroundColor: c.color || "#0A369D" }}>{c.name.charAt(0)}</span>
+                <ClubBadge club={c} size="w-8 h-8" textSize="text-base" rounded="rounded-lg" />
                 <span className="font-heading text-lg uppercase tracking-tight">{c.name}</span>
               </TableCell>
               <TableCell className="text-muted-foreground">—</TableCell>
@@ -568,6 +639,7 @@ export default function Admin() {
       <main className="max-w-6xl mx-auto px-4 py-8">
         <h1 className="text-3xl uppercase tracking-tighter mb-1">Admin console</h1>
         <p className="text-muted-foreground text-sm mb-6">Manage the fleet, season structure and historic scoring.</p>
+        {clubId && <ClubIconField clubId={clubId} />}
         <Tabs defaultValue="boats">
           <TabsList className="flex flex-wrap h-auto gap-1" data-testid="admin-tabs">
             <TabsTrigger value="boats" data-testid="tab-boats">Boats</TabsTrigger>

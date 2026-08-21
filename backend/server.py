@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,6 +10,7 @@ from typing import List, Optional, Literal
 import uuid
 import jwt
 import re
+import base64
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -425,7 +426,8 @@ async def clubs_directory(year: Optional[int] = None):
         if year and not any(ci["latest"] or ci["planned_series"] for ci in class_info):
             continue  # nothing raced or planned that season — omit the club
         out.append({"id": club["id"], "name": club["name"], "slug": club.get("slug"),
-                    "color": club.get("color", "#0A369D"), "classes": class_info})
+                    "color": club.get("color", "#0A369D"), "icon": club.get("icon"),
+                    "classes": class_info})
     return out
 
 
@@ -467,6 +469,35 @@ async def update_club(club_id: str, data: ClubInput, user: dict = Depends(requir
     if data.slug:
         update["slug"] = data.slug.lower()
     await db.clubs.update_one({"id": club_id}, {"$set": update})
+    return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
+
+
+@api_router.put("/clubs/{club_id}/icon")
+async def upload_club_icon(club_id: str, user: dict = Depends(require_admin), file: UploadFile = File(...)):
+    """Set a club's icon (PNG/JPG/WebP etc, up to 512 KB). The club's own
+    race admin may set their club's icon; the webmaster may set any club's.
+    Stored as a base64 data URL on the club doc — no file storage to manage.
+    """
+    _ensure_club(user, club_id)
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
+    data = await file.read()
+    if len(data) > 512 * 1024:
+        raise HTTPException(status_code=400, detail="Icon must be 512 KB or smaller")
+    ctype = file.content_type or "image/png"
+    if not ctype.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Upload must be an image file")
+    icon = f"data:{ctype};base64,{base64.b64encode(data).decode()}"
+    await db.clubs.update_one({"id": club_id}, {"$set": {"icon": icon}})
+    return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
+
+
+@api_router.delete("/clubs/{club_id}/icon")
+async def delete_club_icon(club_id: str, user: dict = Depends(require_admin)):
+    """Remove a club's icon so the letter fallback returns."""
+    _ensure_club(user, club_id)
+    await db.clubs.update_one({"id": club_id}, {"$unset": {"icon": ""}})
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
 

@@ -29,6 +29,12 @@ export const api = {
   createClub: (d) => client.post("/clubs", d).then((r) => r.data),
   updateClub: (id, d) => client.put(`/clubs/${id}`, d).then((r) => r.data),
   deleteClub: (id) => client.delete(`/clubs/${id}`).then((r) => r.data),
+  uploadClubIcon: (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return client.put(`/clubs/${id}/icon`, fd).then((r) => r.data);
+  },
+  deleteClubIcon: (id) => client.delete(`/clubs/${id}/icon`).then((r) => r.data),
 
   getClasses: (params = {}) => client.get("/classes", { params }).then((r) => r.data),
   createClass: (d) => client.post("/classes", d).then((r) => r.data),

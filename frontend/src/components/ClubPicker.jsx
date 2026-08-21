@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import ClubBadge from "@/components/ClubBadge";
 import { Building2 } from "lucide-react";
 
 export default function ClubPicker({ onPick, title = "Choose a club", subtitle }) {
@@ -28,12 +29,7 @@ export default function ClubPicker({ onPick, title = "Choose a club", subtitle }
               onClick={() => onPick(c)}
               className="rounded-xl border border-border bg-card p-5 flex items-center gap-4 text-left hover:border-ocean hover:shadow-lg transition-all active:scale-[0.98]"
             >
-              <span
-                className="w-12 h-12 rounded-xl grid place-items-center text-white font-heading text-xl shadow-lg shrink-0"
-                style={{ backgroundColor: c.color || "#0A369D" }}
-              >
-                {(c.name || "C").charAt(0)}
-              </span>
+              <ClubBadge club={c} size="w-12 h-12" textSize="text-xl" rounded="rounded-xl" />
               <span>
                 <span className="block font-heading text-xl uppercase tracking-tight leading-none">{c.name}</span>
                 <span className="text-xs text-muted-foreground mt-1 block">{c.slug}</span>

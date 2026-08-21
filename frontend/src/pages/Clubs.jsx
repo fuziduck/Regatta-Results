@@ -3,19 +3,13 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { CURRENT_YEAR, MAX_YEAR, fmtDateShort } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
+import ClubBadge from "@/components/ClubBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, CalendarDays, LogIn, Sailboat, Trophy } from "lucide-react";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
-  return (
-    <div
-      className={`${size} rounded-2xl grid place-items-center text-white font-heading text-3xl uppercase shadow-lg shrink-0`}
-      style={{ backgroundColor: club.color || "#0A369D" }}
-    >
-      {(club.name || "C").charAt(0)}
-    </div>
-  );
+  return <ClubBadge club={club} size={size} textSize="text-3xl" />;
 }
 
 function LatestResults({ latest }) {

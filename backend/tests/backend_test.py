@@ -3,6 +3,7 @@ admin CRUD, the full race lifecycle, and RRS scoring — all inside a
 dedicated test club (see conftest.py) so the suite never depends on or
 mutates a real club's data."""
 
+import base64
 import requests
 from datetime import datetime, timezone
 
@@ -123,6 +124,47 @@ class TestWebmaster:
             headers=h(webmaster_token))
         assert r.status_code == 200, r.text
         requests.delete(f"{API}/boats/{r.json()['id']}", headers=h(webmaster_token))
+
+    def test_club_icon_upload_remove(self, test_club, club_admin_token, webmaster_token):
+        # 1x1 transparent PNG
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        cid = test_club["id"]
+        # unauthorised -> 401
+        r = requests.put(f"{API}/clubs/{cid}/icon", files={"file": ("icon.png", png, "image/png")})
+        assert r.status_code == 401
+        # the club's own admin can upload
+        r = requests.put(f"{API}/clubs/{cid}/icon", files={"file": ("icon.png", png, "image/png")},
+                         headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        assert r.json()["icon"].startswith("data:image/png;base64,")
+        # public /clubs carries the icon
+        club = next(c for c in _all_clubs() if c["id"] == cid)
+        assert club["icon"].startswith("data:image/png;base64,")
+        # non-image rejected
+        r = requests.put(f"{API}/clubs/{cid}/icon", files={"file": ("x.txt", b"hello", "text/plain")},
+                         headers=h(club_admin_token))
+        assert r.status_code == 400
+        # oversized rejected (513 KB)
+        big = b"\x89PNG" + b"0" * (513 * 1024)
+        r = requests.put(f"{API}/clubs/{cid}/icon", files={"file": ("big.png", big, "image/png")},
+                         headers=h(club_admin_token))
+        assert r.status_code == 400
+        # webmaster can remove it
+        r = requests.delete(f"{API}/clubs/{cid}/icon", headers=h(webmaster_token))
+        assert r.status_code == 200
+        assert "icon" not in r.json()
+        club = next(c for c in _all_clubs() if c["id"] == cid)
+        assert "icon" not in club
+
+    def test_admin_cannot_set_other_club_icon(self, test_club, other_club_with_data, club_admin_token):
+        other_id = other_club_with_data["id"]
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        r = requests.put(f"{API}/clubs/{other_id}/icon",
+                         files={"file": ("icon.png", png, "image/png")},
+                         headers=h(club_admin_token))
+        assert r.status_code == 403
 
 
 # ---------- Club isolation ----------

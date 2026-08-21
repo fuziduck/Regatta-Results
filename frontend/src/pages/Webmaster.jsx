@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
+import ClubBadge from "@/components/ClubBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,12 +16,7 @@ function ClubCard({ club, onEdit, onDelete, onConsole }) {
   return (
     <div className="rounded-2xl border border-border bg-card p-5 hover:shadow-lg hover:border-ocean/40 transition-all">
       <div className="flex items-center gap-4">
-        <span
-          className="w-14 h-14 rounded-2xl grid place-items-center text-white font-heading text-2xl uppercase shadow-lg shrink-0"
-          style={{ backgroundColor: club.color || "#0A369D" }}
-        >
-          {(club.name || "C").charAt(0)}
-        </span>
+        <ClubBadge club={club} />
         <div className="min-w-0">
           <div className="font-heading text-2xl uppercase tracking-tight leading-none truncate">{club.name}</div>
           <div className="text-xs text-muted-foreground mt-1 font-mono">/{club.slug}</div>
