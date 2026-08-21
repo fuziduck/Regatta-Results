@@ -82,7 +82,7 @@ export default function Login() {
                   data-testid="club-select"
                   value={clubId}
                   onChange={(e) => setClubId(e.target.value)}
-                  className="w-full h-12 pl-9 pr-3 rounded-lg border border-input bg-background text-base font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  className="w-full h-12 pl-11 pr-8 rounded-lg border border-input bg-background text-base font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 >
                   {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   {!clubs.length && <option value="">No clubs available</option>}

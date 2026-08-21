@@ -70,6 +70,13 @@ services:
       - regatta-network
     ports:
       - "3000:3000"
+    volumes:
+      # Bind-mount source so CRA hot-reloads on save, like the backend.
+      # The image's node_modules (installed at build time) are preserved via
+      # the anonymous volume below, because mounting ./frontend over /app
+      # would otherwise hide them.
+      - ./frontend:/app
+      - /app/node_modules
     environment:
       # Baked into the JS bundle at compile time by CRA.  Must be a
       # host-accessible URL because the bundle runs in the browser,
