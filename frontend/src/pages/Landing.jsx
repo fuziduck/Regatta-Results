@@ -104,7 +104,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
   );
 }
 
-function ClassResults({ classId, clubId, year, clubName, className }) {
+function ClassResults({ classId, clubId, year, clubName, className, clubIcon }) {
   const [series, setSeries] = useState([]);
   const [tab, setTab] = useState("overall");
   const [overall, setOverall] = useState(null);
@@ -157,7 +157,7 @@ function ClassResults({ classId, clubId, year, clubName, className }) {
           <Button variant="outline" size="sm" data-testid="export-overall-pdf"
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
             disabled={!overall?.standings?.length}
-            onClick={() => exportOverallPdf({ clubName, className, year, data: overall })}>
+            onClick={() => exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon })}>
             <Download className="w-4 h-4" /> PDF
           </Button>
         </div>
@@ -171,7 +171,7 @@ function ClassResults({ classId, clubId, year, clubName, className }) {
             <Button variant="outline" size="sm" data-testid={`export-pdf-${s.id}`}
               className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
               disabled={!seriesData[s.id]?.standings?.length}
-              onClick={() => exportSeriesPdf({ clubName, className, seriesName: s.name, year: s.year || year, data: seriesData[s.id] })}>
+              onClick={() => exportSeriesPdf({ clubName, className, seriesName: s.name, year: s.year || year, data: seriesData[s.id], icon: clubIcon })}>
               <Download className="w-4 h-4" /> PDF
             </Button>
           </div>
@@ -364,7 +364,7 @@ export default function Landing() {
             </TabsList>
             {classes.map((c) => (
               <TabsContent key={c.id} value={c.id}>
-                <ClassResults classId={c.id} clubId={clubId} year={year} clubName={club.name} className={c.name} />
+                <ClassResults classId={c.id} clubId={clubId} year={year} clubName={club.name} className={c.name} clubIcon={club.icon} />
               </TabsContent>
             ))}
           </Tabs>

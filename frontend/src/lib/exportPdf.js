@@ -12,7 +12,8 @@ const fmtScore = (s) => {
   return s.discarded ? `(${label})` : label;
 };
 
-function header(doc, { clubName, className, title, year }) {
+function header(doc, { clubName, className, title, year, icon }) {
+  const pageW = doc.internal.pageSize.getWidth();
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
   doc.setTextColor(...OCEAN);
@@ -25,13 +26,28 @@ function header(doc, { clubName, className, title, year }) {
   doc.text(`${year} season · Scored under the RRS Low Point System`, 40, 74);
   doc.setDrawColor(...OCEAN);
   doc.setLineWidth(1.2);
-  doc.line(40, 82, doc.internal.pageSize.getWidth() - 40, 82);
+  doc.line(40, 82, pageW - 40, 82);
+
+  // Home club logo, top-right. jsPDF embeds PNG/JPEG only; anything else
+  // (or a missing icon) is skipped without breaking the export.
+  if (icon && typeof icon === "string" && icon.startsWith("data:image/")) {
+    try {
+      const m = /^data:(image\/[a-z0-9.+-]+);base64,/.exec(icon);
+      const fmt = m && (m[1] === "image/png" ? "PNG" : m[1] === "image/jpeg" ? "JPEG" : null);
+      if (fmt) {
+        const size = 38;
+        doc.addImage(icon, fmt, pageW - 40 - size, 24, size, size);
+      }
+    } catch (e) {
+      // Unreadable image data — omit the logo rather than fail the export.
+    }
+  }
 }
 
-export function exportSeriesPdf({ clubName, className, seriesName, year, data }) {
+export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon }) {
   if (!data || !data.standings?.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  header(doc, { clubName, className, title: `${seriesName} Series`, year });
+  header(doc, { clubName, className, title: `${seriesName} Series`, year, icon });
 
   const races = data.races || [];
   const totalCols = Math.max(races.length, data.planned_races || 0, (data.schedule || []).length);
@@ -79,10 +95,10 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data })
   doc.save(`${className}-${seriesName}-${year}-results.pdf`);
 }
 
-export function exportOverallPdf({ clubName, className, year, data }) {
+export function exportOverallPdf({ clubName, className, year, data, icon }) {
   if (!data || !data.standings?.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  header(doc, { clubName, className, title: "Overall Championship", year });
+  header(doc, { clubName, className, title: "Overall Championship", year, icon });
 
   autoTable(doc, {
     startY: 94,
