@@ -91,6 +91,10 @@ export const api = {
     return client.put(`/adverts/${id}/image`, fd).then((r) => r.data);
   },
   deleteAdvert: (id) => client.delete(`/adverts/${id}`).then((r) => r.data),
+
+  getEmailSettings: () => client.get("/admin/email-settings").then((r) => r.data),
+  updateEmailSettings: (d) => client.put("/admin/email-settings", d).then((r) => r.data),
+  testEmail: (to_email) => client.post("/admin/email-settings/test", { to_email }).then((r) => r.data),
 };
 
 export default client;

@@ -19,6 +19,7 @@ import jwt
 import re
 import base64
 import bcrypt
+from cryptography.fernet import Fernet
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -57,10 +58,12 @@ LOCKOUT_MINUTES = 15
 # own window, which is fine behind a single reverse proxy).
 LOGIN_IP_LIMIT = int(os.environ.get("LOGIN_IP_LIMIT", "60"))
 LOGIN_IP_WINDOW_SECONDS = 60
-# Password reset by email (SMTP via the stdlib). Leave SMTP_HOST unset in
-# development: the reset token is then returned in the response so the flow
-# works without a mail server. Production refuses to start without SMTP_HOST
-# and APP_BASE_URL (see _production_config_errors).
+# Password reset by email (SMTP via the stdlib). SMTP can be configured at
+# runtime from the webmaster console (stored encrypted in the database); the
+# environment variables below are the fallback/bootstrap and the source of
+# truth until the webmaster saves settings. In development with no SMTP the
+# reset token is returned in the response so the flow works without a mail
+# server. Production requires APP_BASE_URL (see _production_config_errors).
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
@@ -90,8 +93,10 @@ def _production_config_errors() -> List[str]:
         errors.append("WEBMASTER_PASSCODE must be set to a value of at least 8 characters")
     if "mongodb://" in mongo_url.lower() and "@" not in mongo_url.split("//", 1)[-1]:
         errors.append("MONGO_URL must include database credentials in production")
-    if not SMTP_HOST:
-        errors.append("SMTP_HOST must be set in production (password-reset emails)")
+    # SMTP is intentionally NOT required at startup: the webmaster can enable
+    # email from the webmaster console once the site is live (stored in the
+    # database, encrypted at rest). Until then, reset emails simply cannot be
+    # sent and the forgot endpoint answers 503.
     if not APP_BASE_URL:
         errors.append("APP_BASE_URL must be set in production (reset links)")
     return errors
@@ -623,6 +628,71 @@ class ResetPasswordInput(BaseModel):
     new_passcode: str
 
 
+class EmailSettingsInput(BaseModel):
+    """Webmaster-configured SMTP settings (stored in the settings collection,
+    password encrypted at rest). Blank smtp_password keeps the existing one;
+    blank smtp_host clears the runtime config (falls back to env vars)."""
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    mail_from: Optional[EmailStr] = None
+
+
+class TestEmailInput(BaseModel):
+    to_email: EmailStr
+
+
+# ---------------------------------------------------------------------------
+# Runtime email (SMTP) settings
+# ---------------------------------------------------------------------------
+def _settings_fernet() -> Fernet:
+    """Deterministic encryption key derived from JWT_SECRET for the SMTP
+    password at rest. Changing JWT_SECRET invalidates stored secrets — the
+    webmaster simply re-enters the password."""
+    digest = hashlib.sha256(JWT_SECRET.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _encrypt_secret(plain: str) -> str:
+    return _settings_fernet().encrypt(plain.encode("utf-8")).decode("ascii")
+
+
+def _decrypt_secret(token: str) -> str:
+    try:
+        return _settings_fernet().decrypt(token.encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""
+
+
+async def _get_email_settings() -> dict:
+    """Live SMTP settings: the webmaster-configured doc in the settings
+    collection takes precedence; environment variables are the fallback.
+    Never exposes the plaintext password to callers that must not see it —
+    decrypt only where the value is actually needed."""
+    doc = await db.settings.find_one({"key": "email"}, {"_id": 0})
+    if doc and doc.get("smtp_host"):
+        return {
+            "smtp_host": doc["smtp_host"],
+            "smtp_port": int(doc.get("smtp_port", 587)),
+            "smtp_user": doc.get("smtp_user", ""),
+            "smtp_password": (_decrypt_secret(doc.get("smtp_password_enc", ""))
+                               if doc.get("smtp_password_enc") else ""),
+            "mail_from": doc.get("mail_from", "") or doc.get("smtp_user", ""),
+            "using_env": False,
+            "configured": True,
+        }
+    return {
+        "smtp_host": SMTP_HOST,
+        "smtp_port": SMTP_PORT,
+        "smtp_user": SMTP_USER,
+        "smtp_password": SMTP_PASSWORD,
+        "mail_from": MAIL_FROM or SMTP_USER,
+        "using_env": bool(SMTP_HOST),
+        "configured": bool(SMTP_HOST),
+    }
+
+
 def _reset_email_limited(email: str) -> bool:
     """Per-email throttle on reset requests (stops email-bombing a victim)."""
     now = time.time()
@@ -635,14 +705,14 @@ def _reset_email_limited(email: str) -> bool:
     return False
 
 
-def _send_reset_email(to_email: str, reset_link: str) -> bool:
+async def _send_reset_email(to_email: str, reset_link: str, cfg: dict) -> bool:
     """Send the reset link over SMTP (stdlib). Returns False when SMTP is not
     configured or the send fails — never raises, never leaks internals."""
-    if not SMTP_HOST:
+    if not cfg.get("smtp_host"):
         return False
     msg = EmailMessage()
     msg["Subject"] = "SailScore — reset your passcode"
-    msg["From"] = MAIL_FROM or SMTP_USER or "sailscore@localhost"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
     msg["To"] = to_email
     msg.set_content(
         "Someone asked to reset the SailScore passcode for this email address.\n\n"
@@ -651,10 +721,10 @@ def _send_reset_email(to_email: str, reset_link: str) -> bool:
         "a reset, you can ignore this email — your passcode is unchanged.\n"
     )
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
             s.starttls()
-            if SMTP_USER:
-                s.login(SMTP_USER, SMTP_PASSWORD)
+            if cfg.get("smtp_user"):
+                s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
             s.send_message(msg)
         return True
     except Exception as exc:
@@ -677,7 +747,8 @@ async def forgot_password(data: ForgotInput, request: Request):
     if _reset_email_limited(email):
         raise HTTPException(status_code=429,
                             detail="Too many requests — please try again shortly")
-    if APP_ENV == "production" and not SMTP_HOST:
+    cfg = await _get_email_settings()
+    if APP_ENV == "production" and not cfg.get("configured"):
         raise HTTPException(status_code=503, detail="Password reset email is not configured")
     user = None
     if data.club_id:
@@ -695,7 +766,7 @@ async def forgot_password(data: ForgotInput, request: Request):
                                     + timedelta(minutes=RESET_TOKEN_MINUTES)).isoformat(),
         }})
         reset_link = f"{APP_BASE_URL.rstrip('/')}/reset-password?token={token}" if APP_BASE_URL else ""
-        sent = _send_reset_email(email, reset_link)
+        sent = await _send_reset_email(email, reset_link, cfg)
         logger.info("PASSWORD RESET REQUEST user=%s ip=%s email_sent=%s",
                     user.get("username"), ip, sent)
         if not sent and APP_ENV != "production":
@@ -1318,6 +1389,88 @@ async def upload_advert_image(advert_id: str, user: dict = Depends(require_webma
 async def delete_advert(advert_id: str, user: dict = Depends(require_webmaster)):
     await db.adverts.delete_one({"id": advert_id})
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Email settings (webmaster-only) — runtime SMTP configuration so email can
+# be enabled from the webmaster console once the site is live, without
+# touching the server. The password is encrypted at rest.
+# ---------------------------------------------------------------------------
+@api_router.get("/admin/email-settings")
+async def get_email_settings(user: dict = Depends(require_webmaster)):
+    cfg = await _get_email_settings()
+    doc = await db.settings.find_one({"key": "email"}, {"_id": 0})
+    return {
+        "configured": cfg["configured"],
+        "using_env": cfg["using_env"],
+        "smtp_host": cfg["smtp_host"],
+        "smtp_port": cfg["smtp_port"],
+        "smtp_user": cfg["smtp_user"],
+        "mail_from": cfg["mail_from"],
+        # Never return the plaintext password — only whether one is set.
+        "password_set": bool(doc and doc.get("smtp_password_enc")) or bool(SMTP_PASSWORD),
+    }
+
+
+@api_router.put("/admin/email-settings")
+async def update_email_settings(data: EmailSettingsInput, request: Request,
+                                user: dict = Depends(require_webmaster)):
+    host = (data.smtp_host or "").strip()
+    if host and data.smtp_port is None:
+        raise HTTPException(status_code=400,
+                            detail="SMTP port is required when setting an SMTP host")
+    existing = await db.settings.find_one({"key": "email"}, {"_id": 0}) or {}
+    update = {
+        "smtp_host": host,
+        "smtp_port": int(data.smtp_port or 587),
+        "smtp_user": (data.smtp_user or "").strip(),
+        "mail_from": (data.mail_from or "").strip() if data.mail_from is not None
+                     else existing.get("mail_from", ""),
+        "updated_at": now_iso(),
+        "updated_by": user.get("username"),
+    }
+    if data.smtp_password is not None and data.smtp_password.strip():
+        update["smtp_password_enc"] = _encrypt_secret(data.smtp_password.strip())
+    elif host and existing.get("smtp_password_enc"):
+        # Blank password + existing secret: keep the stored one.
+        update["smtp_password_enc"] = existing["smtp_password_enc"]
+    else:
+        update["smtp_password_enc"] = ""
+    await db.settings.update_one({"key": "email"}, {"$set": update}, upsert=True)
+    logger.info("SECURITY EMAIL SETTINGS CHANGED by=%s host=%s ip=%s",
+                user.get("username"), host, _client_ip(request))
+    return {"ok": True, "configured": bool(host)}
+
+
+@api_router.post("/admin/email-settings/test")
+async def test_email_settings(data: TestEmailInput, request: Request,
+                              user: dict = Depends(require_webmaster)):
+    cfg = await _get_email_settings()
+    if not cfg.get("configured"):
+        raise HTTPException(status_code=400,
+                            detail="Email settings are not configured yet — save them first")
+    msg = EmailMessage()
+    msg["Subject"] = "SailScore — test email"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = data.to_email
+    msg.set_content(
+        "This is a test email from SailScore. Your email settings are working — "
+        "passcode-reset emails will be delivered to this server.\n"
+    )
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
+            s.starttls()
+            if cfg.get("smtp_user"):
+                s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            s.send_message(msg)
+    except Exception as exc:
+        logger.error("TEST EMAIL FAILED to=%s by=%s error=%s",
+                     data.to_email, user.get("username"), exc)
+        raise HTTPException(status_code=502,
+                            detail="Test email failed to send — check the SMTP host, port and credentials")
+    logger.info("TEST EMAIL SENT to=%s by=%s ip=%s",
+                data.to_email, user.get("username"), _client_ip(request))
+    return {"ok": True, "message": f"Test email sent to {data.to_email}"}
 
 
 # ---------------------------------------------------------------------------

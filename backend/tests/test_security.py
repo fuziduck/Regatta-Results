@@ -157,8 +157,11 @@ class TestJwtUnit:
             assert any("JWT_SECRET" in e for e in errs)
             assert any("CORS_ORIGINS" in e for e in errs)
             assert any("WEBMASTER_PASSCODE" in e for e in errs)
-            assert any("SMTP_HOST" in e for e in errs)
             assert any("APP_BASE_URL" in e for e in errs)
+            # SMTP is NOT required at startup: it is configurable at runtime
+            # from the webmaster console, so the site can boot before email
+            # is enabled (until then, reset emails answer 503).
+            assert not any("SMTP_HOST" in e for e in errs)
             # a known-weak default must be rejected too
             srv.JWT_SECRET = "change-me-to-a-long-random-string"
             assert any("JWT_SECRET" in e for e in srv._production_config_errors())
@@ -166,7 +169,6 @@ class TestJwtUnit:
             srv.JWT_SECRET = "a" * 48
             srv.WEBMASTER_PASSCODE = "strong-passcode-123"
             srv.mongo_url = "mongodb://user:pass@localhost:27017/regatta?authSource=admin"
-            srv.SMTP_HOST = "smtp.example.org"
             srv.APP_BASE_URL = "https://results.example.org"
             os.environ["CORS_ORIGINS"] = "https://results.example.org"
             assert srv._production_config_errors() == []
@@ -487,6 +489,105 @@ class TestLivePasswordReset:
         for _ in range(6):
             statuses.append(self._request_reset(test_club["id"], email).status_code)
         assert statuses[-1] == 429  # 5 allowed per 10 minutes, then throttled
+
+
+# --------------------------------------------------------------------------
+# Live tests — runtime email (SMTP) settings (webmaster-only)
+# --------------------------------------------------------------------------
+class TestLiveEmailSettings:
+    """The settings singleton doc is shared state; this whole class runs on one
+    worker (--dist loadscope) and always resets the doc in a finally."""
+
+    def _get(self, token):
+        return requests.get(f"{API}/admin/email-settings", headers=h(token))
+
+    def _put(self, token, payload):
+        return requests.put(f"{API}/admin/email-settings", json=payload, headers=h(token))
+
+    def _clear(self, webmaster_token):
+        requests.put(f"{API}/admin/email-settings",
+                     json={"smtp_host": ""}, headers=h(webmaster_token))
+
+    def test_round_trip_masks_password(self, webmaster_token):
+        try:
+            r = self._put(webmaster_token, {
+                "smtp_host": "smtp.example.org", "smtp_port": 587,
+                "smtp_user": "alerts@example.org",
+                "smtp_password": "super-secret-pw",
+                "mail_from": "alerts@example.org"})
+            assert r.status_code == 200 and r.json()["configured"] is True
+            body = self._get(webmaster_token).json()
+            assert body["configured"] is True
+            assert body["smtp_host"] == "smtp.example.org"
+            assert body["smtp_user"] == "alerts@example.org"
+            assert body["password_set"] is True
+            assert "super-secret-pw" not in json.dumps(body)
+        finally:
+            self._clear(webmaster_token)
+
+    def test_blank_password_keeps_existing(self, webmaster_token):
+        try:
+            self._put(webmaster_token, {"smtp_host": "smtp.example.org", "smtp_port": 25,
+                                        "smtp_password": "pw-one"})
+            r = self._put(webmaster_token, {"smtp_host": "smtp.example.org",
+                                            "smtp_port": 25, "smtp_password": ""})
+            assert r.status_code == 200
+            body = self._get(webmaster_token).json()
+            assert body["password_set"] is True
+            assert body["smtp_port"] == 25
+        finally:
+            self._clear(webmaster_token)
+
+    def test_clear_settings_disables(self, webmaster_token):
+        self._put(webmaster_token, {"smtp_host": "smtp.example.org", "smtp_port": 25})
+        r = self._put(webmaster_token, {"smtp_host": ""})
+        assert r.status_code == 200 and r.json()["configured"] is False
+        body = self._get(webmaster_token).json()
+        assert body["configured"] is False and body["password_set"] is False
+
+    def test_port_required_and_validated(self, webmaster_token):
+        try:
+            r = self._put(webmaster_token, {"smtp_host": "smtp.example.org"})
+            assert r.status_code == 400
+            r = self._put(webmaster_token, {"smtp_host": "smtp.example.org",
+                                            "smtp_port": 99999})
+            assert r.status_code == 422
+        finally:
+            self._clear(webmaster_token)
+
+    def test_webmaster_only(self, club_admin_token, club_officer_token, webmaster_token):
+        try:
+            for tok in (club_admin_token, club_officer_token):
+                assert self._get(tok).status_code == 403
+                assert self._put(tok, {"smtp_host": "evil.example.org"}).status_code == 403
+                r = requests.post(f"{API}/admin/email-settings/test",
+                                  json={"to_email": "x@example.org"}, headers=h(tok))
+                assert r.status_code == 403
+            # nothing was changed by the forbidden attempts
+            assert self._get(webmaster_token).json()["configured"] is False
+        finally:
+            self._clear(webmaster_token)
+
+    def test_test_email_unconfigured_rejected(self, webmaster_token):
+        self._clear(webmaster_token)
+        r = requests.post(f"{API}/admin/email-settings/test",
+                          json={"to_email": "x@example.org"}, headers=h(webmaster_token))
+        assert r.status_code == 400
+
+    def test_test_email_with_settings_no_leak(self, webmaster_token):
+        """With settings saved, the test send attempts a real connection: either
+        it works (200) or fails with a generic 502 — never internal detail."""
+        try:
+            self._put(webmaster_token, {"smtp_host": "127.0.0.1", "smtp_port": 1,
+                                        "smtp_password": "whatever"})
+            r = requests.post(f"{API}/admin/email-settings/test",
+                              json={"to_email": "x@example.org"}, headers=h(webmaster_token))
+            assert r.status_code in (200, 502)
+            if r.status_code == 502:
+                detail = r.json()["detail"]
+                assert "smtplib" not in detail and "Traceback" not in detail
+        finally:
+            self._clear(webmaster_token)
 
 
 # --------------------------------------------------------------------------

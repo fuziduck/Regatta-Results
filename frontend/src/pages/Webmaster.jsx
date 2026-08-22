@@ -5,13 +5,14 @@ import { api } from "@/lib/api";
 import ClubBadge from "@/components/ClubBadge";
 import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
+import EmailSettingsManager from "@/components/EmailSettingsManager";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone } from "lucide-react";
+import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D" };
 
@@ -118,6 +119,15 @@ export default function Webmaster() {
             >
               <Megaphone className="w-4 h-4" /> Advertising
             </button>
+            <button
+              data-testid="nav-email"
+              onClick={() => setSection("email")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "email" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <Mail className="w-4 h-4" /> Email settings
+            </button>
           </nav>
         </aside>
         <main className="flex-1 min-w-0">
@@ -168,6 +178,7 @@ export default function Webmaster() {
         </>
         )}
         {section === "adverts" && <AdvertsManager />}
+        {section === "email" && <EmailSettingsManager />}
         </main>
       </div>
 
