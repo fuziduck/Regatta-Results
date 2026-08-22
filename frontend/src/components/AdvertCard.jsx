@@ -1,5 +1,7 @@
 // Advert card shown interleaved on the public pages (1 in every 3 grid
-// columns). Cards stretch to fill their grid cell, so they sit cleanly
+// columns). The box hugs the logo — it is sized to the displayed image's
+// natural ratio (capped so a very large upload can't dominate the page) and
+// is centred inside its grid cell, which still stretches to sit cleanly
 // alongside content cards whose heights vary.
 //
 // Rotation: adverts roll on each page load — up to MAX_ADVERTS_PER_LOAD are
@@ -66,13 +68,14 @@ export function interleaveWithAdverts(items, adverts) {
   return out;
 }
 
-// Aspect-ratio presets used when the webmaster picks a named shape.
-// Landscape/portrait/square standardise the card box; "auto" detects the
-// uploaded image's intrinsic ratio so the full image always fits.
+// Placeholder ratios used only until the image loads (so the box has a
+// recognised shape from the first frame). Once the image loads the box takes
+// the image's own natural ratio, so the box always hugs the logo.
 const RATIOS = { landscape: 4 / 3, portrait: 3 / 4, square: 1 };
+const MAX_HEIGHT = "max-h-64"; // 16rem — a very tall upload can't dominate the page
 
-// The image that best fits the card's box: the one uploaded for the current
-// shape, then landscape, portrait, square, then the legacy single image.
+// The image that best fits the card: the one uploaded for the current shape,
+// then landscape, portrait, square, then the legacy single image.
 function pickImage(advert, format) {
   const images = advert.images || {};
   if (format !== "auto" && images[format]) return images[format];
@@ -85,44 +88,43 @@ export default function AdvertCard({ advert, className = "" }) {
   const format = advert.format || "auto";
   const preset = RATIOS[format] || null;
   const src = pickImage(advert, format);
-  // Use the named shape if set, otherwise fall back to the image's own
-  // natural ratio; until the image loads, default to landscape so the
-  // card has a recognised shape from the first frame.
-  const ratio = preset || natRatio || RATIOS.landscape;
+  // Once the image is loaded its natural ratio wins so the box wraps tightly
+  // around the logo; before that, fall back to the named shape (or landscape).
+  const ratio = natRatio || preset || RATIOS.landscape;
 
-  const img = (
-    <>
-      <div className="absolute inset-0 flex items-center justify-center p-3">
-        <img
-          src={src}
-          alt={advert.name || "Advertisement"}
-          onLoad={(e) => {
-            const w = e.target.naturalWidth, h = e.target.naturalHeight;
-            if (w && h) setNatRatio(w / h);
-          }}
-          style={{ aspectRatio: ratio }}
-          className="max-w-full max-h-full object-contain rounded-lg"
-        />
-      </div>
-      <span className="absolute top-2 right-2 rounded-full bg-black/45 text-white text-[9px] uppercase tracking-widest px-2 py-0.5 backdrop-blur-sm">
-        Sponsored
-      </span>
-    </>
-  );
-  const body = (
+  const box = (
     <div
       data-testid={`advert-${advert.id}`}
-      className={`relative w-full h-full min-h-36 overflow-hidden rounded-2xl border border-border/70 bg-muted ${className}`}
+      className={`relative p-2 rounded-2xl border border-border/70 bg-muted ${className}`}
     >
-      {img}
+      <img
+        src={src}
+        alt={advert.name || "Advertisement"}
+        onLoad={(e) => {
+          const w = e.target.naturalWidth, h = e.target.naturalHeight;
+          if (w && h) setNatRatio(w / h);
+        }}
+        style={{ aspectRatio: ratio }}
+        className={`block max-w-full ${MAX_HEIGHT} w-auto h-auto rounded-lg`}
+      />
+      <span className="absolute top-1.5 right-1.5 rounded-full bg-black/45 text-white text-[9px] uppercase tracking-widest px-2 py-0.5 backdrop-blur-sm">
+        Sponsored
+      </span>
     </div>
   );
-  if (advert.link_url) {
-    return (
-      <a href={advert.link_url} target="_blank" rel="noopener noreferrer" className="block h-full min-h-36 group">
-        {body}
-      </a>
-    );
-  }
-  return body;
+
+  // Fill the grid cell (so the row stays aligned with neighbours) but centre
+  // the box, which itself wraps to the logo size.
+  const cell = (
+    <div className="w-full h-full flex items-center justify-center">
+      {advert.link_url ? (
+        <a href={advert.link_url} target="_blank" rel="noopener noreferrer" className="block group">
+          {box}
+        </a>
+      ) : (
+        box
+      )}
+    </div>
+  );
+  return cell;
 }

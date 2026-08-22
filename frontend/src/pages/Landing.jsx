@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, MAX_YEAR, CODE_COLORS } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -104,27 +104,10 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
   );
 }
 
-function ClassResults({ classId, clubId, year, clubName, className, clubIcon }) {
-  const [series, setSeries] = useState([]);
-  const [tab, setTab] = useState("overall");
-  const [overall, setOverall] = useState(null);
-  const [seriesData, setSeriesData] = useState({});
-
-  useEffect(() => {
-    setSeries([]); setOverall(null); setSeriesData({});
-    api.getSeries({ class_id: classId, year, club_id: clubId }).then((s) => {
-      setSeries(s); setTab("overall");
-    });
-    api.overallStandings(classId, year, clubId).then(setOverall).catch(() => setOverall(null));
-  }, [classId, clubId, year]);
-
-  useEffect(() => {
-    if (tab !== "overall" && !seriesData[tab]) {
-      api.seriesStandings(tab, clubId).then((d) => setSeriesData((prev) => ({ ...prev, [tab]: d })));
-    }
-  }, [tab]); // eslint-disable-line
-
-  const active = series.find((s) => s.id === tab);
+// Presentational: renders the standings content for the class/series chosen
+// in the hero. All fetching lives in the Landing page so the selector tabs can
+// sit in the banner.
+function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, overall, seriesData }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
   if (year !== CURRENT_YEAR && !hasData) {
@@ -140,18 +123,11 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon }) 
     );
   }
 
-  return (
-    <Tabs value={tab} onValueChange={setTab} className="mt-4">
-      <TabsList className="flex flex-wrap h-auto gap-1 bg-muted/60 p-1" data-testid="series-tabs">
-        <TabsTrigger value="overall" className="data-[state=active]:bg-ocean data-[state=active]:text-white">Overall</TabsTrigger>
-        {series.map((s) => (
-          <TabsTrigger key={s.id} value={s.id} className="data-[state=active]:bg-ocean data-[state=active]:text-white">
-            {s.name}{!s.included_in_overall && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
-          </TabsTrigger>
-        ))}
-      </TabsList>
+  const active = series.find((s) => s.id === activeSeries);
 
-      <TabsContent value="overall" className="pt-5">
+  if (activeSeries === "overall" || !active) {
+    return (
+      <div className="pt-5">
         <div className="flex items-center justify-between gap-3 mb-3">
           <h3 className="text-xl uppercase tracking-tight flex items-center gap-2"><Sailboat className="w-5 h-5 text-ocean" /> Overall Championship</h3>
           <Button variant="outline" size="sm" data-testid="export-overall-pdf"
@@ -162,24 +138,24 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon }) 
           </Button>
         </div>
         <OverallStandingsTable data={overall} />
-      </TabsContent>
+      </div>
+    );
+  }
 
-      {series.map((s) => (
-        <TabsContent key={s.id} value={s.id} className="pt-5">
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <h3 className="text-xl uppercase tracking-tight">{s.name} Series</h3>
-            <Button variant="outline" size="sm" data-testid={`export-pdf-${s.id}`}
-              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
-              disabled={!seriesData[s.id]?.standings?.length}
-              onClick={() => exportSeriesPdf({ clubName, className, seriesName: s.name, year: s.year || year, data: seriesData[s.id], icon: clubIcon })}>
-              <Download className="w-4 h-4" /> PDF
-            </Button>
-          </div>
-          <SeriesStandingsTable data={seriesData[s.id]} />
-          {tab === s.id && <PublishedRaces seriesId={s.id} classId={classId} clubId={clubId} scoringMode={s.scoring_mode || "one_design"} />}
-        </TabsContent>
-      ))}
-    </Tabs>
+  return (
+    <div className="pt-5">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h3 className="text-xl uppercase tracking-tight">{active.name} Series</h3>
+        <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
+          className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
+          disabled={!seriesData[active.id]?.standings?.length}
+          onClick={() => exportSeriesPdf({ clubName, className, seriesName: active.name, year: active.year || year, data: seriesData[active.id], icon: clubIcon })}>
+          <Download className="w-4 h-4" /> PDF
+        </Button>
+      </div>
+      <SeriesStandingsTable data={seriesData[active.id]} />
+      <PublishedRaces seriesId={active.id} classId={classId} clubId={clubId} scoringMode={active.scoring_mode || "one_design"} />
+    </div>
   );
 }
 
@@ -196,6 +172,10 @@ export default function Landing() {
   const [notifications, setNotifications] = useState([]);
   const [seasons, setSeasons] = useState([]);
   const { adverts, roll } = useAdverts();
+  const [series, setSeries] = useState([]);
+  const [activeSeries, setActiveSeries] = useState("overall");
+  const [overall, setOverall] = useState(null);
+  const [seriesData, setSeriesData] = useState({});
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -221,6 +201,23 @@ export default function Landing() {
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, [clubId]);
+
+  // Series + standings for the active class (drives the selector tabs in the
+  // hero and the results content below).
+  useEffect(() => {
+    if (!clubId || !activeClass) return;
+    setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall");
+    api.getSeries({ class_id: activeClass, year, club_id: clubId }).then(setSeries).catch(() => {});
+    api.overallStandings(activeClass, year, clubId).then(setOverall).catch(() => setOverall(null));
+  }, [clubId, activeClass, year]);
+
+  useEffect(() => {
+    if (!clubId || !activeClass || activeSeries === "overall") return;
+    if (seriesData[activeSeries]) return;
+    api.seriesStandings(activeSeries, clubId)
+      .then((d) => setSeriesData((prev) => ({ ...prev, [activeSeries]: d })))
+      .catch(() => {});
+  }, [clubId, activeClass, activeSeries, seriesData]);
 
   // Future years only appear once this club has set up a series for them.
   // Future years are data-driven: any year a club has set a series up for.
@@ -270,7 +267,7 @@ export default function Landing() {
           src="https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0YXR8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
           alt="racing" className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
-        <div className="relative max-w-6xl mx-auto px-4 py-16 md:py-24">
+        <div className="relative max-w-6xl mx-auto px-4 py-12 md:py-16">
           <Badge className={`mb-4 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
             {year} Season
           </Badge>
@@ -280,7 +277,45 @@ export default function Landing() {
           <p className="text-white/80 mt-4 max-w-xl leading-relaxed">
             Follow every fleet across the season. Provisional and confirmed results, series championships and race-day notices — all in one place.
           </p>
-          <YearSwitcher value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-5" />
+          <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-6 justify-center"
+            labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
+
+          {classes.length > 0 && (
+            <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
+              <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
+              <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
+                <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
+                  {classes.map((c) => (
+                    <TabsTrigger key={c.id} value={c.id}
+                      data-testid={`class-tab-${c.name}`}
+                      className="px-5 py-2.5 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                      {c.name}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </div>
+          )}
+
+          {activeClass && series.length > 0 && (
+            <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
+              <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
+              <Tabs value={activeSeries} onValueChange={setActiveSeries}>
+                <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
+                  <TabsTrigger value="overall"
+                    className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                    Overall
+                  </TabsTrigger>
+                  {series.map((s) => (
+                  <TabsTrigger key={s.id} value={s.id}
+                    className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                      {s.name}{!s.included_in_overall && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </div>
+          )}
         </div>
       </section>
 
@@ -340,35 +375,39 @@ export default function Landing() {
           </div>
         )}
 
-        <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
-        <p className="text-muted-foreground text-sm mb-4">Each fleet races its own series and overall championship.</p>
+        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_280px] lg:gap-8 lg:items-start">
+          <div className="min-w-0">
+            <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
+            <p className="text-muted-foreground text-sm mb-4">Each fleet races its own series and overall championship.</p>
 
-        {pickAdverts(adverts, 1, roll + 1)[0] && (
-          <div className="h-28 sm:h-36 mb-6">
-            <AdvertCard advert={pickAdverts(adverts, 1, roll + 1)[0]} />
+            {classes.length === 0 ? (
+              <p className="text-muted-foreground">No classes set up yet.</p>
+            ) : !activeClass ? (
+              <p className="text-muted-foreground">Loading classes…</p>
+            ) : (
+              <ClassResults
+                classId={activeClass}
+                clubId={clubId}
+                year={year}
+                clubName={club.name}
+                className={(classes.find((c) => c.id === activeClass) || {}).name}
+                clubIcon={club.icon}
+                series={series}
+                activeSeries={activeSeries}
+                overall={overall}
+                seriesData={seriesData}
+              />
+            )}
           </div>
-        )}
 
-        {classes.length === 0 ? (
-          <p className="text-muted-foreground">No classes set up yet.</p>
-        ) : (
-          <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
-            <TabsList className="flex flex-wrap h-auto gap-2 bg-transparent p-0" data-testid="class-tabs">
-              {classes.map((c) => (
-                <TabsTrigger key={c.id} value={c.id}
-                  data-testid={`class-tab-${c.name}`}
-                  className="px-5 py-2.5 rounded-full border border-border data-[state=active]:bg-ocean data-[state=active]:text-white data-[state=active]:border-ocean font-heading uppercase tracking-wide">
-                  {c.name}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {classes.map((c) => (
-              <TabsContent key={c.id} value={c.id}>
-                <ClassResults classId={c.id} clubId={clubId} year={year} clubName={club.name} className={c.name} clubIcon={club.icon} />
-              </TabsContent>
-            ))}
-          </Tabs>
-        )}
+          {/* Advert sits beside the results on desktop (sticky while scrolling)
+              and below them on mobile, so it never pushes the results down. */}
+          {pickAdverts(adverts, 1, roll + 1)[0] && (
+            <aside className="mt-10 lg:mt-0 lg:sticky lg:top-24 flex justify-center lg:justify-start">
+              <AdvertCard advert={pickAdverts(adverts, 1, roll + 1)[0]} />
+            </aside>
+          )}
+        </div>
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">

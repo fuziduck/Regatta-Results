@@ -41,17 +41,18 @@ function YearGroup({ label, years, value, onChange }) {
  * years with a series set up appear.
  *
  * `grouped` renders the pills under Past / Current / Future headings instead
- * of one flat row.
+ * of one flat row; pass `labels` to override the three group headings.
  */
-export default function YearSwitcher({ value, onChange, years = [CURRENT_YEAR - 1], className = "", grouped = false }) {
+export default function YearSwitcher({ value, onChange, years = [CURRENT_YEAR - 1], className = "", grouped = false, labels = {} }) {
   const all = [...new Set([CURRENT_YEAR, ...years])].filter((y) => y >= 2000 && y <= MAX_YEAR).sort((a, b) => a - b);
+  const L = { past: "Past", current: "Current", future: "Future", ...labels };
 
   if (grouped) {
     return (
       <div className={`flex flex-wrap items-start gap-x-8 gap-y-4 ${className}`} data-testid="year-switcher">
-        <YearGroup label="Past" years={all.filter((y) => y < CURRENT_YEAR)} value={value} onChange={onChange} />
-        <YearGroup label="Current" years={all.filter((y) => y === CURRENT_YEAR)} value={value} onChange={onChange} />
-        <YearGroup label="Future" years={all.filter((y) => y > CURRENT_YEAR)} value={value} onChange={onChange} />
+        <YearGroup label={L.past} years={all.filter((y) => y < CURRENT_YEAR)} value={value} onChange={onChange} />
+        <YearGroup label={L.current} years={all.filter((y) => y === CURRENT_YEAR)} value={value} onChange={onChange} />
+        <YearGroup label={L.future} years={all.filter((y) => y > CURRENT_YEAR)} value={value} onChange={onChange} />
       </div>
     );
   }
