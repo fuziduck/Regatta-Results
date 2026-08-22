@@ -1637,9 +1637,12 @@ def _valid_advert_format(fmt: Optional[str]) -> str:
 @api_router.get("/adverts")
 async def get_adverts():
     """Public: active adverts only, in display order. The rotation (rolling
-    window capped at 10 per page load) is chosen client-side on refresh."""
+    window capped at 10 per page load) is chosen client-side on refresh.
+    Each advert carries up to three images (landscape/portrait/square) so the
+    card can pick the one matching its display box; legacy adverts fall back
+    to their single `image`."""
     docs = await db.adverts.find({"active": True}, {"_id": 0}).sort("order", 1).to_list(100)
-    return [{k: a.get(k) for k in ("id", "name", "image", "link_url", "format")} for a in docs]
+    return [{k: a.get(k) for k in ("id", "name", "image", "images", "link_url", "format")} for a in docs]
 
 
 @api_router.get("/adverts/manage")
@@ -1664,31 +1667,56 @@ def _detect_image_type(data: bytes) -> Optional[str]:
     return None
 
 
+ADVERT_IMAGE_SHAPES = ("landscape", "portrait", "square")
+
+
 async def _read_advert_image(file: UploadFile) -> str:
     """Validate + read an advert image into a base64 data URL (2 MB cap).
     The image type is verified from magic bytes, never the declared type."""
     data = await file.read()
     if len(data) > ADVERT_IMAGE_MAX:
-        raise HTTPException(status_code=400, detail="Advert image must be 2 MB or smaller")
+        raise HTTPException(status_code=400, detail="Image is too large — 2 MB max")
     ctype = _detect_image_type(data)
     if not ctype:
         raise HTTPException(status_code=400,
-                            detail="Upload must be a PNG, JPEG, GIF or WebP image")
+                            detail="Not a recognised image — the file must be a PNG, JPEG, GIF or WebP")
     return f"data:{ctype};base64,{base64.b64encode(data).decode()}"
+
+
+async def _read_advert_images(landscape: Optional[UploadFile], portrait: Optional[UploadFile],
+                              square: Optional[UploadFile]) -> dict:
+    """Read the three optional per-shape images into a {shape: dataURL} map,
+    keeping only the shapes that were actually uploaded."""
+    images = {}
+    for f, shape in ((landscape, "landscape"), (portrait, "portrait"), (square, "square")):
+        if f:
+            images[shape] = await _read_advert_image(f)
+    return images
 
 
 @api_router.post("/adverts")
 async def create_advert(user: dict = Depends(require_webmaster),
                         name: str = Form(""), link_url: str = Form(""),
                         active: bool = Form(True), format: str = Form("auto"),
-                        file: UploadFile = File(None)):
-    """Create an advert. The image is optional at creation (the card then
-    shows a placeholder) and can be added or replaced later via PUT image."""
+                        file: UploadFile = File(None),
+                        file_landscape: UploadFile = File(None),
+                        file_portrait: UploadFile = File(None),
+                        file_square: UploadFile = File(None)):
+    """Create an advert. Up to three images can be supplied — one per display
+    shape (file_landscape / file_portrait / file_square) — so the card always
+    picks the image that fits its box. The legacy single `file` field is still
+    accepted (stored as the advert's `image`) for backward compatibility.
+    Images are optional at creation; more can be added later via PUT images."""
     order = await db.adverts.count_documents({})
+    images = await _read_advert_images(file_landscape, file_portrait, file_square)
     image = await _read_advert_image(file) if file else None
+    # Mirror the legacy single file into the landscape slot so new cards can
+    # always display it, unless an explicit landscape image was supplied.
+    if image and "landscape" not in images:
+        images["landscape"] = image
     doc = {"id": new_id(), "name": name, "link_url": link_url, "active": bool(active),
            "format": _valid_advert_format(format),
-           "order": order, "image": image, "created_at": now_iso()}
+           "order": order, "images": images, "image": image, "created_at": now_iso()}
     await db.adverts.insert_one(doc)
     doc.pop("_id", None)
     await _log_audit(request=None, user=user, action="ADVERT_CREATED",
@@ -1717,12 +1745,37 @@ async def update_advert(advert_id: str, data: AdvertUpdate,
 @api_router.put("/adverts/{advert_id}/image")
 async def upload_advert_image(advert_id: str, user: dict = Depends(require_webmaster),
                               file: UploadFile = File(...)):
-    if not await db.adverts.find_one({"id": advert_id}, {"_id": 0}):
+    """Legacy single-image upload (kept for backward compatibility). Also
+    recorded as the landscape variant so new cards can use it."""
+    doc = await db.adverts.find_one({"id": advert_id}, {"_id": 0})
+    if not doc:
         raise HTTPException(status_code=404, detail="Advert not found")
+    data = await _read_advert_image(file)
+    images = dict(doc.get("images") or {})
+    images["landscape"] = data
     await db.adverts.update_one({"id": advert_id},
-                                {"$set": {"image": await _read_advert_image(file)}})
+                                {"$set": {"image": data, "images": images}})
     await _log_audit(request=None, user=user, action="ADVERT_IMAGE_UPDATED",
                      description="Replaced advert image", resource_type="advert",
+                     resource_id=advert_id)
+    return await db.adverts.find_one({"id": advert_id}, {"_id": 0})
+
+
+@api_router.put("/adverts/{advert_id}/images")
+async def upload_advert_images(advert_id: str, user: dict = Depends(require_webmaster),
+                               file_landscape: UploadFile = File(None),
+                               file_portrait: UploadFile = File(None),
+                               file_square: UploadFile = File(None)):
+    """Set or replace the per-shape images of an advert. Only the shapes
+    supplied in this request change; the others keep their current image."""
+    doc = await db.adverts.find_one({"id": advert_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Advert not found")
+    images = dict(doc.get("images") or {})
+    images.update(await _read_advert_images(file_landscape, file_portrait, file_square))
+    await db.adverts.update_one({"id": advert_id}, {"$set": {"images": images}})
+    await _log_audit(request=None, user=user, action="ADVERT_IMAGE_UPDATED",
+                     description="Updated advert images", resource_type="advert",
                      resource_id=advert_id)
     return await db.adverts.find_one({"id": advert_id}, {"_id": 0})
 

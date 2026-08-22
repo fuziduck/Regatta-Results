@@ -71,11 +71,20 @@ export function interleaveWithAdverts(items, adverts) {
 // uploaded image's intrinsic ratio so the full image always fits.
 const RATIOS = { landscape: 4 / 3, portrait: 3 / 4, square: 1 };
 
+// The image that best fits the card's box: the one uploaded for the current
+// shape, then landscape, portrait, square, then the legacy single image.
+function pickImage(advert, format) {
+  const images = advert.images || {};
+  if (format !== "auto" && images[format]) return images[format];
+  return images.landscape || images.portrait || images.square || advert.image || "";
+}
+
 export default function AdvertCard({ advert, className = "" }) {
   const [natRatio, setNatRatio] = useState(null);
   if (!advert) return null;
   const format = advert.format || "auto";
   const preset = RATIOS[format] || null;
+  const src = pickImage(advert, format);
   // Use the named shape if set, otherwise fall back to the image's own
   // natural ratio; until the image loads, default to landscape so the
   // card has a recognised shape from the first frame.
@@ -85,7 +94,7 @@ export default function AdvertCard({ advert, className = "" }) {
     <>
       <div className="absolute inset-0 flex items-center justify-center p-3">
         <img
-          src={advert.image}
+          src={src}
           alt={advert.name || "Advertisement"}
           onLoad={(e) => {
             const w = e.target.naturalWidth, h = e.target.naturalHeight;

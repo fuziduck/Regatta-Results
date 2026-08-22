@@ -97,10 +97,14 @@ export const api = {
   getAdvertsManage: () => client.get("/adverts/manage").then((r) => r.data),
   createAdvert: (fd) => client.post("/adverts", fd).then((r) => r.data),
   updateAdvert: (id, d) => client.put(`/adverts/${id}`, d).then((r) => r.data),
-  uploadAdvertImage: (id, file) => {
+  // Upload the per-shape images of an advert: pass an object like
+  // { landscape: File, portrait: File|null, square: File|null }.
+  uploadAdvertImages: (id, images) => {
     const fd = new FormData();
-    fd.append("file", file);
-    return client.put(`/adverts/${id}/image`, fd).then((r) => r.data);
+    Object.entries(images || {}).forEach(([shape, file]) => {
+      if (file) fd.append(`file_${shape}`, file);
+    });
+    return client.put(`/adverts/${id}/images`, fd).then((r) => r.data);
   },
   deleteAdvert: (id) => client.delete(`/adverts/${id}`).then((r) => r.data),
 

@@ -28,6 +28,16 @@ def _create_advert(token, name, active="true", link_url="", format="auto"):
     return r.json()
 
 
+def _create_advert_shaped(token, name, shapes=("landscape", "portrait", "square"), **kw):
+    files = {f"file_{s}": (f"{s}.png", _advert_file(), "image/png") for s in shapes}
+    r = requests.post(f"{API}/adverts",
+                      files=files,
+                      data={"name": name, **kw},
+                      headers=h(token))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 class TestAdvertsCrud:
     def test_webmaster_create_manage_delete(self, webmaster_token):
         name = f"Test Ad {uuid.uuid4().hex[:6]}"
@@ -106,3 +116,48 @@ class TestAdvertsCrud:
                 assert hit and hit["format"] == shape
             finally:
                 requests.delete(f"{API}/adverts/{ad['id']}", headers=h(webmaster_token))
+
+    def test_multiple_images_per_shape(self, webmaster_token):
+        """An advert can carry three images — landscape, portrait, square —
+        each uploaded separately and all exposed on the public feed."""
+        name = f"Multi Ad {uuid.uuid4().hex[:6]}"
+        ad = _create_advert_shaped(webmaster_token, name)
+        try:
+            assert set(ad["images"]) == {"landscape", "portrait", "square"}
+            for s in ("landscape", "portrait", "square"):
+                assert ad["images"][s].startswith("data:image/png;base64,")
+            pub = requests.get(f"{API}/adverts").json()
+            hit = next((a for a in pub if a["id"] == ad["id"]), None)
+            assert hit and set(hit["images"]) == {"landscape", "portrait", "square"}
+        finally:
+            requests.delete(f"{API}/adverts/{ad['id']}", headers=h(webmaster_token))
+
+    def test_replace_single_shape_image(self, webmaster_token):
+        """PUT /adverts/{id}/images replaces only the supplied shape; other
+        shapes keep their existing image."""
+        name = f"Replace Ad {uuid.uuid4().hex[:6]}"
+        ad = _create_advert_shaped(webmaster_token, name, shapes=("landscape", "square"))
+        try:
+            r = requests.put(f"{API}/adverts/{ad['id']}/images",
+                             files={"file_portrait": ("p.png", _advert_file(), "image/png")},
+                             headers=h(webmaster_token))
+            assert r.status_code == 200, r.text
+            assert set(r.json()["images"]) == {"landscape", "portrait", "square"}
+            # the pre-existing landscape image is untouched
+            assert r.json()["images"]["landscape"] == ad["images"]["landscape"]
+        finally:
+            requests.delete(f"{API}/adverts/{ad['id']}", headers=h(webmaster_token))
+
+    def test_legacy_single_image_still_works(self, webmaster_token):
+        """The original single-file upload path keeps working and is mirrored
+        into the landscape image so new cards can display it."""
+        name = f"Legacy Ad {uuid.uuid4().hex[:6]}"
+        ad = _create_advert(webmaster_token, name)
+        try:
+            assert ad["image"].startswith("data:image/png;base64,")
+            assert ad["images"]["landscape"].startswith("data:image/png;base64,")
+            pub = requests.get(f"{API}/adverts").json()
+            hit = next((a for a in pub if a["id"] == ad["id"]), None)
+            assert hit and hit["image"].startswith("data:image/png;base64,")
+        finally:
+            requests.delete(f"{API}/adverts/{ad['id']}", headers=h(webmaster_token))
