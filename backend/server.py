@@ -23,6 +23,7 @@ import jwt
 import re
 import base64
 import bcrypt
+import ipaddress
 from cryptography.fernet import Fernet
 from datetime import datetime, timezone, timedelta
 
@@ -68,6 +69,18 @@ LOCKOUT_MAX_MINUTES = 30
 # own window, which is fine behind a single reverse proxy).
 LOGIN_IP_LIMIT = int(os.environ.get("LOGIN_IP_LIMIT", "60"))
 LOGIN_IP_WINDOW_SECONDS = 60
+
+# Trusted reverse proxies. The real client IP is only ever taken from
+# X-Forwarded-For when the request's DIRECT socket peer is one of these
+# (comma-separated IPs or CIDRs). A client-supplied X-Forwarded-For header is
+# ignored for every other source, so an attacker cannot spoof the IP used for
+# login throttling / account lockout or written into the audit log.
+#   - Production (Caddy on the host -> nginx container): set this to the
+#     Docker internal network (or the nginx container's address). The compose
+#     file pins the internal network to 172.28.0.0/16 and defaults this to it.
+#   - Development (browser talks to the API directly): leave empty, the
+#     socket peer is the real client.
+TRUSTED_PROXY_IPS = os.environ.get("TRUSTED_PROXY_IPS", "")
 
 # Password/passcode policy for NEW or CHANGED credentials. Existing stored
 # passcodes are never re-validated, so nobody is locked out by this change.
@@ -585,18 +598,56 @@ def validate_password_policy(passcode: str) -> Optional[str]:
 
 
 # In-memory login throttle: key -> recent attempt timestamps. Only timestamps
-# inside the sliding window are ever kept, so the map stays bounded. Behind a
-# reverse proxy the client IP comes from X-Forwarded-For (first hop); the
-# per-account lockout is the real protection, the per-IP limit just slows
-# mass account scanning.
+# inside the sliding window are ever kept, so the map stays bounded. The
+# per-account lockout is the real protection, the per-IP limit just slows mass
+# account scanning. Keys are the REAL client IPs computed by _client_ip(), so
+# forged X-Forwarded-For headers cannot rotate the bucket.
 _login_attempts = defaultdict(deque)
 
 
+def _is_trusted_proxy(peer: str) -> bool:
+    """True when the direct socket peer is a configured trusted reverse proxy
+    (exact IP or CIDR). No TRUSTED_PROXY_IPS configured means no proxy is
+    trusted — the socket peer is always the real client."""
+    if not TRUSTED_PROXY_IPS.strip():
+        return False
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for entry in TRUSTED_PROXY_IPS.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            if "/" in entry:
+                if peer_ip in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif entry == peer:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _client_ip(request: Request) -> str:
+    """The real client IP for a request.
+
+    - If the DIRECT socket peer is a trusted reverse proxy, the client IP is
+      the first entry of X-Forwarded-For (the proxy chain preserves the
+      original client, and the proxy itself overwrites/sanitises the header).
+    - Otherwise — direct connection, or a forged X-Forwarded-For from an
+      untrusted peer — the socket peer is authoritative and the header is
+      ignored. This is what makes brute-force throttling and audit-log IPs
+      unspoofable.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if not _is_trusted_proxy(peer):
+        return peer
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+        return xff.split(",")[0].strip() or peer
+    return peer
 
 
 def _login_ip_limited(ip: str) -> bool:
@@ -2337,7 +2388,11 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     boats = await db.boats.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     series = await db.series.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     races = await db.races.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
-    adverts = await db.adverts.find({}, {"_id": 0}).to_list(5000)
+    # Adverts are GLOBAL (webmaster-managed, no club_id) — they are never part
+    # of a club-scoped backup. Only the webmaster's full-system backup (no
+    # scope) includes them; a club admin can never obtain another club's (or
+    # any global) advert data this way.
+    adverts = await db.adverts.find({}, {"_id": 0}).to_list(5000) if not scope_club_id else []
     audit_logs = await db.audit_logs.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(20000)
     results = []
     for r in races:
@@ -2376,6 +2431,8 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     description = (f"{user.get('username')} (webmaster) downloaded full system backup"
                    if not scope_club_id
                    else f"{club_name or 'Club'} {user.get('role')} downloaded club backup")
+    # The audit record reflects the ACTUAL authorised scope (derived from the
+    # authenticated account, never from a client-supplied club_id).
     await _log_audit(request=request, user=user, action="BACKUP_DOWNLOAD",
                      description=description, resource_type="backup",
                      resource_id=scope_club_id or "all", club_id=scope_club_id)

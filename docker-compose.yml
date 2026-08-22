@@ -16,11 +16,14 @@
 #     MONGO_URL; API docs are disabled; HSTS is enabled)
 #   - No uvicorn --reload, no React dev server
 #   - MongoDB is internal-only (no host port) and requires credentials
-#   - The backend is NOT exposed to the host; only the nginx frontend is
+#   - The backend is NOT exposed to the host at all
+#   - The nginx frontend binds 127.0.0.1:80 — reachable ONLY from the Ubuntu
+#     host, where a HOST-INSTALLED Caddy terminates TLS (see deploy/)
 #   - A fresh named volume (prod-mongo-data) with auth enabled from creation
 #
-# Put this behind a reverse proxy for TLS (see deploy/Caddyfile), or expose
-# port 80 and terminate TLS at a load balancer.
+# TLS is terminated by Caddy on the host (see deploy/Caddyfile +
+# deploy/README.md). Nothing in this stack is exposed to the Internet:
+# ports 8000 and 27017 are never published, and port 80 is loopback-only.
 #
 # Moving existing dev data here (optional, one-time): the dev stack keeps your
 # real data in the external `regatta_mongodb_data` volume. To bring it into
@@ -69,6 +72,12 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:?set in .env (never '*')}
       JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
       LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-60}
+      # Trusted reverse proxies whose X-Forwarded-For is honoured (the real
+      # client IP for throttling/audit). Defaults to the pinned internal
+      # network (172.28.0.0/16) — the only peer that can reach the backend is
+      # the nginx frontend container. See the internal network definition
+      # below; must match. Never "*" — forged headers must not be trusted.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.28.0.0/16}
       SMTP_HOST: ${SMTP_HOST:?set in .env}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
@@ -97,8 +106,10 @@ services:
     networks:
       - sailscore-internal
     ports:
-      - "80:80"          # nginx: static SPA + /api reverse proxy. Terminate TLS
-                         # upstream (Caddy/NLB) or expose 443 instead.
+      # Loopback-only: only the HOST-INSTALLED Caddy can reach the app. The
+      # Internet can never talk to nginx directly (Caddy is the only entry
+      # point, and it sanitises X-Forwarded-For before forwarding).
+      - "127.0.0.1:80:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -114,4 +125,9 @@ volumes:
 
 networks:
   sailscore-internal:
-    driver: bridge      # only the frontend's published port reaches the host
+    driver: bridge      # only the frontend's loopback-published port reaches the host
+    ipam:
+      config:
+        # Pinned so TRUSTED_PROXY_IPS (backend env above) can name the exact
+        # network the nginx container arrives from. Keep the two in sync.
+        - subnet: 172.28.0.0/16

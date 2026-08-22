@@ -33,11 +33,12 @@ BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 # --------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def srv():
-    saved = {k: os.environ.get(k) for k in ("MONGO_URL", "DB_NAME", "JWT_SECRET", "ENV")}
+    saved = {k: os.environ.get(k) for k in ("MONGO_URL", "DB_NAME", "JWT_SECRET", "ENV", "TRUSTED_PROXY_IPS")}
     os.environ["MONGO_URL"] = "mongodb://localhost:27017/regatta_test"
     os.environ["DB_NAME"] = "regatta_test"
     os.environ["JWT_SECRET"] = "unit-test-secret-that-is-long-enough-0123456789"
     os.environ["ENV"] = "development"
+    os.environ["TRUSTED_PROXY_IPS"] = ""
     try:
         for name in list(sys.modules):
             if name == "server" or name.startswith("server."):
@@ -150,6 +151,8 @@ class TestJwtUnit:
         old = (srv.JWT_SECRET, srv.WEBMASTER_PASSCODE, srv.mongo_url,
                srv.SMTP_HOST, srv.APP_BASE_URL)
         old_cors = os.environ.get("CORS_ORIGINS")
+        # Dev default: no trusted proxy (browser talks to the API directly).
+        assert srv.TRUSTED_PROXY_IPS == ""
         try:
             srv.JWT_SECRET = "short"
             srv.WEBMASTER_PASSCODE = "x"
@@ -808,6 +811,105 @@ class TestLockoutUnit:
 
 
 # --------------------------------------------------------------------------
+# Unit tests — trusted-proxy client IP detection (forged-XFF resistance)
+# --------------------------------------------------------------------------
+def _req(peer, xff=None):
+    """A Starlette Request whose socket peer is `peer`, optionally carrying a
+    client-supplied X-Forwarded-For header."""
+    from fastapi import Request
+    headers = []
+    if xff is not None:
+        headers.append((b"x-forwarded-for", xff.encode()))
+    scope = {
+        "type": "http", "method": "GET", "path": "/",
+        "headers": headers, "query_string": b"", "scheme": "http",
+        "server": ("test", 80), "client": (peer, 12345),
+        "root_path": "", "state": {},
+    }
+    return Request(scope)
+
+
+class TestTrustedProxyClientIp:
+    """The real client IP is taken ONLY from X-Forwarded-For when the direct
+    socket peer is a configured trusted proxy; every other source uses the
+    socket peer and ignores the header entirely."""
+
+    def _with_proxies(self, srv, value):
+        old = srv.TRUSTED_PROXY_IPS
+        srv.TRUSTED_PROXY_IPS = value
+        return old
+
+    def test_no_trusted_proxy_uses_socket_peer(self, srv):
+        old = self._with_proxies(srv, "")
+        try:
+            # Forged XFF from an untrusted source is ignored entirely.
+            assert srv._client_ip(_req("198.51.100.7", xff="1.2.3.4")) == "198.51.100.7"
+            assert srv._client_ip(_req("198.51.100.7")) == "198.51.100.7"
+        finally:
+            srv.TRUSTED_PROXY_IPS = old
+
+    def test_forged_xff_from_untrusted_peer_ignored(self, srv):
+        old = self._with_proxies(srv, "203.0.113.10")
+        try:
+            # Different peer, forged header -> socket peer wins.
+            assert srv._client_ip(_req("198.51.100.7", xff="1.2.3.4")) == "198.51.100.7"
+        finally:
+            srv.TRUSTED_PROXY_IPS = old
+
+    def test_trusted_proxy_uses_first_xff_entry(self, srv):
+        old = self._with_proxies(srv, "203.0.113.10")
+        try:
+            assert srv._client_ip(
+                _req("203.0.113.10", xff="198.51.100.7, 203.0.113.10")) == "198.51.100.7"
+            # Even a spoofed first entry is accepted from the TRUSTED peer only
+            # (the proxy sanitises it; that is the trust boundary).
+            assert srv._client_ip(
+                _req("203.0.113.10", xff="9.9.9.9")) == "9.9.9.9"
+        finally:
+            srv.TRUSTED_PROXY_IPS = old
+
+    def test_trusted_proxy_cidr(self, srv):
+        old = self._with_proxies(srv, "172.28.0.0/16")
+        try:
+            assert srv._client_ip(_req("172.28.0.3", xff="198.51.100.7")) == "198.51.100.7"
+            assert srv._client_ip(_req("172.28.255.1", xff="198.51.100.8")) == "198.51.100.8"
+            # outside the CIDR -> header ignored
+            assert srv._client_ip(_req("172.29.0.1", xff="198.51.100.9")) == "172.29.0.1"
+            assert srv._client_ip(_req("10.0.0.5", xff="198.51.100.9")) == "10.0.0.5"
+        finally:
+            srv.TRUSTED_PROXY_IPS = old
+
+    def test_malformed_peer_and_header(self, srv):
+        old = self._with_proxies(srv, "203.0.113.10")
+        try:
+            # Non-IP peer string is never trusted; header still ignored.
+            assert srv._client_ip(_req("not-an-ip", xff="1.2.3.4")) == "not-an-ip"
+            # Trusted peer but blank/whitespace XFF -> falls back to peer.
+            assert srv._client_ip(_req("203.0.113.10", xff="   ")) == "203.0.113.10"
+            assert srv._client_ip(_req("203.0.113.10", xff=", ,")) == "203.0.113.10"
+        finally:
+            srv.TRUSTED_PROXY_IPS = old
+
+    def test_rate_limit_key_cannot_be_rotated_by_forged_xff(self, srv):
+        """The throttle bucket is keyed on the computed client IP. From an
+        untrusted source every forged header maps to the SAME socket peer, so
+        an attacker cannot rotate the bucket by varying X-Forwarded-For."""
+        old = self._with_proxies(srv, "")
+        try:
+            keys = {srv._client_ip(_req("198.51.100.7", xff=f"10.0.0.{i}"))
+                    for i in range(5)}
+            assert keys == {"198.51.100.7"}
+            # hammering with distinct forged headers still exhausts ONE bucket
+            limited = False
+            for i in range(srv.LOGIN_IP_LIMIT + 1):
+                limited = srv._login_ip_limited(
+                    srv._client_ip(_req("198.51.100.7", xff=f"10.0.0.{i % 5}")))
+            assert limited is True
+        finally:
+            srv.TRUSTED_PROXY_IPS = old
+
+
+# --------------------------------------------------------------------------
 # Live tests — browser session security (HttpOnly cookie, logout, CSRF-safe)
 # --------------------------------------------------------------------------
 class TestLiveSession:
@@ -976,6 +1078,54 @@ class TestLiveBruteForce:
 
 
 # --------------------------------------------------------------------------
+# Live tests — forged X-Forwarded-For cannot spoof throttling or audit IPs
+# ---------------------------------------------------------------------------
+class TestLiveForgedXff:
+    def test_forged_xff_does_not_change_audit_ip(self, test_club):
+        """A direct request carrying a forged X-Forwarded-For must NOT be able
+        to fake the IP recorded in the audit log. The dev backend has no
+        trusted proxy configured, so the socket peer is recorded instead."""
+        username = club_user_username("admin", test_club["id"])
+        forged = "203.0.113.99"
+        r = requests.post(f"{API}/auth/login",
+                          json={"role": "admin", "username": username,
+                                "passcode": "wrongpass", "club_id": test_club["id"]},
+                          headers={"X-Forwarded-For": forged})
+        assert r.status_code == 401
+        items = requests.get(f"{API}/audit", params={
+            "username": username, "action": "AUTH_LOGIN_FAILED"},
+            headers=h(_login("webmaster", "webmaster", WEBMASTER_PASSCODE)["token"])).json()["items"]
+        latest = items[0]
+        assert latest["ip_address"] != forged, \
+            "forged X-Forwarded-For reached the audit log"
+        assert latest["ip_address"], "audit event must carry a real IP"
+
+    def test_forged_xff_does_not_bypass_ip_throttle(self, test_club):
+        """Varying forged X-Forwarded-For values from the same socket peer
+        must all land in the SAME throttle bucket (the socket peer), so an
+        attacker cannot evade the per-IP login limit by rotating the header.
+        Sends one failed login per forged value — never enough to trip the
+        throttle itself — and asserts every attempt recorded the same real IP."""
+        username = club_user_username("admin", test_club["id"])
+        webmaster_tok = _login("webmaster", "webmaster", WEBMASTER_PASSCODE)["token"]
+        seen = set()
+        for i in range(3):
+            forged = f"198.51.100.{10 + i}"
+            requests.post(f"{API}/auth/login",
+                          json={"role": "admin", "username": username,
+                                "passcode": "wrongpass", "club_id": test_club["id"]},
+                          headers={"X-Forwarded-For": forged})
+            items = requests.get(f"{API}/audit", params={
+                "username": username, "action": "AUTH_LOGIN_FAILED"},
+                headers=h(webmaster_tok)).json()["items"]
+            seen.add(items[0]["ip_address"])
+        # every attempt recorded the SAME real IP — the forged values were
+        # ignored, so the throttle bucket is shared and cannot be rotated.
+        assert len(seen) == 1
+        assert seen != {f"198.51.100.{10 + i}" for i in range(3)}
+
+
+# --------------------------------------------------------------------------
 # Live tests — persistent audit log
 # --------------------------------------------------------------------------
 class TestLiveAudit:
@@ -1115,6 +1265,54 @@ class TestLiveBackup:
                                         headers=h(club_admin_token)))
         # the scope is forced to the caller's own club — no IDOR
         assert len(data["clubs.json"]) == 1 and data["clubs.json"][0]["id"] == test_club["id"]
+        # classes/boats/series/races must belong to the caller's club, and
+        # NOTHING from the other club may leak in (regardless of whether the
+        # caller's own club currently has any classes).
+        other_class_ids = {c["id"] for c in other["classes"]}
+        for c in data["classes.json"]:
+            assert c["club_id"] == test_club["id"], "other club's class leaked"
+            assert c["id"] not in other_class_ids
+        for b in data["boats.json"]:
+            assert b["class_id"] not in other_class_ids, "other club's boat leaked"
+        for s in data["series.json"]:
+            assert s["class_id"] not in other_class_ids, "other club's series leaked"
+        for r in data["races.json"]:
+            assert r["class_id"] not in other_class_ids, "other club's race leaked"
+
+    def test_club_backup_excludes_global_adverts(self, test_club, club_admin_token, webmaster_token):
+        """Adverts are global (webmaster-managed, no club). A club admin's
+        backup must never contain them — only the webmaster's full-system
+        backup does. Same for the audit log: only the club's own events."""
+        advert = requests.post(f"{API}/adverts",
+                               data={"name": "Backup Scope Test Ad"},
+                               headers=h(webmaster_token))
+        assert advert.status_code == 200, advert.text
+        try:
+            club_data = self._unzip(requests.get(f"{API}/backup", headers=h(club_admin_token)))
+            assert club_data["adverts.json"] == [], \
+                "club backup must not include global adverts"
+            # audit records scoped to the club only
+            assert club_data["audit_logs.json"]
+            for ev in club_data["audit_logs.json"]:
+                assert ev["club_id"] == test_club["id"], \
+                    "club backup leaked another scope's audit record"
+            # the webmaster full backup DOES include the advert
+            full = self._unzip(requests.get(f"{API}/admin/backup", headers=h(webmaster_token)))
+            assert any(a["name"] == "Backup Scope Test Ad" for a in full["adverts.json"])
+        finally:
+            requests.delete(f"{API}/adverts/{advert.json()['id']}", headers=h(webmaster_token))
+
+    def test_webmaster_club_backup_scoped(self, test_club, webmaster_token):
+        """A webmaster single-club backup contains only that club's data and
+        no global adverts (adverts are system-wide, not club-owned)."""
+        single = self._unzip(requests.get(f"{API}/admin/backup",
+                                          params={"club_id": test_club["id"]},
+                                          headers=h(webmaster_token)))
+        assert len(single["clubs.json"]) == 1
+        assert single["clubs.json"][0]["id"] == test_club["id"]
+        assert single["adverts.json"] == []
+        for ev in single["audit_logs.json"]:
+            assert ev["club_id"] == test_club["id"]
 
     def test_webmaster_club_and_full_backups(self, test_club, webmaster_token):
         single = self._unzip(requests.get(f"{API}/admin/backup",
@@ -1127,3 +1325,53 @@ class TestLiveBackup:
         for u in full["users.json"]:
             assert "passcode_hash" not in u and "reset_token_hash" not in u
         assert any(u["role"] == "webmaster" for u in full["users.json"])
+        # full backup includes global adverts (they are system-wide data)
+        assert isinstance(full["adverts.json"], list)
+
+
+# --------------------------------------------------------------------------
+# Static config checks — production Caddy/proxy wiring
+# --------------------------------------------------------------------------
+class TestProductionProxyConfig:
+    """Static, offline checks that the production proxy wiring stays coherent:
+    the host-installed Caddyfile sanitises X-Forwarded-For, the compose
+    frontend is loopback-only, and TRUSTED_PROXY_IPS matches the pinned
+    internal network the backend trusts."""
+
+    def _repo_root(self):
+        return Path(__file__).resolve().parent.parent.parent
+
+    def test_caddyfile_sanitises_xff_and_targets_host_loopback(self):
+        caddyfile = (self._repo_root() / "deploy" / "Caddyfile").read_text()
+        assert "results.example.com" in caddyfile, "placeholder domain must be documented"
+        assert "reverse_proxy 127.0.0.1:80" in caddyfile, \
+            "Caddy must proxy to the host loopback (Docker frontend bind)"
+        assert "header_up X-Forwarded-For {remote_host}" in caddyfile, \
+            "Caddy must OVERWRITE X-Forwarded-For with the real client IP"
+        assert "header_up X-Forwarded-Proto https" in caddyfile
+        assert "transport http {" in caddyfile  # explicit timeouts
+        assert "encode zstd gzip" in caddyfile  # compression
+
+    def test_compose_frontend_loopback_only_and_backend_unexposed(self):
+        compose = (self._repo_root() / "docker-compose.yml").read_text()
+        assert '"127.0.0.1:80:80"' in compose, \
+            "production frontend must bind to host loopback only"
+        # backend and mongodb must never publish host ports
+        assert '"8000:8000"' not in compose
+        assert '"27017:27017"' not in compose
+        assert "27017" not in compose.replace("#", "").split("ports:")[-1]
+
+    def test_trusted_proxy_matches_pinned_internal_network(self):
+        """TRUSTED_PROXY_IPS default (172.28.0.0/16) must equal the pinned
+        internal subnet, or the backend would never trust the nginx peer."""
+        compose = (self._repo_root() / "docker-compose.yml").read_text()
+        assert "TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.28.0.0/16}" in compose
+        assert "- subnet: 172.28.0.0/16" in compose
+
+    def test_nginx_passes_through_sanitised_xff(self):
+        nginx = (self._repo_root() / "frontend" / "nginx.conf").read_text()
+        assert "X-Forwarded-For $http_x_forwarded_for" in nginx, \
+            "nginx must forward Caddy's sanitised XFF untouched"
+        assert "$proxy_add_x_forwarded_for" not in nginx, \
+            "nginx must not re-append its own $remote_addr to XFF"
+        assert "X-Forwarded-Proto $scheme" in nginx

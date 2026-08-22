@@ -1,20 +1,62 @@
-# Example Caddy reverse proxy — automatic HTTPS in front of SailScore.
-# Put this on the host (or a proxy container) and point the production
-# frontend's published port at it, e.g. with:
-#   docker run -d --name caddy -p 80:80 -p 443:443 \
-#     -v $PWD/deploy/Caddyfile:/etc/caddy/Caddyfile \
-#     -v caddy-data:/data caddy:2
+# ────────────────────────────────────────────────────────────────────────────
+# SailScore — production Caddyfile (HOST-INSTALLED Caddy on the Ubuntu NUC)
 #
-# Replace results.yourclub.org with the real domain. Caddy obtains and
-# renews the Let's Encrypt certificate automatically.
+# Architecture:
+#
+#   Internet ──HTTPS :443──▶ Caddy (systemd service on Ubuntu host)
+#                              │ reverse_proxy 127.0.0.1:80
+#                              ▼
+#                         Docker frontend nginx (bound to 127.0.0.1:80 ONLY)
+#                              │ /api → proxy_pass http://backend:8000
+#                              ▼
+#                         FastAPI backend (internal Docker network, no host port)
+#                              ▼
+#                         MongoDB (internal Docker network, no host port)
+#
+# Caddy is installed directly on the Ubuntu host — NOT in Docker (see
+# deploy/README.md for the exact install + systemd commands).
+#
+# IMPORTANT — replace the placeholder domain before use:
+#   results.example.com   →   the real public domain (e.g. results.myclub.org)
+#
+# Automatic HTTPS: Caddy obtains and renews the Let's Encrypt certificate,
+# and redirects HTTP → HTTPS automatically. HSTS is added automatically.
+# ────────────────────────────────────────────────────────────────────────────
 
-results.yourclub.org {
-    # TLS is automatic (ACME). HSTS is added by Caddy automatically.
+results.example.com {
+
+    # Compression (brotli/zstd/gzip) for static assets.
+    encode zstd gzip
 
     reverse_proxy 127.0.0.1:80 {
-        # Preserve the real client IP through to the backend (rate limiting
-        # and security logging rely on X-Forwarded-For).
+        # The app is reachable ONLY through this proxy (Docker binds the
+        # frontend to 127.0.0.1:80). Forwarding headers:
+        #
+        # X-Forwarded-For is OVERWRITTEN with the real client IP ({remote_host}).
+        # Caddy sanitises it, so a client-supplied X-Forwarded-For header can
+        # never reach the backend — the backend additionally only honours XFF
+        # from its own trusted proxy (TRUSTED_PROXY_IPS, the internal Docker
+        # network). This is the chain that makes brute-force throttling and
+        # audit-log IPs unspoofable.
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+
+        # WebSocket support (not currently used by SailScore, but harmless and
+        # future-proof): Caddy handles the Upgrade handshake transparently.
+        # Timeouts: sensible production defaults.
+        transport http {
+            dial_timeout 10s
+            response_header_timeout 30s
+            read_timeout 60s
+        }
+    }
+
+    # Reasonable max request size for image uploads (club icons, adverts).
+    request_body {
+        max_size 12MB
     }
 }
+
+# Optional: force-HSTS for all subdomains is automatic in Caddy; nothing else
+# is needed here — HTTPS + redirect are default behaviour for a site block.

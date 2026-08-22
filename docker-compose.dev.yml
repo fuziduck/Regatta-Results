@@ -58,6 +58,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
       LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-60}
+      # Dev: no trusted proxy — the browser talks to the API directly, so the
+      # socket peer IS the real client and forged X-Forwarded-For is ignored.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
