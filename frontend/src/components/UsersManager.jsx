@@ -22,6 +22,7 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
   const [passcode, setPasscode] = useState("");
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
+  const [editUsername, setEditUsername] = useState("");
   const [editName, setEditName] = useState("");
   const [editRole, setEditRole] = useState("");
   const [resetId, setResetId] = useState(null);
@@ -40,9 +41,12 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
     if (isWebmaster) api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
   }, [isWebmaster]);
 
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!username.trim()) return toast.error("Username is required");
+    if (!username.trim()) return toast.error("Email address is required");
+    if (!EMAIL_RE.test(username.trim())) return toast.error("Username must be a valid email address");
     if (passcode.length < 4) return toast.error("Passcode must be at least 4 characters");
     setBusy(true);
     try {
@@ -74,8 +78,11 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
   };
 
   const saveEdit = async (u) => {
+    if (editUsername.trim() && !EMAIL_RE.test(editUsername.trim())) {
+      return toast.error("Username must be a valid email address");
+    }
     try {
-      await api.updateUser(u.id, { name: editName, role: editRole });
+      await api.updateUser(u.id, { username: editUsername.trim() || undefined, name: editName, role: editRole });
       setEditId(null);
       toast.success("Login updated");
       load();
@@ -130,8 +137,8 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
           </div>
         )}
         <div className="space-y-1.5">
-          <Label>Username</Label>
-          <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. tom" className="h-11" data-testid="user-username" />
+          <Label>Email address</Label>
+          <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. tom@club.org" type="email" className="h-11" data-testid="user-username" />
         </div>
         <div className="space-y-1.5">
           <Label>Display name</Label>
@@ -173,7 +180,8 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
               <div className="min-w-0 flex-1">
                 {isEditing ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="h-9 w-44" placeholder="Display name" />
+                    <Input value={editUsername} onChange={(e) => setEditUsername(e.target.value)} className="h-9 w-48" placeholder="Email address" type="email" data-testid="edit-username-input" />
+                    <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="h-9 w-40" placeholder="Display name" />
                     <select value={editRole} onChange={(e) => setEditRole(e.target.value)} className="h-9 px-2 rounded-lg border border-input bg-background text-sm">
                       <option value="officer">Race Officer</option>
                       <option value="admin">Race Admin</option>
@@ -215,7 +223,7 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
                     <Button size="icon" variant="ghost" title="Reset passcode" data-testid={`reset-${u.username}`} onClick={() => { setResetId(u.id); setResetPass(""); setEditId(null); }}>
                       <KeyRound className="w-4 h-4" />
                     </Button>
-                    <Button size="icon" variant="ghost" title="Edit name / role" data-testid={`edit-${u.username}`} onClick={() => { setEditId(u.id); setEditName(u.name || ""); setEditRole(u.role); setResetId(null); }}>
+                    <Button size="icon" variant="ghost" title="Edit email / name / role" data-testid={`edit-${u.username}`} onClick={() => { setEditId(u.id); setEditUsername(u.username || ""); setEditName(u.name || ""); setEditRole(u.role); setResetId(null); }}>
                       <Pencil className="w-4 h-4" />
                     </Button>
                     <Button size="icon" variant="ghost" title={u.active ? "Deactivate" : "Reactivate"} onClick={() => toggleActive(u)}>

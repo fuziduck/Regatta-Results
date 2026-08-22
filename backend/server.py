@@ -6,9 +6,13 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import time
+import hashlib
+import secrets
+import smtplib
 from collections import defaultdict, deque
+from email.message import EmailMessage
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal
 import uuid
 import jwt
@@ -53,6 +57,19 @@ LOCKOUT_MINUTES = 15
 # own window, which is fine behind a single reverse proxy).
 LOGIN_IP_LIMIT = int(os.environ.get("LOGIN_IP_LIMIT", "60"))
 LOGIN_IP_WINDOW_SECONDS = 60
+# Password reset by email (SMTP via the stdlib). Leave SMTP_HOST unset in
+# development: the reset token is then returned in the response so the flow
+# works without a mail server. Production refuses to start without SMTP_HOST
+# and APP_BASE_URL (see _production_config_errors).
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+MAIL_FROM = os.environ.get("MAIL_FROM", "") or SMTP_USER
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "")
+RESET_TOKEN_MINUTES = int(os.environ.get("RESET_TOKEN_MINUTES", "30"))
+RESET_EMAIL_LIMIT = int(os.environ.get("RESET_EMAIL_LIMIT", "5"))
+RESET_EMAIL_WINDOW_SECONDS = 600
 
 WEAK_JWT_SECRETS = {"change-me-to-a-long-random-string", "changeme", "secret",
                     "dev", "development", "jwt-secret", "insecure", "none"}
@@ -73,6 +90,10 @@ def _production_config_errors() -> List[str]:
         errors.append("WEBMASTER_PASSCODE must be set to a value of at least 8 characters")
     if "mongodb://" in mongo_url.lower() and "@" not in mongo_url.split("//", 1)[-1]:
         errors.append("MONGO_URL must include database credentials in production")
+    if not SMTP_HOST:
+        errors.append("SMTP_HOST must be set in production (password-reset emails)")
+    if not APP_BASE_URL:
+        errors.append("APP_BASE_URL must be set in production (reset links)")
     return errors
 
 
@@ -287,12 +308,14 @@ class LoginInput(BaseModel):
 class UserInput(BaseModel):
     club_id: Optional[str] = None
     role: Literal["officer", "admin"] = "officer"
-    username: str
+    # Usernames are email addresses (the account's password-reset contact).
+    username: EmailStr
     name: str = ""
     passcode: str = ""
 
 
 class UserUpdate(BaseModel):
+    username: Optional[EmailStr] = None
     name: Optional[str] = None
     role: Optional[Literal["officer", "admin"]] = None
     active: Optional[bool] = None
@@ -573,7 +596,7 @@ async def login(data: LoginInput, request: Request):
             club = clubs[0]
     if not club or not data.username:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip()}, {"_id": 0})
+    user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip().lower()}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     u = await _login_user(user, passcode, ip)
@@ -588,6 +611,141 @@ async def login(data: LoginInput, request: Request):
 class ChangePasscodeInput(BaseModel):
     current_passcode: str
     new_passcode: str
+
+
+class ForgotInput(BaseModel):
+    club_id: Optional[str] = None
+    email: EmailStr
+
+
+class ResetPasswordInput(BaseModel):
+    token: str
+    new_passcode: str
+
+
+def _reset_email_limited(email: str) -> bool:
+    """Per-email throttle on reset requests (stops email-bombing a victim)."""
+    now = time.time()
+    dq = _login_attempts[f"reset:{email}"]
+    while dq and dq[0] < now - RESET_EMAIL_WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= RESET_EMAIL_LIMIT:
+        return True
+    dq.append(now)
+    return False
+
+
+def _send_reset_email(to_email: str, reset_link: str) -> bool:
+    """Send the reset link over SMTP (stdlib). Returns False when SMTP is not
+    configured or the send fails — never raises, never leaks internals."""
+    if not SMTP_HOST:
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = "SailScore — reset your passcode"
+    msg["From"] = MAIL_FROM or SMTP_USER or "sailscore@localhost"
+    msg["To"] = to_email
+    msg.set_content(
+        "Someone asked to reset the SailScore passcode for this email address.\n\n"
+        f"Reset your passcode here: {reset_link}\n\n"
+        f"This link expires in {RESET_TOKEN_MINUTES} minutes. If you did not request "
+        "a reset, you can ignore this email — your passcode is unchanged.\n"
+    )
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+            s.starttls()
+            if SMTP_USER:
+                s.login(SMTP_USER, SMTP_PASSWORD)
+            s.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("RESET EMAIL SEND FAILED to=%s error=%s", to_email, exc)
+        return False
+
+
+@api_router.post("/auth/forgot")
+async def forgot_password(data: ForgotInput, request: Request):
+    """Request a passcode reset link. Always answers with the same generic
+    body so the endpoint cannot be used to enumerate accounts; the reset
+    email is only sent when a matching account exists. Tokens are stored as
+    a SHA-256 hash (never plaintext), expire after RESET_TOKEN_MINUTES and
+    are single-use."""
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many requests — please try again shortly")
+    email = data.email.strip().lower()
+    if _reset_email_limited(email):
+        raise HTTPException(status_code=429,
+                            detail="Too many requests — please try again shortly")
+    if APP_ENV == "production" and not SMTP_HOST:
+        raise HTTPException(status_code=503, detail="Password reset email is not configured")
+    user = None
+    if data.club_id:
+        user = await db.users.find_one({"club_id": data.club_id, "username": email}, {"_id": 0})
+    else:
+        # No club chosen: unambiguous only when exactly one club exists.
+        clubs = await db.clubs.find({}, {"_id": 0}).to_list(100)
+        if len(clubs) == 1:
+            user = await db.users.find_one({"username": email}, {"_id": 0})
+    if user:
+        token = secrets.token_urlsafe(32)
+        await db.users.update_one({"id": user["id"]}, {"$set": {
+            "reset_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            "reset_token_expires": (datetime.now(timezone.utc)
+                                    + timedelta(minutes=RESET_TOKEN_MINUTES)).isoformat(),
+        }})
+        reset_link = f"{APP_BASE_URL.rstrip('/')}/reset-password?token={token}" if APP_BASE_URL else ""
+        sent = _send_reset_email(email, reset_link)
+        logger.info("PASSWORD RESET REQUEST user=%s ip=%s email_sent=%s",
+                    user.get("username"), ip, sent)
+        if not sent and APP_ENV != "production":
+            # Development convenience: no SMTP configured — hand the token back
+            # so the flow can be exercised end-to-end locally. Production never
+            # returns tokens.
+            return {"ok": True, "dev_reset_token": token}
+    return {"ok": True}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(data: ResetPasswordInput, request: Request):
+    """Complete a passcode reset with the emailed token (single use, expiry).
+    The passcode hash is replaced, every outstanding session is revoked, and
+    the reset token is consumed."""
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many requests — please try again shortly")
+    new = data.new_passcode.strip()
+    if len(new) < 4:
+        raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
+    token_hash = hashlib.sha256(data.token.strip().encode("utf-8")).hexdigest()
+    user = await db.users.find_one({"reset_token_hash": token_hash}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401,
+                            detail="This reset link is invalid or has already been used")
+    try:
+        expires = datetime.fromisoformat(user.get("reset_token_expires", ""))
+    except (TypeError, ValueError):
+        await db.users.update_one({"id": user["id"]},
+                                  {"$unset": {"reset_token_hash": "", "reset_token_expires": ""}})
+        raise HTTPException(status_code=401,
+                            detail="This reset link is invalid or has already been used")
+    if expires <= datetime.now(timezone.utc):
+        await db.users.update_one({"id": user["id"]},
+                                  {"$unset": {"reset_token_hash": "", "reset_token_expires": ""}})
+        raise HTTPException(status_code=401,
+                            detail="This reset link has expired — please request a new one")
+    if verify_passcode(new, user.get("passcode_hash", "")):
+        raise HTTPException(status_code=400,
+                            detail="New passcode must be different from the current one")
+    new_tv = (user.get("token_version") or 0) + 1
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "passcode_hash": hash_passcode(new),
+        "token_version": new_tv,
+        "last_passcode_change": now_iso(),
+    }, "$unset": {"reset_token_hash": "", "reset_token_expires": ""}})
+    logger.info("PASSWORD RESET OK user=%s ip=%s", user.get("username"), ip)
+    return {"ok": True}
 
 
 @api_router.post("/auth/change-passcode")
@@ -690,9 +848,7 @@ async def create_user(data: UserInput, user: dict = Depends(require_admin)):
     if not club_id:
         raise HTTPException(status_code=400, detail="club_id is required")
     _ensure_club(user, club_id)
-    username = data.username.strip()
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required")
+    username = data.username.strip().lower()
     passcode = data.passcode.strip()
     if len(passcode) < 4:
         raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
@@ -737,6 +893,14 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
             raise HTTPException(status_code=400,
                                 detail="A club must keep at least one active admin")
     update = {}
+    if data.username is not None:
+        new_username = data.username.strip().lower()
+        dup = await db.users.find_one({"club_id": target.get("club_id"), "username": new_username,
+                                       "id": {"$ne": user_id}}, {"_id": 0})
+        if dup:
+            raise HTTPException(status_code=400,
+                                detail=f"Username '{new_username}' already exists for this club")
+        update["username"] = new_username
     if data.name is not None:
         update["name"] = data.name.strip()
     if data.role is not None:
@@ -745,10 +909,11 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
         update["active"] = data.active
     if data.passcode:
         update["passcode_hash"] = hash_passcode(data.passcode.strip())
-    # Any change that alters what an existing token authorises (passcode
-    # reset, role change, deactivation) bumps the token version, revoking
-    # every previously issued session for this account immediately.
-    revoke = bool(data.passcode) or data.role is not None or data.active is not None
+    # Any change that alters what an existing token authorises (username,
+    # passcode, role or activation) bumps the token version, revoking every
+    # previously issued session for this account immediately.
+    revoke = (data.username is not None) or bool(data.passcode) \
+        or data.role is not None or data.active is not None
     if update:
         if revoke:
             update["token_version"] = (target.get("token_version") or 0) + 1

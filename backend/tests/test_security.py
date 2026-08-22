@@ -146,7 +146,8 @@ class TestJwtUnit:
         assert srv._detect_image_type(b"PK\x03\x04 zip") is None
 
     def test_production_config_validation(self, srv):
-        old = (srv.JWT_SECRET, srv.WEBMASTER_PASSCODE, srv.mongo_url)
+        old = (srv.JWT_SECRET, srv.WEBMASTER_PASSCODE, srv.mongo_url,
+               srv.SMTP_HOST, srv.APP_BASE_URL)
         old_cors = os.environ.get("CORS_ORIGINS")
         try:
             srv.JWT_SECRET = "short"
@@ -156,6 +157,8 @@ class TestJwtUnit:
             assert any("JWT_SECRET" in e for e in errs)
             assert any("CORS_ORIGINS" in e for e in errs)
             assert any("WEBMASTER_PASSCODE" in e for e in errs)
+            assert any("SMTP_HOST" in e for e in errs)
+            assert any("APP_BASE_URL" in e for e in errs)
             # a known-weak default must be rejected too
             srv.JWT_SECRET = "change-me-to-a-long-random-string"
             assert any("JWT_SECRET" in e for e in srv._production_config_errors())
@@ -163,10 +166,13 @@ class TestJwtUnit:
             srv.JWT_SECRET = "a" * 48
             srv.WEBMASTER_PASSCODE = "strong-passcode-123"
             srv.mongo_url = "mongodb://user:pass@localhost:27017/regatta?authSource=admin"
+            srv.SMTP_HOST = "smtp.example.org"
+            srv.APP_BASE_URL = "https://results.example.org"
             os.environ["CORS_ORIGINS"] = "https://results.example.org"
             assert srv._production_config_errors() == []
         finally:
-            srv.JWT_SECRET, srv.WEBMASTER_PASSCODE, srv.mongo_url = old
+            (srv.JWT_SECRET, srv.WEBMASTER_PASSCODE, srv.mongo_url,
+             srv.SMTP_HOST, srv.APP_BASE_URL) = old
             if old_cors is None:
                 os.environ.pop("CORS_ORIGINS", None)
             else:
@@ -216,7 +222,7 @@ class TestLiveAuth:
 
     def test_inactive_account_rejected(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"ia{uuid.uuid4().hex[:5]}", "ia1234")
+                     f"ia{uuid.uuid4().hex[:5]}@test.club", "ia1234")
         requests.put(f"{API}/users/{u['id']}", json={"active": False},
                      headers=h(webmaster_token))
         r = requests.post(f"{API}/auth/login", json={
@@ -242,7 +248,7 @@ class TestLiveAuth:
 
     def test_role_change_revokes_existing_token(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"rc{uuid.uuid4().hex[:5]}", "rc1234")
+                     f"rc{uuid.uuid4().hex[:5]}@test.club", "rc1234")
         body = _login("officer", u["username"], "rc1234", test_club["id"])
         assert requests.get(f"{API}/auth/me", headers=h(body["token"])).status_code == 200
         r = requests.put(f"{API}/users/{u['id']}", json={"role": "admin"},
@@ -257,7 +263,7 @@ class TestLiveAuth:
 
     def test_passcode_reset_revokes_existing_token(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"rs{uuid.uuid4().hex[:5]}", "rs1234")
+                     f"rs{uuid.uuid4().hex[:5]}@test.club", "rs1234")
         body = _login("officer", u["username"], "rs1234", test_club["id"])
         r = requests.put(f"{API}/users/{u['id']}", json={"passcode": "new5678"},
                          headers=h(webmaster_token))
@@ -271,7 +277,7 @@ class TestLiveAuth:
 # --------------------------------------------------------------------------
 def _mk_officer(webmaster_token, test_club, prefix):
     return _mk_user(webmaster_token, test_club["id"], "officer",
-                    f"{prefix}{uuid.uuid4().hex[:5]}", "cp1234")
+                    f"{prefix}{uuid.uuid4().hex[:5]}@test.club", "cp1234")
 
 
 class TestLiveChangePasscode:
@@ -363,6 +369,127 @@ class TestLiveChangePasscode:
 
 
 # --------------------------------------------------------------------------
+# Live tests — email usernames + password reset
+# --------------------------------------------------------------------------
+class TestEmailUsernames:
+    def test_non_email_username_rejected(self, test_club, club_admin_token):
+        r = requests.post(f"{API}/users", json={
+            "club_id": test_club["id"], "role": "officer",
+            "username": "not-an-email", "passcode": "x1234"},
+            headers=h(club_admin_token))
+        assert r.status_code == 422
+
+    def test_email_username_lowercased(self, test_club, webmaster_token):
+        u = _mk_user(webmaster_token, test_club["id"], "officer",
+                     "MixedCase@Example.COM", "mc1234")
+        try:
+            assert u["username"] == "mixedcase@example.com"
+            # login works with any case and is case-insensitive
+            body = _login("officer", "MIXEDCASE@example.com", "mc1234", test_club["id"])
+            assert body["username"] == "mixedcase@example.com"
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_username_edit_to_email(self, test_club, webmaster_token):
+        u = _mk_user(webmaster_token, test_club["id"], "officer",
+                     f"old{uuid.uuid4().hex[:5]}@test.club", "ol1234")
+        try:
+            r = requests.put(f"{API}/users/{u['id']}",
+                             json={"username": "new@example.org"},
+                             headers=h(webmaster_token))
+            assert r.status_code == 200, r.text
+            assert r.json()["username"] == "new@example.org"
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+
+class TestLivePasswordReset:
+    def _request_reset(self, club_id, email):
+        return requests.post(f"{API}/auth/forgot", json={"club_id": club_id, "email": email})
+
+    def test_forgot_existing_account_returns_token_in_dev(self, test_club, webmaster_token):
+        email = f"reset{uuid.uuid4().hex[:5]}@test.club"
+        u = _mk_user(webmaster_token, test_club["id"], "officer", email, "rs1234")
+        try:
+            r = self._request_reset(test_club["id"], email)
+            assert r.status_code == 200
+            body = r.json()
+            assert body["ok"] is True
+            # development backend (no SMTP) hands the token back
+            assert body.get("dev_reset_token")
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_forgot_unknown_account_no_token(self, test_club):
+        r = self._request_reset(test_club["id"], "nobody-here@test.club")
+        assert r.status_code == 200
+        # identical generic body — no dev token, no account enumeration
+        assert r.json() == {"ok": True}
+
+    def test_forgot_generic_response_matches(self, test_club, webmaster_token):
+        """Known and unknown accounts produce the same response shape."""
+        email = f"gen{uuid.uuid4().hex[:5]}@test.club"
+        u = _mk_user(webmaster_token, test_club["id"], "officer", email, "gn1234")
+        try:
+            known = self._request_reset(test_club["id"], email).json()
+            unknown = self._request_reset(test_club["id"], "nobody@test.club").json()
+            # both say ok; the known one additionally carries the dev token
+            assert known["ok"] is True and unknown["ok"] is True
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_full_reset_flow(self, test_club, webmaster_token):
+        email = f"flow{uuid.uuid4().hex[:5]}@test.club"
+        u = _mk_user(webmaster_token, test_club["id"], "officer", email, "fl1234")
+        try:
+            body = _login("officer", email, "fl1234", test_club["id"])
+            token = self._request_reset(test_club["id"], email).json()["dev_reset_token"]
+            r = requests.post(f"{API}/auth/reset-password",
+                              json={"token": token, "new_passcode": "fresh99"})
+            assert r.status_code == 200, r.text
+            # old passcode fails, new one works
+            r = requests.post(f"{API}/auth/login", json={
+                "role": "officer", "username": email, "passcode": "fl1234",
+                "club_id": test_club["id"]})
+            assert r.status_code == 401
+            r = requests.post(f"{API}/auth/login", json={
+                "role": "officer", "username": email, "passcode": "fresh99",
+                "club_id": test_club["id"]})
+            assert r.status_code == 200
+            # previously issued tokens are revoked by the version bump
+            assert requests.get(f"{API}/auth/me", headers=h(body["token"])).status_code == 401
+            # the token is single-use
+            r = requests.post(f"{API}/auth/reset-password",
+                              json={"token": token, "new_passcode": "again99"})
+            assert r.status_code == 401
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_reset_garbage_token_rejected(self):
+        r = requests.post(f"{API}/auth/reset-password",
+                          json={"token": "not-a-real-token", "new_passcode": "fresh99"})
+        assert r.status_code == 401
+
+    def test_reset_short_passcode_rejected(self, test_club, webmaster_token):
+        email = f"short{uuid.uuid4().hex[:5]}@test.club"
+        u = _mk_user(webmaster_token, test_club["id"], "officer", email, "sh1234")
+        try:
+            token = self._request_reset(test_club["id"], email).json()["dev_reset_token"]
+            r = requests.post(f"{API}/auth/reset-password",
+                              json={"token": token, "new_passcode": "12"})
+            assert r.status_code == 400
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_forgot_rate_limited_per_email(self, test_club):
+        email = f"spam{uuid.uuid4().hex[:5]}@test.club"
+        statuses = []
+        for _ in range(6):
+            statuses.append(self._request_reset(test_club["id"], email).status_code)
+        assert statuses[-1] == 429  # 5 allowed per 10 minutes, then throttled
+
+
+# --------------------------------------------------------------------------
 # Live tests — role escalation
 # --------------------------------------------------------------------------
 class TestLiveRoleEscalation:
@@ -380,19 +507,19 @@ class TestLiveRoleEscalation:
     def test_admin_cannot_create_webmaster(self, test_club, club_admin_token):
         r = requests.post(f"{API}/users", json={
             "club_id": test_club["id"], "role": "webmaster",
-            "username": "evil", "passcode": "evil1234"}, headers=h(club_admin_token))
+            "username": "evil@test.club", "passcode": "evil1234"}, headers=h(club_admin_token))
         assert r.status_code == 422  # role enum rejects 'webmaster'
 
     def test_admin_cannot_change_own_role(self, test_club, club_admin_token):
         users = requests.get(f"{API}/users", headers=h(club_admin_token)).json()
-        me = next(u for u in users if u["username"] == "admin")
+        me = next(u for u in users if u["role"] == "admin" and u["club_id"] == test_club["id"])
         r = requests.put(f"{API}/users/{me['id']}", json={"role": "officer"},
                          headers=h(club_admin_token))
         assert r.status_code == 400
 
     def test_admin_cannot_deactivate_self(self, test_club, club_admin_token):
         users = requests.get(f"{API}/users", headers=h(club_admin_token)).json()
-        me = next(u for u in users if u["username"] == "admin")
+        me = next(u for u in users if u["role"] == "admin" and u["club_id"] == test_club["id"])
         r = requests.put(f"{API}/users/{me['id']}", json={"active": False},
                          headers=h(club_admin_token))
         assert r.status_code == 400

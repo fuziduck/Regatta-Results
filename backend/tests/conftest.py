@@ -54,10 +54,15 @@ def webmaster_token():
     return login("webmaster", "webmaster", WEBMASTER_PASSCODE)["token"]
 
 
+def club_user_username(role, club_id):
+    """Usernames are email addresses; stable per test club."""
+    return f"{role}@{club_id[:8]}.test.club"
+
+
 @pytest.fixture(scope="session")
 def test_club(webmaster_token):
     """A dedicated club for this worker's tests (webmaster-only creation), with
-    its own officer/admin user accounts (individual logins, not PINs)."""
+    its own officer/admin user accounts (individual email logins)."""
     r = requests.post(f"{API}/clubs", json={
         "name": f"API Test Club {uuid.uuid4().hex[:6]}",
         "color": "#123456",
@@ -67,7 +72,8 @@ def test_club(webmaster_token):
     for role, pin, name in (("officer", TEST_OFFICER_PIN, "Test Officer"),
                             ("admin", TEST_ADMIN_PIN, "Test Admin")):
         r = requests.post(f"{API}/users", json={
-            "club_id": club["id"], "role": role, "username": role,
+            "club_id": club["id"], "role": role,
+            "username": club_user_username(role, club["id"]),
             "name": name, "passcode": pin,
         }, headers=h(webmaster_token))
         assert r.status_code == 200, f"test user creation failed: {r.text}"
@@ -77,12 +83,14 @@ def test_club(webmaster_token):
 
 @pytest.fixture(scope="session")
 def club_admin_token(test_club):
-    return login("admin", "admin", TEST_ADMIN_PIN, test_club["id"])["token"]
+    return login("admin", club_user_username("admin", test_club["id"]),
+                 TEST_ADMIN_PIN, test_club["id"])["token"]
 
 
 @pytest.fixture(scope="session")
 def club_officer_token(test_club):
-    return login("officer", "officer", TEST_OFFICER_PIN, test_club["id"])["token"]
+    return login("officer", club_user_username("officer", test_club["id"]),
+                 TEST_OFFICER_PIN, test_club["id"])["token"]
 
 
 @pytest.fixture(scope="session")

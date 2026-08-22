@@ -5,6 +5,8 @@ import { AuthProvider, useAuth } from "@/context/AuthContext";
 import Clubs from "@/pages/Clubs";
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
+import ForgotPassword from "@/pages/ForgotPassword";
+import ResetPassword from "@/pages/ResetPassword";
 import Officer from "@/pages/Officer";
 import Admin from "@/pages/Admin";
 import Webmaster from "@/pages/Webmaster";
@@ -27,6 +29,8 @@ function App() {
             <Route path="/" element={<Clubs />} />
             <Route path="/club/:slug" element={<Landing />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/officer" element={<Protected allow={["officer", "admin", "webmaster"]}><Officer /></Protected>} />
             <Route path="/admin" element={<Protected allow={["admin", "webmaster"]}><Admin /></Protected>} />
             <Route path="/webmaster" element={<Protected allow={["webmaster"]}><Webmaster /></Protected>} />

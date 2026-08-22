@@ -163,14 +163,14 @@ export default function Login() {
 
           <form onSubmit={submit} className="mt-4 space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="username">{isWebmaster ? "Username" : "Email address"}</Label>
               <Input
                 id="username"
-                type="text"
+                type={isWebmaster ? "text" : "email"}
                 data-testid="username-input"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder={isWebmaster ? "webmaster" : "e.g. admin"}
+                placeholder={isWebmaster ? "webmaster" : "you@club.org"}
                 autoComplete="username"
                 autoFocus
                 className="h-12 text-base"
@@ -192,6 +192,13 @@ export default function Login() {
             <Button type="submit" data-testid="login-submit-btn" disabled={loading || !passcode} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
               {loading ? "Signing in…" : "Sign In"}
             </Button>
+            {!isWebmaster && (
+              <div className="text-center">
+                <Link to="/forgot-password" data-testid="forgot-passcode-link" className="text-sm text-ocean hover:underline font-semibold">
+                  Forgot your passcode?
+                </Link>
+              </div>
+            )}
           </form>
         </div>
         <p className="mt-6 text-center text-sm text-white/80">SailScore — Connecting sailing, one club at a time.</p>

@@ -58,6 +58,13 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
       LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-60}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:3000}
+      RESET_TOKEN_MINUTES: ${RESET_TOKEN_MINUTES:-30}
     command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       mongodb:

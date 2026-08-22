@@ -23,6 +23,9 @@ export const api = {
     client.post("/auth/login", { role, username, passcode, club_id }).then((r) => r.data),
   changePasscode: (current_passcode, new_passcode) =>
     client.post("/auth/change-passcode", { current_passcode, new_passcode }).then((r) => r.data),
+  forgotPassword: (club_id, email) => client.post("/auth/forgot", { club_id, email }).then((r) => r.data),
+  resetPassword: (token, new_passcode) =>
+    client.post("/auth/reset-password", { token, new_passcode }).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
 
   getClubs: () => client.get("/clubs").then((r) => r.data),

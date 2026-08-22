@@ -7,7 +7,8 @@ import base64
 import requests
 from datetime import datetime, timezone
 
-from conftest import API, WEBMASTER_PASSCODE, TEST_OFFICER_PIN, TEST_ADMIN_PIN, login, h
+from conftest import (API, WEBMASTER_PASSCODE, TEST_OFFICER_PIN, TEST_ADMIN_PIN,
+                       club_user_username, login, h)
 
 YEAR = datetime.now(timezone.utc).year
 
@@ -43,7 +44,8 @@ class TestAuth:
     def test_club_login(self, test_club):
         for role, pin in (("officer", TEST_OFFICER_PIN), ("admin", TEST_ADMIN_PIN)):
             r = requests.post(f"{API}/auth/login", json={
-                "role": role, "username": role, "passcode": pin, "club_id": test_club["id"]})
+                "role": role, "username": club_user_username(role, test_club["id"]),
+                "passcode": pin, "club_id": test_club["id"]})
             assert r.status_code == 200, r.text
             assert r.json()["role"] == role
             assert r.json()["club_id"] == test_club["id"]
