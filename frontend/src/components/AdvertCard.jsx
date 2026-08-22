@@ -66,15 +66,35 @@ export function interleaveWithAdverts(items, adverts) {
   return out;
 }
 
+// Aspect-ratio presets used when the webmaster picks a named shape.
+// Landscape/portrait/square standardise the card box; "auto" detects the
+// uploaded image's intrinsic ratio so the full image always fits.
+const RATIOS = { landscape: 4 / 3, portrait: 3 / 4, square: 1 };
+
 export default function AdvertCard({ advert, className = "" }) {
+  const [natRatio, setNatRatio] = useState(null);
   if (!advert) return null;
+  const format = advert.format || "auto";
+  const preset = RATIOS[format] || null;
+  // Use the named shape if set, otherwise fall back to the image's own
+  // natural ratio; until the image loads, default to landscape so the
+  // card has a recognised shape from the first frame.
+  const ratio = preset || natRatio || RATIOS.landscape;
+
   const img = (
     <>
-      <img
-        src={advert.image}
-        alt={advert.name || "Advertisement"}
-        className="absolute inset-0 w-full h-full object-cover"
-      />
+      <div className="absolute inset-0 flex items-center justify-center p-3">
+        <img
+          src={advert.image}
+          alt={advert.name || "Advertisement"}
+          onLoad={(e) => {
+            const w = e.target.naturalWidth, h = e.target.naturalHeight;
+            if (w && h) setNatRatio(w / h);
+          }}
+          style={{ aspectRatio: ratio }}
+          className="max-w-full max-h-full object-contain rounded-lg"
+        />
+      </div>
       <span className="absolute top-2 right-2 rounded-full bg-black/45 text-white text-[9px] uppercase tracking-widest px-2 py-0.5 backdrop-blur-sm">
         Sponsored
       </span>

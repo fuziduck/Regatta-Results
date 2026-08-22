@@ -8,7 +8,18 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { toast } from "sonner";
 import { Megaphone, Plus, Pencil, Trash2, ImagePlus, ExternalLink } from "lucide-react";
 
-const blank = { name: "", link_url: "", active: true };
+const blank = { name: "", link_url: "", active: true, format: "auto" };
+
+// Display shapes for the card box. "auto" fits the uploaded image's own
+// ratio; the named shapes standardise the box to a fixed ratio.
+const SHAPES = [
+  { key: "auto", label: "Auto", hint: "Matches the image" },
+  { key: "landscape", label: "Landscape", hint: "Wide box" },
+  { key: "portrait", label: "Portrait", hint: "Tall box" },
+  { key: "square", label: "Square", hint: "Equal sides" },
+];
+// Preview aspect ratios for the shape selector / image preview.
+const SHAPE_RATIO = { auto: null, landscape: 4 / 3, portrait: 3 / 4, square: 1 };
 
 export default function AdvertsManager() {
   const [adverts, setAdverts] = useState([]);
@@ -26,7 +37,7 @@ export default function AdvertsManager() {
     if (!form.name) return toast.error("Give the advert a name");
     try {
       if (editing) {
-        await api.updateAdvert(editing, { name: form.name, link_url: form.link_url, active: form.active });
+        await api.updateAdvert(editing, { name: form.name, link_url: form.link_url, active: form.active, format: form.format });
         if (file) await api.uploadAdvertImage(editing, file);
         toast.success("Advert updated");
       } else {
@@ -34,6 +45,7 @@ export default function AdvertsManager() {
         fd.append("name", form.name);
         fd.append("link_url", form.link_url || "");
         fd.append("active", String(form.active));
+        fd.append("format", form.format);
         if (file) fd.append("file", file);
         await api.createAdvert(fd);
         toast.success("Advert added");
@@ -52,7 +64,7 @@ export default function AdvertsManager() {
 
   const edit = (a) => {
     setEditing(a.id);
-    setForm({ name: a.name, link_url: a.link_url || "", active: a.active !== false });
+    setForm({ name: a.name, link_url: a.link_url || "", active: a.active !== false, format: a.format || "auto" });
     setFile(null);
     setOpen(true);
   };
@@ -92,6 +104,35 @@ export default function AdvertsManager() {
                     onChange={(e) => setFile(e.target.files?.[0] || null)} />
                 </label>
               </div>
+              <div className="space-y-1.5">
+                <Label>Image shape</Label>
+                <div className="grid grid-cols-4 gap-2" data-testid="advert-shape-picker">
+                  {SHAPES.map((s) => {
+                    const selected = form.format === s.key;
+                    return (
+                      <button key={s.key} type="button"
+                        data-testid={`advert-shape-${s.key}`}
+                        onClick={() => setForm({ ...form, format: s.key })}
+                        className={`rounded-lg border p-2 flex flex-col items-center gap-1.5 transition-colors ${selected ? "border-ocean bg-ocean/5 text-ocean" : "border-border hover:border-ocean/40"}`}>
+                        <span className={`block rounded-sm border-2 ${selected ? "border-ocean" : "border-muted-foreground/60"} ${
+                          s.key === "auto" ? "w-7 h-4" : s.key === "landscape" ? "w-7 h-4" : s.key === "portrait" ? "w-4 h-7" : "w-5 h-5"
+                        }`} />
+                        <span className="text-xs font-semibold leading-none">{s.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">Auto fits the uploaded image's own shape — the full image always fits. Pick a shape to standardise the card box.</p>
+              </div>
+              {(file || (editing && adverts.find((a) => a.id === editing)?.image)) && (
+                <div className="space-y-1.5">
+                  <Label>Preview</Label>
+                  <div className="rounded-lg border border-border bg-muted/40 p-3 flex items-center justify-center" style={{ aspectRatio: SHAPE_RATIO[form.format] || undefined }}>
+                    <img src={file ? URL.createObjectURL(file) : adverts.find((a) => a.id === editing)?.image}
+                      alt="Advert preview" className="max-w-full max-h-full object-contain" />
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between rounded-lg border border-border p-3">
                 <div>
                   <div className="font-semibold text-sm">Active</div>
@@ -121,8 +162,9 @@ export default function AdvertsManager() {
               )}
               <div className="min-w-0 flex-1">
                 <div className="font-heading uppercase tracking-tight leading-tight break-words">{a.name}</div>
-                <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                   {a.active ? <span className="text-emerald-600 font-semibold">Active</span> : <span className="text-muted-foreground">Inactive</span>}
+                  <span className="uppercase tracking-wide rounded-full border border-border px-2 py-0.5">{a.format || "auto"}</span>
                   {a.link_url && (
                     <a href={a.link_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-ocean hover:underline truncate">
                       <ExternalLink className="w-3 h-3" /> {a.link_url}

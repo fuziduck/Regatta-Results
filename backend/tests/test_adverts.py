@@ -19,10 +19,10 @@ def _advert_file():
     return _io.BytesIO(PNG)
 
 
-def _create_advert(token, name, active="true", link_url=""):
+def _create_advert(token, name, active="true", link_url="", format="auto"):
     r = requests.post(f"{API}/adverts",
                       files={"file": ("ad.png", _advert_file(), "image/png")},
-                      data={"name": name, "link_url": link_url, "active": active},
+                      data={"name": name, "link_url": link_url, "active": active, "format": format},
                       headers=h(token))
     assert r.status_code == 200, r.text
     return r.json()
@@ -38,6 +38,7 @@ class TestAdvertsCrud:
             assert ad["active"] is True
             assert ad["image"].startswith("data:image/png;base64,")
             assert "order" in ad
+            assert ad["format"] == "auto"
 
             manage = requests.get(f"{API}/adverts/manage", headers=h(webmaster_token)).json()
             assert any(a["id"] == ad["id"] for a in manage)
@@ -49,10 +50,23 @@ class TestAdvertsCrud:
             pub = requests.get(f"{API}/adverts").json()
             assert all(a["id"] != ad["id"] for a in pub)
 
-            # Reactivate + rename.
-            r = requests.put(f"{API}/adverts/{ad['id']}", json={"active": True, "name": name + " v2"},
+            # Reactivate + rename + change shape.
+            r = requests.put(f"{API}/adverts/{ad['id']}",
+                             json={"active": True, "name": name + " v2", "format": "landscape"},
                              headers=h(webmaster_token))
-            assert r.status_code == 200 and r.json()["name"] == name + " v2"
+            assert r.status_code == 200
+            assert r.json()["name"] == name + " v2"
+            assert r.json()["format"] == "landscape"
+
+            # Public feed carries the shape through.
+            pub = requests.get(f"{API}/adverts").json()
+            hit = next((a for a in pub if a["id"] == ad["id"]), None)
+            assert hit and hit["format"] == "landscape"
+
+            # Invalid shape is rejected.
+            r = requests.put(f"{API}/adverts/{ad['id']}", json={"format": "circle"},
+                             headers=h(webmaster_token))
+            assert r.status_code == 400
         finally:
             requests.delete(f"{API}/adverts/{ad['id']}", headers=h(webmaster_token))
 
@@ -79,3 +93,16 @@ class TestAdvertsCrud:
             assert r.status_code == 403
         # Public feed needs no auth at all.
         assert requests.get(f"{API}/adverts").status_code == 200
+
+
+    def test_named_shapes_round_trip(self, webmaster_token):
+        for shape in ("landscape", "portrait", "square"):
+            name = f"Shape {shape} {uuid.uuid4().hex[:4]}"
+            ad = _create_advert(webmaster_token, name, format=shape)
+            try:
+                assert ad["format"] == shape
+                pub = requests.get(f"{API}/adverts").json()
+                hit = next((a for a in pub if a["id"] == ad["id"]), None)
+                assert hit and hit["format"] == shape
+            finally:
+                requests.delete(f"{API}/adverts/{ad['id']}", headers=h(webmaster_token))

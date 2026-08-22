@@ -233,6 +233,9 @@ class AdvertUpdate(BaseModel):
     link_url: Optional[str] = None
     active: Optional[bool] = None
     order: Optional[int] = None
+    # Display shape: "auto" fits the uploaded image's own ratio, or one of
+    # "landscape" / "portrait" / "square" to standardise the card box.
+    format: Optional[str] = None
 
 
 class ClassInput(BaseModel):
@@ -824,6 +827,16 @@ async def delete_club(club_id: str, user: dict = Depends(require_webmaster)):
 # Adverts (webmaster-managed; shown interleaved on public pages)
 # ---------------------------------------------------------------------------
 ADVERT_IMAGE_MAX = 2 * 1024 * 1024
+ADVERT_FORMATS = ("auto", "landscape", "portrait", "square")
+
+
+def _valid_advert_format(fmt: Optional[str]) -> str:
+    """Normalise + validate an advert's display shape (defaults to auto)."""
+    f = (fmt or "auto").strip().lower() or "auto"
+    if f not in ADVERT_FORMATS:
+        raise HTTPException(status_code=400,
+                            detail="format must be auto, landscape, portrait or square")
+    return f
 
 
 @api_router.get("/adverts")
@@ -831,7 +844,7 @@ async def get_adverts():
     """Public: active adverts only, in display order. The rotation (rolling
     window capped at 10 per page load) is chosen client-side on refresh."""
     docs = await db.adverts.find({"active": True}, {"_id": 0}).sort("order", 1).to_list(100)
-    return [{k: a.get(k) for k in ("id", "name", "image", "link_url")} for a in docs]
+    return [{k: a.get(k) for k in ("id", "name", "image", "link_url", "format")} for a in docs]
 
 
 @api_router.get("/adverts/manage")
@@ -854,12 +867,14 @@ async def _read_advert_image(file: UploadFile) -> str:
 @api_router.post("/adverts")
 async def create_advert(user: dict = Depends(require_webmaster),
                         name: str = Form(""), link_url: str = Form(""),
-                        active: bool = Form(True), file: UploadFile = File(None)):
+                        active: bool = Form(True), format: str = Form("auto"),
+                        file: UploadFile = File(None)):
     """Create an advert. The image is optional at creation (the card then
     shows a placeholder) and can be added or replaced later via PUT image."""
     order = await db.adverts.count_documents({})
     image = await _read_advert_image(file) if file else None
     doc = {"id": new_id(), "name": name, "link_url": link_url, "active": bool(active),
+           "format": _valid_advert_format(format),
            "order": order, "image": image, "created_at": now_iso()}
     await db.adverts.insert_one(doc)
     doc.pop("_id", None)
@@ -873,6 +888,8 @@ async def update_advert(advert_id: str, data: AdvertUpdate,
     if not doc:
         raise HTTPException(status_code=404, detail="Advert not found")
     update = {k: v for k, v in data.model_dump().items() if v is not None}
+    if "format" in update:
+        update["format"] = _valid_advert_format(update["format"])
     if update:
         await db.adverts.update_one({"id": advert_id}, {"$set": update})
     return await db.adverts.find_one({"id": advert_id}, {"_id": 0})

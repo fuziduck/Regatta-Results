@@ -81,6 +81,54 @@ Notes:
 - `ajv@^8` is declared in `package.json` — schema-utils@4 needs ajv 8.
 - Output lands in `frontend/build/` (gitignored).
 
+## 2b. Preview when port 3000 is already taken (static build + /api proxy)
+
+When another thread holds port 3000 (docker stack), start an independent
+preview of the **current frontend** on a free port. The app needs the local
+backend (127.0.0.1:8000) for data, but the backend's CORS allowlist only
+covers port 3000 — so the preview server also proxies `/api/*` to the
+backend (same-origin, no CORS needed):
+
+```bash
+# 1. Rebuild the app pointed at the preview port (bakes the API origin)
+cd frontend
+REACT_APP_BACKEND_URL=http://127.0.0.1:3100 CI=false npm run build
+
+# 2. Serve a COPY of the build from /tmp with the proxy helper
+cp -R build /tmp/preview-build-30eb
+cp .freebuff/serve_preview.py /tmp/serve_preview_30eb.py
+launchctl submit -l com.codebuff.pv30eb -- /bin/sh -c \
+  "/usr/bin/python3 /tmp/serve_preview_30eb.py > /tmp/preview-30eb-run.log 2>&1"
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/
+```
+
+`serve_preview.py` serves the SPA with a fallback to `index.html` for deep
+links and proxies `/api/*` to `http://127.0.0.1:8000`. Webmaster PIN on the
+compose backend defaults to `9999` unless the container env sets
+`WEBMASTER_PIN`.
+
+Gotcha (2026-08-22): running a bare `npm run build` **without**
+`REACT_APP_BACKEND_URL` bakes `undefined/api` into the bundle — every page
+crashes with `o.map is not a function` (the API base resolves to a URL that
+falls back to index.html). Always set the env var when building; then serve
+a fresh copy to `/tmp/preview-build-30eb` and clear the browser cache (the
+static server serves the SPA document from cache, so deep links can keep
+running an older bundle hash until cache-busted).
+
+### Why serve from /tmp via launchd (gotchas discovered 2026-08-21)
+
+- `nohup ... &` from the command runner is reaped when the call returns;
+  the reliable detach is `launchctl submit` + `launchctl remove` when done.
+- launchd processes **cannot read the workspace** (macOS provenance
+  restrictions): files under the project and even `frontend/build` 404 with
+  "Operation not permitted". Serving a copy from `/tmp` works.
+- `python3 -m http.server` **fails under launchd**: `--directory`'s default
+  is computed via `os.getcwd()` at startup, which launchd denies. Use the
+  helper script (explicit absolute ROOT, never getcwd).
+- Log files created by the app's sandbox (e.g. the suggested `.freebuff/*.log`)
+  are unwritable by launchd-spawned processes (`com.apple.provenance` xattr).
+  Redirect the job's log to `/tmp` instead.
+
 ## 3. Files modified for docker compose
 
 | File                     | Change                                            |
