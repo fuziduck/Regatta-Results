@@ -267,6 +267,102 @@ class TestLiveAuth:
 
 
 # --------------------------------------------------------------------------
+# Live tests — changing your own passcode
+# --------------------------------------------------------------------------
+def _mk_officer(webmaster_token, test_club, prefix):
+    return _mk_user(webmaster_token, test_club["id"], "officer",
+                    f"{prefix}{uuid.uuid4().hex[:5]}", "cp1234")
+
+
+class TestLiveChangePasscode:
+    def test_officer_changes_own_passcode(self, test_club, webmaster_token):
+        u = _mk_officer(webmaster_token, test_club, "cp")
+        body = _login("officer", u["username"], "cp1234", test_club["id"])
+        try:
+            r = requests.post(f"{API}/auth/change-passcode",
+                              json={"current_passcode": "cp1234", "new_passcode": "new5678"},
+                              headers=h(body["token"]))
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["token"] and data["username"] == u["username"]
+            # the old token is revoked (token version bumped)…
+            assert requests.get(f"{API}/auth/me", headers=h(body["token"])).status_code == 401
+            # …but the fresh token keeps this session alive
+            assert requests.get(f"{API}/auth/me", headers=h(data["token"])).status_code == 200
+            # old passcode no longer works, new one does
+            r = requests.post(f"{API}/auth/login", json={
+                "role": "officer", "username": u["username"], "passcode": "cp1234",
+                "club_id": test_club["id"]})
+            assert r.status_code == 401
+            r = requests.post(f"{API}/auth/login", json={
+                "role": "officer", "username": u["username"], "passcode": "new5678",
+                "club_id": test_club["id"]})
+            assert r.status_code == 200
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_wrong_current_passcode_rejected(self, test_club, webmaster_token):
+        u = _mk_officer(webmaster_token, test_club, "cpw")
+        body = _login("officer", u["username"], "cp1234", test_club["id"])
+        try:
+            r = requests.post(f"{API}/auth/change-passcode",
+                              json={"current_passcode": "wrong", "new_passcode": "new5678"},
+                              headers=h(body["token"]))
+            assert r.status_code == 401
+            # nothing changed — the old passcode still works
+            r = requests.post(f"{API}/auth/login", json={
+                "role": "officer", "username": u["username"], "passcode": "cp1234",
+                "club_id": test_club["id"]})
+            assert r.status_code == 200
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_short_new_passcode_rejected(self, test_club, webmaster_token):
+        u = _mk_officer(webmaster_token, test_club, "cps")
+        body = _login("officer", u["username"], "cp1234", test_club["id"])
+        try:
+            r = requests.post(f"{API}/auth/change-passcode",
+                              json={"current_passcode": "cp1234", "new_passcode": "12"},
+                              headers=h(body["token"]))
+            assert r.status_code == 400
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_same_passcode_rejected(self, test_club, webmaster_token):
+        u = _mk_officer(webmaster_token, test_club, "cpx")
+        body = _login("officer", u["username"], "cp1234", test_club["id"])
+        try:
+            r = requests.post(f"{API}/auth/change-passcode",
+                              json={"current_passcode": "cp1234", "new_passcode": "cp1234"},
+                              headers=h(body["token"]))
+            assert r.status_code == 400
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+    def test_unauthenticated_rejected(self):
+        r = requests.post(f"{API}/auth/change-passcode",
+                          json={"current_passcode": "x", "new_passcode": "y"})
+        assert r.status_code == 401
+
+    def test_lockout_after_five_failures(self, test_club, webmaster_token):
+        u = _mk_officer(webmaster_token, test_club, "cpl")
+        body = _login("officer", u["username"], "cp1234", test_club["id"])
+        try:
+            for _ in range(5):
+                r = requests.post(f"{API}/auth/change-passcode",
+                                  json={"current_passcode": "wrong", "new_passcode": "new5678"},
+                                  headers=h(body["token"]))
+                assert r.status_code == 401
+            # even the correct current passcode is now refused while locked
+            r = requests.post(f"{API}/auth/change-passcode",
+                              json={"current_passcode": "cp1234", "new_passcode": "new5678"},
+                              headers=h(body["token"]))
+            assert r.status_code == 423
+        finally:
+            requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
+
+
+# --------------------------------------------------------------------------
 # Live tests — role escalation
 # --------------------------------------------------------------------------
 class TestLiveRoleEscalation:

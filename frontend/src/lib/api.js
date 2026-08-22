@@ -21,6 +21,8 @@ export function formatApiError(detail) {
 export const api = {
   login: (role, username, passcode, club_id) =>
     client.post("/auth/login", { role, username, passcode, club_id }).then((r) => r.data),
+  changePasscode: (current_passcode, new_passcode) =>
+    client.post("/auth/change-passcode", { current_passcode, new_passcode }).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
 
   getClubs: () => client.get("/clubs").then((r) => r.data),

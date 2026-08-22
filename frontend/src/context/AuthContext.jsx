@@ -28,14 +28,19 @@ export function AuthProvider({ children }) {
     });
   }, []);
 
-  const login = async (r, username_, passcode, club_id) => {
-    const data = await api.login(r, username_, passcode, club_id);
+  // Store a login-shaped payload ({token, role, club_id, club_name, ...}).
+  const updateSession = (data) => {
     localStorage.setItem("scr_token", data.token);
     setRole(data.role);
     setClubId(data.club_id);
-    setClubName(data.club_name);
+    setClubName(data.club_name || null);
     setUsername(data.username || null);
     setUserName(data.name || null);
+  };
+
+  const login = async (r, username_, passcode, club_id) => {
+    const data = await api.login(r, username_, passcode, club_id);
+    updateSession(data);
     return data;
   };
 
@@ -49,7 +54,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ role, clubId, clubName, username, userName, login, logout }}>
+    <AuthContext.Provider value={{ role, clubId, clubName, username, userName, login, logout, updateSession }}>
       {children}
     </AuthContext.Provider>
   );

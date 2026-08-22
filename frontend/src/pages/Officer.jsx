@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
+import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -44,7 +45,7 @@ function startRefMs(race) {
 }
 
 function TopBar({ clubName, onSwitchClub }) {
-  const { role, logout } = useAuth();
+  const { role, logout, updateSession } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const clubQuery = searchParams.get("club");
@@ -68,6 +69,7 @@ function TopBar({ clubName, onSwitchClub }) {
               <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate("/webmaster")}>Webmaster</Button>
             </>
           )}
+          <ChangePasscodeDialog onChanged={updateSession} />
           <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="logout-btn" onClick={() => { logout(); navigate("/"); }}>
             <LogOut className="w-4 h-4 mr-1" /> Exit
           </Button>

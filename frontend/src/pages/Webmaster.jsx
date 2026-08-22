@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import ClubBadge from "@/components/ClubBadge";
 import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
+import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,7 +43,7 @@ function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
 }
 
 export default function Webmaster() {
-  const { logout } = useAuth();
+  const { logout, updateSession } = useAuth();
   const navigate = useNavigate();
   const [clubs, setClubs] = useState([]);
   const [open, setOpen] = useState(false);
@@ -87,6 +88,7 @@ export default function Webmaster() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-white/70 mr-1">{clubs.length} club{clubs.length === 1 ? "" : "s"}</span>
+            <ChangePasscodeDialog onChanged={updateSession} />
             <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="webmaster-logout-btn"
               onClick={() => { logout(); navigate("/"); }}>
               <LogOut className="w-4 h-4 mr-1" /> Exit

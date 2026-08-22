@@ -585,6 +585,64 @@ async def login(data: LoginInput, request: Request):
             "name": u.get("name")}
 
 
+class ChangePasscodeInput(BaseModel):
+    current_passcode: str
+    new_passcode: str
+
+
+@api_router.post("/auth/change-passcode")
+async def change_passcode(data: ChangePasscodeInput, request: Request):
+    """A signed-in officer/admin/webmaster may change their own passcode.
+
+    The current passcode must verify (failed attempts count toward the same
+    account lockout as login). The hash is updated and the token version is
+    bumped, which revokes every other outstanding session; a fresh token for
+    THIS session is returned so the user stays signed in. Only the caller's
+    own account is ever touched — there is no way to target another user.
+    """
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    doc = await db.users.find_one({"id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts — please try again shortly")
+    current = data.current_passcode.strip()
+    new = data.new_passcode.strip()
+    if len(new) < 4:
+        raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
+    if doc.get("role") != "webmaster" and _user_locked(doc):
+        logger.warning("PASSCODE CHANGE LOCKED user=%s ip=%s", doc.get("username"), ip)
+        raise HTTPException(status_code=423,
+                            detail="Account temporarily locked — too many failed attempts. Try again later.")
+    if not verify_passcode(current, doc.get("passcode_hash", "")):
+        if doc.get("role") != "webmaster":
+            await _record_failed_login(doc, ip)
+        raise HTTPException(status_code=401, detail="Current passcode is incorrect")
+    if verify_passcode(new, doc.get("passcode_hash", "")):
+        raise HTTPException(status_code=400,
+                            detail="New passcode must be different from the current one")
+    new_tv = (doc.get("token_version") or 0) + 1
+    await db.users.update_one({"id": doc["id"]}, {"$set": {
+        "passcode_hash": hash_passcode(new),
+        "token_version": new_tv,
+        "last_passcode_change": now_iso(),
+    }})
+    logger.info("PASSCODE CHANGE user=%s role=%s ip=%s", doc.get("username"), doc.get("role"), ip)
+    token = create_token(doc["role"], doc.get("club_id"), doc["id"],
+                         doc.get("username"), new_tv)
+    club_name = None
+    if doc.get("club_id"):
+        club = await db.clubs.find_one({"id": doc["club_id"]}, {"_id": 0, "name": 1})
+        club_name = (club or {}).get("name")
+    return {"token": token, "role": doc["role"], "club_id": doc.get("club_id"),
+            "club_name": club_name, "username": doc.get("username"),
+            "name": doc.get("name")}
+
+
 @api_router.get("/auth/me")
 async def me(request: Request):
     user = await get_current_user(request)
