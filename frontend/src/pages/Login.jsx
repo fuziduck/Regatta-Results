@@ -16,7 +16,8 @@ export default function Login() {
   const [clubs, setClubs] = useState([]);
   const [clubId, setClubId] = useState("");
   const [role, setRole] = useState("officer");
-  const [pin, setPin] = useState("");
+  const [username, setUsername] = useState("");
+  const [passcode, setPasscode] = useState("");
   const [loading, setLoading] = useState(false);
   const [clubOpen, setClubOpen] = useState(false);
 
@@ -63,7 +64,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     try {
-      const r = await login(role, pin, isWebmaster ? null : clubId);
+      const r = await login(role, username.trim(), passcode, isWebmaster ? null : clubId);
       if (isWebmaster) {
         toast.success("Signed in as Webmaster");
         navigate("/webmaster");
@@ -162,19 +163,33 @@ export default function Login() {
 
           <form onSubmit={submit} className="mt-4 space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="pin">Passcode</Label>
+              <Label htmlFor="username">Username</Label>
               <Input
-                id="pin"
+                id="username"
+                type="text"
+                data-testid="username-input"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder={isWebmaster ? "webmaster" : "e.g. admin"}
+                autoComplete="username"
+                autoFocus
+                className="h-12 text-base"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="passcode">Passcode</Label>
+              <Input
+                id="passcode"
                 type="password"
                 data-testid="pin-input"
-                value={pin}
-                onChange={(e) => setPin(e.target.value)}
-                placeholder="Enter role passcode"
-                autoFocus
+                value={passcode}
+                onChange={(e) => setPasscode(e.target.value)}
+                placeholder={isWebmaster ? "Enter the webmaster passcode" : "Enter your passcode"}
+                autoComplete="current-password"
                 className="h-12 text-lg tabular"
               />
             </div>
-            <Button type="submit" data-testid="login-submit-btn" disabled={loading || !pin} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
+            <Button type="submit" data-testid="login-submit-btn" disabled={loading || !passcode} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
               {loading ? "Signing in…" : "Sign In"}
             </Button>
           </form>

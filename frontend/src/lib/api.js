@@ -19,7 +19,8 @@ export function formatApiError(detail) {
 }
 
 export const api = {
-  login: (role, pin, club_id) => client.post("/auth/login", { role, pin, club_id }).then((r) => r.data),
+  login: (role, username, passcode, club_id) =>
+    client.post("/auth/login", { role, username, passcode, club_id }).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
 
   getClubs: () => client.get("/clubs").then((r) => r.data),
@@ -69,6 +70,11 @@ export const api = {
   seriesStandings: (id, club_id) => client.get(`/standings/series/${id}`, { params: club_id ? { club_id } : {} }).then((r) => r.data),
   overallStandings: (class_id, year, club_id) => client.get("/standings/overall", { params: { class_id, year, ...(club_id ? { club_id } : {}) } }).then((r) => r.data),
   rrsCodes: () => client.get("/rrs-codes").then((r) => r.data),
+
+  getUsers: (club_id) => client.get("/users", { params: club_id ? { club_id } : {} }).then((r) => r.data),
+  createUser: (d) => client.post("/users", d).then((r) => r.data),
+  updateUser: (id, d) => client.put(`/users/${id}`, d).then((r) => r.data),
+  deleteUser: (id) => client.delete(`/users/${id}`).then((r) => r.data),
 };
 
 export default client;

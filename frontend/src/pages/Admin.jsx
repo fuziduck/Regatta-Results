@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ClubBadge from "@/components/ClubBadge";
+import UsersManager from "@/components/UsersManager";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -172,6 +173,8 @@ function ClassesTab({ classes, reload, clubId }) {
 function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   const [classFilter, setClassFilter] = useState("all");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
+  const { seasonYears } = useSeasonYears(clubId);
+  const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
   const [boats, setBoats] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -220,7 +223,7 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
           <Label className="text-sm">Year</Label>
           <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(Number(v))}>
             <SelectTrigger className="w-28" data-testid="boat-year-filter"><SelectValue /></SelectTrigger>
-            <SelectContent>{YEAR_OPTIONS.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+            <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm(blank); } }}>
@@ -280,9 +283,26 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
 // managed before racing starts) through the historic range.
 const YEAR_OPTIONS = [CURRENT_YEAR + 2, CURRENT_YEAR + 1, CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2, CURRENT_YEAR - 3];
 
+// Season years that actually exist in the DB for the club, so the year
+// dropdowns always include any year a series has been set up in — even
+// beyond the fixed YEAR_OPTIONS window. `reload` re-fetches after a save.
+function useSeasonYears(clubId) {
+  const [seasonYears, setSeasonYears] = useState([]);
+  const reload = useCallback(() => {
+    api.getSeasons(clubId ? { club_id: clubId } : {}).then((d) => setSeasonYears(d?.years || [])).catch(() => {});
+  }, [clubId]);
+  useEffect(() => { reload(); }, [reload]);
+  return { seasonYears, reload };
+}
+
+const withSeasonYears = (base, seasonYears) =>
+  [...new Set([...base, ...seasonYears])].sort((a, b) => b - a);
+
 function SeriesTab({ classes, clubId }) {
   const [classFilter, setClassFilter] = useState("");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
+  const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
+  const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -305,7 +325,8 @@ function SeriesTab({ classes, clubId }) {
     if (!form.name || !form.class_id) return toast.error("Name and class required");
     const payload = { ...form, discards: Number(form.discards), order: Number(form.order), year: Number(form.year), planned_races: Number(form.planned_races), schedule: form.schedule || [] };
     if (editing) await api.updateSeries(editing, payload); else await api.createSeries(payload);
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank, class_id: classFilter }); load();
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank, class_id: classFilter });
+    reloadYears(); load();
   };
   const genSchedule = async () => {
     if (!editing) return toast.error("Save the series first, then re-open to auto-fill dates");
@@ -331,7 +352,7 @@ function SeriesTab({ classes, clubId }) {
           <Label className="text-sm">Year</Label>
           <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(Number(v))}>
             <SelectTrigger className="w-28" data-testid="series-year-filter"><SelectValue /></SelectTrigger>
-            <SelectContent>{YEAR_OPTIONS.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+            <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank, class_id: classFilter }); } }}>
@@ -420,6 +441,8 @@ function SeriesTab({ classes, clubId }) {
 function HistoricTab({ classes, rrsCodes, clubId }) {
   const [classId, setClassId] = useState("");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
+  const { seasonYears } = useSeasonYears(clubId);
+  const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
   const [seriesList, setSeriesList] = useState([]);
   const [seriesId, setSeriesId] = useState("");
   const [races, setRaces] = useState([]);
@@ -463,7 +486,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
         </Select>
         <Select value={String(yearFilter)} onValueChange={(v) => { setYearFilter(Number(v)); setSeriesId(""); setRace(null); }}>
           <SelectTrigger className="w-28" data-testid="hist-year"><SelectValue /></SelectTrigger>
-          <SelectContent>{YEAR_OPTIONS.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+          <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
         </Select>
         <Select value={seriesId} onValueChange={(v) => { setSeriesId(v); setRace(null); }}>
           <SelectTrigger className="w-48" data-testid="hist-series"><SelectValue placeholder="Series" /></SelectTrigger>
@@ -532,69 +555,6 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
   );
 }
 
-/* ---------------- Clubs ---------------- */
-function ClubsTab() {
-  const [clubs, setClubs] = useState([]);
-  const [open, setOpen] = useState(false);
-  const blank = { name: "", color: "#0A369D", officer_pin: "", admin_pin: "" };
-  const [form, setForm] = useState(blank);
-
-  const load = useCallback(() => api.getClubs().then(setClubs), []);
-  useEffect(() => { load(); }, [load]);
-
-  const save = async () => {
-    if (!form.name || !form.officer_pin || !form.admin_pin) return toast.error("Name and both passcodes required");
-    await api.createClub(form);
-    toast.success("Club added"); setOpen(false); setForm(blank); load();
-  };
-  const del = async (id) => {
-    if (!window.confirm("Delete this club? Its classes must be deleted first.")) return;
-    await api.deleteClub(id); toast.success("Club deleted"); load();
-  };
-
-  return (
-    <div>
-      <p className="text-sm text-muted-foreground mb-4">
-        Webmaster view — full club management (passcodes, colours and renames) lives on the <Link to="/webmaster" className="text-ocean font-semibold hover:underline">Webmaster page</Link>. Each club gets its own officer and admin passcodes, and staff only ever see their own club.
-      </p>
-      <div className="flex justify-between items-center mb-4">
-        <p className="text-sm text-muted-foreground">Every club has its own classes, boats and results.</p>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setForm(blank); }}>
-          <DialogTrigger asChild><Button data-testid="add-club-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add club</Button></DialogTrigger>
-          <DialogContent>
-            <DialogHeader><DialogTitle className="font-heading uppercase">Add a club</DialogTitle></DialogHeader>
-            <div className="space-y-3">
-              <div className="space-y-1.5"><Label>Club name</Label><Input data-testid="club-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Seafarers Sailing Club" /></div>
-              <div className="space-y-1.5"><Label>Colour</Label><Input type="color" data-testid="club-color-input" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="h-12 p-1" /></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label>Officer passcode</Label><Input data-testid="club-officer-pin" value={form.officer_pin} onChange={(e) => setForm({ ...form, officer_pin: e.target.value })} placeholder="e.g. 1234" /></div>
-                <div className="space-y-1.5"><Label>Admin passcode</Label><Input data-testid="club-admin-pin" value={form.admin_pin} onChange={(e) => setForm({ ...form, admin_pin: e.target.value })} placeholder="e.g. 5678" /></div>
-              </div>
-            </div>
-            <DialogFooter><Button onClick={save} data-testid="save-club-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-      <div className="rounded-xl border overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Club</TableHead><TableHead>Classes</TableHead><TableHead>Link</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-          <TableBody>{clubs.map((c) => (
-            <TableRow key={c.id} data-testid={`club-row-${c.slug}`}>
-              <TableCell className="flex items-center gap-3">
-                <ClubBadge club={c} size="w-8 h-8" textSize="text-base" rounded="rounded-lg" />
-                <span className="font-heading text-lg uppercase tracking-tight">{c.name}</span>
-              </TableCell>
-              <TableCell className="text-muted-foreground">—</TableCell>
-              <TableCell><a href={`/club/${c.slug}`} className="text-ocean text-sm hover:underline font-mono">/club/{c.slug}</a></TableCell>
-              <TableCell className="text-right">
-                <Button size="icon" variant="ghost" className="text-destructive" onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
-              </TableCell>
-            </TableRow>))}
-          </TableBody></Table>
-      </div>
-    </div>
-  );
-}
-
 export default function Admin() {
   const { role, clubId: authClubId, clubName: authClubName } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -648,13 +608,13 @@ export default function Admin() {
             <TabsTrigger value="classes" data-testid="tab-classes">Classes</TabsTrigger>
             <TabsTrigger value="series" data-testid="tab-series">Series</TabsTrigger>
             <TabsTrigger value="historic" data-testid="tab-historic">Historic Results</TabsTrigger>
-            {isWebmaster && <TabsTrigger value="clubs" data-testid="tab-clubs">Clubs</TabsTrigger>}
+            <TabsTrigger value="users" data-testid="tab-users">Logins</TabsTrigger>
           </TabsList>
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
-          {isWebmaster && <TabsContent value="clubs" className="pt-6"><ClubsTab /></TabsContent>}
+          <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
         </Tabs>
       </main>
     </div>

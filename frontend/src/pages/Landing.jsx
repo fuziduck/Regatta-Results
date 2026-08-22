@@ -204,7 +204,8 @@ export default function Landing() {
   }, [clubId]);
 
   // Future years only appear once this club has set up a series for them.
-  const futureYears = seasons.filter((y) => y > CURRENT_YEAR && y <= MAX_YEAR);
+  // Future years are data-driven: any year a club has set a series up for.
+  const futureYears = seasons.filter((y) => y > CURRENT_YEAR);
 
   if (loadingClub) {
     return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;

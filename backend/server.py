@@ -11,6 +11,7 @@ import uuid
 import jwt
 import re
 import base64
+import bcrypt
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -26,7 +27,11 @@ api_router = APIRouter(prefix="/api")
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 # Global role PIN for the Webmaster — the one role not bound to a single club.
+# (Seeded as the webmaster user account's passcode at startup.)
 WEBMASTER_PIN = os.environ.get("WEBMASTER_PIN", "9999")
+# Failed-attempt lockout for user accounts (never applied to the webmaster).
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,27 +44,51 @@ def new_id():
     return str(uuid.uuid4())
 
 
-def create_token(role: str, club_id: str) -> str:
+def create_token(role: str, club_id: str, user_id: Optional[str] = None,
+                  username: Optional[str] = None) -> str:
     payload = {
         "role": role,
         "club_id": club_id,
         "exp": datetime.now(timezone.utc) + timedelta(days=30),
         "type": "access",
     }
+    if user_id:
+        payload["user_id"] = user_id
+    if username:
+        payload["username"] = username
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 async def get_current_user(request: Request):
-    """Decode the bearer token -> {role, club_id}, or None if absent/invalid."""
+    """Decode the bearer token -> {role, club_id, user_id, username}, or None.
+
+    Tokens minted for a user account are re-validated against the users
+    collection on every request, so deactivating or deleting an account
+    revokes its sessions immediately. Legacy tokens (no user_id) — minted by
+    the shared club-PIN login — pass through on role/club claims alone.
+    """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None
     token = auth_header[7:]
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return {"role": payload.get("role"), "club_id": payload.get("club_id")}
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
+    user_id = payload.get("user_id")
+    if user_id:
+        user = await db.users.find_one({"id": user_id}, {"_id": 0, "passcode_hash": 0})
+        if not user or not user.get("active"):
+            return None
+        return {"role": user.get("role"), "club_id": user.get("club_id"),
+                "user_id": user["id"], "username": user.get("username")}
+    # Legacy token (minted by the old shared-PIN login, no user account).
+    # Club officer/admin tokens keep working for backward compatibility, but
+    # the webmaster is now a user account — stale webmaster tokens from the
+    # old system must not keep full platform control.
+    if payload.get("role") == "webmaster":
+        return None
+    return {"role": payload.get("role"), "club_id": payload.get("club_id")}
 
 
 async def require_admin(request: Request) -> dict:
@@ -167,8 +196,27 @@ async def _race_of_club(race_id: str, user: dict):
 # ---------------------------------------------------------------------------
 class LoginInput(BaseModel):
     role: str
-    pin: str
+    # Per-user login: username + passcode. `pin` is kept as an alias for
+    # `passcode` so legacy clients and the shared club-PIN fallback still work.
+    username: Optional[str] = None
+    passcode: Optional[str] = None
+    pin: Optional[str] = None
     club_id: Optional[str] = None
+
+
+class UserInput(BaseModel):
+    club_id: Optional[str] = None
+    role: Literal["officer", "admin"] = "officer"
+    username: str
+    name: str = ""
+    passcode: str = ""
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[Literal["officer", "admin"]] = None
+    active: Optional[bool] = None
+    passcode: Optional[str] = None
 
 
 class ClubInput(BaseModel):
@@ -316,15 +364,72 @@ POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DS
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+def hash_passcode(passcode: str) -> str:
+    """bcrypt hash of a user passcode (bcrypt caps input at 72 bytes)."""
+    return bcrypt.hashpw(passcode.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_passcode(passcode: str, passcode_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(passcode.encode("utf-8"), passcode_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+async def _record_failed_login(user: dict):
+    """Count a failed attempt, locking the account after MAX_FAILED_ATTEMPTS
+    for LOCKOUT_MINUTES."""
+    n = (user.get("failed_attempts") or 0) + 1
+    if n >= MAX_FAILED_ATTEMPTS:
+        await db.users.update_one({"id": user["id"]}, {"$set": {
+            "failed_attempts": 0,
+            "locked_until": (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
+        }})
+    else:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"failed_attempts": n}})
+
+
+def _user_locked(user: dict) -> bool:
+    locked = user.get("locked_until")
+    if not locked:
+        return False
+    try:
+        return datetime.fromisoformat(locked) > datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
+async def _login_user(u: dict, passcode: str) -> dict:
+    """Verify a passcode against a user account with failed-attempt lockout.
+    Lockout never applies to the webmaster singleton, so the master key can't
+    lock itself out of the system."""
+    if not u or not u.get("active"):
+        raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+    if u.get("role") != "webmaster":
+        if _user_locked(u):
+            raise HTTPException(status_code=423, detail="Account locked — too many failed attempts. Try again later.")
+        if not verify_passcode(passcode, u.get("passcode_hash", "")):
+            await _record_failed_login(u)
+            raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+    elif not verify_passcode(passcode, u.get("passcode_hash", "")):
+        raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+    await db.users.update_one({"id": u["id"]}, {"$set": {"failed_attempts": 0, "last_login": now_iso()},
+                                                "$unset": {"locked_until": ""}})
+    return u
+
+
 @api_router.post("/auth/login")
 async def login(data: LoginInput):
     role = data.role
-    pin = data.pin.strip()
+    passcode = (data.passcode or data.pin or "").strip()
     if role == "webmaster":
-        if pin != WEBMASTER_PIN:
-            raise HTTPException(status_code=401, detail="Incorrect passcode")
-        return {"token": create_token("webmaster", None), "role": "webmaster",
-                "club_id": None, "club_name": None}
+        wm = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
+        if not wm:
+            raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+        u = await _login_user(wm, passcode)
+        token = create_token("webmaster", None, u["id"], u.get("username"))
+        return {"token": token, "role": "webmaster", "club_id": None, "club_name": None,
+                "username": u.get("username"), "name": u.get("name")}
     if role not in ("officer", "admin"):
         raise HTTPException(status_code=401, detail="Unknown role")
     club = None
@@ -337,8 +442,20 @@ async def login(data: LoginInput):
             club = clubs[0]
     if not club:
         raise HTTPException(status_code=404, detail="Club not found — choose your club")
+    if data.username:
+        # Per-user login — the primary path. The account's role is
+        # authoritative: a username only ever logs into the club it belongs
+        # to, under the role the account was given.
+        user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip()}, {"_id": 0})
+        u = await _login_user(user, passcode)
+        role = u["role"]
+        token = create_token(role, club["id"], u["id"], u.get("username"))
+        return {"token": token, "role": role, "club_id": club["id"],
+                "club_name": club.get("name"), "username": u.get("username"),
+                "name": u.get("name")}
+    # Legacy shared-PIN login (the club master passcode, set by the webmaster).
     expected = club.get("admin_pin") if role == "admin" else club.get("officer_pin")
-    if not expected or pin != expected:
+    if not expected or passcode != expected:
         raise HTTPException(status_code=401, detail="Incorrect passcode")
     return {"token": create_token(role, club["id"]), "role": role,
             "club_id": club["id"], "club_name": club.get("name")}
@@ -349,11 +466,163 @@ async def me(request: Request):
     user = await get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    name = None
+    club_name = None
     if user.get("club_id"):
         club = await db.clubs.find_one({"id": user["club_id"]}, {"_id": 0, "name": 1})
-        name = (club or {}).get("name")
-    return {"role": user.get("role"), "club_id": user.get("club_id"), "club_name": name}
+        club_name = (club or {}).get("name")
+    return {"role": user.get("role"), "club_id": user.get("club_id"),
+            "club_name": club_name, "username": user.get("username"),
+            "name": user.get("name")}
+
+
+# ---------------------------------------------------------------------------
+# Users (per-club logins)
+# ---------------------------------------------------------------------------
+def _user_public(u: dict) -> dict:
+    """User without the passcode hash (never leak credentials)."""
+    return {k: v for k, v in u.items() if k not in ("passcode_hash",)}
+
+
+@api_router.get("/users")
+async def get_users(request: Request, club_id: Optional[str] = None):
+    """List users. Race Admins only ever see their own club's users; the
+    webmaster may list any club's (or all, when no club_id is given)."""
+    user = await require_admin(request)
+    q = {}
+    if user.get("role") == "webmaster":
+        if club_id:
+            q["club_id"] = club_id
+    else:
+        q["club_id"] = user.get("club_id")
+    users = await db.users.find(q, {"_id": 0}).sort("role", 1).sort("username", 1).to_list(500)
+    return [_user_public(u) for u in users]
+
+
+@api_router.post("/users")
+async def create_user(data: UserInput, user: dict = Depends(require_admin)):
+    """Create a login for a club. Race Admins may only create officer/admin
+    logins inside their own club; the webmaster may create them for any club."""
+    is_webmaster = user.get("role") == "webmaster"
+    club_id = (data.club_id or user.get("club_id")) if is_webmaster else user.get("club_id")
+    if not club_id:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    _ensure_club(user, club_id)
+    username = data.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    passcode = data.passcode.strip()
+    if len(passcode) < 4:
+        raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
+    if await db.users.find_one({"club_id": club_id, "username": username}, {"_id": 0}):
+        raise HTTPException(status_code=400, detail=f"Username '{username}' already exists for this club")
+    doc = {
+        "id": new_id(), "club_id": club_id, "role": data.role,
+        "username": username, "name": data.name.strip(),
+        "passcode_hash": hash_passcode(passcode),
+        "active": True, "created_by": user.get("user_id") or "webmaster",
+        "created_at": now_iso(), "failed_attempts": 0,
+    }
+    await db.users.insert_one(doc)
+    doc.pop("_id", None)
+    return _user_public(doc)
+
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(require_admin)):
+    """Edit a user: display name, role, active flag or passcode reset.
+    Race Admins may only touch their own club's users, may never touch the
+    webmaster account, and may never deactivate or re-role themselves."""
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    is_webmaster = user.get("role") == "webmaster"
+    if not is_webmaster:
+        _ensure_club(user, target.get("club_id"))
+        if target.get("role") == "webmaster":
+            raise HTTPException(status_code=403, detail="Cannot modify the webmaster account")
+    if user.get("user_id") == user_id and (data.active is False or (data.role and data.role != target.get("role"))):
+        raise HTTPException(status_code=400, detail="You cannot deactivate or change the role of your own account")
+    update = {}
+    if data.name is not None:
+        update["name"] = data.name.strip()
+    if data.role is not None:
+        update["role"] = data.role
+    if data.active is not None:
+        update["active"] = data.active
+    if data.passcode:
+        update["passcode_hash"] = hash_passcode(data.passcode.strip())
+    if update:
+        await db.users.update_one({"id": user_id}, {"$set": update})
+    return _user_public(await db.users.find_one({"id": user_id}, {"_id": 0}))
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user: dict = Depends(require_admin)):
+    """Remove a user login. An admin may not delete their own account, and a
+    club must always keep at least one active admin."""
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    is_webmaster = user.get("role") == "webmaster"
+    if not is_webmaster:
+        _ensure_club(user, target.get("club_id"))
+        if target.get("role") == "webmaster":
+            raise HTTPException(status_code=403, detail="Cannot delete the webmaster account")
+    if user.get("user_id") == user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    if target.get("role") == "admin" and not is_webmaster:
+        active_admins = await db.users.count_documents(
+            {"club_id": target.get("club_id"), "role": "admin", "active": True})
+        if active_admins <= 1:
+            raise HTTPException(status_code=400, detail="A club must keep at least one active admin")
+    await db.users.delete_one({"id": user_id})
+    return {"ok": True}
+
+
+async def _ensure_club_users(club: dict):
+    """Backfill the legacy club-PIN accounts as per-club users.
+
+    Each club keeps one 'officer' and one 'admin' account, seeded from (and
+    kept in sync with) the club's shared PINs — so existing PIN logins keep
+    working as username+passcode logins. Any additional users created by the
+    race admin or webmaster are never touched.
+    """
+    if not club or not club.get("id"):
+        return
+    for role, pin in (("officer", club.get("officer_pin")), ("admin", club.get("admin_pin"))):
+        if not pin:
+            continue
+        existing = await db.users.find_one({"club_id": club["id"], "role": role, "username": role}, {"_id": 0})
+        if existing:
+            if not verify_passcode(pin, existing.get("passcode_hash", "")):
+                await db.users.update_one({"id": existing["id"]}, {"$set": {"passcode_hash": hash_passcode(pin)}})
+            continue
+        await db.users.insert_one({
+            "id": new_id(), "club_id": club["id"], "role": role,
+            "username": role, "name": f"{club.get('name', 'Club')} {role.title()}",
+            "passcode_hash": hash_passcode(pin), "active": True,
+            "created_by": "system", "created_at": now_iso(), "failed_attempts": 0,
+        })
+
+
+async def ensure_webmaster_user():
+    """Seed the singleton webmaster account from WEBMASTER_PIN (default 9999)."""
+    wm = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
+    if not wm:
+        await db.users.insert_one({
+            "id": new_id(), "club_id": None, "role": "webmaster",
+            "username": "webmaster", "name": "Webmaster",
+            "passcode_hash": hash_passcode(WEBMASTER_PIN),
+            "active": True, "created_by": "system", "created_at": now_iso(),
+            "failed_attempts": 0,
+        })
+    return wm
+
+
+async def _ensure_all_club_users():
+    clubs = await db.clubs.find({}, {"_id": 0}).to_list(1000)
+    for club in clubs:
+        await _ensure_club_users(club)
 
 # ---------------------------------------------------------------------------
 # Clubs
@@ -485,6 +754,7 @@ async def create_club(data: ClubInput, user: dict = Depends(require_webmaster)):
            "created_at": now_iso()}
     await db.clubs.insert_one(doc)
     doc.pop("_id", None)
+    await _ensure_club_users(doc)
     return _club_public(doc)
 
 
@@ -498,6 +768,7 @@ async def update_club(club_id: str, data: ClubInput, user: dict = Depends(requir
     if data.slug:
         update["slug"] = data.slug.lower()
     await db.clubs.update_one({"id": club_id}, {"$set": update})
+    await _ensure_club_users({**club, **update})
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
 
@@ -537,6 +808,7 @@ async def delete_club(club_id: str, user: dict = Depends(require_webmaster)):
         raise HTTPException(status_code=400,
                             detail="Club still has classes — delete its classes first")
     await db.clubs.delete_one({"id": club_id})
+    await db.users.delete_many({"club_id": club_id})
     return {"ok": True}
 
 
@@ -1522,6 +1794,8 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def startup():
     await ensure_default_club()
+    await ensure_webmaster_user()
+    await _ensure_all_club_users()
     await run_seed()
 
 

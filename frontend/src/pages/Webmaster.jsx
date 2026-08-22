@@ -3,16 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubBadge from "@/components/ClubBadge";
+import UsersManager from "@/components/UsersManager";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2 } from "lucide-react";
+import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D", officer_pin: "", admin_pin: "" };
 
-function ClubCard({ club, onEdit, onDelete, onConsole }) {
+function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
   return (
     <div className="rounded-2xl border border-border bg-card p-5 hover:shadow-lg hover:border-ocean/40 transition-all">
       <div className="flex items-center gap-4">
@@ -22,6 +23,7 @@ function ClubCard({ club, onEdit, onDelete, onConsole }) {
           <div className="text-xs text-muted-foreground mt-1 font-mono">/{club.slug}</div>
         </div>
         <div className="ml-auto flex items-center gap-1">
+          <Button size="icon" variant="ghost" title="Manage logins" data-testid={`logins-club-${club.slug}`} onClick={() => onLogins(club)}><KeyRound className="w-4 h-4" /></Button>
           <Button size="icon" variant="ghost" data-testid={`edit-club-${club.slug}`} onClick={() => onEdit(club)}><Pencil className="w-4 h-4" /></Button>
           <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-club-${club.slug}`} onClick={() => onDelete(club)}><Trash2 className="w-4 h-4" /></Button>
         </div>
@@ -45,6 +47,7 @@ export default function Webmaster() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blank);
+  const [usersClub, setUsersClub] = useState(null);
 
   const load = useCallback(() => api.getClubsManage().then(setClubs).catch(() => {}), []);
   useEffect(() => { load(); }, [load]);
@@ -70,6 +73,7 @@ export default function Webmaster() {
     }
   };
   const openConsole = (club, kind) => navigate(`/${kind === "officer" ? "officer" : "admin"}?club=${club.id}`);
+  const openLogins = (club) => setUsersClub(club);
 
   return (
     <div className="min-h-screen bg-background">
@@ -124,10 +128,17 @@ export default function Webmaster() {
         ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5" data-testid="webmaster-club-grid">
             {clubs.map((c) => (
-              <ClubCard key={c.id} club={c} onEdit={edit} onDelete={del} onConsole={openConsole} />
+              <ClubCard key={c.id} club={c} onEdit={edit} onDelete={del} onConsole={openConsole} onLogins={openLogins} />
             ))}
           </div>
         )}
+
+        <Dialog open={!!usersClub} onOpenChange={(o) => { if (!o) setUsersClub(null); }}>
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader><DialogTitle className="font-heading uppercase">{usersClub?.name} — logins</DialogTitle></DialogHeader>
+            {usersClub && <UsersManager key={usersClub.id} clubId={usersClub.id} heading={`${usersClub.name} logins`} />}
+          </DialogContent>
+        </Dialog>
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">

@@ -646,3 +646,50 @@ class TestMultiClub:
         pub = server._club_public(club)
         assert "officer_pin" not in pub and "admin_pin" not in pub
         assert pub["name"] == "X"
+
+
+class TestLegacyTokenRevocation:
+    """Tokens minted by the old shared-PIN login carry no user account. Club
+    officer/admin legacy tokens stay valid for backward compatibility, but a
+    legacy token claiming the webmaster role must be rejected — the webmaster
+    is now a user account and stale sessions must not keep platform control.
+    """
+
+    def _request(self, token):
+        from fastapi import Request
+        scope = {
+            "type": "http", "method": "GET", "path": "/",
+            "headers": [(b"authorization", b"Bearer " + token.encode())],
+            "query_string": b"", "scheme": "http", "server": ("test", 80),
+            "client": ("test", 1), "root_path": "", "state": {},
+        }
+        return Request(scope)
+
+    def _legacy_token(self, role, club_id):
+        import asyncio
+        import jwt as pyjwt
+        from datetime import datetime, timezone, timedelta
+        return pyjwt.encode(
+            {"role": role, "club_id": club_id, "type": "access",
+             "exp": datetime.now(timezone.utc) + timedelta(days=1)},
+            server.JWT_SECRET, algorithm="HS256")
+
+    def test_legacy_webmaster_token_rejected(self):
+        import asyncio
+        user = asyncio.run(server.get_current_user(self._request(self._legacy_token("webmaster", None))))
+        assert user is None
+
+    def test_legacy_admin_token_still_accepted(self):
+        import asyncio
+        user = asyncio.run(server.get_current_user(self._request(self._legacy_token("admin", "club-a"))))
+        assert user == {"role": "admin", "club_id": "club-a"}
+
+    def test_legacy_officer_token_still_accepted(self):
+        import asyncio
+        user = asyncio.run(server.get_current_user(self._request(self._legacy_token("officer", "club-a"))))
+        assert user == {"role": "officer", "club_id": "club-a"}
+
+    def test_garbage_token_rejected(self):
+        import asyncio
+        user = asyncio.run(server.get_current_user(self._request("not.a.token")))
+        assert user is None
