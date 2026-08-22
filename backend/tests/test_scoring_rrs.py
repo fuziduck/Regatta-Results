@@ -619,13 +619,15 @@ class TestMultiClub:
 
     def test_token_carries_club_id(self):
         payload = server.jwt.decode(server.create_token("admin", "club-1"),
-                                    server.JWT_SECRET, algorithms=["HS256"])
+                                    server.JWT_SECRET, algorithms=["HS256"],
+                                    issuer=server.JWT_ISSUER, audience=server.JWT_AUDIENCE)
         assert payload["role"] == "admin"
         assert payload["club_id"] == "club-1"
 
     def test_officer_and_admin_tokens_keep_their_club(self):
         payload = server.jwt.decode(server.create_token("officer", "club-b"),
-                                    server.JWT_SECRET, algorithms=["HS256"])
+                                    server.JWT_SECRET, algorithms=["HS256"],
+                                    issuer=server.JWT_ISSUER, audience=server.JWT_AUDIENCE)
         assert payload["role"] == "officer"
         assert payload["club_id"] == "club-b"
 
@@ -649,10 +651,10 @@ class TestMultiClub:
 
 
 class TestLegacyTokenRevocation:
-    """Tokens minted by the old shared-PIN login carry no user account. Club
-    officer/admin legacy tokens stay valid for backward compatibility, but a
-    legacy token claiming the webmaster role must be rejected — the webmaster
-    is now a user account and stale sessions must not keep platform control.
+    """Tokens minted by the old shared-PIN login carry no user account. The
+    legacy shared-PIN authentication scheme has been removed entirely, so ALL
+    such tokens — officer, admin and webmaster — are rejected outright: there
+    is no fallback mechanism, and no claim in a legacy token can grant access.
     """
 
     def _request(self, token):
@@ -679,15 +681,15 @@ class TestLegacyTokenRevocation:
         user = asyncio.run(server.get_current_user(self._request(self._legacy_token("webmaster", None))))
         assert user is None
 
-    def test_legacy_admin_token_still_accepted(self):
+    def test_legacy_admin_token_rejected(self):
         import asyncio
         user = asyncio.run(server.get_current_user(self._request(self._legacy_token("admin", "club-a"))))
-        assert user == {"role": "admin", "club_id": "club-a"}
+        assert user is None
 
-    def test_legacy_officer_token_still_accepted(self):
+    def test_legacy_officer_token_rejected(self):
         import asyncio
         user = asyncio.run(server.get_current_user(self._request(self._legacy_token("officer", "club-a"))))
-        assert user == {"role": "officer", "club_id": "club-a"}
+        assert user is None
 
     def test_garbage_token_rejected(self):
         import asyncio

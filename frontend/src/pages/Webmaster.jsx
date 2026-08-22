@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { toast } from "sonner";
 import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone } from "lucide-react";
 
-const blank = { name: "", color: "#0A369D", officer_pin: "", admin_pin: "" };
+const blank = { name: "", color: "#0A369D" };
 
 function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
   return (
@@ -55,14 +55,14 @@ export default function Webmaster() {
   useEffect(() => { load(); }, [load]);
 
   const save = async () => {
-    if (!form.name || !form.officer_pin || !form.admin_pin) return toast.error("Name and both passcodes required");
+    if (!form.name) return toast.error("Club name required");
     if (editing) await api.updateClub(editing, form); else await api.createClub(form);
     toast.success(editing ? "Club updated" : "Club added");
     setOpen(false); setEditing(null); setForm(blank); load();
   };
   const edit = (c) => {
     setEditing(c.id);
-    setForm({ name: c.name, color: c.color || "#0A369D", officer_pin: c.officer_pin || "", admin_pin: c.admin_pin || "" });
+    setForm({ name: c.name, color: c.color || "#0A369D" });
     setOpen(true);
   };
   const del = async (c) => {
@@ -125,7 +125,7 @@ export default function Webmaster() {
           <div>
             <h1 className="text-3xl uppercase tracking-tighter mb-1">Club management</h1>
             <p className="text-muted-foreground text-sm">
-              Add, change or remove clubs, set each club's passcodes, and open any club's consoles.
+              Add, change or remove clubs, manage each club's logins, and open any club's consoles.
             </p>
           </div>
           <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm(blank); } }}>
@@ -137,10 +137,7 @@ export default function Webmaster() {
               <div className="space-y-3">
                 <div className="space-y-1.5"><Label>Club name</Label><Input data-testid="club-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Seafarers Sailing Club" /></div>
                 <div className="space-y-1.5"><Label>Colour</Label><Input type="color" data-testid="club-color-input" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="h-12 p-1" /></div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5"><Label>Officer passcode</Label><Input data-testid="club-officer-pin" value={form.officer_pin} onChange={(e) => setForm({ ...form, officer_pin: e.target.value })} placeholder="e.g. 1234" /></div>
-                  <div className="space-y-1.5"><Label>Admin passcode</Label><Input data-testid="club-admin-pin" value={form.admin_pin} onChange={(e) => setForm({ ...form, admin_pin: e.target.value })} placeholder="e.g. 5678" /></div>
-                </div>
+                <p className="text-xs text-muted-foreground">Logins are individual accounts — manage them from the club's "Manage logins" button after creating the club.</p>
               </div>
               <DialogFooter><Button onClick={save} data-testid="save-club-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
             </DialogContent>

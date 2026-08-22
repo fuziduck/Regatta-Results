@@ -8,7 +8,7 @@ inside a dedicated test club that is torn down afterwards.
 import uuid
 import requests
 
-from conftest import API, WEBMASTER_PIN, TEST_OFFICER_PIN, TEST_ADMIN_PIN, h
+from conftest import API, WEBMASTER_PASSCODE, TEST_OFFICER_PIN, TEST_ADMIN_PIN, h
 
 
 def _login_user(role, username, passcode, club_id=None):
@@ -37,7 +37,7 @@ def _club_users(club_id, token):
 
 class TestPerUserLogin:
     def test_webmaster_username_login(self):
-        body = _login_user("webmaster", "webmaster", WEBMASTER_PIN)
+        body = _login_user("webmaster", "webmaster", WEBMASTER_PASSCODE)
         assert body["role"] == "webmaster"
         assert body["club_id"] is None
         assert body["username"] == "webmaster"
@@ -47,8 +47,9 @@ class TestPerUserLogin:
         r = requests.post(f"{API}/auth/login", json={"role": "webmaster", "username": "webmaster", "passcode": "wrong"})
         assert r.status_code == 401
 
-    def test_seeded_club_accounts_match_pins(self, test_club):
-        """The club's PINs are seeded as 'admin'/'officer' accounts."""
+    def test_club_officer_admin_accounts_login(self, test_club):
+        """The club's officer/admin accounts (username = role) authenticate with
+        their own passcodes, under the role the account was given."""
         for role, pin in (("officer", TEST_OFFICER_PIN), ("admin", TEST_ADMIN_PIN)):
             body = _login_user(role, role, pin, test_club["id"])
             assert body["role"] == role

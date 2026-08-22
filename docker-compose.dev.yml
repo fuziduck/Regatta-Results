@@ -1,0 +1,123 @@
+# docker-compose.dev.yml — SailScore (DEVELOPMENT ONLY)
+#
+# Local development: React dev server (hot reload) + uvicorn --reload +
+# your real data volume. NEVER use this for a public deployment — it exposes
+# ports 3000/8000 to the host, runs dev servers, and MongoDB has no
+# credentials. Production is the default `docker-compose.yml`.
+#
+# Usage:
+#   cp .env.example .env          # first time — fill in dev values
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# All secrets come from the gitignored .env file — nothing here is a secret.
+
+services:
+  # ── MongoDB ──────────────────────────────────────────────────────────
+  # No host port is published (27017 is container-network only) and no
+  # credentials are configured: this volume is the user's real data, and
+  # enabling auth retroactively on an existing volume is unsafe (the mongo
+  # entrypoint only creates the root user on a fresh data directory).
+  mongodb:
+    image: mongo:7
+    container_name: regatta-mongodb
+    networks:
+      - regatta-network
+    volumes:
+      - mongo-data:/data/db          # named volume — data survives down/up
+    healthcheck:
+      test: mongosh --eval 'db.adminCommand("ping")' --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Backend (FastAPI + Motor) ────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: regatta-backend
+    networks:
+      - regatta-network
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mount source code into the image.  The image's system
+      # site-packages (fastapi, motor, …) live outside /app, so they
+      # survive the mount.  --reload makes edits to server.py take
+      # effect immediately.
+      - ./backend:/app
+    environment:
+      ENV: ${ENV:-development}
+      MONGO_URL: ${MONGO_URL:-mongodb://mongodb:27017/regatta}
+      DB_NAME: ${DB_NAME:-regatta}
+      # Required — set in .env (see .env.example).
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      # Bootstrap passcode for the webmaster user account (seeded once).
+      WEBMASTER_PASSCODE: ${WEBMASTER_PASSCODE:?WEBMASTER_PASSCODE must be set in .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
+      LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-60}
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Frontend (React dev server via CRA + craco) ─────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: regatta-frontend
+    networks:
+      - regatta-network
+    ports:
+      - "3000:3000"
+    volumes:
+      # Bind-mount source so CRA hot-reloads on save, like the backend.
+      # The image's node_modules (installed at build time) are preserved via
+      # the anonymous volume below, because mounting ./frontend over /app
+      # would otherwise hide them.
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      # Baked into the JS bundle at compile time by CRA.  Must be a
+      # host-accessible URL because the bundle runs in the browser,
+      # not inside the container.
+      REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://127.0.0.1:8000}
+      # Bind-mounts don't always propagate inotify events into the
+      # container on Docker for Mac, so CRA's watcher can miss host-side
+      # edits and keep serving stale bundles.  Poll instead of watching.
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "1000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+# ── Persistent storage ────────────────────────────────────────────────
+volumes:
+  # The club's real data lives in the pre-compose volume created by the
+  # original `docker run` mongo container. Mark it external so compose
+  # reuses it instead of creating a fresh empty one.
+  mongo-data:
+    external: true
+    name: regatta_mongodb_data
+
+# ── Networking ────────────────────────────────────────────────────────
+networks:
+  regatta-network:
+    name: regatta-network            # matches existing manual containers
+    external: true

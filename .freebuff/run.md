@@ -2,13 +2,16 @@
 
 The project is a FastAPI + MongoDB backend (`backend/`, port 8000) and a React
 SPA (`frontend/`, port 3000). The Preview tab serves the **docker compose
-frontend** — the full stack runs via `docker compose up`.
+frontend** — the full stack runs via `docker compose -f docker-compose.dev.yml up`
+(the default `docker-compose.yml` is the PRODUCTION stack and must never be
+used for local preview work).
 
-## 1. Quick start (docker compose)
+## 1. Quick start (docker compose, development)
 
 ```bash
 cd /Users/lukehopper/Documents/regatta-results
-docker compose up --build -d
+cp .env.example .env        # fill in dev values (JWT_SECRET, WEBMASTER_PASSCODE)
+docker compose -f docker-compose.dev.yml up --build -d
 ```
 
 This builds and starts all three services:
@@ -103,9 +106,9 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/
 ```
 
 `serve_preview.py` serves the SPA with a fallback to `index.html` for deep
-links and proxies `/api/*` to `http://127.0.0.1:8000`. Webmaster PIN on the
-compose backend defaults to `9999` unless the container env sets
-`WEBMASTER_PIN`.
+links and proxies `/api/*` to `http://127.0.0.1:8000`. The webmaster account
+(username `webmaster`) is bootstrapped once from the `WEBMASTER_PASSCODE` env
+(see `.env`); the legacy `WEBMASTER_PIN` / shared-PIN login no longer exists.
 
 Gotcha (2026-08-22): running a bare `npm run build` **without**
 `REACT_APP_BACKEND_URL` bakes `undefined/api` into the bundle — every page
@@ -133,8 +136,10 @@ running an older bundle hash until cache-busted).
 
 | File                     | Change                                            |
 |--------------------------|---------------------------------------------------|
-| `docker-compose.yml`     | New — full stack definition                       |
-| `frontend/.dockerignore` | New — excludes node_modules (443MB) from context  |
-| `backend/.dockerignore`  | New — excludes .venv, __pycache__ from context    |
-| `frontend/Dockerfile`    | Changed `npm install` → `--legacy-peer-deps`      |
+| `docker-compose.yml`     | PRODUCTION stack (default): mongo auth, no exposed backend, nginx frontend |
+| `docker-compose.dev.yml` | DEVELOPMENT stack: dev servers, ports 3000/8000, real data volume |
+| `frontend/Dockerfile.prod`, `frontend/nginx.conf` | Production frontend image |
+| `frontend/.dockerignore` | Excludes node_modules (443MB) from context        |
+| `backend/.dockerignore`  | Excludes .venv, __pycache__ from context          |
+| `frontend/Dockerfile`    | `npm install` → `--legacy-peer-deps`              |
 | `backend/requirements.txt` | Removed unused `emergentintegrations==0.2.0`     |

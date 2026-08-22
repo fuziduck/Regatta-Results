@@ -196,8 +196,8 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
                           <Power className="w-3 h-3 mr-1" /> Deactivated
                         </span>
                       )}
-                      {u.created_by === "system" && (
-                        <span className="text-[11px] text-muted-foreground/70">(seeded from club passcode)</span>
+                      {u.created_by === "system" && u.club_id && (
+                        <span className="text-[11px] text-muted-foreground/70">(migrated from legacy passcode)</span>
                       )}
                     </div>
                   </>

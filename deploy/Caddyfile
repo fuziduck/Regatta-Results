@@ -1,0 +1,20 @@
+# Example Caddy reverse proxy — automatic HTTPS in front of SailScore.
+# Put this on the host (or a proxy container) and point the production
+# frontend's published port at it, e.g. with:
+#   docker run -d --name caddy -p 80:80 -p 443:443 \
+#     -v $PWD/deploy/Caddyfile:/etc/caddy/Caddyfile \
+#     -v caddy-data:/data caddy:2
+#
+# Replace results.yourclub.org with the real domain. Caddy obtains and
+# renews the Let's Encrypt certificate automatically.
+
+results.yourclub.org {
+    # TLS is automatic (ACME). HSTS is added by Caddy automatically.
+
+    reverse_proxy 127.0.0.1:80 {
+        # Preserve the real client IP through to the backend (rate limiting
+        # and security logging rely on X-Forwarded-For).
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+}

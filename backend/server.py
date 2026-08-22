@@ -1,9 +1,12 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
@@ -21,17 +24,68 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.environ['JWT_SECRET']
+# ---------------------------------------------------------------------------
+# Security configuration
+# ---------------------------------------------------------------------------
+# APP_ENV switches development vs production behaviour: production refuses to
+# start with weak secrets, disables interactive API docs, enables HSTS and
+# locked-down headers. JWT_SECRET and MONGO_URL are always required.
+APP_ENV = os.environ.get("ENV", "development").strip().lower()
+JWT_SECRET = os.environ['JWT_SECRET']           # required — no default
 JWT_ALGORITHM = "HS256"
-# Global role PIN for the Webmaster — the one role not bound to a single club.
-# (Seeded as the webmaster user account's passcode at startup.)
-WEBMASTER_PIN = os.environ.get("WEBMASTER_PIN", "9999")
-# Failed-attempt lockout for user accounts (never applied to the webmaster).
+JWT_ISSUER = "sailscore"
+JWT_AUDIENCE = "sailscore-app"
+# Short-lived access tokens (8h default). There is no refresh-token flow, so a
+# signed-in officer is simply asked to sign in again after this window.
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "8"))
+# Bootstrap passcode for the singleton webmaster user account. Seeded only when
+# the account does not exist yet; never re-applied on restart. Required in
+# production (the app refuses to start without it).
+WEBMASTER_PASSCODE = os.environ.get("WEBMASTER_PASSCODE")
+# Failed-attempt lockout for user accounts (never applied to the webmaster,
+# so the master key cannot lock itself out of the system).
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
+# Per-IP login throttle (in-memory sliding window; each app instance tracks its
+# own window, which is fine behind a single reverse proxy).
+LOGIN_IP_LIMIT = int(os.environ.get("LOGIN_IP_LIMIT", "60"))
+LOGIN_IP_WINDOW_SECONDS = 60
+
+WEAK_JWT_SECRETS = {"change-me-to-a-long-random-string", "changeme", "secret",
+                    "dev", "development", "jwt-secret", "insecure", "none"}
+
+
+def _production_config_errors() -> List[str]:
+    """Configuration problems that must stop a production start. Empty list
+    means the environment is safe to boot."""
+    errors = []
+    secret_l = JWT_SECRET.lower()
+    if len(JWT_SECRET) < 32 or secret_l in WEAK_JWT_SECRETS \
+            or secret_l.startswith(("replace_with", "change-me", "changeme")):
+        errors.append("JWT_SECRET must be a random string of at least 32 characters")
+    cors = os.environ.get("CORS_ORIGINS", "")
+    if not cors.strip() or cors.strip() == "*":
+        errors.append("CORS_ORIGINS must list the production origin(s) (never '*')")
+    if not WEBMASTER_PASSCODE or len(WEBMASTER_PASSCODE) < 8:
+        errors.append("WEBMASTER_PASSCODE must be set to a value of at least 8 characters")
+    if "mongodb://" in mongo_url.lower() and "@" not in mongo_url.split("//", 1)[-1]:
+        errors.append("MONGO_URL must include database credentials in production")
+    return errors
+
+
+if APP_ENV == "production":
+    _cfg_errors = _production_config_errors()
+    if _cfg_errors:
+        raise RuntimeError("Refusing to start in production:\n- " + "\n- ".join(_cfg_errors))
+    # No interactive API docs in production (limits info disclosure).
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+else:
+    app = FastAPI()
+
+api_router = APIRouter(prefix="/api")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,50 +99,60 @@ def new_id():
 
 
 def create_token(role: str, club_id: str, user_id: Optional[str] = None,
-                  username: Optional[str] = None) -> str:
+                  username: Optional[str] = None, token_version: int = 0) -> str:
+    now = datetime.now(timezone.utc)
     payload = {
         "role": role,
         "club_id": club_id,
-        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(hours=JWT_EXPIRE_HOURS),
         "type": "access",
+        "tv": int(token_version or 0),
     }
     if user_id:
         payload["user_id"] = user_id
+        payload["sub"] = user_id
     if username:
         payload["username"] = username
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 async def get_current_user(request: Request):
-    """Decode the bearer token -> {role, club_id, user_id, username}, or None.
+    """Decode the bearer token and resolve the live user account.
 
-    Tokens minted for a user account are re-validated against the users
-    collection on every request, so deactivating or deleting an account
-    revokes its sessions immediately. Legacy tokens (no user_id) — minted by
-    the shared club-PIN login — pass through on role/club claims alone.
+    Every accepted token belongs to a user account and is re-validated against
+    the users collection on every request, so deactivating, deleting,
+    re-roling or resetting the passcode of an account revokes its sessions
+    immediately (role and club always come from the database, never from the
+    token). Tokens without a user account — minted by the legacy shared-PIN
+    login — are rejected outright. Signature, expiry, issuer, audience and the
+    required claims are all verified; only HS256 is accepted.
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None
     token = auth_header[7:]
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        payload = jwt.decode(
+            token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+            issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
+            options={"require": ["exp", "iat", "iss", "aud", "sub"]},
+        )
+    except jwt.PyJWTError:
         return None
-    user_id = payload.get("user_id")
-    if user_id:
-        user = await db.users.find_one({"id": user_id}, {"_id": 0, "passcode_hash": 0})
-        if not user or not user.get("active"):
-            return None
-        return {"role": user.get("role"), "club_id": user.get("club_id"),
-                "user_id": user["id"], "username": user.get("username")}
-    # Legacy token (minted by the old shared-PIN login, no user account).
-    # Club officer/admin tokens keep working for backward compatibility, but
-    # the webmaster is now a user account — stale webmaster tokens from the
-    # old system must not keep full platform control.
-    if payload.get("role") == "webmaster":
+    user_id = payload.get("user_id") or payload.get("sub")
+    if not user_id:
+        return None  # legacy shared-PIN token — no user account
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "passcode_hash": 0})
+    if not user or not user.get("active"):
         return None
-    return {"role": payload.get("role"), "club_id": payload.get("club_id")}
+    tv = payload.get("tv")
+    if int(tv if tv is not None else -1) != int(user.get("token_version") or 0):
+        return None  # token predates a passcode reset / role change / deactivation
+    return {"role": user.get("role"), "club_id": user.get("club_id"),
+            "user_id": user["id"], "username": user.get("username")}
 
 
 async def require_admin(request: Request) -> dict:
@@ -167,6 +231,22 @@ async def _class_of_club(class_id: str, user: dict):
     return cls
 
 
+async def _class_visible_or_404(class_id: str, user: dict):
+    """A non-webmaster staff member may only ever see their own club's class.
+    404 (not 403) so another club's resources are never revealed to exist."""
+    cid = await _class_club_id(class_id)
+    if cid is None or (user.get("role") != "webmaster" and cid != user.get("club_id")):
+        raise HTTPException(status_code=404, detail="Class not found")
+
+
+async def _series_visible_or_404(series_id: str, user: dict):
+    """A non-webmaster staff member may only ever see their own club's series."""
+    series = await db.series.find_one({"id": series_id}, {"_id": 0, "class_id": 1})
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    await _class_visible_or_404(series.get("class_id"), user)
+
+
 async def _series_of_club(series_id: str, user: dict):
     series = await db.series.find_one({"id": series_id}, {"_id": 0})
     if not series:
@@ -195,12 +275,12 @@ async def _race_of_club(race_id: str, user: dict):
 # Models
 # ---------------------------------------------------------------------------
 class LoginInput(BaseModel):
-    role: str
-    # Per-user login: username + passcode. `pin` is kept as an alias for
-    # `passcode` so legacy clients and the shared club-PIN fallback still work.
+    # Individual user accounts only — there is no shared-PIN login any more.
+    # `role` is a routing hint (webmaster vs club staff); the account's own
+    # role is authoritative once the passcode verifies.
+    role: str = "officer"
     username: Optional[str] = None
     passcode: Optional[str] = None
-    pin: Optional[str] = None
     club_id: Optional[str] = None
 
 
@@ -223,8 +303,7 @@ class ClubInput(BaseModel):
     name: str
     slug: Optional[str] = None
     color: str = "#0A369D"
-    officer_pin: str = ""
-    admin_pin: str = ""
+    # No PIN fields: logins are individual user accounts managed per club.
 
 
 class AdvertUpdate(BaseModel):
@@ -387,14 +466,45 @@ def verify_passcode(passcode: str, passcode_hash: str) -> bool:
         return False
 
 
-async def _record_failed_login(user: dict):
+# In-memory login throttle: key -> recent attempt timestamps. Only timestamps
+# inside the sliding window are ever kept, so the map stays bounded. Behind a
+# reverse proxy the client IP comes from X-Forwarded-For (first hop); the
+# per-account lockout is the real protection, the per-IP limit just slows
+# mass account scanning.
+_login_attempts = defaultdict(deque)
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _login_ip_limited(ip: str) -> bool:
+    """True when this IP has exceeded the login throttle window."""
+    now = time.time()
+    dq = _login_attempts[f"ip:{ip}"]
+    while dq and dq[0] < now - LOGIN_IP_WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= LOGIN_IP_LIMIT:
+        return True
+    dq.append(now)
+    return False
+
+
+async def _record_failed_login(user: dict, ip: str = ""):
     """Count a failed attempt, locking the account after MAX_FAILED_ATTEMPTS
-    for LOCKOUT_MINUTES."""
+    for LOCKOUT_MINUTES. Never logs the passcode."""
     n = (user.get("failed_attempts") or 0) + 1
+    logger.info("LOGIN FAIL user=%s ip=%s attempts=%d", user.get("username"), ip, n)
     if n >= MAX_FAILED_ATTEMPTS:
+        locked_until = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
+        logger.warning("ACCOUNT LOCKOUT user=%s ip=%s locked_until=%s",
+                       user.get("username"), ip, locked_until)
         await db.users.update_one({"id": user["id"]}, {"$set": {
             "failed_attempts": 0,
-            "locked_until": (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
+            "locked_until": locked_until,
         }})
     else:
         await db.users.update_one({"id": user["id"]}, {"$set": {"failed_attempts": n}})
@@ -410,39 +520,49 @@ def _user_locked(user: dict) -> bool:
         return False
 
 
-async def _login_user(u: dict, passcode: str) -> dict:
+async def _login_user(u: dict, passcode: str, ip: str = "") -> dict:
     """Verify a passcode against a user account with failed-attempt lockout.
     Lockout never applies to the webmaster singleton, so the master key can't
-    lock itself out of the system."""
+    lock itself out of the system. All failures return the same generic
+    message so the endpoint cannot be used to enumerate accounts."""
     if not u or not u.get("active"):
-        raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if u.get("role") != "webmaster":
         if _user_locked(u):
-            raise HTTPException(status_code=423, detail="Account locked — too many failed attempts. Try again later.")
+            logger.warning("LOGIN LOCKED user=%s ip=%s", u.get("username"), ip)
+            raise HTTPException(status_code=423,
+                                detail="Account temporarily locked — too many failed attempts. Try again later.")
         if not verify_passcode(passcode, u.get("passcode_hash", "")):
-            await _record_failed_login(u)
-            raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+            await _record_failed_login(u, ip)
+            raise HTTPException(status_code=401, detail="Invalid credentials")
     elif not verify_passcode(passcode, u.get("passcode_hash", "")):
-        raise HTTPException(status_code=401, detail="Incorrect username or passcode")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     await db.users.update_one({"id": u["id"]}, {"$set": {"failed_attempts": 0, "last_login": now_iso()},
                                                 "$unset": {"locked_until": ""}})
     return u
 
 
 @api_router.post("/auth/login")
-async def login(data: LoginInput):
-    role = data.role
-    passcode = (data.passcode or data.pin or "").strip()
-    if role == "webmaster":
+async def login(data: LoginInput, request: Request):
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many login attempts — please try again shortly")
+    passcode = (data.passcode or "").strip()
+    if data.role not in ("officer", "admin", "webmaster"):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if data.role == "webmaster":
         wm = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
         if not wm:
-            raise HTTPException(status_code=401, detail="Incorrect username or passcode")
-        u = await _login_user(wm, passcode)
-        token = create_token("webmaster", None, u["id"], u.get("username"))
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        u = await _login_user(wm, passcode, ip)
+        token = create_token("webmaster", None, u["id"], u.get("username"), u.get("token_version"))
+        logger.info("LOGIN OK user=%s role=webmaster ip=%s", u.get("username"), ip)
         return {"token": token, "role": "webmaster", "club_id": None, "club_name": None,
                 "username": u.get("username"), "name": u.get("name")}
-    if role not in ("officer", "admin"):
-        raise HTTPException(status_code=401, detail="Unknown role")
+    # Club staff: the account is looked up by username inside the chosen club;
+    # the account's own role and club decide the session. The client can never
+    # claim a role or club it was not given.
     club = None
     if data.club_id:
         club = await db.clubs.find_one({"id": data.club_id}, {"_id": 0})
@@ -451,25 +571,18 @@ async def login(data: LoginInput):
         clubs = await db.clubs.find({}, {"_id": 0}).to_list(100)
         if len(clubs) == 1:
             club = clubs[0]
-    if not club:
-        raise HTTPException(status_code=404, detail="Club not found — choose your club")
-    if data.username:
-        # Per-user login — the primary path. The account's role is
-        # authoritative: a username only ever logs into the club it belongs
-        # to, under the role the account was given.
-        user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip()}, {"_id": 0})
-        u = await _login_user(user, passcode)
-        role = u["role"]
-        token = create_token(role, club["id"], u["id"], u.get("username"))
-        return {"token": token, "role": role, "club_id": club["id"],
-                "club_name": club.get("name"), "username": u.get("username"),
-                "name": u.get("name")}
-    # Legacy shared-PIN login (the club master passcode, set by the webmaster).
-    expected = club.get("admin_pin") if role == "admin" else club.get("officer_pin")
-    if not expected or passcode != expected:
-        raise HTTPException(status_code=401, detail="Incorrect passcode")
-    return {"token": create_token(role, club["id"]), "role": role,
-            "club_id": club["id"], "club_name": club.get("name")}
+    if not club or not data.username:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip()}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    u = await _login_user(user, passcode, ip)
+    role = u["role"]
+    token = create_token(role, club["id"], u["id"], u.get("username"), u.get("token_version"))
+    logger.info("LOGIN OK user=%s role=%s club=%s ip=%s", u.get("username"), role, club["id"], ip)
+    return {"token": token, "role": role, "club_id": club["id"],
+            "club_name": club.get("name"), "username": u.get("username"),
+            "name": u.get("name")}
 
 
 @api_router.get("/auth/me")
@@ -490,8 +603,9 @@ async def me(request: Request):
 # Users (per-club logins)
 # ---------------------------------------------------------------------------
 def _user_public(u: dict) -> dict:
-    """User without the passcode hash (never leak credentials)."""
-    return {k: v for k, v in u.items() if k not in ("passcode_hash",)}
+    """User without credential material or internal counters (never leak a
+    passcode hash or the token version used for session revocation)."""
+    return {k: v for k, v in u.items() if k not in ("passcode_hash", "token_version")}
 
 
 @api_router.get("/users")
@@ -531,10 +645,12 @@ async def create_user(data: UserInput, user: dict = Depends(require_admin)):
         "username": username, "name": data.name.strip(),
         "passcode_hash": hash_passcode(passcode),
         "active": True, "created_by": user.get("user_id") or "webmaster",
-        "created_at": now_iso(), "failed_attempts": 0,
+        "created_at": now_iso(), "failed_attempts": 0, "token_version": 0,
     }
     await db.users.insert_one(doc)
     doc.pop("_id", None)
+    logger.info("USER CREATE id=%s username=%s role=%s club=%s by=%s",
+                doc["id"], username, data.role, club_id, user.get("username"))
     return _user_public(doc)
 
 
@@ -553,6 +669,15 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
             raise HTTPException(status_code=403, detail="Cannot modify the webmaster account")
     if user.get("user_id") == user_id and (data.active is False or (data.role and data.role != target.get("role"))):
         raise HTTPException(status_code=400, detail="You cannot deactivate or change the role of your own account")
+    # A club must always keep at least one active admin: a non-webmaster may
+    # not deactivate the club's last active admin (mirrors the delete guard).
+    if (not is_webmaster and target.get("role") == "admin" and data.active is False
+            and target.get("active") is not False):
+        active_admins = await db.users.count_documents(
+            {"club_id": target.get("club_id"), "role": "admin", "active": True})
+        if active_admins <= 1:
+            raise HTTPException(status_code=400,
+                                detail="A club must keep at least one active admin")
     update = {}
     if data.name is not None:
         update["name"] = data.name.strip()
@@ -562,8 +687,16 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
         update["active"] = data.active
     if data.passcode:
         update["passcode_hash"] = hash_passcode(data.passcode.strip())
+    # Any change that alters what an existing token authorises (passcode
+    # reset, role change, deactivation) bumps the token version, revoking
+    # every previously issued session for this account immediately.
+    revoke = bool(data.passcode) or data.role is not None or data.active is not None
     if update:
+        if revoke:
+            update["token_version"] = (target.get("token_version") or 0) + 1
         await db.users.update_one({"id": user_id}, {"$set": update})
+    logger.info("USER UPDATE id=%s by=%s fields=%s revoke=%s",
+                user_id, user.get("username"), sorted(update.keys()), revoke)
     return _user_public(await db.users.find_one({"id": user_id}, {"_id": 0}))
 
 
@@ -587,53 +720,88 @@ async def delete_user(user_id: str, user: dict = Depends(require_admin)):
         if active_admins <= 1:
             raise HTTPException(status_code=400, detail="A club must keep at least one active admin")
     await db.users.delete_one({"id": user_id})
+    logger.info("USER DELETE id=%s username=%s by=%s", user_id, target.get("username"), user.get("username"))
     return {"ok": True}
 
 
-async def _ensure_club_users(club: dict):
-    """Backfill the legacy club-PIN accounts as per-club users.
+async def _ensure_user_token_version(user_id: str):
+    await db.users.update_one({"id": user_id, "token_version": {"$exists": False}},
+                              {"$set": {"token_version": 0}})
 
-    Each club keeps one 'officer' and one 'admin' account, seeded from (and
-    kept in sync with) the club's shared PINs — so existing PIN logins keep
-    working as username+passcode logins. Any additional users created by the
-    race admin or webmaster are never touched.
+
+async def _migrate_legacy_club_pins():
+    """One-time, idempotent migration of the legacy shared-PIN scheme.
+
+    Clubs used to carry plaintext officer_pin/admin_pin fields and a
+    username-less shared-PIN login. This turns each PIN into the passcode of
+    the club's seeded 'officer'/'admin' user account (bcrypt-hashed), then
+    removes the plaintext fields from the club document. It is safe to run
+    any number of times — once the fields are gone nothing further happens —
+    and it never touches clubs/classes/boats/series/races or other users.
     """
-    if not club or not club.get("id"):
-        return
-    for role, pin in (("officer", club.get("officer_pin")), ("admin", club.get("admin_pin"))):
-        if not pin:
-            continue
-        existing = await db.users.find_one({"club_id": club["id"], "role": role, "username": role}, {"_id": 0})
-        if existing:
-            if not verify_passcode(pin, existing.get("passcode_hash", "")):
-                await db.users.update_one({"id": existing["id"]}, {"$set": {"passcode_hash": hash_passcode(pin)}})
-            continue
-        await db.users.insert_one({
-            "id": new_id(), "club_id": club["id"], "role": role,
-            "username": role, "name": f"{club.get('name', 'Club')} {role.title()}",
-            "passcode_hash": hash_passcode(pin), "active": True,
-            "created_by": "system", "created_at": now_iso(), "failed_attempts": 0,
-        })
+    clubs = await db.clubs.find({}, {"_id": 0}).to_list(1000)
+    for club in clubs:
+        officer_pin = club.get("officer_pin")
+        admin_pin = club.get("admin_pin")
+        for role, pin in (("officer", officer_pin), ("admin", admin_pin)):
+            if not pin:
+                continue
+            existing = await db.users.find_one(
+                {"club_id": club["id"], "role": role, "username": role}, {"_id": 0})
+            if existing:
+                # Refresh the seeded account's hash so the old PIN keeps working
+                # as that account's passcode, and bump its token version so any
+                # outstanding sessions from before the migration are revoked.
+                if not verify_passcode(pin, existing.get("passcode_hash", "")):
+                    await db.users.update_one(
+                        {"id": existing["id"]},
+                        {"$set": {"passcode_hash": hash_passcode(pin),
+                                   "token_version": (existing.get("token_version") or 0) + 1}})
+            else:
+                await db.users.insert_one({
+                    "id": new_id(), "club_id": club["id"], "role": role,
+                    "username": role, "name": f"{club.get('name', 'Club')} {role.title()}",
+                    "passcode_hash": hash_passcode(pin), "active": True,
+                    "created_by": "legacy-pin-migration", "created_at": now_iso(),
+                    "failed_attempts": 0, "token_version": 0,
+                })
+            logger.info("SECURITY MIGRATE legacy %s PIN -> user account (club %s)",
+                        role, club.get("id"))
+        if officer_pin is not None or admin_pin is not None:
+            await db.clubs.update_one({"id": club["id"]},
+                                      {"$unset": {"officer_pin": "", "admin_pin": ""}})
+            logger.info("SECURITY MIGRATE removed plaintext PIN fields from club %s",
+                        club.get("id"))
 
 
 async def ensure_webmaster_user():
-    """Seed the singleton webmaster account from WEBMASTER_PIN (default 9999)."""
+    """Bootstrap the singleton webmaster user account.
+
+    The account is created once from the WEBMASTER_PASSCODE environment
+    variable (required — production refuses to start without it). It is never
+    re-seeded on restart, so a later env change does not silently reset the
+    passcode, and it is never a shared-PIN login.
+    """
     wm = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
-    if not wm:
-        await db.users.insert_one({
-            "id": new_id(), "club_id": None, "role": "webmaster",
-            "username": "webmaster", "name": "Webmaster",
-            "passcode_hash": hash_passcode(WEBMASTER_PIN),
-            "active": True, "created_by": "system", "created_at": now_iso(),
-            "failed_attempts": 0,
-        })
-    return wm
+    if wm:
+        await _ensure_user_token_version(wm["id"])
+        return wm
+    if not WEBMASTER_PASSCODE:
+        raise RuntimeError("WEBMASTER_PASSCODE must be set to bootstrap the webmaster account")
+    await db.users.insert_one({
+        "id": new_id(), "club_id": None, "role": "webmaster",
+        "username": "webmaster", "name": "Webmaster",
+        "passcode_hash": hash_passcode(WEBMASTER_PASSCODE),
+        "active": True, "created_by": "system", "created_at": now_iso(),
+        "failed_attempts": 0, "token_version": 0,
+    })
+    logger.info("SECURITY BOOTSTRAP webmaster user account created")
+    return await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
 
 
-async def _ensure_all_club_users():
-    clubs = await db.clubs.find({}, {"_id": 0}).to_list(1000)
-    for club in clubs:
-        await _ensure_club_users(club)
+async def _ensure_all_user_token_versions():
+    await db.users.update_many({"token_version": {"$exists": False}},
+                               {"$set": {"token_version": 0}})
 
 # ---------------------------------------------------------------------------
 # Clubs
@@ -644,7 +812,8 @@ def slugify(name: str) -> str:
 
 
 def _club_public(club: dict) -> dict:
-    """Club without the PIN fields (never leak passcodes)."""
+    """Club without credential material (legacy plaintext PIN fields are
+    stripped even if a pre-migration document still carries them)."""
     return {k: v for k, v in club.items() if k not in ("officer_pin", "admin_pin")}
 
 
@@ -656,8 +825,8 @@ async def get_clubs():
 
 @api_router.get("/clubs/manage")
 async def clubs_manage(user: dict = Depends(require_webmaster)):
-    """Webmaster-only: full club documents including passcodes, so the
-    webmaster can edit (and change) them. Public /clubs never leaks PINs."""
+    """Webmaster-only: full club documents for management. Public /clubs
+    returns the same shape minus any legacy credential fields."""
     return await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
 
 
@@ -761,11 +930,10 @@ async def create_club(data: ClubInput, user: dict = Depends(require_webmaster)):
     if await db.clubs.find_one({"slug": slug}, {"_id": 0}):
         slug = f"{slug}-{new_id()[:4]}"
     doc = {"id": new_id(), "name": data.name, "slug": slug, "color": data.color,
-           "officer_pin": data.officer_pin, "admin_pin": data.admin_pin,
            "created_at": now_iso()}
     await db.clubs.insert_one(doc)
     doc.pop("_id", None)
-    await _ensure_club_users(doc)
+    logger.info("CLUB CREATE id=%s name=%s by=%s", doc["id"], doc["name"], user.get("username"))
     return _club_public(doc)
 
 
@@ -774,12 +942,11 @@ async def update_club(club_id: str, data: ClubInput, user: dict = Depends(requir
     club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
     if not club:
         raise HTTPException(status_code=404, detail="Club not found")
-    update = {"name": data.name, "color": data.color,
-              "officer_pin": data.officer_pin, "admin_pin": data.admin_pin}
+    update = {"name": data.name, "color": data.color}
     if data.slug:
         update["slug"] = data.slug.lower()
     await db.clubs.update_one({"id": club_id}, {"$set": update})
-    await _ensure_club_users({**club, **update})
+    logger.info("CLUB UPDATE id=%s by=%s", club_id, user.get("username"))
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
 
@@ -796,9 +963,10 @@ async def upload_club_icon(club_id: str, user: dict = Depends(require_admin), fi
     data = await file.read()
     if len(data) > 512 * 1024:
         raise HTTPException(status_code=400, detail="Icon must be 512 KB or smaller")
-    ctype = file.content_type or "image/png"
-    if not ctype.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Upload must be an image file")
+    ctype = _detect_image_type(data)
+    if not ctype:
+        raise HTTPException(status_code=400,
+                            detail="Upload must be a PNG, JPEG, GIF or WebP image")
     icon = f"data:{ctype};base64,{base64.b64encode(data).decode()}"
     await db.clubs.update_one({"id": club_id}, {"$set": {"icon": icon}})
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
@@ -853,14 +1021,32 @@ async def adverts_manage(user: dict = Depends(require_webmaster)):
     return await db.adverts.find({}, {"_id": 0}).sort("order", 1).to_list(100)
 
 
+def _detect_image_type(data: bytes) -> Optional[str]:
+    """MIME type from magic bytes only — the client-declared content type is
+    never trusted, so a file cannot masquerade as an image (SVG/HTML/JS are
+    all rejected) and stored data can never be rendered as executable content.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 async def _read_advert_image(file: UploadFile) -> str:
-    """Validate + read an advert image into a base64 data URL (2 MB cap)."""
+    """Validate + read an advert image into a base64 data URL (2 MB cap).
+    The image type is verified from magic bytes, never the declared type."""
     data = await file.read()
     if len(data) > ADVERT_IMAGE_MAX:
         raise HTTPException(status_code=400, detail="Advert image must be 2 MB or smaller")
-    ctype = file.content_type or "image/png"
-    if not ctype.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Upload must be an image file")
+    ctype = _detect_image_type(data)
+    if not ctype:
+        raise HTTPException(status_code=400,
+                            detail="Upload must be a PNG, JPEG, GIF or WebP image")
     return f"data:{ctype};base64,{base64.b64encode(data).decode()}"
 
 
@@ -960,6 +1146,10 @@ async def delete_class(class_id: str, user: dict = Depends(require_admin)):
 async def get_boats(request: Request, class_id: Optional[str] = None, year: Optional[int] = None,
                    active_only: bool = False, club_id: Optional[str] = None):
     q = {}
+    user = await get_current_user(request)
+    if user and user.get("role") != "webmaster" and class_id:
+        # Staff may never enumerate another club's boats via a class_id param.
+        await _class_visible_or_404(class_id, user)
     club = await _resolve_club_id(request, club_id)
     if class_id:
         q["class_id"] = class_id
@@ -1009,6 +1199,10 @@ async def delete_boat(boat_id: str, user: dict = Depends(require_admin)):
 async def get_series(request: Request, class_id: Optional[str] = None, year: Optional[int] = None,
                     club_id: Optional[str] = None):
     q = {}
+    user = await get_current_user(request)
+    if user and user.get("role") != "webmaster" and class_id:
+        # Staff may never enumerate another club's series via a class_id param.
+        await _class_visible_or_404(class_id, user)
     club = await _resolve_club_id(request, club_id)
     if class_id:
         q["class_id"] = class_id
@@ -1101,6 +1295,13 @@ async def get_races(request: Request, status: Optional[str] = None, class_id: Op
                     series_id: Optional[str] = None, date: Optional[str] = None,
                     club_id: Optional[str] = None):
     q = {}
+    user = await get_current_user(request)
+    if user and user.get("role") != "webmaster":
+        # Staff may never enumerate another club's races via class/series ids.
+        if class_id:
+            await _class_visible_or_404(class_id, user)
+        if series_id:
+            await _series_visible_or_404(series_id, user)
     club = await _resolve_club_id(request, club_id)
     if status:
         q["status"] = status
@@ -1806,7 +2007,9 @@ async def root():
 # Seed sample data
 # ---------------------------------------------------------------------------
 @api_router.post("/seed")
-async def seed(user: dict = Depends(require_admin)):
+async def seed(user: dict = Depends(require_webmaster)):
+    """Seed sample data — a global, data-creating operation, so webmaster-only."""
+    logger.info("SEED requested by=%s", user.get("username"))
     return await run_seed()
 
 
@@ -1817,13 +2020,12 @@ async def ensure_default_club():
     if clubs:
         default = clubs[0]
     else:
+        # New clubs carry no PINs — logins are individual user accounts.
         default = {
             "id": new_id(),
             "name": os.environ.get("CLUB_NAME", "Sailing Club"),
             "slug": slugify(os.environ.get("CLUB_NAME", "Sailing Club")),
             "color": "#0A369D",
-            "officer_pin": os.environ.get("RACE_OFFICER_PIN", "1234"),
-            "admin_pin": os.environ.get("RACE_ADMIN_PIN", "5678"),
             "created_at": now_iso(),
         }
         await db.clubs.insert_one(default)
@@ -1878,23 +2080,47 @@ async def run_seed():
 
 app.include_router(api_router)
 
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Defence-in-depth response headers for every API response.
+
+    The API only ever returns JSON, so the strictest CSP is safe here; the
+    SPA itself is served by the reverse proxy with a document CSP that is
+    compatible with the React app (see deploy/). HSTS is only advertised when
+    serving HTTPS (production).
+    """
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        if APP_ENV == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+# CORS: the origin list is entirely environment-configured. Production refuses
+# to start with '*' (see _production_config_errors), and the dev default is
+# the local dev frontend only.
+_cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+app.add_middleware(_SecurityHeadersMiddleware)
 
 
 @app.on_event("startup")
 async def startup():
     await ensure_default_club()
+    await _migrate_legacy_club_pins()
     await ensure_webmaster_user()
-    await _ensure_all_club_users()
+    await _ensure_all_user_token_versions()
     await run_seed()
 
 

@@ -7,7 +7,7 @@ import base64
 import requests
 from datetime import datetime, timezone
 
-from conftest import API, WEBMASTER_PIN, TEST_OFFICER_PIN, TEST_ADMIN_PIN, login, h
+from conftest import API, WEBMASTER_PASSCODE, TEST_OFFICER_PIN, TEST_ADMIN_PIN, login, h
 
 YEAR = datetime.now(timezone.utc).year
 
@@ -23,37 +23,42 @@ def _other_club_id(test_club):
 # ---------- Auth ----------
 class TestAuth:
     def test_webmaster_login(self):
-        r = requests.post(f"{API}/auth/login", json={"role": "webmaster", "pin": WEBMASTER_PIN})
+        r = requests.post(f"{API}/auth/login", json={
+            "role": "webmaster", "username": "webmaster", "passcode": WEBMASTER_PASSCODE})
         assert r.status_code == 200
         body = r.json()
         assert body["role"] == "webmaster"
         assert body["club_id"] is None
         assert isinstance(body["token"], str)
 
-    def test_webmaster_bad_pin(self):
-        r = requests.post(f"{API}/auth/login", json={"role": "webmaster", "pin": "wrong"})
+    def test_webmaster_bad_passcode(self):
+        r = requests.post(f"{API}/auth/login", json={
+            "role": "webmaster", "username": "webmaster", "passcode": "wrong"})
         assert r.status_code == 401
 
     def test_unknown_role(self):
-        r = requests.post(f"{API}/auth/login", json={"role": "crew", "pin": "x"})
+        r = requests.post(f"{API}/auth/login", json={"role": "crew", "username": "x", "passcode": "x"})
         assert r.status_code == 401
 
     def test_club_login(self, test_club):
         for role, pin in (("officer", TEST_OFFICER_PIN), ("admin", TEST_ADMIN_PIN)):
-            r = requests.post(f"{API}/auth/login", json={"role": role, "pin": pin, "club_id": test_club["id"]})
+            r = requests.post(f"{API}/auth/login", json={
+                "role": role, "username": role, "passcode": pin, "club_id": test_club["id"]})
             assert r.status_code == 200, r.text
             assert r.json()["role"] == role
             assert r.json()["club_id"] == test_club["id"]
             assert r.json()["club_name"] == test_club["name"]
 
-    def test_club_login_wrong_pin(self, test_club):
-        r = requests.post(f"{API}/auth/login", json={"role": "officer", "pin": "nope", "club_id": test_club["id"]})
+    def test_club_login_wrong_passcode(self, test_club):
+        r = requests.post(f"{API}/auth/login", json={
+            "role": "officer", "username": "officer", "passcode": "nope", "club_id": test_club["id"]})
         assert r.status_code == 401
 
     def test_club_login_unknown_club(self):
         r = requests.post(f"{API}/auth/login", json={
-            "role": "officer", "pin": TEST_OFFICER_PIN, "club_id": "00000000-0000-0000-0000-000000000000"})
-        assert r.status_code == 404
+            "role": "officer", "username": "officer", "passcode": TEST_OFFICER_PIN,
+            "club_id": "00000000-0000-0000-0000-000000000000"})
+        assert r.status_code == 401  # generic — never reveals whether the club exists
 
     def test_me(self, club_officer_token, test_club):
         r = requests.get(f"{API}/auth/me", headers=h(club_officer_token))
@@ -83,9 +88,9 @@ class TestWebmaster:
         r = requests.get(f"{API}/clubs/manage", headers=h(webmaster_token))
         assert r.status_code == 200
         mine = next(c for c in r.json() if c["id"] == test_club["id"])
-        assert mine["officer_pin"] == TEST_OFFICER_PIN
-        assert mine["admin_pin"] == TEST_ADMIN_PIN
-        # a club admin may not read the passcodes
+        # no plaintext PINs anywhere — logins are individual user accounts
+        assert "officer_pin" not in mine and "admin_pin" not in mine
+        # a club admin may not read the management payload
         r = requests.get(f"{API}/clubs/manage", headers=h(club_admin_token))
         assert r.status_code == 403
 
@@ -99,20 +104,18 @@ class TestWebmaster:
             assert r.status_code == 403, f"{method} {url} should be 403 for admin"
 
     def test_webmaster_crud_club(self, webmaster_token):
-        r = requests.post(f"{API}/clubs", json={
-            "name": "Tmp Club", "color": "#111111", "officer_pin": "1111", "admin_pin": "2222"},
-            headers=h(webmaster_token))
+        r = requests.post(f"{API}/clubs", json={"name": "Tmp Club", "color": "#111111"},
+                          headers=h(webmaster_token))
         assert r.status_code == 200, r.text
         cid = r.json()["id"]
-        r = requests.put(f"{API}/clubs/{cid}", json={
-            "name": "Tmp Club 2", "color": "#222222", "officer_pin": "3333", "admin_pin": "4444"},
-            headers=h(webmaster_token))
+        r = requests.put(f"{API}/clubs/{cid}", json={"name": "Tmp Club 2", "color": "#222222"},
+                         headers=h(webmaster_token))
         assert r.status_code == 200
         assert r.json()["name"] == "Tmp Club 2"
-        # PINs are only readable via /clubs/manage (webmaster-only), never on /clubs
+        # no PIN fields are ever stored or returned
         manage = requests.get(f"{API}/clubs/manage", headers=h(webmaster_token)).json()
         updated = next(c for c in manage if c["id"] == cid)
-        assert updated["officer_pin"] == "3333" and updated["admin_pin"] == "4444"
+        assert "officer_pin" not in updated and "admin_pin" not in updated
         r = requests.delete(f"{API}/clubs/{cid}", headers=h(webmaster_token))
         assert r.status_code == 200
 

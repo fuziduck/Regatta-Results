@@ -1,54 +1,75 @@
-# docker-compose.yml — Sailing Club Racing App
-# Usage: docker compose up --build
+# docker-compose.yml — SailScore (PRODUCTION)
 #
-# First run: builds all images (~3-5 min for frontend npm install).
-# Subsequent runs: only rebuilds if Dockerfiles or package files change.
+# This is the default compose file: `docker compose up` deploys a hardened,
+# production-shaped stack. For local development (hot reload, dev servers,
+# your real data volume) use the explicit dev file instead:
 #
-# Prerequisite: stop any legacy containers that use the same names/ports:
-#   docker stop regatta-backend regatta-frontend regatta-mongodb 2>/dev/null
-#   docker rm   regatta-backend regatta-frontend regatta-mongodb 2>/dev/null
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Production setup:
+#   1. cp .env.example .env        # fill in REAL values (see .env.example)
+#   2. docker compose up -d --build
+#
+# Production guarantees:
+#   - ENV=production  (the backend refuses to start with weak JWT secrets,
+#     a '*' CORS origin, a missing webmaster passcode, or a credential-less
+#     MONGO_URL; API docs are disabled; HSTS is enabled)
+#   - No uvicorn --reload, no React dev server
+#   - MongoDB is internal-only (no host port) and requires credentials
+#   - The backend is NOT exposed to the host; only the nginx frontend is
+#   - A fresh named volume (prod-mongo-data) with auth enabled from creation
+#
+# Put this behind a reverse proxy for TLS (see deploy/Caddyfile), or expose
+# port 80 and terminate TLS at a load balancer.
+#
+# Moving existing dev data here (optional, one-time): the dev stack keeps your
+# real data in the external `regatta_mongodb_data` volume. To bring it into
+# production, mongodump from the dev mongo and mongorestore into this one:
+#   docker run --rm -v regatta_mongodb_data:/data/db mongo:7 mongodump --db regatta --out /dump
+#   docker run --rm -v prod-mongo-data:/data/db mongo:7 \
+#     mongorestore --uri mongodb://<user>:<pass>@mongodb:27017/regatta --db regatta /dump/regatta
 
 services:
-  # ── MongoDB ──────────────────────────────────────────────────────────
   mongodb:
     image: mongo:7
-    container_name: regatta-mongodb
+    container_name: sailscore-mongodb
+    restart: unless-stopped
     networks:
-      - regatta-network
+      - sailscore-internal
     volumes:
-      - mongo-data:/data/db          # named volume — data survives down/up
+      - prod-mongo-data:/data/db
+    environment:
+      # Required — the mongo entrypoint enables auth when these are set.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?set in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?set in .env}
     healthcheck:
-      test: mongosh --eval 'db.adminCommand("ping")' --quiet
+      test: ["CMD", "mongosh", "--quiet",
+             "-u", "${MONGO_INITDB_ROOT_USERNAME}", "-p", "${MONGO_INITDB_ROOT_PASSWORD}",
+             "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping').ok"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
-  # ── Backend (FastAPI + Motor) ────────────────────────────────────────
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: regatta-backend
+    container_name: sailscore-backend
+    restart: unless-stopped
     networks:
-      - regatta-network
-    ports:
-      - "8000:8000"
-    volumes:
-      # Bind-mount source code into the image.  The image's system
-      # site-packages (fastapi, motor, …) live outside /app, so they
-      # survive the mount.  --reload makes edits to server.py take
-      # effect immediately.
-      - ./backend:/app
+      - sailscore-internal
+    # No ports: the backend is only reachable from the internal network.
     environment:
-      MONGO_URL: mongodb://mongodb:27017/regatta
-      DB_NAME: regatta
-      JWT_SECRET: change-me-to-a-long-random-string   # override via .env
-      RACE_OFFICER_PIN: race2026
-      RACE_ADMIN_PIN: admin2026
-      WEBMASTER_PIN: master2026   # global role — manages clubs, access to all
-      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1:3100"
-    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+      ENV: production
+      MONGO_URL: mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:27017/regatta?authSource=admin
+      DB_NAME: ${DB_NAME:-regatta}
+      JWT_SECRET: ${JWT_SECRET:?set in .env}
+      WEBMASTER_PASSCODE: ${WEBMASTER_PASSCODE:?set in .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set in .env (never '*')}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
+      LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-60}
+    command: uvicorn server:app --host 0.0.0.0 --port 8000
     depends_on:
       mongodb:
         condition: service_healthy
@@ -60,54 +81,30 @@ services:
       retries: 3
       start_period: 15s
 
-  # ── Frontend (React dev server via CRA + craco) ─────────────────────
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-    container_name: regatta-frontend
+      dockerfile: Dockerfile.prod
+    container_name: sailscore-frontend
+    restart: unless-stopped
     networks:
-      - regatta-network
+      - sailscore-internal
     ports:
-      - "3000:3000"
-    volumes:
-      # Bind-mount source so CRA hot-reloads on save, like the backend.
-      # The image's node_modules (installed at build time) are preserved via
-      # the anonymous volume below, because mounting ./frontend over /app
-      # would otherwise hide them.
-      - ./frontend:/app
-      - /app/node_modules
-    environment:
-      # Baked into the JS bundle at compile time by CRA.  Must be a
-      # host-accessible URL because the bundle runs in the browser,
-      # not inside the container.
-      REACT_APP_BACKEND_URL: http://127.0.0.1:8000
-      # Bind-mounts don't always propagate inotify events into the
-      # container on Docker for Mac, so CRA's watcher can miss host-side
-      # edits and keep serving stale bundles.  Poll instead of watching.
-      CHOKIDAR_USEPOLLING: "true"
-      CHOKIDAR_INTERVAL: "1000"
+      - "80:80"          # nginx: static SPA + /api reverse proxy. Terminate TLS
+                         # upstream (Caddy/NLB) or expose 443 instead.
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000 || exit 1"]
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
 
-# ── Persistent storage ────────────────────────────────────────────────
 volumes:
-  # The club's real data lives in the pre-compose volume created by the
-  # original `docker run` mongo container. Mark it external so compose
-  # reuses it instead of creating a fresh empty one.
-  mongo-data:
-    external: true
-    name: regatta_mongodb_data
+  prod-mongo-data:      # fresh production volume (auth-enabled from creation)
 
-# ── Networking ────────────────────────────────────────────────────────
 networks:
-  regatta-network:
-    name: regatta-network            # matches existing manual containers
-    external: true
+  sailscore-internal:
+    driver: bridge      # only the frontend's published port reaches the host

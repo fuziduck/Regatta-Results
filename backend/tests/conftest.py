@@ -1,10 +1,10 @@
 """Shared fixtures for the live-API test suite.
 
 The suite is self-contained: each pytest-xdist worker creates a dedicated
-club (via the webmaster role — which also exercises club management) with its
-own officer/admin passcodes and runs its CRUD/race-flow tests inside it, so
-the tests never depend on — or mutate — a real club's data. Everything is
-torn down at session end.
+club (via the webmaster role — which also exercises club management), then
+creates that club's officer/admin user accounts, and runs its CRUD/race-flow
+tests inside it, so the tests never depend on — or mutate — a real club's
+data. Everything is torn down at session end.
 
 Point the suite at a deployment with REACT_APP_BACKEND_URL (defaults to the
 local compose stack, http://127.0.0.1:8000).
@@ -16,14 +16,15 @@ import pytest
 import requests
 
 API = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/") + "/api"
-WEBMASTER_PIN = os.environ.get("WEBMASTER_PIN", "master2026")
+WEBMASTER_PASSCODE = os.environ.get("WEBMASTER_PASSCODE", "master2026")
 
 TEST_OFFICER_PIN = "test1234"
 TEST_ADMIN_PIN = "test5678"
 
 
-def login(role, pin, club_id=None):
-    body = {"role": role, "pin": pin}
+def login(role, username, passcode, club_id=None):
+    """Per-user login: username + passcode (individual accounts only)."""
+    body = {"role": role, "username": username, "passcode": passcode}
     if club_id:
         body["club_id"] = club_id
     r = requests.post(f"{API}/auth/login", json=body)
@@ -50,32 +51,38 @@ def _delete_test_club(club_id, token):
 
 @pytest.fixture(scope="session")
 def webmaster_token():
-    return login("webmaster", WEBMASTER_PIN)["token"]
+    return login("webmaster", "webmaster", WEBMASTER_PASSCODE)["token"]
 
 
 @pytest.fixture(scope="session")
 def test_club(webmaster_token):
-    """A dedicated club for this worker's tests (webmaster-only creation)."""
+    """A dedicated club for this worker's tests (webmaster-only creation), with
+    its own officer/admin user accounts (individual logins, not PINs)."""
     r = requests.post(f"{API}/clubs", json={
         "name": f"API Test Club {uuid.uuid4().hex[:6]}",
         "color": "#123456",
-        "officer_pin": TEST_OFFICER_PIN,
-        "admin_pin": TEST_ADMIN_PIN,
     }, headers=h(webmaster_token))
     assert r.status_code == 200, f"test club creation failed: {r.text}"
     club = r.json()
+    for role, pin, name in (("officer", TEST_OFFICER_PIN, "Test Officer"),
+                            ("admin", TEST_ADMIN_PIN, "Test Admin")):
+        r = requests.post(f"{API}/users", json={
+            "club_id": club["id"], "role": role, "username": role,
+            "name": name, "passcode": pin,
+        }, headers=h(webmaster_token))
+        assert r.status_code == 200, f"test user creation failed: {r.text}"
     yield club
     _delete_test_club(club["id"], webmaster_token)
 
 
 @pytest.fixture(scope="session")
 def club_admin_token(test_club):
-    return login("admin", TEST_ADMIN_PIN, test_club["id"])["token"]
+    return login("admin", "admin", TEST_ADMIN_PIN, test_club["id"])["token"]
 
 
 @pytest.fixture(scope="session")
 def club_officer_token(test_club):
-    return login("officer", TEST_OFFICER_PIN, test_club["id"])["token"]
+    return login("officer", "officer", TEST_OFFICER_PIN, test_club["id"])["token"]
 
 
 @pytest.fixture(scope="session")
