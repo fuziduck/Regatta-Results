@@ -48,8 +48,12 @@ macOS wipes `/tmp` on reboot and various tooling recreates the dirs empty.
 
 - **REACT_APP_BACKEND_URL**: `api.js` has **no default** — the frontend
   container must have this env set, and it must be a host-accessible URL
-  (`http://127.0.0.1:8000`, NOT `http://backend:8000`) because the JS
-  bundle runs in the browser, not inside the container.
+  (`http://localhost:8000`, NOT `http://backend:8000`) because the JS
+  bundle runs in the browser, not inside the container. It must be
+  **`localhost`** (not `127.0.0.1`): authentication uses a SameSite=Lax
+  HttpOnly session cookie, so the browser page (`http://localhost:3000`)
+  and the API must share the same site. Browse the app at
+  `http://localhost:3000`, not `http://127.0.0.1:3000`.
 - **Port conflicts**: stop any legacy containers first if names clash:
   `docker stop regatta-backend regatta-frontend regatta-mongodb 2>/dev/null`
 - **Don't run the static preview server** (`python3 -m http.server 3000`)

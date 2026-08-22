@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ClubBadge from "@/components/ClubBadge";
 import UsersManager from "@/components/UsersManager";
+import AuditLog from "@/components/AuditLog";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
@@ -18,7 +19,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff } from "lucide-react";
+import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -601,8 +602,21 @@ export default function Admin() {
     <div className="min-h-screen bg-background">
       <TopBar clubName={clubName} onSwitchClub={switchClub} />
       <main className="max-w-6xl mx-auto px-4 py-8">
-        <h1 className="text-3xl uppercase tracking-tighter mb-1">Admin console</h1>
-        <p className="text-muted-foreground text-sm mb-6">Manage the fleet, season structure and historic scoring.</p>
+        <div className="flex flex-wrap items-end justify-between gap-3 mb-1">
+          <div>
+            <h1 className="text-3xl uppercase tracking-tighter">Admin console</h1>
+            <p className="text-muted-foreground text-sm">Manage the fleet, season structure and historic scoring.</p>
+          </div>
+          <Button
+            variant="outline"
+            className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+            data-testid="admin-backup-btn"
+            onClick={() => api.downloadBackup(clubId, false)}
+          >
+            <Archive className="w-4 h-4" /> Download backup
+          </Button>
+        </div>
+        <div className="mb-6" />
         {clubId && <ClubIconField clubId={clubId} />}
         <Tabs defaultValue="boats">
           <TabsList className="flex flex-wrap h-auto gap-1" data-testid="admin-tabs">
@@ -611,12 +625,14 @@ export default function Admin() {
             <TabsTrigger value="series" data-testid="tab-series">Series</TabsTrigger>
             <TabsTrigger value="historic" data-testid="tab-historic">Historic Results</TabsTrigger>
             <TabsTrigger value="users" data-testid="tab-users">Logins</TabsTrigger>
+            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
           </TabsList>
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
+          <TabsContent value="activity" className="pt-6"><AuditLog clubId={clubId} webmaster={isWebmaster} /></TabsContent>
         </Tabs>
       </main>
     </div>

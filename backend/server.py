@@ -1,14 +1,18 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
 from dotenv import load_dotenv
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import io
+import json
 import logging
 import time
 import hashlib
 import secrets
 import smtplib
+import zipfile
 from collections import defaultdict, deque
 from email.message import EmailMessage
 from pathlib import Path
@@ -50,14 +54,37 @@ JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "8"))
 # the account does not exist yet; never re-applied on restart. Required in
 # production (the app refuses to start without it).
 WEBMASTER_PASSCODE = os.environ.get("WEBMASTER_PASSCODE")
-# Failed-attempt lockout for user accounts (never applied to the webmaster,
-# so the master key cannot lock itself out of the system).
+# Failed-attempt lockout for user accounts. Every account — including the
+# webmaster — is protected: 5 failed attempts lock the account, initially for
+# 5 minutes, and each repeated lockout escalates (10, 20) up to a 30-minute
+# cap. Lockouts are always temporary, and a successful login resets the
+# counter, so no account can be permanently locked by an attacker. The
+# per-IP throttle (below) bounds how many different accounts one attacker can
+# probe, so a single source cannot trivially lock out a whole club.
 MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_MINUTES = 15
+LOCKOUT_BASE_MINUTES = 5
+LOCKOUT_MAX_MINUTES = 30
 # Per-IP login throttle (in-memory sliding window; each app instance tracks its
 # own window, which is fine behind a single reverse proxy).
 LOGIN_IP_LIMIT = int(os.environ.get("LOGIN_IP_LIMIT", "60"))
 LOGIN_IP_WINDOW_SECONDS = 60
+
+# Password/passcode policy for NEW or CHANGED credentials. Existing stored
+# passcodes are never re-validated, so nobody is locked out by this change.
+# The policy is deliberately minimal (6 chars + 1 number + 1 special) and easy
+# to strengthen later without touching every call site: see
+# validate_password_policy().
+PASSWORD_MIN_LEN = 6
+PASSWORD_POLICY_HINT = ("Passcode must be at least 6 characters and contain "
+                        "at least one number and one special character "
+                        "(e.g. ! @ # $ % ^ & * ( ) - _ + = ?).")
+
+# HttpOnly session cookie that carries the JWT. The token never reaches
+# JavaScript: it is set by the server, read only by the server, and deleted on
+# logout. SameSite=Lax keeps the cookie off cross-site requests (CSRF defence
+# in depth); Secure is applied only in production (development uses plain
+# HTTP on localhost).
+SESSION_COOKIE = "scr_token"
 # Password reset by email (SMTP via the stdlib). SMTP can be configured at
 # runtime from the webmaster console (stored encrypted in the database); the
 # environment variables below are the fallback/bootstrap and the source of
@@ -136,6 +163,8 @@ def create_token(role: str, club_id: str, user_id: Optional[str] = None,
         "exp": now + timedelta(hours=JWT_EXPIRE_HOURS),
         "type": "access",
         "tv": int(token_version or 0),
+        # Unique token id: lets logout revoke this exact session server-side.
+        "jti": secrets.token_urlsafe(16),
     }
     if user_id:
         payload["user_id"] = user_id
@@ -145,8 +174,50 @@ def create_token(role: str, club_id: str, user_id: Optional[str] = None,
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+# In-memory registry of logged-out token ids (jti -> expiry epoch). Logout
+# adds the current token here so it stops working immediately even if an
+# attacker recovered it; entries are pruned once their JWT expires, keeping
+# the registry bounded by the number of logouts in one token lifetime.
+_revoked_jtis = {}
+
+
+def _prune_revoked_jtis():
+    now = time.time()
+    for jti in [j for j, exp in _revoked_jtis.items() if exp <= now]:
+        _revoked_jtis.pop(jti, None)
+
+
+def _session_cookie_kwargs() -> dict:
+    """Attributes for the HttpOnly session cookie. Secure is only ever set in
+    production (development runs plain HTTP on localhost); SameSite=Lax keeps
+    the cookie out of cross-site requests while still working for the
+    same-site dev topology (localhost:3000 -> localhost:8000) and the
+    same-origin production topology (nginx)."""
+    return {
+        "key": SESSION_COOKIE,
+        "httponly": True,
+        "secure": APP_ENV == "production",
+        "samesite": "lax",
+        "max_age": JWT_EXPIRE_HOURS * 3600,
+        "path": "/",
+    }
+
+
+def _token_from_request(request: Request) -> Optional[str]:
+    """The JWT for this request: the HttpOnly session cookie first (browser
+    sessions), then the Authorization bearer header (API clients)."""
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        return token
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    return None
+
+
 async def get_current_user(request: Request):
-    """Decode the bearer token and resolve the live user account.
+    """Decode the session token (HttpOnly cookie, or bearer for API clients)
+    and resolve the live user account.
 
     Every accepted token belongs to a user account and is re-validated against
     the users collection on every request, so deactivating, deleting,
@@ -154,12 +225,12 @@ async def get_current_user(request: Request):
     immediately (role and club always come from the database, never from the
     token). Tokens without a user account — minted by the legacy shared-PIN
     login — are rejected outright. Signature, expiry, issuer, audience and the
-    required claims are all verified; only HS256 is accepted.
+    required claims are all verified; only HS256 is accepted. Logged-out
+    sessions are rejected via the jti denylist.
     """
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    token = _token_from_request(request)
+    if not token:
         return None
-    token = auth_header[7:]
     try:
         payload = jwt.decode(
             token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
@@ -168,6 +239,9 @@ async def get_current_user(request: Request):
         )
     except jwt.PyJWTError:
         return None
+    _prune_revoked_jtis()
+    if payload.get("jti") in _revoked_jtis:
+        return None  # this session was explicitly logged out
     user_id = payload.get("user_id") or payload.get("sub")
     if not user_id:
         return None  # legacy shared-PIN token — no user account
@@ -494,6 +568,22 @@ def verify_passcode(passcode: str, passcode_hash: str) -> bool:
         return False
 
 
+def validate_password_policy(passcode: str) -> Optional[str]:
+    """Single source of truth for the password policy applied to NEW and
+    CHANGED credentials. Returns a user-facing error message, or None when
+    the passcode complies. Existing stored passcodes are never re-validated,
+    so tightening the policy here never locks anyone out — it only applies
+    from the next create/change. Deliberately minimal (6 chars + 1 number + 1
+    special) and trivial to strengthen later without touching call sites."""
+    if len(passcode) < PASSWORD_MIN_LEN:
+        return "Passcode must be at least 6 characters"
+    if not any(c.isdigit() for c in passcode):
+        return "Passcode must contain at least one number"
+    if not any(not c.isalnum() and not c.isspace() for c in passcode):
+        return "Passcode must contain at least one special character (e.g. ! @ # $ % ^ & * ( ) - _ + = ?)"
+    return None
+
+
 # In-memory login throttle: key -> recent attempt timestamps. Only timestamps
 # inside the sliding window are ever kept, so the map stays bounded. Behind a
 # reverse proxy the client IP comes from X-Forwarded-For (first hop); the
@@ -521,73 +611,149 @@ def _login_ip_limited(ip: str) -> bool:
     return False
 
 
+def _lockout_minutes(lockout_level: int) -> int:
+    """Progressive account lockout: 5, then 10, then 20 minutes, capped at 30
+    (never permanent). Repeated lockouts escalate, but a successful login
+    resets the level, so real users are never stuck."""
+    return min(LOCKOUT_BASE_MINUTES * (2 ** max(0, int(lockout_level or 0))), LOCKOUT_MAX_MINUTES)
+
+
 async def _record_failed_login(user: dict, ip: str = ""):
-    """Count a failed attempt, locking the account after MAX_FAILED_ATTEMPTS
-    for LOCKOUT_MINUTES. Never logs the passcode."""
+    """Persist one failed attempt on the account (Mongo-backed, so it
+    survives restarts). After MAX_FAILED_ATTEMPTS the account is locked for a
+    progressively longer window; the counter then resets so the lock expires
+    naturally. Never logs the passcode."""
     n = (user.get("failed_attempts") or 0) + 1
-    logger.info("LOGIN FAIL user=%s ip=%s attempts=%d", user.get("username"), ip, n)
+    now = datetime.now(timezone.utc)
+    update = {"failed_attempts": n, "last_failed_login": now.isoformat()}
     if n >= MAX_FAILED_ATTEMPTS:
-        locked_until = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
-        logger.warning("ACCOUNT LOCKOUT user=%s ip=%s locked_until=%s",
-                       user.get("username"), ip, locked_until)
-        await db.users.update_one({"id": user["id"]}, {"$set": {
-            "failed_attempts": 0,
-            "locked_until": locked_until,
-        }})
+        level = (user.get("lockout_level") or 0) + 1
+        minutes = _lockout_minutes(level - 1)
+        locked_until = (now + timedelta(minutes=minutes)).isoformat()
+        update.update({"failed_attempts": 0, "locked_until": locked_until,
+                       "lockout_level": level})
+        logger.warning("ACCOUNT LOCKOUT user=%s ip=%s for %d minutes",
+                       user.get("username"), ip, minutes)
     else:
-        await db.users.update_one({"id": user["id"]}, {"$set": {"failed_attempts": n}})
+        logger.info("LOGIN FAIL user=%s ip=%s attempts=%d", user.get("username"), ip, n)
+    await db.users.update_one({"id": user["id"]}, {"$set": update})
 
 
 def _user_locked(user: dict) -> bool:
+    """True while the account's lockout window is still running. Applies to
+    every account type including the webmaster (a lockout is always
+    temporary — max 30 minutes — so the master key can never be permanently
+    locked)."""
     locked = user.get("locked_until")
     if not locked:
         return False
     try:
         return datetime.fromisoformat(locked) > datetime.now(timezone.utc)
-    except ValueError:
+    except (ValueError, TypeError):
         return False
 
 
 async def _login_user(u: dict, passcode: str, ip: str = "") -> dict:
     """Verify a passcode against a user account with failed-attempt lockout.
-    Lockout never applies to the webmaster singleton, so the master key can't
-    lock itself out of the system. All failures return the same generic
-    message so the endpoint cannot be used to enumerate accounts."""
+    The same protection applies to every account, including the webmaster.
+    All failures return the same generic message so the endpoint cannot be
+    used to enumerate accounts."""
     if not u or not u.get("active"):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    if u.get("role") != "webmaster":
-        if _user_locked(u):
-            logger.warning("LOGIN LOCKED user=%s ip=%s", u.get("username"), ip)
-            raise HTTPException(status_code=423,
-                                detail="Account temporarily locked — too many failed attempts. Try again later.")
-        if not verify_passcode(passcode, u.get("passcode_hash", "")):
-            await _record_failed_login(u, ip)
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-    elif not verify_passcode(passcode, u.get("passcode_hash", "")):
+    if _user_locked(u):
+        logger.warning("LOGIN LOCKED user=%s ip=%s", u.get("username"), ip)
+        raise HTTPException(status_code=423,
+                            detail="Account temporarily locked — too many failed attempts. Try again later.")
+    if not verify_passcode(passcode, u.get("passcode_hash", "")):
+        await _record_failed_login(u, ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Successful login clears the failure counter, the last-failure timestamp
+    # and any lockout state (the lockout level too, so escalation restarts).
     await db.users.update_one({"id": u["id"]}, {"$set": {"failed_attempts": 0, "last_login": now_iso()},
-                                                "$unset": {"locked_until": ""}})
+                                                "$unset": {"locked_until": "",
+                                                           "lockout_level": "",
+                                                           "last_failed_login": ""}})
     return u
+
+
+async def _log_audit(request: Optional[Request], user: Optional[dict], action: str,
+                     description: str = "", resource_type: Optional[str] = None,
+                     resource_id: Optional[str] = None, success: bool = True,
+                     target_user_id: Optional[str] = None,
+                     target_username: Optional[str] = None,
+                     club_id: Optional[str] = None):
+    """Append one event to the persistent audit log (audit_logs collection,
+    survives restarts). Best-effort: a logging failure never breaks the
+    operation that triggered it. Sensitive values (passcodes, hashes, tokens,
+    reset links) are never accepted or stored here."""
+    try:
+        club = club_id if club_id is not None else (user or {}).get("club_id")
+        await db.audit_logs.insert_one({
+            "id": new_id(),
+            "timestamp": now_iso(),
+            "user_id": (user or {}).get("user_id"),
+            "username": (user or {}).get("username"),
+            "role": (user or {}).get("role"),
+            "club_id": club,
+            "action": action,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "description": description,
+            "ip_address": _client_ip(request) if request else "",
+            "success": bool(success),
+            "request_method": request.method if request else None,
+            "request_path": request.url.path if request else None,
+            "target_user_id": target_user_id,
+            "target_username": target_username,
+        })
+    except Exception as exc:
+        logger.error("AUDIT LOG FAILED action=%s error=%s", action, exc)
 
 
 @api_router.post("/auth/login")
 async def login(data: LoginInput, request: Request):
+    """Sign in. On success the JWT is set as an HttpOnly session cookie — the
+    token is never returned in the response body, so it is not accessible to
+    JavaScript. Every failure returns the same generic message (no account
+    enumeration); failures are counted per account (progressive lockout) and
+    throttled per IP."""
     ip = _client_ip(request)
     if _login_ip_limited(ip):
         raise HTTPException(status_code=429,
                             detail="Too many login attempts — please try again shortly")
     passcode = (data.passcode or "").strip()
     if data.role not in ("officer", "admin", "webmaster"):
+        await _log_audit(request, None, "AUTH_LOGIN_FAILED",
+                         description="Login rejected: unknown role")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if data.role == "webmaster":
         wm = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
         if not wm:
+            await _log_audit(request, None, "AUTH_LOGIN_FAILED",
+                             description="Webmaster login: account not found")
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        u = await _login_user(wm, passcode, ip)
+        try:
+            u = await _login_user(wm, passcode, ip)
+        except HTTPException as exc:
+            actor = {"user_id": wm["id"], "username": wm.get("username"),
+                     "role": "webmaster", "club_id": None}
+            if exc.status_code == 423:
+                await _log_audit(request, actor, "AUTH_LOCKOUT",
+                                 description=f"Account {wm.get('username')} locked after repeated failures",
+                                 success=False)
+            else:
+                await _log_audit(request, actor, "AUTH_LOGIN_FAILED",
+                                 description=f"Failed login for {wm.get('username')}", success=False)
+            raise
         token = create_token("webmaster", None, u["id"], u.get("username"), u.get("token_version"))
+        await _log_audit(request, {"user_id": u["id"], "username": u.get("username"),
+                                  "role": "webmaster", "club_id": None},
+                         "AUTH_LOGIN_SUCCESS", description="Webmaster signed in")
         logger.info("LOGIN OK user=%s role=webmaster ip=%s", u.get("username"), ip)
-        return {"token": token, "role": "webmaster", "club_id": None, "club_name": None,
-                "username": u.get("username"), "name": u.get("name")}
+        response = JSONResponse({"role": "webmaster", "club_id": None, "club_name": None,
+                                 "username": u.get("username"), "name": u.get("name")})
+        response.set_cookie(value=token, **_session_cookie_kwargs())
+        return response
     # Club staff: the account is looked up by username inside the chosen club;
     # the account's own role and club decide the session. The client can never
     # claim a role or club it was not given.
@@ -600,17 +766,61 @@ async def login(data: LoginInput, request: Request):
         if len(clubs) == 1:
             club = clubs[0]
     if not club or not data.username:
+        await _log_audit(request, None, "AUTH_LOGIN_FAILED",
+                         description=f"Login rejected for username {data.username or ''}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip().lower()}, {"_id": 0})
     if not user:
+        await _log_audit(request, None, "AUTH_LOGIN_FAILED",
+                         description=f"Login rejected: unknown account {data.username.strip().lower()}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    u = await _login_user(user, passcode, ip)
+    try:
+        u = await _login_user(user, passcode, ip)
+    except HTTPException as exc:
+        actor = {"user_id": user["id"], "username": user.get("username"),
+                 "role": user.get("role"), "club_id": user.get("club_id")}
+        if exc.status_code == 423:
+            await _log_audit(request, actor, "AUTH_LOCKOUT",
+                             description=f"Account {user.get('username')} locked after repeated failures",
+                             success=False)
+        else:
+            await _log_audit(request, actor, "AUTH_LOGIN_FAILED",
+                             description=f"Failed login for {user.get('username')}", success=False)
+        raise
     role = u["role"]
     token = create_token(role, club["id"], u["id"], u.get("username"), u.get("token_version"))
+    await _log_audit(request, {"user_id": u["id"], "username": u.get("username"),
+                               "role": role, "club_id": club["id"]},
+                     "AUTH_LOGIN_SUCCESS",
+                     description=f"{u.get('username')} signed in to {club.get('name')}")
     logger.info("LOGIN OK user=%s role=%s club=%s ip=%s", u.get("username"), role, club["id"], ip)
-    return {"token": token, "role": role, "club_id": club["id"],
-            "club_name": club.get("name"), "username": u.get("username"),
-            "name": u.get("name")}
+    response = JSONResponse({"role": role, "club_id": club["id"],
+                             "club_name": club.get("name"), "username": u.get("username"),
+                             "name": u.get("name")})
+    response.set_cookie(value=token, **_session_cookie_kwargs())
+    return response
+
+
+@api_router.post("/auth/logout")
+async def logout(request: Request):
+    """Sign out: revoke this session's token server-side (jti denylist) and
+    delete the session cookie. Works even when the token is already invalid."""
+    user = await get_current_user(request)
+    if user:
+        await _log_audit(request, user, "AUTH_LOGOUT",
+                         description=f"{user.get('username')} signed out")
+    token = _token_from_request(request)
+    if token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                                 issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
+                                 options={"require": ["exp", "iat", "iss", "aud", "sub"]})
+            _revoked_jtis[payload.get("jti")] = int(payload.get("exp") or time.time())
+        except jwt.PyJWTError:
+            pass  # nothing to revoke server-side; the cookie is still cleared
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 class ChangePasscodeInput(BaseModel):
@@ -769,6 +979,9 @@ async def forgot_password(data: ForgotInput, request: Request):
         sent = await _send_reset_email(email, reset_link, cfg)
         logger.info("PASSWORD RESET REQUEST user=%s ip=%s email_sent=%s",
                     user.get("username"), ip, sent)
+        await _log_audit(request, None, "PASSWORD_RESET_REQUESTED",
+                         description=f"Reset link requested for {email}",
+                         target_username=email, club_id=user.get("club_id"))
         if not sent and APP_ENV != "production":
             # Development convenience: no SMTP configured — hand the token back
             # so the flow can be exercised end-to-end locally. Production never
@@ -787,8 +1000,9 @@ async def reset_password(data: ResetPasswordInput, request: Request):
         raise HTTPException(status_code=429,
                             detail="Too many requests — please try again shortly")
     new = data.new_passcode.strip()
-    if len(new) < 4:
-        raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
+    policy_err = validate_password_policy(new)
+    if policy_err:
+        raise HTTPException(status_code=400, detail=policy_err)
     token_hash = hashlib.sha256(data.token.strip().encode("utf-8")).hexdigest()
     user = await db.users.find_one({"reset_token_hash": token_hash}, {"_id": 0})
     if not user:
@@ -816,6 +1030,10 @@ async def reset_password(data: ResetPasswordInput, request: Request):
         "last_passcode_change": now_iso(),
     }, "$unset": {"reset_token_hash": "", "reset_token_expires": ""}})
     logger.info("PASSWORD RESET OK user=%s ip=%s", user.get("username"), ip)
+    await _log_audit(request, None, "PASSWORD_RESET_COMPLETED",
+                     description=f"Passcode reset completed for {user.get('username')}",
+                     target_user_id=user.get("id"), target_username=user.get("username"),
+                     club_id=user.get("club_id"))
     return {"ok": True}
 
 
@@ -841,15 +1059,21 @@ async def change_passcode(data: ChangePasscodeInput, request: Request):
                             detail="Too many attempts — please try again shortly")
     current = data.current_passcode.strip()
     new = data.new_passcode.strip()
-    if len(new) < 4:
-        raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
-    if doc.get("role") != "webmaster" and _user_locked(doc):
+    policy_err = validate_password_policy(new)
+    if policy_err:
+        raise HTTPException(status_code=400, detail=policy_err)
+    if _user_locked(doc):
         logger.warning("PASSCODE CHANGE LOCKED user=%s ip=%s", doc.get("username"), ip)
+        await _log_audit(request, user, "AUTH_LOCKOUT",
+                         description=f"Account {doc.get('username')} locked after repeated failures",
+                         success=False)
         raise HTTPException(status_code=423,
                             detail="Account temporarily locked — too many failed attempts. Try again later.")
     if not verify_passcode(current, doc.get("passcode_hash", "")):
-        if doc.get("role") != "webmaster":
-            await _record_failed_login(doc, ip)
+        await _record_failed_login(doc, ip)
+        await _log_audit(request, user, "AUTH_LOGIN_FAILED",
+                         description=f"Wrong current passcode while changing passcode ({doc.get('username')})",
+                         success=False)
         raise HTTPException(status_code=401, detail="Current passcode is incorrect")
     if verify_passcode(new, doc.get("passcode_hash", "")):
         raise HTTPException(status_code=400,
@@ -861,15 +1085,20 @@ async def change_passcode(data: ChangePasscodeInput, request: Request):
         "last_passcode_change": now_iso(),
     }})
     logger.info("PASSCODE CHANGE user=%s role=%s ip=%s", doc.get("username"), doc.get("role"), ip)
+    await _log_audit(request, user, "PASSCODE_CHANGE",
+                     description=f"Passcode changed for {doc.get('username')}",
+                     target_user_id=doc["id"], target_username=doc.get("username"))
     token = create_token(doc["role"], doc.get("club_id"), doc["id"],
                          doc.get("username"), new_tv)
     club_name = None
     if doc.get("club_id"):
         club = await db.clubs.find_one({"id": doc["club_id"]}, {"_id": 0, "name": 1})
         club_name = (club or {}).get("name")
-    return {"token": token, "role": doc["role"], "club_id": doc.get("club_id"),
-            "club_name": club_name, "username": doc.get("username"),
-            "name": doc.get("name")}
+    response = JSONResponse({"role": doc["role"], "club_id": doc.get("club_id"),
+                             "club_name": club_name, "username": doc.get("username"),
+                             "name": doc.get("name")})
+    response.set_cookie(value=token, **_session_cookie_kwargs())
+    return response
 
 
 @api_router.get("/auth/me")
@@ -890,9 +1119,13 @@ async def me(request: Request):
 # Users (per-club logins)
 # ---------------------------------------------------------------------------
 def _user_public(u: dict) -> dict:
-    """User without credential material or internal counters (never leak a
-    passcode hash or the token version used for session revocation)."""
-    return {k: v for k, v in u.items() if k not in ("passcode_hash", "token_version")}
+    """User without credential material or internal security counters. Never
+    leaks a passcode hash, a pending reset token, the token version used for
+    session revocation, or the failed-attempt/lockout state."""
+    secret_keys = ("passcode_hash", "password_hash", "reset_token_hash",
+                   "reset_token_expires", "token_version", "failed_attempts",
+                   "last_failed_login", "locked_until", "lockout_level")
+    return {k: v for k, v in u.items() if k not in secret_keys}
 
 
 @api_router.get("/users")
@@ -911,7 +1144,7 @@ async def get_users(request: Request, club_id: Optional[str] = None):
 
 
 @api_router.post("/users")
-async def create_user(data: UserInput, user: dict = Depends(require_admin)):
+async def create_user(data: UserInput, request: Request, user: dict = Depends(require_admin)):
     """Create a login for a club. Race Admins may only create officer/admin
     logins inside their own club; the webmaster may create them for any club."""
     is_webmaster = user.get("role") == "webmaster"
@@ -921,8 +1154,9 @@ async def create_user(data: UserInput, user: dict = Depends(require_admin)):
     _ensure_club(user, club_id)
     username = data.username.strip().lower()
     passcode = data.passcode.strip()
-    if len(passcode) < 4:
-        raise HTTPException(status_code=400, detail="Passcode must be at least 4 characters")
+    policy_err = validate_password_policy(passcode)
+    if policy_err:
+        raise HTTPException(status_code=400, detail=policy_err)
     if await db.users.find_one({"club_id": club_id, "username": username}, {"_id": 0}):
         raise HTTPException(status_code=400, detail=f"Username '{username}' already exists for this club")
     doc = {
@@ -936,11 +1170,16 @@ async def create_user(data: UserInput, user: dict = Depends(require_admin)):
     doc.pop("_id", None)
     logger.info("USER CREATE id=%s username=%s role=%s club=%s by=%s",
                 doc["id"], username, data.role, club_id, user.get("username"))
+    await _log_audit(request=request, user=user, action="USER_CREATED",
+                     description=f"Created login {username} ({data.role})",
+                     resource_type="user", resource_id=doc["id"],
+                     target_user_id=doc["id"], target_username=username,
+                     club_id=club_id)
     return _user_public(doc)
 
 
 @api_router.put("/users/{user_id}")
-async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(require_admin)):
+async def update_user(user_id: str, data: UserUpdate, request: Request, user: dict = Depends(require_admin)):
     """Edit a user: display name, role, active flag or passcode reset.
     Race Admins may only touch their own club's users, may never touch the
     webmaster account, and may never deactivate or re-role themselves."""
@@ -979,6 +1218,9 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
     if data.active is not None:
         update["active"] = data.active
     if data.passcode:
+        policy_err = validate_password_policy(data.passcode.strip())
+        if policy_err:
+            raise HTTPException(status_code=400, detail=policy_err)
         update["passcode_hash"] = hash_passcode(data.passcode.strip())
     # Any change that alters what an existing token authorises (username,
     # passcode, role or activation) bumps the token version, revoking every
@@ -991,11 +1233,27 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
         await db.users.update_one({"id": user_id}, {"$set": update})
     logger.info("USER UPDATE id=%s by=%s fields=%s revoke=%s",
                 user_id, user.get("username"), sorted(update.keys()), revoke)
+    # Audit the most significant change (the record always describes the rest).
+    if data.passcode:
+        action = "USER_PASSCODE_RESET"
+    elif data.active is False:
+        action = "USER_DEACTIVATED"
+    elif data.active is True:
+        action = "USER_REACTIVATED"
+    elif data.role is not None:
+        action = "USER_ROLE_CHANGED"
+    else:
+        action = "USER_UPDATED"
+    await _log_audit(request=request, user=user, action=action,
+                     description=f"Updated login {target.get('username')} ({action.lower().replace('_', ' ')})",
+                     resource_type="user", resource_id=user_id,
+                     target_user_id=user_id, target_username=target.get("username"),
+                     club_id=target.get("club_id"))
     return _user_public(await db.users.find_one({"id": user_id}, {"_id": 0}))
 
 
 @api_router.delete("/users/{user_id}")
-async def delete_user(user_id: str, user: dict = Depends(require_admin)):
+async def delete_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
     """Remove a user login. An admin may not delete their own account, and a
     club must always keep at least one active admin."""
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
@@ -1015,6 +1273,11 @@ async def delete_user(user_id: str, user: dict = Depends(require_admin)):
             raise HTTPException(status_code=400, detail="A club must keep at least one active admin")
     await db.users.delete_one({"id": user_id})
     logger.info("USER DELETE id=%s username=%s by=%s", user_id, target.get("username"), user.get("username"))
+    await _log_audit(request=request, user=user, action="USER_DELETED",
+                     description=f"Deleted login {target.get('username')}",
+                     resource_type="user", resource_id=user_id,
+                     target_user_id=user_id, target_username=target.get("username"),
+                     club_id=target.get("club_id"))
     return {"ok": True}
 
 
@@ -1228,6 +1491,9 @@ async def create_club(data: ClubInput, user: dict = Depends(require_webmaster)):
     await db.clubs.insert_one(doc)
     doc.pop("_id", None)
     logger.info("CLUB CREATE id=%s name=%s by=%s", doc["id"], doc["name"], user.get("username"))
+    await _log_audit(request=None, user=user, action="CLUB_CREATED",
+                     description=f"Created club {doc['name']}",
+                     resource_type="club", resource_id=doc["id"], club_id=doc["id"])
     return _club_public(doc)
 
 
@@ -1241,6 +1507,9 @@ async def update_club(club_id: str, data: ClubInput, user: dict = Depends(requir
         update["slug"] = data.slug.lower()
     await db.clubs.update_one({"id": club_id}, {"$set": update})
     logger.info("CLUB UPDATE id=%s by=%s", club_id, user.get("username"))
+    await _log_audit(request=None, user=user, action="CLUB_UPDATED",
+                     description=f"Updated club {club.get('name')}",
+                     resource_type="club", resource_id=club_id, club_id=club_id)
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
 
@@ -1263,6 +1532,9 @@ async def upload_club_icon(club_id: str, user: dict = Depends(require_admin), fi
                             detail="Upload must be a PNG, JPEG, GIF or WebP image")
     icon = f"data:{ctype};base64,{base64.b64encode(data).decode()}"
     await db.clubs.update_one({"id": club_id}, {"$set": {"icon": icon}})
+    await _log_audit(request=None, user=user, action="CLUB_ICON_UPDATED",
+                     description=f"Updated club icon for {club.get('name')}",
+                     resource_type="club", resource_id=club_id, club_id=club_id)
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
 
@@ -1270,7 +1542,13 @@ async def upload_club_icon(club_id: str, user: dict = Depends(require_admin), fi
 async def delete_club_icon(club_id: str, user: dict = Depends(require_admin)):
     """Remove a club's icon so the letter fallback returns."""
     _ensure_club(user, club_id)
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
     await db.clubs.update_one({"id": club_id}, {"$unset": {"icon": ""}})
+    await _log_audit(request=None, user=user, action="CLUB_ICON_DELETED",
+                     description=f"Removed club icon for {club.get('name')}",
+                     resource_type="club", resource_id=club_id, club_id=club_id)
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
 
@@ -1282,6 +1560,10 @@ async def delete_club(club_id: str, user: dict = Depends(require_webmaster)):
                             detail="Club still has classes — delete its classes first")
     await db.clubs.delete_one({"id": club_id})
     await db.users.delete_many({"club_id": club_id})
+    logger.info("CLUB DELETE id=%s by=%s", club_id, user.get("username"))
+    await _log_audit(request=None, user=user, action="CLUB_DELETED",
+                     description=f"Deleted club", resource_type="club",
+                     resource_id=club_id, club_id=club_id)
     return {"ok": True}
 
 
@@ -1358,6 +1640,9 @@ async def create_advert(user: dict = Depends(require_webmaster),
            "order": order, "image": image, "created_at": now_iso()}
     await db.adverts.insert_one(doc)
     doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="ADVERT_CREATED",
+                     description=f"Created advert {name or '(no name)'}",
+                     resource_type="advert", resource_id=doc["id"])
     return doc
 
 
@@ -1372,6 +1657,9 @@ async def update_advert(advert_id: str, data: AdvertUpdate,
         update["format"] = _valid_advert_format(update["format"])
     if update:
         await db.adverts.update_one({"id": advert_id}, {"$set": update})
+    await _log_audit(request=None, user=user, action="ADVERT_UPDATED",
+                     description=f"Updated advert {doc.get('name') or advert_id}",
+                     resource_type="advert", resource_id=advert_id)
     return await db.adverts.find_one({"id": advert_id}, {"_id": 0})
 
 
@@ -1382,12 +1670,18 @@ async def upload_advert_image(advert_id: str, user: dict = Depends(require_webma
         raise HTTPException(status_code=404, detail="Advert not found")
     await db.adverts.update_one({"id": advert_id},
                                 {"$set": {"image": await _read_advert_image(file)}})
+    await _log_audit(request=None, user=user, action="ADVERT_IMAGE_UPDATED",
+                     description="Replaced advert image", resource_type="advert",
+                     resource_id=advert_id)
     return await db.adverts.find_one({"id": advert_id}, {"_id": 0})
 
 
 @api_router.delete("/adverts/{advert_id}")
 async def delete_advert(advert_id: str, user: dict = Depends(require_webmaster)):
     await db.adverts.delete_one({"id": advert_id})
+    await _log_audit(request=None, user=user, action="ADVERT_DELETED",
+                     description="Deleted advert", resource_type="advert",
+                     resource_id=advert_id)
     return {"ok": True}
 
 
@@ -1439,6 +1733,8 @@ async def update_email_settings(data: EmailSettingsInput, request: Request,
     await db.settings.update_one({"key": "email"}, {"$set": update}, upsert=True)
     logger.info("SECURITY EMAIL SETTINGS CHANGED by=%s host=%s ip=%s",
                 user.get("username"), host, _client_ip(request))
+    await _log_audit(request=request, user=user, action="EMAIL_SETTINGS_CHANGED",
+                     description=f"Email (SMTP) settings updated (host {host or 'cleared'})")
     return {"ok": True, "configured": bool(host)}
 
 
@@ -1470,6 +1766,8 @@ async def test_email_settings(data: TestEmailInput, request: Request,
                             detail="Test email failed to send — check the SMTP host, port and credentials")
     logger.info("TEST EMAIL SENT to=%s by=%s ip=%s",
                 data.to_email, user.get("username"), _client_ip(request))
+    await _log_audit(request=request, user=user, action="EMAIL_TEST_SENT",
+                     description=f"Test email sent to {data.to_email}")
     return {"ok": True, "message": f"Test email sent to {data.to_email}"}
 
 
@@ -1497,6 +1795,9 @@ async def create_class(data: ClassInput, user: dict = Depends(require_admin)):
            "scoring_mode": data.scoring_mode, "created_at": now_iso()}
     await db.classes.insert_one(doc)
     doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="CLASS_CREATED",
+                     description=f"Created class {data.name}",
+                     resource_type="class", resource_id=doc["id"], club_id=club_id)
     return doc
 
 
@@ -1505,13 +1806,19 @@ async def update_class(class_id: str, data: ClassInput, user: dict = Depends(req
     cls = await _class_of_club(class_id, user)
     await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name,
                                   "default_start_time": data.default_start_time, "scoring_mode": data.scoring_mode}})
+    await _log_audit(request=None, user=user, action="CLASS_UPDATED",
+                     description=f"Updated class {cls.get('name')}",
+                     resource_type="class", resource_id=class_id, club_id=cls.get("club_id"))
     return await db.classes.find_one({"id": class_id}, {"_id": 0})
 
 
 @api_router.delete("/classes/{class_id}")
 async def delete_class(class_id: str, user: dict = Depends(require_admin)):
-    await _class_of_club(class_id, user)
+    cls = await _class_of_club(class_id, user)
     await db.classes.delete_one({"id": class_id})
+    await _log_audit(request=None, user=user, action="CLASS_DELETED",
+                     description=f"Deleted class {cls.get('name')}",
+                     resource_type="class", resource_id=class_id, club_id=cls.get("club_id"))
     return {"ok": True}
 
 
@@ -1544,27 +1851,37 @@ async def get_boats(request: Request, class_id: Optional[str] = None, year: Opti
 
 @api_router.post("/boats")
 async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
-    await _class_of_club(data.class_id, user)
+    cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     await db.boats.insert_one(doc)
     doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="BOAT_CREATED",
+                     description=f"Created boat {doc.get('name')} ({doc.get('sail_no')})",
+                     resource_type="boat", resource_id=doc["id"], club_id=cls.get("club_id"))
     return doc
 
 
 @api_router.put("/boats/{boat_id}")
 async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(require_admin)):
-    await _boat_of_club(boat_id, user)
-    await _class_of_club(data.class_id, user)
+    boat = await _boat_of_club(boat_id, user)
+    cls = await _class_of_club(data.class_id, user)
     await db.boats.update_one({"id": boat_id}, {"$set": data.model_dump()})
+    await _log_audit(request=None, user=user, action="BOAT_UPDATED",
+                     description=f"Updated boat {boat.get('name')}",
+                     resource_type="boat", resource_id=boat_id, club_id=cls.get("club_id"))
     return await db.boats.find_one({"id": boat_id}, {"_id": 0})
 
 
 @api_router.delete("/boats/{boat_id}")
 async def delete_boat(boat_id: str, user: dict = Depends(require_admin)):
-    await _boat_of_club(boat_id, user)
+    boat = await _boat_of_club(boat_id, user)
     await db.boats.delete_one({"id": boat_id})
+    club_id = await _class_club_id(boat.get("class_id"))
+    await _log_audit(request=None, user=user, action="BOAT_DELETED",
+                     description=f"Deleted boat {boat.get('name')}",
+                     resource_type="boat", resource_id=boat_id, club_id=club_id)
     return {"ok": True}
 
 
@@ -1595,7 +1912,7 @@ async def get_series(request: Request, class_id: Optional[str] = None, year: Opt
 
 @api_router.post("/series")
 async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
-    await _class_of_club(data.class_id, user)
+    cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     if doc.get("schedule") is None:
         doc["schedule"] = []
@@ -1603,6 +1920,9 @@ async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     doc["created_at"] = now_iso()
     await db.series.insert_one(doc)
     doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="SERIES_CREATED",
+                     description=f"Created series {data.name} ({data.year})",
+                     resource_type="series", resource_id=doc["id"], club_id=cls.get("club_id"))
     return doc
 
 
@@ -1621,13 +1941,16 @@ async def _sync_race_dates(series_id: str, schedule):
 
 @api_router.put("/series/{series_id}")
 async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(require_admin)):
-    await _series_of_club(series_id, user)
-    await _class_of_club(data.class_id, user)
+    series = await _series_of_club(series_id, user)
+    cls = await _class_of_club(data.class_id, user)
     update = data.model_dump()
     if update.get("schedule") is None:
         update.pop("schedule", None)
     await db.series.update_one({"id": series_id}, {"$set": update})
     await _sync_race_dates(series_id, update.get("schedule"))
+    await _log_audit(request=None, user=user, action="SERIES_UPDATED",
+                     description=f"Updated series {series.get('name')}",
+                     resource_type="series", resource_id=series_id, club_id=cls.get("club_id"))
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
@@ -1649,13 +1972,21 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict =
     schedule = sailed_dates + future
     await db.series.update_one({"id": series_id}, {"$set": {"schedule": schedule, "planned_races": total}})
     await _sync_race_dates(series_id, schedule)
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="SERIES_UPDATED",
+                     description=f"Generated schedule for series {series.get('name')}",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
 @api_router.delete("/series/{series_id}")
 async def delete_series(series_id: str, user: dict = Depends(require_admin)):
-    await _series_of_club(series_id, user)
+    series = await _series_of_club(series_id, user)
     await db.series.delete_one({"id": series_id})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="SERIES_DELETED",
+                     description=f"Deleted series {series.get('name')}",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
     return {"ok": True}
 
 
@@ -1748,6 +2079,9 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
     }
     await db.races.insert_one(doc)
     doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="RACE_CREATED",
+                     description=f"Created race {data.race_number} on {data.date} ({cls.get('name')})",
+                     resource_type="race", resource_id=doc["id"], club_id=cls.get("club_id"))
     return doc
 
 
@@ -1759,14 +2093,22 @@ async def start_race(race_id: str, data: StartRaceInput, user: dict = Depends(re
     actual_start = data.start_time or None
     await db.races.update_one({"id": race_id}, {"$set": {"actual_start": actual_start}})
     updated = await db.races.find_one({"id": race_id}, {"_id": 0})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RACE_UPDATED",
+                     description=f"Start gun {'set' if actual_start else 'cleared'} for race {race.get('race_number')}",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return updated
 
 
 @api_router.put("/races/{race_id}/notifications")
 async def update_notifications(race_id: str, data: RaceNotificationInput, user: dict = Depends(require_officer)):
-    await _race_of_club(race_id, user)
+    race = await _race_of_club(race_id, user)
     update = {k: v for k, v in data.model_dump().items() if v is not None}
     await db.races.update_one({"id": race_id}, {"$set": update})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RACE_UPDATED",
+                     description=f"Updated notifications for race {race.get('race_number')}",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
@@ -1789,6 +2131,10 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
     if any(r["boat_id"] in previously_finished and r["code"] != "FINISHED" for r in results):
         await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RACE_UPDATED",
+                     description=f"Updated starters for race {race.get('race_number')} ({len(selected)} boats)",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
@@ -1804,6 +2150,10 @@ async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(re
     # Re-sequence all finishers: one-design by finish time, IRC by corrected time.
     await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RESULTS_SUBMITTED",
+                     description=f"Finish recorded for boat {data.boat_id} in race {race.get('race_number')}",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
@@ -1820,6 +2170,10 @@ async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(requ
     # time for one-design, corrected time for IRC/PY handicap classes).
     await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RESULTS_UPDATED",
+                     description=f"Finish undone for boat {data.boat_id} in race {race.get('race_number')}",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
@@ -1863,6 +2217,10 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     if resequence:
         await _resequence_race(race)
     await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RESULTS_UPDATED",
+                     description=f"Result adjusted for boat {boat_id} in race {race.get('race_number')} (code {target.get('code')})",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
@@ -1870,16 +2228,180 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
 async def set_race_status(race_id: str, status: str, user: dict = Depends(require_officer)):
     if status not in ("setup", "provisional", "published"):
         raise HTTPException(status_code=400, detail="Invalid status")
-    await _race_of_club(race_id, user)
+    race = await _race_of_club(race_id, user)
     await db.races.update_one({"id": race_id}, {"$set": {"status": status, "published_at": now_iso() if status == "published" else None}})
+    club_id = await _class_club_id(race.get("class_id"))
+    if status == "published":
+        action = "RESULTS_PUBLISHED"
+    elif race.get("status") == "published":
+        action = "RESULTS_UNPUBLISHED"
+    else:
+        action = "RACE_STATUS_CHANGED"
+    await _log_audit(request=None, user=user, action=action,
+                     description=f"Race {race.get('race_number')} status -> {status}",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
 @api_router.delete("/races/{race_id}")
 async def delete_race(race_id: str, user: dict = Depends(require_officer)):
-    await _race_of_club(race_id, user)
+    race = await _race_of_club(race_id, user)
     await db.races.delete_one({"id": race_id})
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user, action="RACE_DELETED",
+                     description=f"Deleted race {race.get('race_number')} ({race.get('date')})",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Audit log (persistent, Mongo-backed)
+# ---------------------------------------------------------------------------
+AUDIT_LIMIT_MAX = 500
+
+
+@api_router.get("/audit")
+async def read_audit(request: Request, user: dict = Depends(require_admin),
+                     club_id: Optional[str] = None, username: Optional[str] = None,
+                     role: Optional[str] = None, action: Optional[str] = None,
+                     from_date: Optional[str] = None, to_date: Optional[str] = None,
+                     limit: int = 100, offset: int = 0):
+    """Audit events, newest first. Club admins see ONLY their own club's
+    events — the club scope is derived from the authenticated account and a
+    club_id param can never widen it. The webmaster sees everything and may
+    additionally filter by club, user, role, action and date range."""
+    q = {}
+    if user.get("role") == "webmaster":
+        if club_id:
+            q["club_id"] = club_id
+    else:
+        q["club_id"] = user.get("club_id")
+    if username:
+        q["username"] = username
+    if role:
+        q["role"] = role
+    if action:
+        q["action"] = action
+    ts = {}
+    if from_date:
+        ts["$gte"] = from_date if len(from_date) > 10 else f"{from_date}T00:00:00+00:00"
+    if to_date:
+        ts["$lte"] = to_date if len(to_date) > 10 else f"{to_date}T23:59:59.999+00:00"
+    if ts:
+        q["timestamp"] = ts
+    lim = min(max(1, limit), AUDIT_LIMIT_MAX)
+    off = max(0, offset)
+    total = await db.audit_logs.count_documents(q)
+    items = await db.audit_logs.find(q, {"_id": 0})\
+        .sort("timestamp", -1)\
+        .skip(off)\
+        .limit(lim)\
+        .to_list(lim)
+    return {"items": items, "total": total, "limit": lim, "offset": off}
+
+
+# ---------------------------------------------------------------------------
+# Backup / export (zip of JSON collection dumps)
+# ---------------------------------------------------------------------------
+# Fields that must never leave the server in a backup (authentication
+# secrets, revocation counters, lockout state).
+BACKUP_SECRET_KEYS = ("passcode_hash", "password_hash", "reset_token_hash",
+                      "reset_token_expires", "token_version", "failed_attempts",
+                      "last_failed_login", "locked_until", "lockout_level")
+
+
+def _strip_backup_secrets(doc: dict) -> dict:
+    """Remove credential/security fields from a document before export."""
+    return {k: v for k, v in doc.items() if k not in BACKUP_SECRET_KEYS and k != "_id"}
+
+
+async def _build_backup(request: Request, user: dict, scope_club_id: Optional[str]):
+    """Build a zip of JSON dumps for one club (Race Admin always; Webmaster
+    with ?club_id=) or every club (Webmaster, no param). The server
+    constructs every query itself — callers cannot inject queries, and a
+    non-webmaster caller's scope is always their own club regardless of any
+    club_id parameter."""
+    if user.get("role") != "webmaster":
+        scope_club_id = user.get("club_id")
+    if not scope_club_id and user.get("role") != "webmaster":
+        raise HTTPException(status_code=403, detail="Backup requires a club scope")
+    now = datetime.now(timezone.utc)
+    stamp = now.date().isoformat()
+    class_ids = None
+    if scope_club_id:
+        classes_in = await db.classes.find({"club_id": scope_club_id}, {"_id": 0, "id": 1}).to_list(5000)
+        class_ids = [c["id"] for c in classes_in]
+    clubs = await db.clubs.find({"id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    users = await db.users.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    classes = await db.classes.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    boats = await db.boats.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    series = await db.series.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    races = await db.races.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    adverts = await db.adverts.find({}, {"_id": 0}).to_list(5000)
+    audit_logs = await db.audit_logs.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(20000)
+    results = []
+    for r in races:
+        for res in r.get("results", []):
+            row = dict(res)
+            row.update({"race_id": r["id"], "date": r.get("date"),
+                        "class_id": r.get("class_id"), "series_id": r.get("series_id")})
+            results.append(row)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, payload in (
+            ("metadata.json", {"app": "SailScore", "exported_at": now.isoformat(),
+                               "scope": "all-clubs" if not scope_club_id else "club",
+                               "club_id": scope_club_id,
+                               "generated_by": user.get("username"),
+                               "generated_by_role": user.get("role")}),
+            ("clubs.json", clubs),
+            ("users.json", [_strip_backup_secrets(u) for u in users]),
+            ("classes.json", classes),
+            ("boats.json", boats),
+            ("series.json", series),
+            ("races.json", races),
+            ("results.json", results),
+            ("adverts.json", adverts),
+            ("audit_logs.json", audit_logs),
+        ):
+            zf.writestr(name, json.dumps(payload, indent=2, default=str))
+    data = buf.getvalue()
+    slug, club_name = "", ""
+    if scope_club_id:
+        club = await db.clubs.find_one({"id": scope_club_id}, {"_id": 0, "slug": 1, "name": 1})
+        slug = (club or {}).get("slug", "club")
+        club_name = (club or {}).get("name", "")
+    fname = (f"sailscore-{slug}-backup-{stamp}.zip" if scope_club_id
+             else f"sailscore-backup-{stamp}.zip")
+    description = (f"{user.get('username')} (webmaster) downloaded full system backup"
+                   if not scope_club_id
+                   else f"{club_name or 'Club'} {user.get('role')} downloaded club backup")
+    await _log_audit(request=request, user=user, action="BACKUP_DOWNLOAD",
+                     description=description, resource_type="backup",
+                     resource_id=scope_club_id or "all", club_id=scope_club_id)
+    logger.info("BACKUP DOWNLOAD scope=%s by=%s ip=%s",
+                scope_club_id or "all", user.get("username"), _client_ip(request))
+    return Response(content=data, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="{fname}"',
+        "Cache-Control": "no-store",
+    })
+
+
+@api_router.get("/admin/backup")
+async def admin_backup(request: Request, club_id: Optional[str] = None,
+                       user: dict = Depends(require_webmaster)):
+    """Webmaster only: download one club's backup (?club_id=) or the full
+    system backup (no param)."""
+    return await _build_backup(request, user, club_id)
+
+
+@api_router.get("/backup")
+async def club_backup(request: Request, club_id: Optional[str] = None,
+                      user: dict = Depends(require_admin)):
+    """Race Admin only: download their own club's backup. A club_id param can
+    never widen the scope — the club is derived from the authenticated
+    account, and officers are denied outright."""
+    return await _build_backup(request, user, club_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2386,6 +2908,8 @@ async def root():
 async def seed(user: dict = Depends(require_webmaster)):
     """Seed sample data — a global, data-creating operation, so webmaster-only."""
     logger.info("SEED requested by=%s", user.get("username"))
+    await _log_audit(request=None, user=user, action="SEED",
+                     description="Sample data seed requested")
     return await run_seed()
 
 
@@ -2477,6 +3001,27 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class _CSRFOriginMiddleware(BaseHTTPMiddleware):
+    """Defence in depth against cross-site request forgery for state-changing
+    requests. The session cookie is SameSite=Lax, so browsers already refuse
+    to attach it to cross-site requests; this additionally rejects any unsafe
+    request that carries an Origin header from outside the allowed origins.
+    Browsers always attach Origin to cross-site POSTs, so this is robust
+    without breaking non-browser clients (curl, tests, scripts), which send
+    no Origin."""
+
+    async def dispatch(self, request, call_next):
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            if origin:
+                allowed = {o.rstrip("/") for o in _cors_origins}
+                same_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+                if origin.rstrip("/") not in allowed and origin.rstrip("/") != same_origin:
+                    return JSONResponse({"detail": "Cross-origin request rejected"},
+                                        status_code=403)
+        return await call_next(request)
+
+
 # CORS: the origin list is entirely environment-configured. Production refuses
 # to start with '*' (see _production_config_errors), and the dev default is
 # the local dev frontend only.
@@ -2489,6 +3034,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(_SecurityHeadersMiddleware)
+app.add_middleware(_CSRFOriginMiddleware)
 
 
 @app.on_event("startup")
@@ -2498,6 +3044,14 @@ async def startup():
     await ensure_webmaster_user()
     await _ensure_all_user_token_versions()
     await run_seed()
+    # Indexes for the audit log (idempotent; speeds up club-scoped,
+    # newest-first reads and the webmaster filters).
+    try:
+        await db.audit_logs.create_index([("timestamp", -1)])
+        await db.audit_logs.create_index([("club_id", 1), ("timestamp", -1)])
+        await db.audit_logs.create_index([("username", 1), ("timestamp", -1)])
+    except Exception as exc:
+        logger.warning("AUDIT INDEX CREATION FAILED: %s", exc)
 
 
 @app.on_event("shutdown")

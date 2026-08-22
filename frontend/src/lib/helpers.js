@@ -127,6 +127,18 @@ export const CODE_COLORS = {
 
 export const CURRENT_YEAR = new Date().getFullYear();
 
+// Passcode policy hint — mirrors the backend validate_password_policy().
+export const PASSCODE_HINT =
+  "At least 6 characters, with at least one number and one special character (e.g. sail1!).";
+
+// Returns an error message when the passcode fails the policy, else null.
+export function passcodeError(p) {
+  if (!p || p.length < 6) return "Passcode must be at least 6 characters";
+  if (!/\d/.test(p)) return "Passcode must contain at least one number";
+  if (!/[^A-Za-z0-9\s]/.test(p)) return "Passcode must contain at least one special character";
+  return null;
+}
+
 // The furthest season ahead that can be set up and viewed (year buttons and
 // the ?year= URL param both stop here). Generous horizon — future years are
 // data-driven (only years with a series actually appear), so this is just a

@@ -30,7 +30,10 @@ class TestAuth:
         body = r.json()
         assert body["role"] == "webmaster"
         assert body["club_id"] is None
-        assert isinstance(body["token"], str)
+        # The JWT is delivered as an HttpOnly session cookie — never in the
+        # response body, so JavaScript cannot read it.
+        assert "token" not in body
+        assert isinstance(r.cookies.get("scr_token"), str)
 
     def test_webmaster_bad_passcode(self):
         r = requests.post(f"{API}/auth/login", json={

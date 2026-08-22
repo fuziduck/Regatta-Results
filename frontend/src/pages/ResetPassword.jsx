@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { ArrowLeft, KeyRound } from "lucide-react";
+import { passcodeError, PASSCODE_HINT } from "@/lib/helpers";
 
 export default function ResetPassword() {
   const navigate = useNavigate();
@@ -17,7 +18,8 @@ export default function ResetPassword() {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (next.length < 4) return toast.error("New passcode must be at least 4 characters");
+    const policy = passcodeError(next);
+    if (policy) return toast.error(policy);
     if (next !== confirm) return toast.error("New passcodes do not match");
     setLoading(true);
     try {
@@ -62,12 +64,13 @@ export default function ResetPassword() {
                   required
                   value={next}
                   onChange={(e) => setNext(e.target.value)}
-                  placeholder="4+ characters"
+                  placeholder="6+ chars with a number & special char"
                   autoComplete="new-password"
                   autoFocus
                   className="h-12 text-base"
                 />
               </div>
+              <p className="text-xs text-muted-foreground -mt-2">{PASSCODE_HINT}</p>
               <div className="space-y-2">
                 <Label htmlFor="confirm-passcode">Confirm new passcode</Label>
                 <Input

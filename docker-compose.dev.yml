@@ -97,8 +97,10 @@ services:
     environment:
       # Baked into the JS bundle at compile time by CRA.  Must be a
       # host-accessible URL because the bundle runs in the browser,
-      # not inside the container.
-      REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://127.0.0.1:8000}
+      # not inside the container. Use http://localhost:8000 (NOT 127.0.0.1):
+      # the session cookie is SameSite=Lax, which requires the browser page
+      # (localhost:3000) and the API to share the same site (localhost).
+      REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:8000}
       # Bind-mounts don't always propagate inotify events into the
       # container on Docker for Mac, so CRA's watcher can miss host-side
       # edits and keep serving stale bundles.  Poll instead of watching.

@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { KeyRound } from "lucide-react";
+import { passcodeError, PASSCODE_HINT } from "@/lib/helpers";
 
 /**
  * Change your own passcode. Verifies the current passcode, revokes every
@@ -27,7 +28,8 @@ export default function ChangePasscodeDialog({ onChanged, buttonClassName = "" }
 
   const submit = async (e) => {
     e.preventDefault();
-    if (next.length < 4) return toast.error("New passcode must be at least 4 characters");
+    const policy = passcodeError(next);
+    if (policy) return toast.error(policy);
     if (next !== confirm) return toast.error("New passcodes do not match");
     setLoading(true);
     try {
@@ -80,7 +82,7 @@ export default function ChangePasscodeDialog({ onChanged, buttonClassName = "" }
               data-testid="cp-new"
               value={next}
               onChange={(e) => setNext(e.target.value)}
-              placeholder="4+ characters"
+              placeholder="6+ chars with a number & special char"
               autoComplete="new-password"
               className="h-11"
             />
@@ -97,6 +99,7 @@ export default function ChangePasscodeDialog({ onChanged, buttonClassName = "" }
               className="h-11"
             />
           </div>
+          <p className="text-xs text-muted-foreground">{PASSCODE_HINT}</p>
           <p className="text-xs text-muted-foreground">
             Changing your passcode signs out every other device — this session stays signed in.
           </p>

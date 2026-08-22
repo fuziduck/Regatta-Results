@@ -18,22 +18,29 @@ import requests
 API = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/") + "/api"
 WEBMASTER_PASSCODE = os.environ.get("WEBMASTER_PASSCODE", "master2026")
 
-TEST_OFFICER_PIN = "test1234"
-TEST_ADMIN_PIN = "test5678"
+# Passcodes meet the app-wide policy (6+ chars, number + special character).
+TEST_OFFICER_PIN = "test1234!"
+TEST_ADMIN_PIN = "test5678!"
 
 
 def login(role, username, passcode, club_id=None):
-    """Per-user login: username + passcode (individual accounts only)."""
+    """Per-user login: username + passcode (individual accounts only). The JWT
+    is delivered as an HttpOnly session cookie (never in the response body),
+    so the returned dict carries the cookie value as its "token" for the
+    request helpers below."""
     body = {"role": role, "username": username, "passcode": passcode}
     if club_id:
         body["club_id"] = club_id
     r = requests.post(f"{API}/auth/login", json=body)
     assert r.status_code == 200, f"login {role} failed: {r.text}"
-    return r.json()
+    data = r.json()
+    data["token"] = r.cookies.get("scr_token", "")
+    return data
 
 
 def h(token):
-    return {"Authorization": f"Bearer {token}"}
+    """Authenticate as the session cookie, exactly like the browser does."""
+    return {"Cookie": f"scr_token={token}"}
 
 
 def _delete_test_club(club_id, token):

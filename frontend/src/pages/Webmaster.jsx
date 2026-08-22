@@ -6,13 +6,14 @@ import ClubBadge from "@/components/ClubBadge";
 import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
+import AuditLog from "@/components/AuditLog";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail } from "lucide-react";
+import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D" };
 
@@ -38,6 +39,58 @@ function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
         <Button variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid={`open-admin-${club.slug}`} onClick={() => onConsole(club, "admin")}>
           <ShieldCheck className="w-4 h-4" /> Admin console
         </Button>
+      </div>
+    </div>
+  );
+}
+
+function BackupSection({ clubs }) {
+  const [clubId, setClubId] = useState("");
+  return (
+    <div>
+      <div className="mb-6">
+        <h1 className="text-3xl uppercase tracking-tighter mb-1">Backups</h1>
+        <p className="text-muted-foreground text-sm">
+          Download a zip of JSON exports — a single club's data, or everything. Backups never contain passcodes, hashes or reset tokens.
+        </p>
+      </div>
+      <div className="rounded-2xl border border-border bg-card p-5 space-y-4 max-w-2xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="font-heading text-lg uppercase tracking-tight">Full system backup</div>
+            <p className="text-xs text-muted-foreground mt-0.5">Every club — clubs, users, classes, boats, series, races, results, adverts and the audit log.</p>
+          </div>
+          <Button
+            className="gap-2 bg-ocean hover:bg-ocean-dark"
+            data-testid="backup-all-btn"
+            onClick={() => api.downloadBackup(null, true)}
+          >
+            <Download className="w-4 h-4" /> Download all
+          </Button>
+        </div>
+        <div className="border-t border-border pt-4 flex flex-wrap items-end gap-3">
+          <div className="space-y-1.5 flex-1 min-w-52">
+            <Label>Club</Label>
+            <select
+              value={clubId}
+              onChange={(e) => setClubId(e.target.value)}
+              className="w-full h-11 px-3 rounded-lg border border-input bg-background text-sm"
+              data-testid="backup-club-select"
+            >
+              <option value="">Choose a club…</option>
+              {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <Button
+            variant="outline"
+            className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+            disabled={!clubId}
+            data-testid="backup-club-btn"
+            onClick={() => api.downloadBackup(clubId, true)}
+          >
+            <Download className="w-4 h-4" /> Download club backup
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -128,6 +181,24 @@ export default function Webmaster() {
             >
               <Mail className="w-4 h-4" /> Email settings
             </button>
+            <button
+              data-testid="nav-audit"
+              onClick={() => setSection("audit")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "audit" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <ScrollText className="w-4 h-4" /> Audit log
+            </button>
+            <button
+              data-testid="nav-backup"
+              onClick={() => setSection("backup")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "backup" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <Archive className="w-4 h-4" /> Backups
+            </button>
           </nav>
         </aside>
         <main className="flex-1 min-w-0">
@@ -179,6 +250,18 @@ export default function Webmaster() {
         )}
         {section === "adverts" && <AdvertsManager />}
         {section === "email" && <EmailSettingsManager />}
+        {section === "audit" && (
+          <div>
+            <div className="mb-6">
+              <h1 className="text-3xl uppercase tracking-tighter mb-1">Audit log</h1>
+              <p className="text-muted-foreground text-sm">
+                Every security-sensitive and administrative action across all clubs, newest first.
+              </p>
+            </div>
+            <AuditLog webmaster />
+          </div>
+        )}
+        {section === "backup" && <BackupSection clubs={clubs} />}
         </main>
       </div>
 

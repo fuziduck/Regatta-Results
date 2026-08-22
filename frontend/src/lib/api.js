@@ -2,13 +2,10 @@ import axios from "axios";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
-const client = axios.create({ baseURL: API });
-
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem("scr_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+// The JWT lives in an HttpOnly session cookie set by the server — it is never
+// stored in localStorage or exposed to JavaScript. `withCredentials` makes
+// the browser attach the cookie on every request.
+const client = axios.create({ baseURL: API, withCredentials: true });
 
 export function formatApiError(detail) {
   if (detail == null) return "Something went wrong. Please try again.";
@@ -21,12 +18,27 @@ export function formatApiError(detail) {
 export const api = {
   login: (role, username, passcode, club_id) =>
     client.post("/auth/login", { role, username, passcode, club_id }).then((r) => r.data),
+  logout: () => client.post("/auth/logout").then((r) => r.data),
   changePasscode: (current_passcode, new_passcode) =>
     client.post("/auth/change-passcode", { current_passcode, new_passcode }).then((r) => r.data),
   forgotPassword: (club_id, email) => client.post("/auth/forgot", { club_id, email }).then((r) => r.data),
   resetPassword: (token, new_passcode) =>
     client.post("/auth/reset-password", { token, new_passcode }).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
+
+  getAudit: (params = {}) => client.get("/audit", { params }).then((r) => r.data),
+  // Backup downloads use a real browser download (the session cookie is sent
+  // automatically; the server names the file via Content-Disposition).
+  downloadBackup: (club_id, admin = false) => {
+    const base = admin ? "/admin/backup" : "/backup";
+    const qs = club_id ? `?club_id=${encodeURIComponent(club_id)}` : "";
+    const a = document.createElement("a");
+    a.href = `${API}${base}${qs}`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  },
 
   getClubs: () => client.get("/clubs").then((r) => r.data),
   getClubDirectory: (year) => client.get("/clubs/directory", { params: year ? { year } : {} }).then((r) => r.data),

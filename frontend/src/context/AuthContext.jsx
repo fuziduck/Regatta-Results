@@ -10,12 +10,9 @@ export function AuthProvider({ children }) {
   const [username, setUsername] = useState(null);
   const [userName, setUserName] = useState(null);
 
+  // The session token lives in an HttpOnly cookie the browser attaches
+  // automatically — we just ask the server who we are. No localStorage.
   useEffect(() => {
-    const token = localStorage.getItem("scr_token");
-    if (!token) {
-      setRole(null);
-      return;
-    }
     api.me().then((d) => {
       setRole(d.role);
       setClubId(d.club_id);
@@ -23,14 +20,13 @@ export function AuthProvider({ children }) {
       setUsername(d.username || null);
       setUserName(d.name || null);
     }).catch(() => {
-      localStorage.removeItem("scr_token");
       setRole(null);
     });
   }, []);
 
-  // Store a login-shaped payload ({token, role, club_id, club_name, ...}).
+  // Apply a login / change-passcode payload (role, club, name — the fresh
+  // session cookie is already set by the server).
   const updateSession = (data) => {
-    localStorage.setItem("scr_token", data.token);
     setRole(data.role);
     setClubId(data.club_id);
     setClubName(data.club_name || null);
@@ -45,7 +41,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = () => {
-    localStorage.removeItem("scr_token");
+    api.logout().catch(() => {});
     setRole(null);
     setClubId(null);
     setClubName(null);

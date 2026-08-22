@@ -18,7 +18,9 @@ def _login_user(role, username, passcode, club_id=None):
         body["club_id"] = club_id
     r = requests.post(f"{API}/auth/login", json=body)
     assert r.status_code == 200, f"user login failed: {r.text}"
-    return r.json()
+    data = r.json()
+    data["token"] = r.cookies.get("scr_token", "")
+    return data
 
 
 def _mk_user(webmaster_token, club_id, role, username, passcode, name=""):
@@ -61,10 +63,10 @@ class TestPerUserLogin:
     def test_username_scoped_to_own_club(self, test_club, webmaster_token):
         """The same email username in another club must not authenticate here."""
         other = next(c["id"] for c in requests.get(f"{API}/clubs").json() if c["id"] != test_club["id"])
-        u = _mk_user(webmaster_token, other, "officer", "sharedname@test.club", "sh4red1")
+        u = _mk_user(webmaster_token, other, "officer", "sharedname@test.club", "sh4red1!")
         try:
             r = requests.post(f"{API}/auth/login", json={
-                "role": "officer", "username": "sharedname@test.club", "passcode": "sh4red1",
+                "role": "officer", "username": "sharedname@test.club", "passcode": "sh4red1!",
                 "club_id": test_club["id"]})
             assert r.status_code == 401
         finally:
@@ -85,7 +87,7 @@ class TestUserCrudScoping:
     def test_admin_cannot_create_user_in_other_club(self, test_club, club_admin_token):
         other = next(c["id"] for c in requests.get(f"{API}/clubs").json() if c["id"] != test_club["id"])
         r = requests.post(f"{API}/users", json={
-            "club_id": other, "role": "admin", "username": "sneaky@test.club", "passcode": "1234"},
+            "club_id": other, "role": "admin", "username": "sneaky@test.club", "passcode": "123456!"},
             headers=h(club_admin_token))
         # Server scopes creation to the caller's own club — never the other club.
         assert r.status_code == 200
@@ -94,7 +96,7 @@ class TestUserCrudScoping:
     def test_admin_cannot_delete_other_clubs_user(self, test_club, club_admin_token, webmaster_token):
         other = next(c["id"] for c in requests.get(f"{API}/clubs").json() if c["id"] != test_club["id"])
         victim = _mk_user(webmaster_token, other, "officer",
-                          f"vic{uuid.uuid4().hex[:5]}@test.club", "vic1234")
+                          f"vic{uuid.uuid4().hex[:5]}@test.club", "vic1234!")
         try:
             r = requests.delete(f"{API}/users/{victim['id']}", headers=h(club_admin_token))
             assert r.status_code == 403
@@ -105,11 +107,11 @@ class TestUserCrudScoping:
         email = f"dup{uuid.uuid4().hex[:6]}@test.club"
         r = requests.post(f"{API}/users", json={
             "club_id": test_club["id"], "role": "officer",
-            "username": email, "passcode": "dup1234"}, headers=h(club_admin_token))
+            "username": email, "passcode": "dup1234!"}, headers=h(club_admin_token))
         assert r.status_code == 200, r.text
         r = requests.post(f"{API}/users", json={
             "club_id": test_club["id"], "role": "officer",
-            "username": email.upper(), "passcode": "dup1234"}, headers=h(club_admin_token))
+            "username": email.upper(), "passcode": "dup1234!"}, headers=h(club_admin_token))
         assert r.status_code == 400  # emails are unique case-insensitively
 
     def test_short_passcode_rejected(self, test_club, club_admin_token):
@@ -138,21 +140,21 @@ class TestUserCrudScoping:
 class TestLockoutAndRevocation:
     def test_lockout_after_five_failures(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"lock{uuid.uuid4().hex[:5]}@test.club", "lock1234")
+                     f"lock{uuid.uuid4().hex[:5]}@test.club", "lock1234!")
         for _ in range(5):
             r = requests.post(f"{API}/auth/login", json={
                 "role": "officer", "username": u["username"], "passcode": "wrong", "club_id": test_club["id"]})
             assert r.status_code == 401
         # Correct passcode is now rejected while the account is locked.
         r = requests.post(f"{API}/auth/login", json={
-            "role": "officer", "username": u["username"], "passcode": "lock1234", "club_id": test_club["id"]})
+            "role": "officer", "username": u["username"], "passcode": "lock1234!", "club_id": test_club["id"]})
         assert r.status_code == 423
         requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
 
     def test_deactivate_revokes_existing_token(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"rev{uuid.uuid4().hex[:5]}@test.club", "rev1234")
-        body = _login_user("officer", u["username"], "rev1234", test_club["id"])
+                     f"rev{uuid.uuid4().hex[:5]}@test.club", "rev1234!")
+        body = _login_user("officer", u["username"], "rev1234!", test_club["id"])
         assert requests.get(f"{API}/auth/me", headers=h(body["token"])).status_code == 200
         r = requests.put(f"{API}/users/{u['id']}", json={"active": False}, headers=h(webmaster_token))
         assert r.status_code == 200
@@ -161,21 +163,21 @@ class TestLockoutAndRevocation:
 
     def test_passcode_reset_blocks_old_passcode(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"pw{uuid.uuid4().hex[:5]}@test.club", "pw1234")
-        _login_user("officer", u["username"], "pw1234", test_club["id"])
-        r = requests.put(f"{API}/users/{u['id']}", json={"passcode": "new5678"}, headers=h(webmaster_token))
+                     f"pw{uuid.uuid4().hex[:5]}@test.club", "pw1234!")
+        _login_user("officer", u["username"], "pw1234!", test_club["id"])
+        r = requests.put(f"{API}/users/{u['id']}", json={"passcode": "new5678!"}, headers=h(webmaster_token))
         assert r.status_code == 200
         r = requests.post(f"{API}/auth/login", json={
-            "role": "officer", "username": u["username"], "passcode": "pw1234", "club_id": test_club["id"]})
+            "role": "officer", "username": u["username"], "passcode": "pw1234!", "club_id": test_club["id"]})
         assert r.status_code == 401
-        body = _login_user("officer", u["username"], "new5678", test_club["id"])
+        body = _login_user("officer", u["username"], "new5678!", test_club["id"])
         assert body["token"]
         requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
 
     def test_deleted_user_cannot_login(self, test_club, webmaster_token):
         u = _mk_user(webmaster_token, test_club["id"], "officer",
-                     f"del{uuid.uuid4().hex[:5]}@test.club", "del1234")
+                     f"del{uuid.uuid4().hex[:5]}@test.club", "del1234!")
         requests.delete(f"{API}/users/{u['id']}", headers=h(webmaster_token))
         r = requests.post(f"{API}/auth/login", json={
-            "role": "officer", "username": u["username"], "passcode": "del1234", "club_id": test_club["id"]})
+            "role": "officer", "username": u["username"], "passcode": "del1234!", "club_id": test_club["id"]})
         assert r.status_code == 401
