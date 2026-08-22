@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import AdvertCard, { useAdverts, pickAdverts, interleaveWithAdverts } from "@/components/AdvertCard";
 import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle, ArrowLeft } from "lucide-react";
 
 function NotificationBanner({ items }) {
@@ -177,6 +178,7 @@ export default function Landing() {
   const [activeClass, setActiveClass] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [seasons, setSeasons] = useState([]);
+  const { adverts, roll } = useAdverts();
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -276,8 +278,11 @@ export default function Landing() {
               <h2 className="font-heading uppercase tracking-tight text-safety text-xl">Racing today</h2>
               <span className="text-xs text-muted-foreground">· clears once results are published</span>
             </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {notifications.map((n, idx) => (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
+              {interleaveWithAdverts(notifications, pickAdverts(adverts, Math.ceil(notifications.length / 2), roll)).map((n, idx) => (
+                n.__advert ? (
+                  <AdvertCard key={`ad-${idx}`} advert={n.__advert} />
+                ) : (
                 <div key={idx} data-testid={`notice-card-${n.class_name}`}
                   className="rounded-xl border border-safety/30 bg-safety/5 p-4 relative overflow-hidden">
                   <div className="absolute top-0 left-0 w-1.5 h-full bg-safety" />
@@ -312,6 +317,7 @@ export default function Landing() {
                     )}
                   </div>
                 </div>
+                )
               ))}
             </div>
           </div>
@@ -319,6 +325,12 @@ export default function Landing() {
 
         <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
         <p className="text-muted-foreground text-sm mb-4">Each fleet races its own series and overall championship.</p>
+
+        {pickAdverts(adverts, 1, roll + 1)[0] && (
+          <div className="h-28 sm:h-36 mb-6">
+            <AdvertCard advert={pickAdverts(adverts, 1, roll + 1)[0]} />
+          </div>
+        )}
 
         {classes.length === 0 ? (
           <p className="text-muted-foreground">No classes set up yet.</p>

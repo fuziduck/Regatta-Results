@@ -75,6 +75,17 @@ export const api = {
   createUser: (d) => client.post("/users", d).then((r) => r.data),
   updateUser: (id, d) => client.put(`/users/${id}`, d).then((r) => r.data),
   deleteUser: (id) => client.delete(`/users/${id}`).then((r) => r.data),
+
+  getAdverts: () => client.get("/adverts").then((r) => r.data),
+  getAdvertsManage: () => client.get("/adverts/manage").then((r) => r.data),
+  createAdvert: (fd) => client.post("/adverts", fd).then((r) => r.data),
+  updateAdvert: (id, d) => client.put(`/adverts/${id}`, d).then((r) => r.data),
+  uploadAdvertImage: (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return client.put(`/adverts/${id}/image`, fd).then((r) => r.data);
+  },
+  deleteAdvert: (id) => client.delete(`/adverts/${id}`).then((r) => r.data),
 };
 
 export default client;

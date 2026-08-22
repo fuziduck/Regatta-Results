@@ -4,12 +4,13 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubBadge from "@/components/ClubBadge";
 import UsersManager from "@/components/UsersManager";
+import AdvertsManager from "@/components/AdvertsManager";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound } from "lucide-react";
+import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D", officer_pin: "", admin_pin: "" };
 
@@ -48,6 +49,7 @@ export default function Webmaster() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blank);
   const [usersClub, setUsersClub] = useState(null);
+  const [section, setSection] = useState("clubs");
 
   const load = useCallback(() => api.getClubsManage().then(setClubs).catch(() => {}), []);
   useEffect(() => { load(); }, [load]);
@@ -93,7 +95,32 @@ export default function Webmaster() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-8">
+      <div className="max-w-6xl mx-auto px-4 py-8 flex flex-col md:flex-row gap-8">
+        <aside className="md:w-56 shrink-0">
+          <nav className="flex md:flex-col gap-1 md:sticky md:top-24 overflow-x-auto" data-testid="webmaster-nav">
+            <button
+              data-testid="nav-clubs"
+              onClick={() => setSection("clubs")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "clubs" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <Building2 className="w-4 h-4" /> Club management
+            </button>
+            <button
+              data-testid="nav-adverts"
+              onClick={() => setSection("adverts")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "adverts" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <Megaphone className="w-4 h-4" /> Advertising
+            </button>
+          </nav>
+        </aside>
+        <main className="flex-1 min-w-0">
+        {section === "clubs" && (
+        <>
         <div className="flex flex-wrap items-end justify-between gap-3 mb-6">
           <div>
             <h1 className="text-3xl uppercase tracking-tighter mb-1">Club management</h1>
@@ -139,7 +166,11 @@ export default function Webmaster() {
             {usersClub && <UsersManager key={usersClub.id} clubId={usersClub.id} heading={`${usersClub.name} logins`} />}
           </DialogContent>
         </Dialog>
-      </main>
+        </>
+        )}
+        {section === "adverts" && <AdvertsManager />}
+        </main>
+      </div>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
         Webmaster — manages clubs and has full officer & admin access to every club.

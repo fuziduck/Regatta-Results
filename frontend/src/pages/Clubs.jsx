@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { CURRENT_YEAR, MAX_YEAR, fmtDateShort } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import ClubBadge from "@/components/ClubBadge";
+import AdvertCard, { useAdverts, pickAdverts, interleaveWithAdverts } from "@/components/AdvertCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, CalendarDays, LogIn, Sailboat, Trophy } from "lucide-react";
@@ -52,6 +53,7 @@ export default function Clubs() {
   const [directory, setDirectory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [seasons, setSeasons] = useState([]);
+  const { adverts, roll } = useAdverts();
 
   // Refresh when new series may have been set up elsewhere (page re-focus or a
   // 30s poll): the future-year buttons and the per-year club directory must
@@ -136,25 +138,28 @@ export default function Clubs() {
             </div>
           )
         ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5" data-testid="club-grid">
-            {directory.map((club) => (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch" data-testid="club-grid">
+            {interleaveWithAdverts(directory, pickAdverts(adverts, Math.ceil(directory.length / 2), roll)).map((cell) => (
+              cell.__advert ? (
+                <AdvertCard key={cell.__advert.id} advert={cell.__advert} />
+              ) : (
               <Link
-                key={club.id}
-                to={`/club/${club.slug}${year === CURRENT_YEAR ? "" : `?year=${year}`}`}
-                data-testid={`club-card-${club.slug}`}
+                key={cell.id}
+                to={`/club/${cell.slug}${year === CURRENT_YEAR ? "" : `?year=${year}`}`}
+                data-testid={`club-card-${cell.slug}`}
                 className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all"
               >
                 <div className="flex items-center gap-4">
-                  <ClubIcon club={club} />
+                  <ClubIcon club={cell} />
                   <div>
-                    <div className="font-heading text-2xl uppercase tracking-tight leading-none group-hover:text-ocean transition-colors">{club.name}</div>
-                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><Sailboat className="w-3.5 h-3.5" /> {club.classes.length} class{club.classes.length === 1 ? "" : "es"}</div>
+                    <div className="font-heading text-2xl uppercase tracking-tight leading-none group-hover:text-ocean transition-colors">{cell.name}</div>
+                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><Sailboat className="w-3.5 h-3.5" /> {cell.classes.length} class{cell.classes.length === 1 ? "" : "es"}</div>
                   </div>
                 </div>
 
                 <div className="mt-5 space-y-4">
-                  {club.classes.length === 0 && <p className="text-xs text-muted-foreground">No classes set up yet.</p>}
-                  {club.classes.map((c) => (
+                  {cell.classes.length === 0 && <p className="text-xs text-muted-foreground">No classes set up yet.</p>}
+                  {cell.classes.map((c) => (
                     <div key={c.id} className="rounded-xl bg-muted/40 border border-border/60 p-3">
                       <div className="flex items-center justify-between">
                         <div className="font-heading uppercase tracking-tight text-sm">{c.name}</div>
@@ -185,6 +190,7 @@ export default function Clubs() {
                   ))}
                 </div>
               </Link>
+              )
             ))}
           </div>
         )}

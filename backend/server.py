@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -225,6 +225,14 @@ class ClubInput(BaseModel):
     color: str = "#0A369D"
     officer_pin: str = ""
     admin_pin: str = ""
+
+
+class AdvertUpdate(BaseModel):
+    """Editable advert metadata (the image itself is uploaded separately)."""
+    name: Optional[str] = None
+    link_url: Optional[str] = None
+    active: Optional[bool] = None
+    order: Optional[int] = None
 
 
 class ClassInput(BaseModel):
@@ -809,6 +817,80 @@ async def delete_club(club_id: str, user: dict = Depends(require_webmaster)):
                             detail="Club still has classes — delete its classes first")
     await db.clubs.delete_one({"id": club_id})
     await db.users.delete_many({"club_id": club_id})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Adverts (webmaster-managed; shown interleaved on public pages)
+# ---------------------------------------------------------------------------
+ADVERT_IMAGE_MAX = 2 * 1024 * 1024
+
+
+@api_router.get("/adverts")
+async def get_adverts():
+    """Public: active adverts only, in display order. The rotation (rolling
+    window capped at 10 per page load) is chosen client-side on refresh."""
+    docs = await db.adverts.find({"active": True}, {"_id": 0}).sort("order", 1).to_list(100)
+    return [{k: a.get(k) for k in ("id", "name", "image", "link_url")} for a in docs]
+
+
+@api_router.get("/adverts/manage")
+async def adverts_manage(user: dict = Depends(require_webmaster)):
+    """Webmaster-only: every advert, active or not, with its metadata."""
+    return await db.adverts.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+
+
+async def _read_advert_image(file: UploadFile) -> str:
+    """Validate + read an advert image into a base64 data URL (2 MB cap)."""
+    data = await file.read()
+    if len(data) > ADVERT_IMAGE_MAX:
+        raise HTTPException(status_code=400, detail="Advert image must be 2 MB or smaller")
+    ctype = file.content_type or "image/png"
+    if not ctype.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Upload must be an image file")
+    return f"data:{ctype};base64,{base64.b64encode(data).decode()}"
+
+
+@api_router.post("/adverts")
+async def create_advert(user: dict = Depends(require_webmaster),
+                        name: str = Form(""), link_url: str = Form(""),
+                        active: bool = Form(True), file: UploadFile = File(None)):
+    """Create an advert. The image is optional at creation (the card then
+    shows a placeholder) and can be added or replaced later via PUT image."""
+    order = await db.adverts.count_documents({})
+    image = await _read_advert_image(file) if file else None
+    doc = {"id": new_id(), "name": name, "link_url": link_url, "active": bool(active),
+           "order": order, "image": image, "created_at": now_iso()}
+    await db.adverts.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/adverts/{advert_id}")
+async def update_advert(advert_id: str, data: AdvertUpdate,
+                        user: dict = Depends(require_webmaster)):
+    doc = await db.adverts.find_one({"id": advert_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Advert not found")
+    update = {k: v for k, v in data.model_dump().items() if v is not None}
+    if update:
+        await db.adverts.update_one({"id": advert_id}, {"$set": update})
+    return await db.adverts.find_one({"id": advert_id}, {"_id": 0})
+
+
+@api_router.put("/adverts/{advert_id}/image")
+async def upload_advert_image(advert_id: str, user: dict = Depends(require_webmaster),
+                              file: UploadFile = File(...)):
+    if not await db.adverts.find_one({"id": advert_id}, {"_id": 0}):
+        raise HTTPException(status_code=404, detail="Advert not found")
+    await db.adverts.update_one({"id": advert_id},
+                                {"$set": {"image": await _read_advert_image(file)}})
+    return await db.adverts.find_one({"id": advert_id}, {"_id": 0})
+
+
+@api_router.delete("/adverts/{advert_id}")
+async def delete_advert(advert_id: str, user: dict = Depends(require_webmaster)):
+    await db.adverts.delete_one({"id": advert_id})
     return {"ok": True}
 
 
