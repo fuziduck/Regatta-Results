@@ -10,7 +10,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts, interleaveWithAdverts } from "@/components/AdvertCard";
-import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle, ArrowLeft } from "lucide-react";
+import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
+import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -103,7 +104,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
   );
 }
 
-function ClassResults({ classId, clubId, year }) {
+function ClassResults({ classId, clubId, year, clubName, className }) {
   const [series, setSeries] = useState([]);
   const [tab, setTab] = useState("overall");
   const [overall, setOverall] = useState(null);
@@ -151,13 +152,29 @@ function ClassResults({ classId, clubId, year }) {
       </TabsList>
 
       <TabsContent value="overall" className="pt-5">
-        <h3 className="text-xl uppercase tracking-tight mb-3 flex items-center gap-2"><Sailboat className="w-5 h-5 text-ocean" /> Overall Championship</h3>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h3 className="text-xl uppercase tracking-tight flex items-center gap-2"><Sailboat className="w-5 h-5 text-ocean" /> Overall Championship</h3>
+          <Button variant="outline" size="sm" data-testid="export-overall-pdf"
+            className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
+            disabled={!overall?.standings?.length}
+            onClick={() => exportOverallPdf({ clubName, className, year, data: overall })}>
+            <Download className="w-4 h-4" /> PDF
+          </Button>
+        </div>
         <OverallStandingsTable data={overall} />
       </TabsContent>
 
       {series.map((s) => (
         <TabsContent key={s.id} value={s.id} className="pt-5">
-          <h3 className="text-xl uppercase tracking-tight mb-3">{s.name} Series</h3>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="text-xl uppercase tracking-tight">{s.name} Series</h3>
+            <Button variant="outline" size="sm" data-testid={`export-pdf-${s.id}`}
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
+              disabled={!seriesData[s.id]?.standings?.length}
+              onClick={() => exportSeriesPdf({ clubName, className, seriesName: s.name, year: s.year || year, data: seriesData[s.id] })}>
+              <Download className="w-4 h-4" /> PDF
+            </Button>
+          </div>
           <SeriesStandingsTable data={seriesData[s.id]} />
           {tab === s.id && <PublishedRaces seriesId={s.id} classId={classId} clubId={clubId} scoringMode={s.scoring_mode || "one_design"} />}
         </TabsContent>
@@ -347,7 +364,7 @@ export default function Landing() {
             </TabsList>
             {classes.map((c) => (
               <TabsContent key={c.id} value={c.id}>
-                <ClassResults classId={c.id} clubId={clubId} year={year} />
+                <ClassResults classId={c.id} clubId={clubId} year={year} clubName={club.name} className={c.name} />
               </TabsContent>
             ))}
           </Tabs>
