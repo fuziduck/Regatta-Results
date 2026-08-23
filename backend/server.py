@@ -1205,7 +1205,7 @@ async def get_users(request: Request, club_id: Optional[str] = None):
             q["club_id"] = club_id
     else:
         q["club_id"] = user.get("club_id")
-    users = await db.users.find(q, {"_id": 0}).sort("role", 1).sort("username", 1).to_list(500)
+    users = await db.users.find(q, {"_id": 0}).sort([("role", 1), ("username", 1)]).to_list(500)
     return [_user_public(u) for u in users]
 
 
@@ -1472,8 +1472,10 @@ async def clubs_directory(year: Optional[int] = None):
             q = {"class_id": c["id"], "status": "published"}
             if year:
                 q["year"] = year
+            # NB: chained .sort() calls REPLACE each other in PyMongo ("only
+            # the last sort has any effect"), so both keys must go in one list.
             races = await db.races.find(q, {"_id": 0})\
-                .sort("date", -1).sort("race_number", -1).limit(1).to_list(1)
+                .sort([("date", -1), ("race_number", -1)]).limit(1).to_list(1)
             if races:
                 r = races[0]
                 finished = sorted(

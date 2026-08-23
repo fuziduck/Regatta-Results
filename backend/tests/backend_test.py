@@ -284,6 +284,44 @@ class TestPublic:
         finally:
             requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
 
+    def test_directory_latest_is_most_recently_dated_race(self, test_club, club_admin_token, club_officer_token):
+        """Front-page 'latest' must be the most recently DATED published race.
+        Regression: chained PyMongo .sort() calls replace each other, so the
+        directory used to pick the highest race_number regardless of date."""
+        r = requests.post(f"{API}/classes", json={"name": "Dir Latest Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Dir Latest Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 60}, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        created = {}
+        try:
+            # Race 2 has the HIGHER race number but an EARLIER date than race 1.
+            for rn, date in [(2, f"{YEAR}-04-01"), (1, f"{YEAR}-06-15")]:
+                r = requests.post(f"{API}/races", json={
+                    "date": date, "class_id": cls["id"], "series_id": sid, "race_number": rn},
+                    headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                rid = r.json()["id"]
+                r = requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                created[rn] = rid
+            directory = requests.get(f"{API}/clubs/directory").json()
+            club_entry = next((c for c in directory if c["id"] == test_club["id"]), None)
+            assert club_entry
+            ci = next((x for x in club_entry["classes"] if x["id"] == cls["id"]), None)
+            assert ci and ci["latest"], "directory must report a latest race"
+            assert ci["latest"]["race_number"] == 1, "must pick the latest-dated race, not the highest race number"
+            assert ci["latest"]["date"] == f"{YEAR}-06-15"
+        finally:
+            for rid in created.values():
+                requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
     def test_seasons(self, test_club, test_class, club_admin_token):
         """/seasons reports only years that actually have series (all clubs,
         or scoped to one club)."""
