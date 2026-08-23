@@ -545,3 +545,65 @@ class TestSeriesScoringMode:
         # PY: corrected order (M2 1667 < M3 1900 < M1 2000) — the last boat over
         # the line wins because it is rated much faster
         assert race_positions(py) == {"M2": 1, "M3": 2, "M1": 3}
+
+
+# ---------- Mini-series (long series split into consecutive chunks) ----------
+class TestMiniSeriesEndpoint:
+    def test_mini_endpoint(self, club_officer_token, club_admin_token):
+        r = requests.post(f"{API}/classes", json={"name": "Mini Series Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Mini Split Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 11,
+            "mini_series": True,
+            "mini_series_groups": [
+                {"name": "Early", "race_numbers": [1, 2], "discards": 1},
+                {"name": "Late", "race_numbers": [3], "discards": 0},
+            ]},
+            headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        series = r.json()
+        sid = series["id"]
+        assert series["mini_series"] is True
+        assert series["mini_series_groups"][0]["name"] == "Early"
+
+        # Non-mini series rejects the mini param.
+        r = requests.post(f"{API}/series", json={
+            "name": "No Mini", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 12},
+            headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        other = r.json()["id"]
+        assert requests.get(f"{API}/standings/series/{other}", params={"mini": 1}).status_code == 400
+
+        # Publish 3 races; the groups pick races 1-2 and 3.
+        for rn in range(1, 4):
+            r = requests.post(f"{API}/races", json={
+                "date": f"{YEAR}-06-{rn:02d}", "class_id": cls["id"],
+                "series_id": sid, "race_number": rn}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            rid = r.json()["id"]
+            r = requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+
+        full = requests.get(f"{API}/standings/series/{sid}").json()
+        assert full["race_count"] == 3
+        assert full["mini_series"]["groups"] == [
+            {"name": "Early", "race_numbers": [1, 2], "discards": 1, "race_count": 2},
+            {"name": "Late", "race_numbers": [3], "discards": 0, "race_count": 1},
+        ]
+        m1 = requests.get(f"{API}/standings/series/{sid}", params={"mini": 1}).json()
+        assert m1["race_count"] == 2 and m1["mini_index"] == 1 and m1["mini_name"] == "Early"
+        assert m1["discards"] == 1  # the group's discards apply, not the series' 0
+        m2 = requests.get(f"{API}/standings/series/{sid}", params={"mini": 2}).json()
+        assert m2["race_count"] == 1 and m2["mini_index"] == 2 and m2["mini_name"] == "Late"
+        assert requests.get(f"{API}/standings/series/{sid}", params={"mini": 3}).status_code == 404
+        assert requests.get(f"{API}/standings/series/{sid}", params={"mini": 0}).status_code == 404
+
+        # cleanup: races, then series
+        for s in (sid, other):
+            for race in requests.get(f"{API}/races", params={"series_id": s}).json():
+                requests.delete(f"{API}/races/{race['id']}", headers=h(club_officer_token))
+            requests.delete(f"{API}/series/{s}", headers=h(club_admin_token))

@@ -107,7 +107,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
 // Presentational: renders the standings content for the class/series chosen
 // in the hero. All fetching lives in the Landing page so the selector tabs can
 // sit in the banner.
-function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, overall, seriesData }) {
+function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
   if (year !== CURRENT_YEAR && !hasData) {
@@ -142,18 +142,53 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
     );
   }
 
+  // Mini-series feature: the full standings payload carries the named groups,
+  // and each mini view is keyed separately so it can be fetched independently.
+  const miniMeta = active.mini_series ? seriesData[active.id]?.mini_series : null;
+  const groups = (miniMeta && miniMeta.groups) || [];
+  const dataKey = activeMini ? `${active.id}:m${activeMini}` : active.id;
+  const miniData = seriesData[dataKey];
+  const activeGroup = activeMini ? groups[activeMini - 1] : null;
+  const miniLabel = activeGroup ? ` · ${activeGroup.name}` : "";
+  const miniRange = (g) => {
+    const nums = g.race_numbers || [];
+    if (!nums.length) return "";
+    if (nums.length === 1) return `R${nums[0]}`;
+    const contig = nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
+    return contig ? `R${nums[0]}–${nums[nums.length - 1]}` : `R${nums.join(",")}`;
+  };
+
   return (
     <div className="pt-5">
+      {groups.length > 1 && (
+        <div className="flex items-center gap-2 mb-4" data-testid="mini-series-tabs">
+          <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Split</span>
+          <Tabs value={activeMini ? String(activeMini) : "overall"} onValueChange={(v) => setActiveMini(v === "overall" ? null : Number(v))}>
+            <TabsList className="h-auto flex-wrap">
+              <TabsTrigger value="overall" data-testid="mini-tab-overall"
+                className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
+                Overall
+              </TabsTrigger>
+              {groups.map((g, i) => (
+                <TabsTrigger key={i} value={String(i + 1)} data-testid={`mini-tab-${i + 1}`}
+                  className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
+                  {g.name}{miniRange(g) ? ` · ${miniRange(g)}` : ""}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 mb-3">
-        <h3 className="text-xl uppercase tracking-tight">{active.name} Series</h3>
+        <h3 className="text-xl uppercase tracking-tight">{active.name} Series{miniLabel}</h3>
         <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
           className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
-          disabled={!seriesData[active.id]?.standings?.length}
-          onClick={() => exportSeriesPdf({ clubName, className, seriesName: active.name, year: active.year || year, data: seriesData[active.id], icon: clubIcon })}>
+          disabled={!miniData?.standings?.length}
+          onClick={() => exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon })}>
           <Download className="w-4 h-4" /> PDF
         </Button>
       </div>
-      <SeriesStandingsTable data={seriesData[active.id]} />
+      <SeriesStandingsTable data={miniData} />
       <PublishedRaces seriesId={active.id} classId={classId} clubId={clubId} scoringMode={active.scoring_mode || "one_design"} />
     </div>
   );
@@ -174,6 +209,7 @@ export default function Landing() {
   const { adverts, roll } = useAdverts();
   const [series, setSeries] = useState([]);
   const [activeSeries, setActiveSeries] = useState("overall");
+  const [activeMini, setActiveMini] = useState(null);
   const [overall, setOverall] = useState(null);
   const [seriesData, setSeriesData] = useState({});
 
@@ -206,10 +242,12 @@ export default function Landing() {
   // hero and the results content below).
   useEffect(() => {
     if (!clubId || !activeClass) return;
-    setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall");
+    setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall"); setActiveMini(null);
     api.getSeries({ class_id: activeClass, year, club_id: clubId }).then(setSeries).catch(() => {});
     api.overallStandings(activeClass, year, clubId).then(setOverall).catch(() => setOverall(null));
   }, [clubId, activeClass, year]);
+
+  useEffect(() => { setActiveMini(null); }, [activeSeries]);
 
   useEffect(() => {
     if (!clubId || !activeClass || activeSeries === "overall") return;
@@ -218,6 +256,16 @@ export default function Landing() {
       .then((d) => setSeriesData((prev) => ({ ...prev, [activeSeries]: d })))
       .catch(() => {});
   }, [clubId, activeClass, activeSeries, seriesData]);
+
+  // Mini-series views: standings over one consecutive chunk of the series' races.
+  useEffect(() => {
+    if (!clubId || !activeClass || activeSeries === "overall" || !activeMini) return;
+    const key = `${activeSeries}:m${activeMini}`;
+    if (seriesData[key]) return;
+    api.seriesStandings(activeSeries, clubId, activeMini)
+      .then((d) => setSeriesData((prev) => ({ ...prev, [key]: d })))
+      .catch(() => {});
+  }, [clubId, activeClass, activeSeries, activeMini, seriesData]);
 
   // Future years only appear once this club has set up a series for them.
   // Future years are data-driven: any year a club has set a series up for.
@@ -394,6 +442,8 @@ export default function Landing() {
                 clubIcon={club.icon}
                 series={series}
                 activeSeries={activeSeries}
+                activeMini={activeMini}
+                setActiveMini={setActiveMini}
                 overall={overall}
                 seriesData={seriesData}
               />

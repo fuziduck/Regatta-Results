@@ -465,6 +465,14 @@ class BoatInput(BaseModel):
     home_club: Optional[str] = ""
 
 
+class MiniSeriesGroup(BaseModel):
+    """One mini series inside a long series: which races it contains (by race
+    number) and how many discards it applies independently of the main series."""
+    name: str = ""
+    race_numbers: List[int] = []
+    discards: int = 0
+
+
 class SeriesInput(BaseModel):
     name: str
     class_id: str
@@ -489,6 +497,13 @@ class SeriesInput(BaseModel):
     # one more than the number of boats that FINISHED the race. DNC always
     # scores series entries + 1 regardless of this flag.
     use_finishers: bool = False
+    # Long-series feature: when enabled, the series is split into named mini
+    # series (mini_series_groups). Each group picks which of the series' races
+    # it contains (by race number) and has its own discard count, scored and
+    # shown separately. The series as a whole still counts towards the overall
+    # championship using its full standings and its own discards.
+    mini_series: bool = False
+    mini_series_groups: Optional[List[MiniSeriesGroup]] = None
 
 
 class GenScheduleInput(BaseModel):
@@ -2809,11 +2824,42 @@ async def _club_name_of_class(class_id):
     return (club or {}).get("name", "")
 
 
-async def _series_scores(series):
+def _normalize_mini_groups(series, races):
+    """Normalize a series' mini-series groups for display and scoring.
+
+    Returns a list of dicts: {name, race_numbers, discards, race_count}.
+    Explicit groups (mini_series_groups) are honoured as-is; a legacy series
+    stored with mini_series_size is split into consecutive chunks of that
+    size. race_count is how many of the group's race numbers actually have
+    published races in the series."""
+    races = list(races)
+    published_numbers = {r.get("race_number") for r in races}
+    groups = series.get("mini_series_groups") or []
+    if not groups and series.get("mini_series_size"):
+        size = max(1, int(series.get("mini_series_size") or 1))
+        race_nums = [r.get("race_number") for r in races]
+        groups = [{"name": f"Mini {i + 1}", "race_numbers": race_nums[i * size:(i + 1) * size],
+                   "discards": series.get("mini_series_discards", 0)}
+                  for i in range((len(race_nums) + size - 1) // size)]
+    out = []
+    for i, g in enumerate(groups):
+        rns = sorted({int(n) for n in (g.get("race_numbers") or []) if int(n) >= 1})
+        name = (g.get("name") or "").strip() or f"Mini {i + 1}"
+        out.append({"name": name, "race_numbers": rns,
+                    "discards": int(g.get("discards", 0)),
+                    "race_count": len([n for n in rns if n in published_numbers])})
+    return out
+
+
+async def _series_scores(series, race_numbers=None):
     """Return (agg, boat_map, race_meta, use_a5_3). agg: boat_id -> list of
-    per-race entry dicts, aligned to race_meta."""
+    per-race entry dicts, aligned to race_meta. If race_numbers is given (a
+    set/list of the series' race numbers), only those races count."""
     races = await db.races.find({"series_id": series["id"], "status": "published"}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
+    if race_numbers is not None:
+        keep = {int(n) for n in race_numbers}
+        races = [r for r in races if int(r.get("race_number") or 0) in keep]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
     use_a5_3 = bool(series.get("use_a5_3", False))
@@ -2857,13 +2903,18 @@ async def _series_scores(series):
     return agg, boat_map, race_meta, use_a5_3, use_finishers
 
 
-async def compute_series_standings(series):
-    agg, boat_map, race_meta, use_a5_3, use_finishers = await _series_scores(series)
+async def compute_series_standings(series, race_numbers=None, discards=None):
+    agg, boat_map, race_meta, use_a5_3, use_finishers = await _series_scores(series, race_numbers)
     club_name = await _club_name_of_class(series.get("class_id"))
     race_count = len(race_meta)
     # Effective discards never remove every race: at least one always counts.
     # Rule A2.1 also discards the earliest of equal worst scores (stable sort).
-    discards = min(series.get("discards", 0), max(0, race_count - 1))
+    # A mini-series view uses that group's discard count; the full series its own.
+    if discards is not None:
+        configured_discards = discards
+    else:
+        configured_discards = series.get("discards", 0)
+    discards = min(configured_discards, max(0, race_count - 1))
     rows = []
     for bid, entries in agg.items():
         b = boat_map.get(bid)
@@ -2896,24 +2947,49 @@ async def compute_series_standings(series):
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)
-    return {"race_count": race_count, "discards": discards,
-            "configured_discards": series.get("discards", 0),
-            "use_a5_3": use_a5_3,
-            "use_finishers": use_finishers,
-            "planned_races": series.get("planned_races", 0),
-            "schedule": series.get("schedule", []),
-            "races": race_meta, "standings": rows}
+    payload = {"race_count": race_count, "discards": discards,
+               "configured_discards": configured_discards,
+               "use_a5_3": use_a5_3,
+               "use_finishers": use_finishers,
+               "planned_races": series.get("planned_races", 0),
+               "schedule": series.get("schedule", []),
+               "races": race_meta, "standings": rows}
+    if series.get("mini_series"):
+        payload["mini_series"] = {
+            "enabled": True,
+            "groups": _normalize_mini_groups(series, race_meta),
+        }
+    else:
+        payload["mini_series"] = None
+    return payload
 
 
 @api_router.get("/standings/series/{series_id}")
-async def series_standings(series_id: str, request: Request, club_id: Optional[str] = None):
+async def series_standings(series_id: str, request: Request, club_id: Optional[str] = None,
+                           mini: Optional[int] = None):
     series = await db.series.find_one({"id": series_id}, {"_id": 0})
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
     club = await _resolve_club_id(request, club_id)
     if club and (await _class_club_id(series.get("class_id"))) != club:
         raise HTTPException(status_code=404, detail="Series not found")
-    return await compute_series_standings(series)
+    if mini is None:
+        return await compute_series_standings(series)
+    # Mini-series view: standings over one of the series' named mini groups.
+    if not series.get("mini_series"):
+        raise HTTPException(status_code=400, detail="This series is not split into mini series")
+    all_races = await db.races.find({"series_id": series_id, "status": "published"},
+                                    {"_id": 0, "race_number": 1}).to_list(1000)
+    groups = _normalize_mini_groups(series, all_races)
+    if mini < 1 or mini > len(groups):
+        raise HTTPException(status_code=404, detail="Mini series not found")
+    group = groups[mini - 1]
+    result = await compute_series_standings(series, race_numbers=group["race_numbers"],
+                                            discards=group["discards"])
+    result["mini_index"] = mini
+    result["mini_name"] = group["name"]
+    result["mini_series"] = {"enabled": True, "groups": groups}
+    return result
 
 
 @api_router.get("/standings/overall")

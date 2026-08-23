@@ -84,7 +84,7 @@ export const api = {
   deleteRace: (id) => client.delete(`/races/${id}`).then((r) => r.data),
 
   getNotifications: (params = {}) => client.get("/notifications", { params }).then((r) => r.data),
-  seriesStandings: (id, club_id) => client.get(`/standings/series/${id}`, { params: club_id ? { club_id } : {} }).then((r) => r.data),
+  seriesStandings: (id, club_id, mini) => client.get(`/standings/series/${id}`, { params: { ...(club_id ? { club_id } : {}), ...(mini ? { mini } : {}) } }).then((r) => r.data),
   overallStandings: (class_id, year, club_id) => client.get("/standings/overall", { params: { class_id, year, ...(club_id ? { club_id } : {}) } }).then((r) => r.data),
   rrsCodes: () => client.get("/rrs-codes").then((r) => r.data),
 

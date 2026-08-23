@@ -309,9 +309,43 @@ function SeriesTab({ classes, clubId }) {
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false };
+  const blank = { name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [] };
   const [form, setForm] = useState(blank);
   const [schedStart, setSchedStart] = useState("2026-08-08");
+  const [autoSize, setAutoSize] = useState(5);
+  // How many races the admin can assign into mini series (planned count, or
+  // the schedule length if that is set instead).
+  const miniRaceTotal = Math.max(Number(form.planned_races) || 0, (form.schedule || []).length);
+
+  const toggleMiniRace = (gi, raceNo) => setForm((f) => {
+    const groups = (f.mini_series_groups || []).map((g, idx) => {
+      const has = (g.race_numbers || []).includes(raceNo);
+      if (idx === gi) return { ...g, race_numbers: has ? (g.race_numbers || []).filter((n) => n !== raceNo) : [...(g.race_numbers || []), raceNo].sort((a, b) => a - b) };
+      // a race may only belong to one mini series — take it out of the others
+      return has ? { ...g, race_numbers: (g.race_numbers || []).filter((n) => n !== raceNo) } : g;
+    });
+    return { ...f, mini_series_groups: groups };
+  });
+  const patchMiniGroup = (gi, patch) => setForm((f) => {
+    const groups = (f.mini_series_groups || []).map((g, idx) => (idx === gi ? { ...g, ...patch } : g));
+    return { ...f, mini_series_groups: groups };
+  });
+  const addMiniGroup = () => setForm((f) => ({
+    ...f, mini_series_groups: [...(f.mini_series_groups || []), { name: `Mini ${(f.mini_series_groups || []).length + 1}`, race_numbers: [], discards: 0 }],
+  }));
+  const removeMiniGroup = (gi) => setForm((f) => ({
+    ...f, mini_series_groups: (f.mini_series_groups || []).filter((_, idx) => idx !== gi),
+  }));
+  const autoSplitMini = () => {
+    const size = Math.max(1, Number(autoSize) || 1);
+    if (miniRaceTotal <= 0) return toast.error("Set planned races first so the mini series can be split");
+    const groups = [];
+    for (let start = 1; start <= miniRaceTotal; start += size) {
+      const race_numbers = Array.from({ length: Math.min(size, miniRaceTotal - start + 1) }, (_, k) => start + k);
+      groups.push({ name: `Mini ${groups.length + 1}`, race_numbers, discards: 0 });
+    }
+    setForm((f) => ({ ...f, mini_series_groups: groups }));
+  };
 
   useEffect(() => { if (!classFilter && classes[0]) setClassFilter(classes[0].id); }, [classes]); // eslint-disable-line
   // Reset filters only when the club actually changes — not on first mount,
@@ -390,6 +424,55 @@ function SeriesTab({ classes, clubId }) {
               <div className="flex items-center gap-2"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
               <div className="flex items-center gap-2"><Switch checked={form.use_a5_3} onCheckedChange={(v) => setForm({ ...form, use_a5_3: v })} data-testid="series-a53-switch" /><Label>RRS A5.3 — boats that came to the start area score as starters + 1</Label></div>
               <div className="flex items-center gap-2"><Switch checked={form.use_finishers} onCheckedChange={(v) => setForm({ ...form, use_finishers: v })} data-testid="series-fins-switch" /><Label>Score DNF/RET/DSQ as finishers + 1 (RYA convention)</Label></div>
+              <div className="rounded-lg border border-border p-3 space-y-3">
+                <div className="flex items-center gap-2"><Switch checked={form.mini_series} onCheckedChange={(v) => setForm({ ...form, mini_series: v })} data-testid="series-mini-switch" /><Label className="font-heading uppercase text-sm">Split into mini series</Label></div>
+                {form.mini_series && (
+                  <>
+                    <p className="text-xs text-muted-foreground">Give each mini series a name, pick which races it contains and set its own discards. The full series keeps its own discards and still counts toward the overall championship.</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-xs">Races per mini</Label>
+                        <Input type="number" min="1" className="h-8 w-16" value={autoSize} onChange={(e) => setAutoSize(e.target.value)} data-testid="series-mini-size-input" />
+                      </div>
+                      <Button type="button" size="sm" variant="outline" onClick={autoSplitMini} data-testid="series-auto-split-btn">Auto-split evenly</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={addMiniGroup} data-testid="add-mini-group-btn"><Plus className="w-3.5 h-3.5" /> Add mini series</Button>
+                    </div>
+                    {miniRaceTotal === 0 && <p className="text-xs text-muted-foreground">Set planned races (above) so you can pick which races belong to each mini series.</p>}
+                    <div className="space-y-2">
+                      {(form.mini_series_groups || []).map((g, gi) => (
+                        <div key={gi} className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2" data-testid={`mini-group-${gi}`}>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1"><Label className="text-xs">Name</Label><Input className="h-8" value={g.name} onChange={(e) => patchMiniGroup(gi, { name: e.target.value })} placeholder={`Mini ${gi + 1}`} data-testid={`mini-name-${gi}`} /></div>
+                            <div className="space-y-1"><Label className="text-xs">Discards</Label><Input type="number" min="0" className="h-8" value={g.discards} onChange={(e) => patchMiniGroup(gi, { discards: e.target.value })} data-testid={`mini-discards-${gi}`} /></div>
+                          </div>
+                          <div>
+                            <Label className="text-xs">Races</Label>
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              {miniRaceTotal > 0 && Array.from({ length: miniRaceTotal }, (_, k) => k + 1).map((rn) => {
+                                const on = (g.race_numbers || []).includes(rn);
+                                return (
+                                  <button key={rn} type="button"
+                                    onClick={() => toggleMiniRace(gi, rn)}
+                                    data-testid={`mini-race-${gi}-${rn}`}
+                                    className={`px-2 py-1 rounded-md text-xs font-mono border transition-colors ${on ? "bg-ocean text-white border-ocean" : "bg-white border-border text-muted-foreground hover:border-ocean/50"}`}>
+                                    R{rn}
+                                  </button>
+                                );
+                              })}
+                              {miniRaceTotal === 0 && <span className="text-xs text-muted-foreground italic">No races defined yet.</span>}
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-muted-foreground">{g.race_numbers?.length || 0} race{(g.race_numbers?.length || 0) !== 1 ? "s" : ""} selected</span>
+                            <Button type="button" size="sm" variant="ghost" className="text-destructive h-7" onClick={() => removeMiniGroup(gi)} data-testid={`remove-mini-group-${gi}`}><Trash2 className="w-3.5 h-3.5" /></Button>
+                          </div>
+                        </div>
+                      ))}
+                      {!(form.mini_series_groups || []).length && <p className="text-xs text-muted-foreground italic">No mini series yet — auto-split or add one.</p>}
+                    </div>
+                  </>
+                )}
+              </div>
 
               <div className="rounded-lg border border-border p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
@@ -416,7 +499,7 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead>Fin+1</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead>Fin+1</TableHead><TableHead>Mini</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
@@ -428,12 +511,13 @@ function SeriesTab({ classes, clubId }) {
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
               <TableCell><Switch checked={!!s.use_a5_3} onCheckedChange={(v) => quickSet(s, { use_a5_3: v })} data-testid={`a53-toggle-${s.name}`} /></TableCell>
               <TableCell><Switch checked={!!s.use_finishers} onCheckedChange={(v) => quickSet(s, { use_finishers: v })} data-testid={`fins-toggle-${s.name}`} /></TableCell>
+              <TableCell>{s.mini_series ? <Badge className="bg-purple-100 text-purple-800">{s.mini_series_groups?.length || 0} mini series</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0 })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!series.length && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={11} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>

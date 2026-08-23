@@ -695,3 +695,119 @@ class TestLegacyTokenRevocation:
         import asyncio
         user = asyncio.run(server.get_current_user(self._request("not.a.token")))
         assert user is None
+
+
+class TestMiniSeries:
+    """A long series split into named mini series: each group picks which
+    races it contains and has its own discard count, while the full series
+    keeps its own standings and discards."""
+
+    def _run(self, race_numbers=None, discards=None):
+        import asyncio
+        import types
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "use_a5_3": False, "use_finishers": False,
+                  "mini_series": True,
+                  "mini_series_groups": [
+                      {"name": "Spring", "race_numbers": [1, 2], "discards": 1},
+                      {"name": "Autumn", "race_numbers": [5, 6], "discards": 0},
+                  ]}
+        boats = [{"id": f"b{i}", "name": f"Boat {i}", "sail_no": str(i),
+                  "helm": "H", "class_id": "c1", "year": 2026} for i in range(1, 4)]
+
+        def fin(bid, pos):
+            return {"boat_id": bid, "code": "FINISHED", "position": pos,
+                    "finish_time": None, "penalty_points": 0}
+
+        def dnc(bid):
+            return {"boat_id": bid, "code": "DNC", "position": None,
+                    "finish_time": None, "penalty_points": 0}
+
+        # 6 races: races 1-2 b1 dominant, 3-4 b2 dominant, 5-6 b3 dominant.
+        plan = [("b1", "b2", "b3"), ("b1", "b2", "b3"),
+                ("b2", "b1", "b3"), ("b2", "b1", "b3"),
+                ("b3", "b1", "b2"), ("b3", "b1", "b2")]
+        races = []
+        for rn, (w, s, third) in enumerate(plan, start=1):
+            races.append({
+                "id": f"r{rn}", "series_id": "s1", "class_id": "c1", "year": 2026,
+                "race_number": rn, "date": f"2026-05-{rn:02d}", "status": "published",
+                "entries_count": 3,
+                "results": [fin(w, 1), fin(s, 2), dnc(third)],
+            })
+        server.db = types.SimpleNamespace(races=_Coll(races), boats=_Coll(boats))
+        return asyncio.run(server.compute_series_standings(series, race_numbers=race_numbers,
+                                                           discards=discards))
+
+    def test_groups_layout(self):
+        st = self._run()
+        assert st["race_count"] == 6
+        # Full series keeps its own discards (0), not any group's discards.
+        assert st["discards"] == 0
+        assert st["mini_series"]["enabled"] is True
+        assert st["mini_series"]["groups"] == [
+            {"name": "Spring", "race_numbers": [1, 2], "discards": 1, "race_count": 2},
+            {"name": "Autumn", "race_numbers": [5, 6], "discards": 0, "race_count": 2},
+        ]
+
+    def test_group_uses_only_its_races_and_its_own_discards(self):
+        st = self._run(race_numbers=[1, 2], discards=1)  # Spring group
+        assert st["race_count"] == 2
+        assert st["discards"] == 1
+        assert st["configured_discards"] == 1
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert len(by_id) == 3
+        assert all(len(r["scores"]) == 2 for r in st["standings"])
+        # b1 won both Spring races; with 1 discard the net is the best race (1).
+        # b3 DNC'd both (4 + 4, discard one -> 4).
+        assert by_id["b1"]["rank"] == 1 and by_id["b1"]["net"] == 1.0
+        assert by_id["b3"]["net"] == 4.0
+
+    def test_group_race_selection_is_explicit(self):
+        # Only race 3 (of b2's 3-4 run) selected -> b2 wins with a single 1.0.
+        st = self._run(race_numbers=[3], discards=0)
+        assert st["race_count"] == 1
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b2"]["rank"] == 1 and by_id["b2"]["net"] == 1.0
+
+    def test_normalize_mini_groups(self):
+        races = [{"race_number": 1}, {"race_number": 2}, {"race_number": 3},
+                 {"race_number": 4}, {"race_number": 5}, {"race_number": 6}]
+        series = {"mini_series": True, "mini_series_groups": [
+            {"name": "First half", "race_numbers": [1, 2, 3], "discards": 1},
+            {"name": "", "race_numbers": [4, 5, 6]},
+        ]}
+        groups = server._normalize_mini_groups(series, races)
+        assert groups == [
+            {"name": "First half", "race_numbers": [1, 2, 3], "discards": 1, "race_count": 3},
+            {"name": "Mini 2", "race_numbers": [4, 5, 6], "discards": 0, "race_count": 3},
+        ]
+        # A group referencing races that have not been published reports 0.
+        groups2 = server._normalize_mini_groups({"mini_series": True, "mini_series_groups": [
+            {"name": "Later", "race_numbers": [9, 10]}]}, races)
+        assert groups2[0]["race_count"] == 0
+        # Legacy stored shape (mini_series_size) falls back to consecutive chunks.
+        legacy = server._normalize_mini_groups(
+            {"mini_series": True, "mini_series_size": 2, "mini_series_discards": 1}, races)
+        assert [g["name"] for g in legacy] == ["Mini 1", "Mini 2", "Mini 3"]
+        assert legacy[0]["race_numbers"] == [1, 2] and legacy[0]["discards"] == 1
+
+    def test_group_race_numbers_are_deduplicated_and_sorted(self):
+        groups = server._normalize_mini_groups({"mini_series": True, "mini_series_groups": [
+            {"name": "Mix", "race_numbers": [3, 1, 3, 0, -2]}]},
+            [{"race_number": 1}, {"race_number": 3}])
+        assert groups[0]["race_numbers"] == [1, 3]
+        assert groups[0]["race_count"] == 2
+
+    def test_non_mini_series_has_no_metadata(self):
+        import asyncio
+        import types
+        series = {"id": "s2", "class_id": "c1", "year": 2026, "discards": 0}
+        boats = [{"id": "b1", "name": "Boat 1", "sail_no": "1", "helm": "H",
+                  "class_id": "c1", "year": 2026}]
+        race = {"id": "r1", "series_id": "s2", "class_id": "c1", "year": 2026,
+                "race_number": 1, "date": "2026-05-01", "status": "published",
+                "entries_count": 1, "results": []}
+        server.db = types.SimpleNamespace(races=_Coll([race]), boats=_Coll(boats))
+        st = asyncio.run(server.compute_series_standings(series))
+        assert st["mini_series"] is None
