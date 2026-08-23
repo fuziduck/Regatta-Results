@@ -572,13 +572,18 @@ RRS_CODES = [
     {"code": "DNE", "label": "DNE — Disqualification not excludable"},
     {"code": "DPI", "label": "DPI — Discretionary penalty imposed (manual points)"},
     {"code": "RDG", "label": "RDG — Redress given (manual points)"},
+    {"code": "OOD", "label": "OOD — Officer of the Day duty (average of own other race scores)"},
 ]
 # Rule A2.1: only DNE may not be excluded from a series score.
 NON_DISCARDABLE = {"DNE"}
 FINISH_CODES = {"FINISHED"}
 # Codes that mean the boat did not finish (or never started): scoring them on a
 # boat that had finished triggers RRS A6.1 (boats behind move up one place).
-POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC"}
+POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC", "OOD"}
+# Duty codes (Sailwave club convention): the boat did not race — it did its
+# club duty (Officer of the Day, rescue boat, crew) — and scores the average
+# of its own points in the series' other races where it actually sailed.
+DUTY_CODES = {"OOD"}
 
 
 # ---------------------------------------------------------------------------
@@ -2569,8 +2574,9 @@ def round_half_up(x: float) -> int:
 
 
 def _start_area_entries(results) -> int:
-    """Boats that came to the starting area = those selected to race (not DNC)."""
-    return len([r for r in results if r.get("code") != "DNC"])
+    """Boats that came to the starting area = those selected to race (not DNC
+    and not on duty — an OOD boat is on the bank, not on the start line)."""
+    return len([r for r in results if r.get("code") not in ("DNC", *DUTY_CODES)])
 
 
 def result_points(r, series_entries, start_area_entries, use_a5_3=False,
@@ -2853,6 +2859,23 @@ def _normalize_mini_groups(series, races):
     return out
 
 
+def _apply_duty_points(agg, entries_by_race):
+    """Duty races (OOD — Officer of the Day) score the boat's own average of
+    its OTHER races in the series where it actually sailed (code not DNC and
+    not another duty), matching the Sailwave club convention of "OOD average
+    points excluding DNC". A boat with no other sailed races falls back to
+    the DNC score (series entries + 1) so duty can never score better than a
+    finish in a tiny fleet."""
+    for entries in agg.values():
+        sailed = [e["points"] for e in entries if e["code"] not in ("DNC", *DUTY_CODES)]
+        for i, e in enumerate(entries):
+            if e["code"] in DUTY_CODES:
+                if sailed:
+                    e["points"] = round(sum(sailed) / len(sailed), 2)
+                else:
+                    e["points"] = float(entries_by_race[i] + 1)
+
+
 async def _series_scores(series, race_numbers=None):
     """Return (agg, boat_map, race_meta, use_a5_3). agg: boat_id -> list of
     per-race entry dicts, aligned to race_meta. If race_numbers is given (a
@@ -2868,9 +2891,11 @@ async def _series_scores(series, race_numbers=None):
     use_finishers = bool(series.get("use_finishers", False))
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     agg = {bid: [] for bid in boat_map}
+    entries_by_race = []
     for race in races:
         results = race.get("results", [])
         series_entries = race.get("entries_count") or len(results)
+        entries_by_race.append(series_entries)
         start_entries = _start_area_entries(results)
         finishers = len([r for r in results if r.get("code") == "FINISHED"])
         present = {r["boat_id"]: r for r in results}
@@ -2902,6 +2927,7 @@ async def _series_scores(series, race_numbers=None):
                     per_boat[bid]["points"] = shared
         for bid, e in per_boat.items():
             agg[bid].append(e)
+    _apply_duty_points(agg, entries_by_race)
     return agg, boat_map, race_meta, use_a5_3, use_finishers
 
 

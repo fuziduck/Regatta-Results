@@ -56,6 +56,15 @@ macOS wipes `/tmp` on reboot and various tooling recreates the dirs empty.
   `http://localhost:3000`, not `http://127.0.0.1:3000`.
 - **Port conflicts**: stop any legacy containers first if names clash:
   `docker stop regatta-backend regatta-frontend regatta-mongodb 2>/dev/null`
+- **Preview registration PID**: the Freebuff preview must be registered with a
+  HOST-visible pid. A container's `docker inspect .State.Pid` is inside the
+  Docker VM and is rejected. Use the host process listening on the port
+  instead (`lsof -nP -iTCP:3000 -sTCP:LISTEN` → `com.docker`).
+- **After a restart**: the compose stack dies with Docker Desktop; relaunch
+  with `open -a Docker`, wait for the socket, then
+  `docker compose -f docker-compose.dev.yml up -d`. Remove any stale
+  launchd preview job (`launchctl remove com.codebuff.pv30eb`) before
+  starting a fresh preview.
 - **Don't run the static preview server** (`python3 -m http.server 3000`)
   while the compose stack is up — it binds 127.0.0.1:3000 first and shadows
   the frontend container.

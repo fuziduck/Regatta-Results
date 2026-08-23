@@ -645,3 +645,64 @@ class TestMiniSeriesEndpoint:
             for race in requests.get(f"{API}/races", params={"series_id": s}).json():
                 requests.delete(f"{API}/races/{race['id']}", headers=h(club_officer_token))
             requests.delete(f"{API}/series/{s}", headers=h(club_admin_token))
+
+
+# ---------- Duty points (OOD average, Sailwave club convention) ----------
+class TestDutyPoints:
+    def test_ood_scores_average_of_own_sailed_races(self, club_officer_token, club_admin_token):
+        r = requests.post(f"{API}/classes", json={"name": "Duty Points Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Duty Points Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 70}, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        boats = []
+        for i, (nm, sl) in enumerate([("D One", "D1"), ("D Two", "D2"), ("D Three", "D3")], start=1):
+            r = requests.post(f"{API}/boats", json={
+                "name": nm, "sail_no": sl, "class_id": cls["id"], "helm": f"H{i}",
+                "year": YEAR, "active": True}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json())
+        b = [x["id"] for x in boats]
+        created = []
+        try:
+            # Race 1: D1 1st, D2 2nd. Race 2: D1 2nd, D2 1st. Race 3: D1 OOD, D2 1st.
+            positions = [(1, 0, 1), (2, 1, 0)]
+            for rn, first_idx, second_idx in positions:
+                r = requests.post(f"{API}/races", json={
+                    "date": f"{YEAR}-07-{rn:02d}", "class_id": cls["id"], "series_id": sid,
+                    "race_number": rn, "start_time": "10:30"}, headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                rid = r.json()["id"]
+                created.append(rid)
+                requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b[first_idx]}, headers=h(club_officer_token))
+                requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b[second_idx]}, headers=h(club_officer_token))
+                requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+            # Race 3: D1 -> OOD, D2 finishes 1st.
+            r = requests.post(f"{API}/races", json={
+                "date": f"{YEAR}-07-03", "class_id": cls["id"], "series_id": sid,
+                "race_number": 3, "start_time": "10:30"}, headers=h(club_officer_token))
+            rid3 = r.json()["id"]
+            created.append(rid3)
+            r = requests.put(f"{API}/races/{rid3}/result/{b[0]}", json={"code": "OOD"}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            assert next(x for x in r.json()["results"] if x["boat_id"] == b[0])["code"] == "OOD"
+            requests.post(f"{API}/races/{rid3}/finish", json={"boat_id": b[1]}, headers=h(club_officer_token))
+            requests.post(f"{API}/races/{rid3}/status/published", headers=h(club_officer_token))
+
+            st = requests.get(f"{API}/standings/series/{sid}").json()
+            row = next(x for x in st["standings"] if x["boat_id"] == b[0])
+            # D1: 1st + 2nd + OOD(avg 1.5) = 4.5
+            assert row["scores"][2]["code"] == "OOD" and row["scores"][2]["points"] == 1.5
+            assert row["net"] == 4.5
+            # D2: 2 + 1 + 1 = 4, so D2 wins the series on duty points
+            row2 = next(x for x in st["standings"] if x["boat_id"] == b[1])
+            assert row2["rank"] == 1 and row2["net"] == 4.0
+        finally:
+            for rid in created:
+                requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))

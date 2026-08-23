@@ -799,6 +799,101 @@ class TestMiniSeries:
         assert groups[0]["race_numbers"] == [1, 3]
         assert groups[0]["race_count"] == 2
 
+
+class TestDutyPoints:
+    """OOD (Officer of the Day) duty races score the boat's own average of its
+    OTHER races in the series where it actually sailed (Sailwave club
+    convention: "OOD average points excluding DNC")."""
+
+    def _run(self, races, use_a5_3=False):
+        import asyncio
+        import types
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "use_a5_3": use_a5_3, "use_finishers": False}
+        boats = [{"id": f"b{i}", "name": f"Boat {i}", "sail_no": str(i),
+                  "helm": "H", "class_id": "c1", "year": 2026} for i in range(1, 4)]
+        server.db = types.SimpleNamespace(races=_Coll(races), boats=_Coll(boats))
+        st = asyncio.run(server.compute_series_standings(series))
+        return {r["boat_id"]: r for r in st["standings"]}
+
+    def _race(self, rn, results):
+        return {"id": f"r{rn}", "series_id": "s1", "class_id": "c1", "year": 2026,
+                "race_number": rn, "date": f"2026-05-{rn:02d}", "status": "published",
+                "entries_count": 3, "results": results}
+
+    def _res(self, bid, code, pos=None):
+        return {"boat_id": bid, "code": code, "position": pos,
+                "finish_time": None, "penalty_points": 0}
+
+    def test_ood_scores_average_of_own_sailed_races(self):
+        # b1: 1st, 2nd, then OOD -> OOD = (1 + 2) / 2 = 1.5
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        scores = by_id["b1"]["scores"]
+        assert [(s["code"], s["points"]) for s in scores] == [("FINISHED", 1.0), ("FINISHED", 2.0), ("OOD", 1.5)]
+        # OOD is discardable like any other scored race
+        assert scores[2]["discarded"] is False and scores[2]["points"] == 1.5
+
+    def test_ood_excludes_dnc_from_the_average(self):
+        # b1: 1st, DNC, OOD -> average over sailed races only = [1] -> 1.0
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        ood_score = by_id["b1"]["scores"][2]
+        assert ood_score["code"] == "OOD" and ood_score["points"] == 1.0
+
+    def test_ood_falls_back_to_dnc_score_with_no_sailed_races(self):
+        # b3 never sails, only OOD + DNC -> OOD scores series entries + 1 = 4
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "OOD")]),
+        ]
+        by_id = self._run(races)
+        assert by_id["b3"]["scores"][1]["code"] == "OOD" and by_id["b3"]["scores"][1]["points"] == 4.0
+
+    def test_multiple_oods_do_not_average_each_other(self):
+        # b1: 1st, OOD, OOD -> both OODs average the one sailed race = 1.0
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        assert [(s["code"], s["points"]) for s in by_id["b1"]["scores"]] == [
+            ("FINISHED", 1.0), ("OOD", 1.0), ("OOD", 1.0)]
+
+    def test_ood_not_counted_as_start_area_under_a5_3(self):
+        # r3: b1 OOD, b2 finished, b3 DNS. Start area = b2 + b3 = 2 (b1 on duty
+        # is NOT on the line) -> DNS scores start-area + 1 = 3, not 4.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNS")]),
+            self._race(2, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNS")]),
+            self._race(3, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNS")]),
+        ]
+        by_id = self._run(races, use_a5_3=True)
+        assert by_id["b3"]["scores"][2]["points"] == 3.0
+
+    def test_ood_average_keeps_precision_to_two_decimals(self):
+        # Directly on the helper: avg of 1, 1, 2 = 1.3333 -> 1.33 (the standings
+        # display rounds to one decimal later, like every other score).
+        agg = {"b1": [{"code": "FINISHED", "points": 1.0},
+                      {"code": "FINISHED", "points": 1.0},
+                      {"code": "FINISHED", "points": 2.0},
+                      {"code": "OOD", "points": 99.0}]}
+        server._apply_duty_points(agg, [3, 3, 3, 3])
+        assert agg["b1"][3]["points"] == 1.33
+        # a boat with no sailed races falls back to that race's entries + 1
+        agg2 = {"b2": [{"code": "DNC", "points": 4.0}, {"code": "OOD", "points": 99.0}]}
+        server._apply_duty_points(agg2, [3, 3])
+        assert agg2["b2"][1]["points"] == 4.0
+
     def test_non_mini_series_has_no_metadata(self):
         import asyncio
         import types
