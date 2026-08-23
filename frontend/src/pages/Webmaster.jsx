@@ -20,17 +20,17 @@ const blank = { name: "", color: "#0A369D" };
 function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
   return (
     <div className="rounded-2xl border border-border bg-card p-5 hover:shadow-lg hover:border-ocean/40 transition-all">
-      <div className="flex items-center gap-4">
+      <div className="flex items-start justify-between gap-2">
         <ClubBadge club={club} />
-        <div className="min-w-0">
-          <div className="font-heading text-2xl uppercase tracking-tight leading-tight break-words">{club.name}</div>
-          <div className="text-xs text-muted-foreground mt-1 font-mono">/{club.slug}</div>
-        </div>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <Button size="icon" variant="ghost" title="Manage logins" data-testid={`logins-club-${club.slug}`} onClick={() => onLogins(club)}><KeyRound className="w-4 h-4" /></Button>
           <Button size="icon" variant="ghost" data-testid={`edit-club-${club.slug}`} onClick={() => onEdit(club)}><Pencil className="w-4 h-4" /></Button>
           <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-club-${club.slug}`} onClick={() => onDelete(club)}><Trash2 className="w-4 h-4" /></Button>
         </div>
+      </div>
+      <div className="mt-3">
+        <div className="font-heading text-2xl uppercase tracking-tight leading-tight break-words">{club.name}</div>
+        <div className="text-xs text-muted-foreground mt-1 font-mono break-all">/{club.slug}</div>
       </div>
       <div className="mt-5 grid grid-cols-2 gap-2">
         <Button variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid={`open-officer-${club.slug}`} onClick={() => onConsole(club, "officer")}>
