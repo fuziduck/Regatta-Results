@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Trophy } from "lucide-react";
 
@@ -38,7 +39,14 @@ const medal = (rank) => {
 
   const races = data.races || [];
   const schedule = data.schedule || [];
-  const totalCols = Math.max(races.length, data.planned_races || 0, schedule.length);
+  // The planned/TBC columns only make sense while the scored races run
+  // contiguously from race 1. When a race has been abandoned (or is otherwise
+  // missing), the remaining races no longer line up with their schedule index,
+  // so padding with an index-derived race number would invent a duplicate —
+  // show only the races actually scored instead.
+  const contiguous = races.every((r, i) => r.race_number === i + 1);
+  const planned = contiguous ? data.planned_races || 0 : races.length;
+  const totalCols = Math.max(races.length, planned, contiguous ? schedule.length : 0);
   const cols = Array.from({ length: totalCols }, (_, i) => ({
     race_number: races[i]?.race_number ?? i + 1,
     date: races[i]?.date ?? schedule[i] ?? null,
@@ -81,8 +89,10 @@ const medal = (rank) => {
                 </span>
               </TableCell>
               <TableCell className="sticky z-10 bg-inherit" style={{ left: "var(--rank-w, 3rem)" }}>
-                <div className="font-semibold leading-tight whitespace-nowrap">{row.boat_name}</div>
-                <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
+                <Link to={`/boat/${row.boat_id}`} className="font-semibold leading-tight whitespace-nowrap hover:text-ocean transition-colors" data-testid={`boat-link-${row.sail_no}`}>{row.boat_name}</Link>
+                <div className="font-mono text-xs text-muted-foreground">
+                  <Link to={`/boat/${row.boat_id}`} className="hover:text-ocean transition-colors" data-testid={`boat-sail-link-${row.sail_no}`}>{row.sail_no}</Link> · {row.helm}
+                </div>
               </TableCell>
               <TableCell className="text-muted-foreground whitespace-nowrap">{row.home_club || "—"}</TableCell>
               {cols.map((_, j) => {
@@ -143,8 +153,10 @@ export function OverallStandingsTable({ data }) {
                 </span>
               </TableCell>
               <TableCell className="sticky z-10 bg-inherit" style={{ left: "var(--rank-w, 3rem)" }}>
-                <div className="font-semibold leading-tight">{row.boat_name}</div>
-                <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
+                <Link to={`/boat/${row.boat_id}`} className="font-semibold leading-tight hover:text-ocean transition-colors" data-testid={`boat-link-${row.sail_no}`}>{row.boat_name}</Link>
+                <div className="font-mono text-xs text-muted-foreground">
+                  <Link to={`/boat/${row.boat_id}`} className="hover:text-ocean transition-colors" data-testid={`boat-sail-link-${row.sail_no}`}>{row.sail_no}</Link> · {row.helm}
+                </div>
               </TableCell>
               <TableCell className="text-muted-foreground whitespace-nowrap">{row.home_club || "—"}</TableCell>
               {data.series_names.map((s) => (

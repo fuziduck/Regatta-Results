@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
-import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
+import { Anchor, LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -38,7 +38,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
   const [boats, setBoats] = useState({});
 
   useEffect(() => {
-    api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then((rs) => setRaces((rs || []).filter((r) => !r.abandoned)));
+    api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then(setRaces);
     api.getBoats({ class_id: classId, club_id: clubId }).then((bs) => {
       const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m);
     });
@@ -60,14 +60,27 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
           <AccordionItem key={race.id} value={race.id} className="border rounded-xl mb-3 px-4 bg-card">
             <AccordionTrigger className="hover:no-underline" data-testid={`race-folder-${race.id}`}>
               <div className="flex items-center gap-3 text-left">
-                <div className="w-10 h-10 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg">R{race.race_number}</div>
+                <div className={`w-10 h-10 rounded-lg grid place-items-center font-heading text-lg ${race.abandoned ? "bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400" : "bg-ocean/10 text-ocean"}`}>
+                  {race.abandoned ? <FlagOff className="w-5 h-5" /> : `R${race.race_number}`}
+                </div>
                 <div>
-                  <div className="font-semibold">Race {race.race_number}</div>
+                  <div className="font-semibold flex items-center gap-2">Race {race.race_number}
+                    {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
+                  </div>
                   <div className="text-xs text-muted-foreground">{fmtDate(race.date)}</div>
                 </div>
               </div>
             </AccordionTrigger>
             <AccordionContent>
+              {race.abandoned ? (
+                <div className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 p-4 text-sm text-red-700 dark:text-red-300 flex items-start gap-2" data-testid={`race-abandoned-${race.id}`}>
+                  <FlagOff className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold">Race abandoned</div>
+                    <p className="text-xs mt-0.5">This race was abandoned on the day and does not count towards the series — the series is scored as if this weekend never took place.</p>
+                  </div>
+                </div>
+              ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -97,6 +110,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
                   </tbody>
                 </table>
               </div>
+              )}
             </AccordionContent>
           </AccordionItem>
         );
