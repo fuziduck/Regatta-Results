@@ -1,5 +1,19 @@
+import { useEffect, useRef } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Trophy } from "lucide-react";
+
+// Keep the rank (#) column pinned at the left edge and offset the sticky Boat
+// column by the rank column's ACTUAL rendered width, so the two sit
+// side-by-side while every other column scrolls underneath them. The width is
+// content-driven (trophy + single or double-digit ranks), so it is measured
+// once per data change and exposed as --rank-w on the scroll container.
+function useRankPinning(ref, deps) {
+  useEffect(() => {
+    const box = ref.current?.closest(".overflow-x-auto");
+    const th = ref.current?.querySelector("thead th");
+    if (box && th) box.style.setProperty("--rank-w", `${th.getBoundingClientRect().width}px`);
+  }, deps); // eslint-disable-line
+}
 
 const fmtDateShort = (dstr) => {
   if (!dstr) return "";
@@ -13,14 +27,15 @@ const fmtDateShort = (dstr) => {
 const medal = (rank) => {
   if (rank === 1) return "text-amber-500";
   if (rank === 2) return "text-slate-400";
-  if (rank === 3) return "text-orange-600";
+  if (rank === 3) return "text-orange-600 dark:text-orange-400";
   return "text-muted-foreground";
-};
-
-export function SeriesStandingsTable({ data }) {
+};export function SeriesStandingsTable({ data }) {
+  const tableRef = useRef(null);
+  useRankPinning(tableRef, [data]);
   if (!data || !data.standings?.length) {
     return <p data-testid="no-standings" className="text-muted-foreground text-sm py-6">No results published yet for this series.</p>;
   }
+
   const races = data.races || [];
   const schedule = data.schedule || [];
   const totalCols = Math.max(races.length, data.planned_races || 0, schedule.length);
@@ -35,11 +50,11 @@ export function SeriesStandingsTable({ data }) {
   };
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <Table data-testid="series-standings-table">
+      <Table data-testid="series-standings-table" ref={tableRef}>
         <TableHeader>
           <TableRow className="bg-ocean text-white hover:bg-ocean">
-            <TableHead className="text-white w-12">#</TableHead>
-            <TableHead className="text-white sticky left-0 bg-ocean">Boat</TableHead>
+            <TableHead className="text-white w-12 sticky left-0 z-20 bg-ocean">#</TableHead>
+            <TableHead className="text-white sticky z-10 bg-ocean" style={{ left: "var(--rank-w, 3rem)" }}>Boat</TableHead>
             <TableHead className="text-white">Club</TableHead>
             {cols.map((r, i) => (
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
@@ -55,13 +70,17 @@ export function SeriesStandingsTable({ data }) {
         </TableHeader>
         <TableBody>
           {data.standings.map((row, i) => (
-            <TableRow key={row.boat_id} className={i % 2 ? "bg-muted/40" : ""} data-testid={`standing-row-${row.sail_no}`}>
-              <TableCell className="font-heading text-lg">
+            // Opaque row backgrounds, hover included: the sticky Boat column
+            // uses bg-inherit, so any translucency (the base row's
+            // hover:bg-muted/50 included) lets columns scrolling underneath it
+            // show through and overlap the boat name.
+            <TableRow key={row.boat_id} className={i % 2 ? "bg-muted hover:bg-muted" : "bg-card hover:bg-muted"} data-testid={`standing-row-${row.sail_no}`}>
+              <TableCell className="font-heading text-lg sticky left-0 z-20 bg-inherit">
                 <span className={`inline-flex items-center gap-1 ${medal(row.rank)}`}>
                   {row.rank <= 3 && <Trophy className="w-4 h-4" />} {row.rank}
                 </span>
               </TableCell>
-              <TableCell className="sticky left-0 bg-inherit">
+              <TableCell className="sticky z-10 bg-inherit" style={{ left: "var(--rank-w, 3rem)" }}>
                 <div className="font-semibold leading-tight whitespace-nowrap">{row.boat_name}</div>
                 <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
               </TableCell>
@@ -70,7 +89,7 @@ export function SeriesStandingsTable({ data }) {
                 const s = (row.scores || [])[j];
                 if (!s) return <TableCell key={j} className="text-center text-muted-foreground/30">–</TableCell>;
                 return (
-                  <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : ""} ${s.code && s.code !== "FINISHED" ? "text-red-600" : ""}`}>
+                  <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : ""} ${s.code && s.code !== "FINISHED" ? "text-red-600 dark:text-red-400" : ""}`}>
                     {fmtScore(s)}
                   </TableCell>
                 );
@@ -96,16 +115,18 @@ export function SeriesStandingsTable({ data }) {
 }
 
 export function OverallStandingsTable({ data }) {
+  const tableRef = useRef(null);
+  useRankPinning(tableRef, [data]);
   if (!data || !data.standings?.length) {
     return <p data-testid="no-overall" className="text-muted-foreground text-sm py-6">No overall results yet.</p>;
   }
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <Table data-testid="overall-standings-table">
+      <Table data-testid="overall-standings-table" ref={tableRef}>
         <TableHeader>
           <TableRow className="bg-ocean-dark text-white hover:bg-ocean-dark">
-            <TableHead className="text-white w-12">#</TableHead>
-            <TableHead className="text-white">Boat</TableHead>
+            <TableHead className="text-white w-12 sticky left-0 z-20 bg-ocean-dark">#</TableHead>
+            <TableHead className="text-white sticky z-10 bg-ocean-dark" style={{ left: "var(--rank-w, 3rem)" }}>Boat</TableHead>
             <TableHead className="text-white">Club</TableHead>
             {data.series_names.map((s) => (
               <TableHead key={s} className="text-white text-center hidden md:table-cell whitespace-nowrap">{s}</TableHead>
@@ -115,13 +136,13 @@ export function OverallStandingsTable({ data }) {
         </TableHeader>
         <TableBody>
           {data.standings.map((row, i) => (
-            <TableRow key={row.boat_id} className={i % 2 ? "bg-muted/40" : ""} data-testid={`overall-row-${row.sail_no}`}>
-              <TableCell className="font-heading text-lg">
+            <TableRow key={row.boat_id} className={i % 2 ? "bg-muted hover:bg-muted" : "bg-card hover:bg-muted"} data-testid={`overall-row-${row.sail_no}`}>
+              <TableCell className="font-heading text-lg sticky left-0 z-20 bg-inherit">
                 <span className={`inline-flex items-center gap-1 ${medal(row.rank)}`}>
                   {row.rank <= 3 && <Trophy className="w-4 h-4" />} {row.rank}
                 </span>
               </TableCell>
-              <TableCell>
+              <TableCell className="sticky z-10 bg-inherit" style={{ left: "var(--rank-w, 3rem)" }}>
                 <div className="font-semibold leading-tight">{row.boat_name}</div>
                 <div className="font-mono text-xs text-muted-foreground">{row.sail_no} · {row.helm}</div>
               </TableCell>

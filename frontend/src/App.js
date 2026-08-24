@@ -2,6 +2,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 import Clubs from "@/pages/Clubs";
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
@@ -23,6 +24,7 @@ function Protected({ children, allow }) {
 function App() {
   return (
     <div className="App">
+      <ThemeProvider>
       <AuthProvider>
         <BrowserRouter>
           <Routes>
@@ -39,6 +41,7 @@ function App() {
         </BrowserRouter>
         <Toaster position="top-center" richColors />
       </AuthProvider>
+      </ThemeProvider>
     </div>
   );
 }

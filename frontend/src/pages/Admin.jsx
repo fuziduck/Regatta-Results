@@ -7,6 +7,7 @@ import ClubBadge from "@/components/ClubBadge";
 import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
+import ThemeToggle from "@/components/ThemeToggle";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -109,6 +110,7 @@ function TopBar({ clubName, onSwitchClub }) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <ThemeToggle light />
           <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate(clubQuery ? `/officer?club=${clubQuery}` : "/officer")}>Officer</Button>
           {role === "webmaster" && (
             <>
@@ -332,7 +334,7 @@ function SeriesTab({ classes, clubId }) {
     a5_convention: "a5_2",
     discard_policy: "fixed",
     discard_schedule: [],
-    tle: { enabled: false, time_limit_minutes: null, method: "dnf" },
+    tle: { enabled: false, time_limit_minutes: null, method: "finishers_plus_1" },
     scp: { method: "percent", value: 20, cap_dnf: true },
     zfp: { method: "percent", value: 20, cap_dnf: true },
     duty: { enabled: true, method: "average_own_sailed", round: 2 },
@@ -623,7 +625,7 @@ function SeriesTab({ classes, clubId }) {
                                   <button key={rn} type="button"
                                     onClick={() => toggleMiniRace(gi, rn)}
                                     data-testid={`mini-race-${gi}-${rn}`}
-                                    className={`px-2 py-1 rounded-md text-xs font-mono border transition-colors ${on ? "bg-ocean text-white border-ocean" : "bg-white border-border text-muted-foreground hover:border-ocean/50"}`}>
+                                    className={`px-2 py-1 rounded-md text-xs font-mono border transition-colors ${on ? "bg-ocean text-white border-ocean" : "bg-white dark:bg-card border-border text-muted-foreground hover:border-ocean/50"}`}>
                                     R{rn}
                                   </button>
                                 );
@@ -698,7 +700,7 @@ function SeriesTab({ classes, clubId }) {
                 {locked ? (
                   <>
                     {s.lock_status === "locked" && (
-                      <Button size="sm" variant="outline" className="text-slate-700 border-slate-400/60 h-8" data-testid={`archive-${s.name}`} onClick={() => { setLockDialog({ mode: "archive", series: s }); setLockReason(""); }}>Archive</Button>
+                      <Button size="sm" variant="outline" className="text-slate-700 border-slate-400/60 h-8 dark:text-slate-300 dark:border-slate-500/60" data-testid={`archive-${s.name}`} onClick={() => { setLockDialog({ mode: "archive", series: s }); setLockReason(""); }}>Archive</Button>
                     )}
                     <Button size="sm" variant="outline" className="text-amber-700 border-amber-400/60 h-8" data-testid={`unlock-${s.name}`} onClick={() => { setLockDialog({ mode: "unlock", series: s }); setLockReason(""); }}>Unlock</Button>
                   </>
@@ -765,7 +767,7 @@ function SeriesTab({ classes, clubId }) {
             {snapshots.map((s) => (
               <div key={s.version} className="rounded-lg border border-border p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-heading uppercase text-sm">Version {s.version} <Badge className={s.status === "locked" ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700"}>{s.status}</Badge></span>
+                  <span className="font-heading uppercase text-sm">Version {s.version} <Badge className={s.status === "locked" ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300"}>{s.status}</Badge></span>
                   <span className="font-mono text-xs text-muted-foreground">{new Date(s.locked_at).toLocaleString()}</span>
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">Locked by <span className="font-semibold">{s.locked_by}</span> · engine {s.engine_version} · {s.scoring_config?.rrs_edition}</div>
@@ -875,9 +877,9 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
         return (
           <>
             {sel && (
-              <div className={`rounded-xl border p-3 mb-4 flex flex-wrap items-center justify-between gap-3 ${archived ? "border-slate-600 bg-slate-100" : locked ? "border-emerald-500/50 bg-emerald-50" : "border-border bg-muted/40"}`} data-testid="hist-lock-banner">
+              <div className={`rounded-xl border p-3 mb-4 flex flex-wrap items-center justify-between gap-3 ${archived ? "border-slate-600 bg-slate-100 dark:bg-slate-800/40 dark:border-slate-500" : locked ? "border-emerald-500/50 bg-emerald-50 dark:bg-emerald-500/10 dark:border-emerald-500/50" : "border-border bg-muted/40"}`} data-testid="hist-lock-banner">
                 <div className="flex items-center gap-2 text-sm">
-                  {archived ? <Archive className="w-4 h-4 text-slate-700" /> : locked ? <ShieldCheck className="w-4 h-4 text-emerald-700" /> : <Anchor className="w-4 h-4 text-muted-foreground" />}
+                  {archived ? <Archive className="w-4 h-4 text-slate-700 dark:text-slate-300" /> : locked ? <ShieldCheck className="w-4 h-4 text-emerald-700 dark:text-emerald-400" /> : <Anchor className="w-4 h-4 text-muted-foreground" />}
                   <span className="font-semibold">{archived ? "Season archived — results are permanent" : locked ? "Season locked — results are final" : "Season open"}</span>
                   {locked && <span className="text-xs text-muted-foreground">v{sel.lock_version || 1} · locked by {sel.locked_by || "—"} · results are served from the saved snapshot and cannot be changed through normal editing.</span>}
                 </div>
@@ -885,7 +887,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
                   {locked && (
                     <>
                       {!archived && (
-                        <Button size="sm" variant="outline" className="border-slate-600 text-slate-700 h-8" data-testid="hist-archive-btn"
+                        <Button size="sm" variant="outline" className="border-slate-600 text-slate-700 h-8 dark:border-slate-500 dark:text-slate-300" data-testid="hist-archive-btn"
                           onClick={() => { setLockDialog("archive"); setLockReason(""); }}>Archive</Button>
                       )}
                       <Button size="sm" variant="outline" className="border-amber-500 text-amber-700 h-8" data-testid="hist-unlock-btn"
@@ -961,7 +963,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-muted/40 p-3">
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">Race {race.race_number} · {fmtDate(race.date)}</span>
-              <Badge className={race.status === "published" ? "bg-emerald-100 text-emerald-800" : race.status === "provisional" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}>{race.status}</Badge>
+              <Badge className={race.status === "published" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : race.status === "provisional" ? "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" : "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300"}>{race.status}</Badge>
             </div>
             <div className="flex items-center gap-2">
               {race.status === "published" ? (

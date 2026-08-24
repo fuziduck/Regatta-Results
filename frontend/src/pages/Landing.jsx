@@ -9,7 +9,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import AdvertCard, { useAdverts, pickAdverts, interleaveWithAdverts } from "@/components/AdvertCard";
+import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
+import ThemeToggle from "@/components/ThemeToggle";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { Anchor, LifeBuoy, Clock, Flag, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 
@@ -285,17 +286,19 @@ export default function Landing() {
     );
   }
 
+  const sideAdverts = pickAdverts(adverts, 3, roll);
   return (
     <div className="min-h-screen bg-background">
       <NotificationBanner items={notifications} />
 
-      <header className="sticky top-0 z-40 backdrop-blur-xl bg-white/80 border-b border-border">
+      <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Anchor className="w-5 h-5 text-white" /></div>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
           </div>
           <div className="flex items-center gap-2">
+            <ThemeToggle />
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs
@@ -315,17 +318,17 @@ export default function Landing() {
           src="https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0YXR8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
           alt="racing" className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
-        <div className="relative max-w-6xl mx-auto px-4 py-12 md:py-16">
-          <Badge className={`mb-4 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
+        <div className="relative max-w-6xl mx-auto px-4 py-6 md:py-8">
+          <Badge className={`mb-3 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
             {year} Season
           </Badge>
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
             {club.name} · {year === CURRENT_YEAR ? "live" : year} results & standings
           </h1>
-          <p className="text-white/80 mt-4 max-w-xl leading-relaxed">
+          <p className="text-white/80 mt-3 max-w-xl leading-relaxed">
             Follow every fleet across the season. Provisional and confirmed results, series championships and race-day notices — all in one place.
           </p>
-          <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-6 justify-center"
+          <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4"
             labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
 
           {classes.length > 0 && (
@@ -379,10 +382,7 @@ export default function Landing() {
               <span className="text-xs text-muted-foreground">· clears once results are published</span>
             </div>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
-              {interleaveWithAdverts(notifications, pickAdverts(adverts, Math.ceil(notifications.length / 2), roll)).map((n, idx) => (
-                n.__advert ? (
-                  <AdvertCard key={`ad-${idx}`} advert={n.__advert} />
-                ) : (
+              {notifications.map((n, idx) => (
                 <div key={idx} data-testid={`notice-card-${n.class_name}`}
                   className="rounded-xl border border-safety/30 bg-safety/5 p-4 relative overflow-hidden">
                   <div className="absolute top-0 left-0 w-1.5 h-full bg-safety" />
@@ -417,16 +417,29 @@ export default function Landing() {
                     )}
                   </div>
                 </div>
-                )
               ))}
             </div>
           </div>
         )}
 
-        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_280px] lg:gap-8 lg:items-start">
+        <div>
           <div className="min-w-0">
-            <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
-            <p className="text-muted-foreground text-sm mb-4">Each fleet races its own series and overall championship.</p>
+            <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
+              <div>
+                <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
+                <p className="text-muted-foreground text-sm">Each fleet races its own series and overall championship.</p>
+              </div>
+              {/* Sponsor adverts sit beside the section heading, on the right. */}
+              {sideAdverts.length > 0 && (
+                <div className="flex flex-wrap gap-4" data-testid="section-adverts">
+                  {sideAdverts.map((a) => (
+                    <div key={a.id} className="w-48 md:w-56">
+                      <AdvertCard advert={a} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {classes.length === 0 ? (
               <p className="text-muted-foreground">No classes set up yet.</p>
@@ -449,21 +462,16 @@ export default function Landing() {
               />
             )}
           </div>
-
-          {/* Advert sits beside the results on desktop (sticky while scrolling)
-              and below them on mobile, so it never pushes the results down. */}
-          {pickAdverts(adverts, 1, roll + 1)[0] && (
-            <aside className="mt-10 lg:mt-0 lg:sticky lg:top-24 flex justify-center lg:justify-start">
-              <AdvertCard advert={pickAdverts(adverts, 1, roll + 1)[0]} />
-            </aside>
-          )}
         </div>
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
         <div className="font-heading uppercase tracking-tight">SailScore</div>
         <p className="mt-1">Connecting sailing, one club at a time.</p>
-        <p className="mt-2 text-xs">{club.name} · Scored under the RRS Low Point System · {year}</p>
+        <p className="mt-2 text-xs">
+          Website by L Hopper · Queries to{" "}
+          <a href="mailto:admin@sailscore.co.uk" className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">admin@sailscore.co.uk</a>
+        </p>
       </footer>
     </div>
   );

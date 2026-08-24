@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
+import ThemeToggle from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +43,9 @@ export default function ForgotPassword() {
 
   return (
     <div className="min-h-screen relative flex items-center justify-center p-4 bg-ocean-dark">
+      <div className="absolute top-4 right-4 z-10">
+        <ThemeToggle light />
+      </div>
       <div className="relative w-full max-w-md">
         <Link to="/login" className="inline-flex items-center gap-2 text-white/80 hover:text-white mb-6 text-sm font-semibold transition-colors">
           <ArrowLeft className="w-4 h-4" /> Back to login

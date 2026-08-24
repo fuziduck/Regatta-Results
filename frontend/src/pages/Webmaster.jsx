@@ -8,6 +8,7 @@ import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
 import AuditLog from "@/components/AuditLog";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
+import ThemeToggle from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,10 +34,10 @@ function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
         <div className="text-xs text-muted-foreground mt-1 font-mono break-all">/{club.slug}</div>
       </div>
       <div className="mt-5 grid grid-cols-2 gap-2">
-        <Button variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid={`open-officer-${club.slug}`} onClick={() => onConsole(club, "officer")}>
+        <Button variant="outline" className="w-full gap-2 whitespace-normal leading-tight text-center border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid={`open-officer-${club.slug}`} onClick={() => onConsole(club, "officer")}>
           <Radio className="w-4 h-4" /> Officer console
         </Button>
-        <Button variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid={`open-admin-${club.slug}`} onClick={() => onConsole(club, "admin")}>
+        <Button variant="outline" className="w-full gap-2 whitespace-normal leading-tight text-center border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid={`open-admin-${club.slug}`} onClick={() => onConsole(club, "admin")}>
           <ShieldCheck className="w-4 h-4" /> Admin console
         </Button>
       </div>
@@ -141,6 +142,7 @@ export default function Webmaster() {
             <div className="font-heading text-xl uppercase tracking-tight leading-none">Webmaster</div>
           </div>
           <div className="flex items-center gap-2">
+            <ThemeToggle light />
             <span className="text-xs text-white/70 mr-1">{clubs.length} club{clubs.length === 1 ? "" : "s"}</span>
             <ChangePasscodeDialog onChanged={updateSession} />
             <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="webmaster-logout-btn"

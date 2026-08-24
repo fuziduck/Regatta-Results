@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
+import ThemeToggle from "@/components/ThemeToggle";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -18,9 +19,9 @@ import { toast } from "sonner";
 import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil } from "lucide-react";
 
 const STATUS_BADGE = {
-  setup: "bg-slate-200 text-slate-700",
-  provisional: "bg-amber-100 text-amber-800 animate-pulse",
-  published: "bg-emerald-100 text-emerald-800",
+  setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
+  provisional: "bg-amber-100 text-amber-800 animate-pulse dark:bg-amber-500/15 dark:text-amber-300",
+  published: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
 };
 
 function useNow(intervalMs = 250) {
@@ -62,6 +63,7 @@ function TopBar({ clubName, onSwitchClub }) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <ThemeToggle light />
           {(role === "admin" || role === "webmaster") && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate(clubQuery ? `/admin?club=${clubQuery}` : "/admin")}>Admin</Button>}
           {role === "webmaster" && (
             <>
@@ -279,7 +281,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
 
   return (
     <div className="pb-40">
-      <div className="sticky top-16 z-30 backdrop-blur-xl bg-white/85 border-b border-border">
+      <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={onBack} data-testid="console-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
           <div className="flex-1">
@@ -414,7 +416,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
             <Button size="sm" variant="outline" className="h-8 border-ocean/40 text-ocean" data-testid="validate-btn" onClick={checkResults}>Check results</Button>
           </div>
           {validateMsg && (
-            <div className={`mb-3 rounded-lg p-3 text-xs whitespace-pre-line ${validateMsg.level === "ok" ? "bg-emerald-50 text-emerald-800" : validateMsg.level === "error" ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"}`} data-testid="validate-msg">
+            <div className={`mb-3 rounded-lg p-3 text-xs whitespace-pre-line ${validateMsg.level === "ok" ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : validateMsg.level === "error" ? "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300" : "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"}`} data-testid="validate-msg">
               {validateMsg.text}
             </div>
           )}
@@ -499,7 +501,7 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
       </div>
 
       {/* Sticky action bar */}
-      <div className="fixed bottom-0 inset-x-0 z-40 backdrop-blur-xl bg-white/90 border-t border-border">
+      <div className="fixed bottom-0 inset-x-0 z-40 backdrop-blur-xl bg-background/90 border-t border-border">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
           <Button variant="outline" className="text-destructive border-destructive/40" data-testid="delete-race-btn" onClick={remove}><Trash2 className="w-4 h-4" /></Button>
           {race.status === "published" ? (

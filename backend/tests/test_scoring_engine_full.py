@@ -83,8 +83,9 @@ class TestEveryCodeScores:
     def test_tle_is_a_code_with_a_rule(self):
         codes = {c["code"] for c in server.RRS_CODES}
         assert "TLE" in codes
-        # default TLE method "dnf" scores the active DNF base (A5.2 -> entries+1)
-        assert server.result_points(_res("TLE"), 10, 8) == 11.0
+        # default TLE method "finishers_plus_1": one more than the boats that
+        # finished the race, regardless of the A5 base
+        assert server.result_points(_res("TLE"), 10, 8, finishers=6) == 7.0
 
 
 # ---------------------------------------------------------------------------

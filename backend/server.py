@@ -2879,7 +2879,8 @@ def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
       always series entries + 1).
     - tle: Time Limit Expired rule. Disabled by default; when enabled the
       race committee records a boat as TLE and it scores per `method`
-      ("dnf" = the active A5 DNF score, "finishers_plus_1", or "dnc").
+      ("finishers_plus_1" — the default: one more than the number of boats
+      that finished the race; "dnf" = the active A5 DNF score; "dnc").
     - scp/zfp: penalty rule per RRS 44.3(c)/30.2 — a percentage of the DNF
       score added to the boat's place, rounded half-up, never worse than DNF
       (that cap is itself configurable via cap_dnf).
@@ -2898,7 +2899,7 @@ def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
         "a5_convention": convention,
         "discard_policy": "fixed",
         "discard_schedule": [],
-        "tle": {"enabled": False, "time_limit_minutes": None, "method": "dnf"},
+        "tle": {"enabled": False, "time_limit_minutes": None, "method": "finishers_plus_1"},
         "scp": {"method": "percent", "value": 20.0, "cap_dnf": True},
         "zfp": {"method": "percent", "value": 20.0, "cap_dnf": True},
         "duty": {"enabled": True, "method": "average_own_sailed", "round": 2},
@@ -2983,7 +2984,7 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
     SCP/ZFP  -> her place made worse by the series' configured penalty
                 (percent of DNF, or points/places), capped at DNF when the
                 series rules impose that limit.
-    TLE      -> the series' configured TLE rule (default: the DNF score).
+    TLE      -> the series' configured TLE rule (default: finishers + 1).
     DNC      -> series entries + 1 under every convention.
     DNS/OCS/UFD/BFD/NSC/DNF/RET/DSQ/DNE -> the active A5 base: series
                 entries + 1 (A5.2 default), start-area entries + 1 (A5.3),

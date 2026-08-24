@@ -107,23 +107,25 @@ export function fmtSeconds(total) {
   return neg ? `−${body}` : body;
 }
 
+const DARK = "dark:bg-white/10 dark:text-red-300 dark:border-red-500/40";
+
 export const CODE_COLORS = {
-  FINISHED: "bg-emerald-100 text-emerald-800 border-emerald-300",
-  DNC: "bg-slate-100 text-slate-600 border-slate-300",
-  DNS: "bg-amber-100 text-amber-800 border-amber-300",
-  DNF: "bg-orange-100 text-orange-800 border-orange-300",
-  OCS: "bg-red-100 text-red-800 border-red-300",
-  UFD: "bg-red-100 text-red-800 border-red-300",
-  BFD: "bg-red-100 text-red-800 border-red-300",
-  ZFP: "bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300",
-  SCP: "bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300",
-  NSC: "bg-orange-100 text-orange-800 border-orange-300",
-  RET: "bg-purple-100 text-purple-800 border-purple-300",
-  DSQ: "bg-red-100 text-red-800 border-red-300",
-  DNE: "bg-red-200 text-red-900 border-red-400",
-  DPI: "bg-red-100 text-red-800 border-red-300",
-  RDG: "bg-blue-100 text-blue-800 border-blue-300",
-  OOD: "bg-teal-100 text-teal-800 border-teal-300",
+  FINISHED: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/40",
+  DNC: "bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/40",
+  DNS: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40",
+  DNF: "bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-500/15 dark:text-orange-300 dark:border-orange-500/40",
+  OCS: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
+  UFD: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
+  BFD: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
+  ZFP: "bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300 dark:bg-fuchsia-500/15 dark:text-fuchsia-300 dark:border-fuchsia-500/40",
+  SCP: "bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300 dark:bg-fuchsia-500/15 dark:text-fuchsia-300 dark:border-fuchsia-500/40",
+  NSC: "bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-500/15 dark:text-orange-300 dark:border-orange-500/40",
+  RET: "bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40",
+  DSQ: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
+  DNE: "bg-red-200 text-red-900 border-red-400 dark:bg-red-500/25 dark:text-red-300 dark:border-red-500/60",
+  DPI: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
+  RDG: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/40",
+  OOD: "bg-teal-100 text-teal-800 border-teal-300 dark:bg-teal-500/15 dark:text-teal-300 dark:border-teal-500/40",
 };
 
 export const CURRENT_YEAR = new Date().getFullYear();
