@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, ArrowLeft, LogIn, Sailboat, Search, Trophy, Medal, Lock, Archive } from "lucide-react";
+import { CURRENT_YEAR } from "@/lib/helpers";
 
 export default function Boat() {
   const { fleetId } = useParams();
+  const navigate = useNavigate();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
@@ -116,15 +118,26 @@ export default function Boat() {
                   </tr>
                 </thead>
                 <tbody>
-                  {profile.overall.map((o, i) => (
-                    <tr key={i} className={i % 2 ? "bg-muted" : "bg-card"}>
-                      <td className="py-2 px-4">{o.club_name}</td>
-                      <td className="py-2 px-4">{o.class_name}</td>
-                      <td className="py-2 px-4">{o.year}</td>
-                      <td className="py-2 px-4 text-center font-heading text-base">{o.rank}</td>
-                      <td className="py-2 px-4 text-center font-mono font-bold text-ocean dark:text-ocean-light">{o.net}</td>
-                    </tr>
-                  ))}
+                  {profile.overall.map((o, i) => {
+                    const qp = new URLSearchParams();
+                    if (o.year && o.year !== CURRENT_YEAR) qp.set("year", String(o.year));
+                    if (o.class_id) qp.set("class", o.class_id);
+                    const qs = qp.toString();
+                    return (
+                      <tr key={i}
+                        onClick={() => navigate(`/club/${o.club_slug}${qs ? `?${qs}` : ""}`)}
+                        data-testid={`career-overall-${o.class_id}`}
+                        className={`${i % 2 ? "bg-muted" : "bg-card"} cursor-pointer hover:bg-muted/70 transition-colors`}
+                        title={`View the ${o.year} overall championship for ${o.class_name}`}
+                      >
+                        <td className="py-2 px-4">{o.club_name}</td>
+                        <td className="py-2 px-4">{o.class_name}</td>
+                        <td className="py-2 px-4">{o.year}</td>
+                        <td className="py-2 px-4 text-center font-heading text-base">{o.rank}</td>
+                        <td className="py-2 px-4 text-center font-mono font-bold text-ocean dark:text-ocean-light">{o.net}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -146,14 +159,17 @@ export default function Boat() {
                     <th className="py-2.5 px-4 font-semibold">Club</th>
                     <th className="py-2.5 px-4 font-semibold">Class</th>
                     <th className="py-2.5 px-4 font-semibold">Year</th>
-                    <th className="py-2.5 px-4 font-semibold text-center">Races</th>
-                    <th className="py-2.5 px-4 font-semibold text-center">Net</th>
                     <th className="py-2.5 px-4 font-semibold text-center">Position</th>
                   </tr>
                 </thead>
                 <tbody>
                   {profile.series.map((s, i) => (
-                    <tr key={s.series_id} className={i % 2 ? "bg-muted" : "bg-card"}>
+                    <tr key={s.series_id}
+                      onClick={() => openSeries(s)}
+                      data-testid={`career-series-${s.series_id}`}
+                      className={`${i % 2 ? "bg-muted" : "bg-card"} cursor-pointer hover:bg-muted/70 transition-colors`}
+                      title={`View the full ${s.series_name} results`}
+                    >
                       <td className="py-2 px-4">
                         <span className="font-semibold">{s.series_name}</span>
                         {s.locked && (
@@ -166,22 +182,15 @@ export default function Boat() {
                       </td>
                       <td className="py-2 px-4">
                         {s.club_slug
-                          ? <Link to={`/club/${s.club_slug}`} className="text-ocean dark:text-ocean-light hover:underline">{s.club_name}</Link>
+                          ? <Link to={`/club/${s.club_slug}`} className="text-ocean dark:text-ocean-light hover:underline" onClick={(e) => e.stopPropagation()}>{s.club_name}</Link>
                           : s.club_name}
                       </td>
                       <td className="py-2 px-4 text-muted-foreground">{s.class_name}</td>
                       <td className="py-2 px-4">{s.year}</td>
-                      <td className="py-2 px-4 text-center font-mono">{s.races_scored}</td>
-                      <td className="py-2 px-4 text-center font-mono font-bold text-ocean dark:text-ocean-light">{s.net}</td>
                       <td className="py-2 px-4 text-center">
-                        <button
-                          type="button"
-                          data-testid={`career-series-${s.series_id}`}
-                          onClick={() => openSeries(s)}
-                          className="inline-flex items-center gap-1 rounded-lg border border-ocean/40 px-2.5 py-1 font-heading text-base text-ocean dark:text-ocean-light hover:bg-ocean hover:text-white transition-colors"
-                        >
+                        <span className="inline-flex items-center gap-1 rounded-lg border border-ocean/40 px-2.5 py-1 font-heading text-base text-ocean dark:text-ocean-light">
                           {s.rank}
-                        </button>
+                        </span>
                       </td>
                     </tr>
                   ))}

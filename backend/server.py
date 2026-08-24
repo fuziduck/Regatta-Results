@@ -4155,7 +4155,8 @@ async def fleet_profile(fleet_id: str):
             continue
         row = next((r for r in payload.get("standings", []) if r["boat_id"] in ids), None)
         if row:
-            overall.append({"class_name": s["class_name"], "club_name": s["club_name"],
+            overall.append({"class_id": s.get("class_id"), "class_name": s["class_name"],
+                            "club_name": s["club_name"], "club_slug": s.get("club_slug"),
                             "year": s["year"], "rank": row.get("rank"), "net": row.get("net")})
     overall.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
     primary = min(members, key=lambda m: m.get("created_at") or "")

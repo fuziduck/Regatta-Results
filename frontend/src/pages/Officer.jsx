@@ -640,6 +640,9 @@ export default function Officer() {
   const [series, setSeries] = useState({});
   const [selected, setSelected] = useState(null);
   const [rrsCodes, setRrsCodes] = useState([]);
+  // Published races list: newest first by default (most recent race at the
+  // top), switchable to oldest first.
+  const [publishedOrder, setPublishedOrder] = useState("desc");
 
   const loadRaces = useCallback(async () => {
     const params = clubId ? { club_id: clubId } : {};
@@ -714,6 +717,11 @@ export default function Officer() {
 
   const active = races.filter((r) => r.status !== "published");
   const done = races.filter((r) => r.status === "published");
+  const sortedDone = [...done].sort((a, b) => {
+    const ka = `${a.date || ""}|${String(a.race_number || 0).padStart(4, "0")}`;
+    const kb = `${b.date || ""}|${String(b.race_number || 0).padStart(4, "0")}`;
+    return publishedOrder === "desc" ? (ka < kb ? 1 : ka > kb ? -1 : 0) : (ka < kb ? -1 : ka > kb ? 1 : 0);
+  });
 
   const RaceRow = ({ r }) => (
     <button data-testid={`race-item-${r.id}`} onClick={() => setSelected(r.id)}
@@ -801,8 +809,20 @@ export default function Officer() {
 
         {done.length > 0 && (
           <>
-            <h2 className="text-lg md:text-lg uppercase tracking-tight mb-3 mt-8">Published</h2>
-            <div className="space-y-3">{done.map((r) => <RaceRow key={r.id} r={r} />)}</div>
+            <div className="flex items-center justify-between gap-2 mb-3 mt-8">
+              <h2 className="text-lg md:text-lg uppercase tracking-tight">Published</h2>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground hidden sm:inline">Order</span>
+                <Select value={publishedOrder} onValueChange={setPublishedOrder}>
+                  <SelectTrigger className="h-8 w-40" data-testid="published-order"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="desc">Newest first</SelectItem>
+                    <SelectItem value="asc">Oldest first</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-3">{sortedDone.map((r) => <RaceRow key={r.id} r={r} />)}</div>
           </>
         )}
       </main>

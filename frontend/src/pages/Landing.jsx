@@ -214,7 +214,11 @@ export default function Landing() {
   const [searchParams, setSearchParams] = useSearchParams();
   const yearParam = Number(searchParams.get("year"));
   const year = Number.isInteger(yearParam) && yearParam > 2000 && yearParam <= MAX_YEAR ? yearParam : CURRENT_YEAR;
-  const setYear = (y) => setSearchParams(y === CURRENT_YEAR ? {} : { year: String(y) });
+  const setYear = (y) => {
+    const p = new URLSearchParams(searchParams);
+    if (y === CURRENT_YEAR) p.delete("year"); else p.set("year", String(y));
+    setSearchParams(p);
+  };
   const [club, setClub] = useState(null);
   const [loadingClub, setLoadingClub] = useState(true);
   const [classes, setClasses] = useState([]);
@@ -240,7 +244,14 @@ export default function Landing() {
 
   useEffect(() => {
     if (!clubId) return;
-    api.getClasses({ club_id: clubId }).then((c) => { setClasses(c); if (c[0]) setActiveClass(c[0].id); });
+    api.getClasses({ club_id: clubId }).then((c) => {
+      setClasses(c);
+      // A ?class= param (e.g. from a boat career page) preselects that class;
+      // otherwise the first class is the default.
+      const wanted = searchParams.get("class");
+      if (wanted && c.some((x) => x.id === wanted)) setActiveClass(wanted);
+      else if (c[0]) setActiveClass(c[0].id);
+    });
     const load = () => {
       api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
       // Keep the future-year buttons current when the admin sets up a new season.
