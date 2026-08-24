@@ -22,7 +22,13 @@ function LatestResults({ latest }) {
     <div className="mt-3 space-y-1.5">
       <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         <Trophy className="w-3.5 h-3.5 text-safety" />
-        Latest · R{latest.race_number} · {fmtDateShort(latest.date)}
+        {latest.is_overall ? (
+          <span title={`Final standings of ${latest.series_name} — every planned race sailed`}>
+            Series complete · {latest.series_name}
+          </span>
+        ) : (
+          <span>Latest · R{latest.race_number} · {fmtDateShort(latest.date)}</span>
+        )}
       </div>
       <div className="space-y-1">
         {latest.top3.map((t) => (
@@ -186,6 +192,7 @@ export default function Clubs() {
                         <div className="font-heading uppercase tracking-tight text-sm">{c.name}</div>
                         {c.latest?.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50 dark:text-indigo-300 dark:border-indigo-500/40 dark:bg-indigo-500/15">IRC</Badge>}
                         {c.latest?.scoring_mode === "py" && <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-300 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-500/40 dark:bg-emerald-500/15">PY</Badge>}
+                        {c.latest?.scoring_mode === "one_design" && <Badge variant="outline" className="text-[10px] text-slate-600 border-slate-300 bg-slate-50 dark:text-slate-300 dark:border-slate-500/40 dark:bg-slate-500/15">One Design</Badge>}
                       </div>
                       {c.latest ? (
                         <LatestResults latest={c.latest} />

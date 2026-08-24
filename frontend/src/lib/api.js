@@ -98,6 +98,7 @@ export const api = {
   adjustResult: (id, boat_id, d, v) => client.put(`/races/${id}/result/${boat_id}`, withVer(d, v)).then((r) => r.data),
   validateRace: (id) => client.get(`/races/${id}/validation`).then((r) => r.data),
   setStatus: (id, status, v) => client.post(`/races/${id}/status/${status}`, null, { params: verQuery(v) }).then((r) => r.data),
+  abandonRace: (id, abandoned, v) => client.post(`/races/${id}/abandon`, { abandoned }, { params: verQuery(v) }).then((r) => r.data),
   deleteRace: (id, v) => client.delete(`/races/${id}`, { params: verQuery(v) }).then((r) => r.data),
 
   getNotifications: (params = {}) => client.get("/notifications", { params }).then((r) => r.data),

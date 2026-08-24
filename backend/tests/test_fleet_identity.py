@@ -45,6 +45,9 @@ def _scalar_match(v, val):
             elif op == "$ne":
                 if v == arg:
                     return False
+            elif op == "$nin":
+                if v in arg:
+                    return False
             elif op == "$regex":
                 flags = _re.IGNORECASE if options == "i" else 0
                 if not _re.search(arg, str(v or ""), flags):
@@ -289,6 +292,37 @@ class TestFleetProfile:
         assert spring["rank"] == 1
         assert spring["locked"] is False
 
+    def test_profile_groups_records_sharing_name_and_sail(self):
+        """Two clubs record the same boat under DIFFERENT fleet_ids (never
+        explicitly linked). The career profile must still group them, because
+        the boat name and sail number match."""
+        b1 = _boat("b1", "Watersong", "8420", "c1", 2026, fleet_id="F1")
+        b2 = _boat("b2", "Water Song", "8420", "c2", 2027, fleet_id="F2")  # same key, other fleet
+        s1 = {"id": "s1", "name": "Late Spring", "class_id": "c1", "year": 2026,
+              "scoring_mode": "one_design", "discards": 0, "included_in_overall": True,
+              "order": 0, "lock_status": None}
+        s2 = {"id": "s2", "name": "Spring Series", "class_id": "c2", "year": 2027,
+              "scoring_mode": "one_design", "discards": 0, "included_in_overall": True,
+              "order": 0, "lock_status": None}
+        r1 = {"id": "r1", "series_id": "s1", "class_id": "c1", "year": 2026,
+              "race_number": 1, "date": "2026-06-13", "status": "published",
+              "results": [{"boat_id": "b1", "code": "FINISHED", "position": 1,
+                           "finish_time": "2026-06-13T10:00:00Z", "penalty_points": 0}]}
+        r2 = {"id": "r2", "series_id": "s2", "class_id": "c2", "year": 2027,
+              "race_number": 1, "date": "2027-04-10", "status": "published",
+              "results": [{"boat_id": "b2", "code": "FINISHED", "position": 1,
+                           "finish_time": "2027-04-10T10:00:00Z", "penalty_points": 0}]}
+        server.db = types.SimpleNamespace(
+            boats=_Coll([b1, b2]), races=_Coll([r1, r2]), series=_Coll([s1, s2]),
+            classes=_Coll([{"id": "c1", "name": "Sonata", "club_id": "club-a"},
+                           {"id": "c2", "name": "Wayfarer", "club_id": "club-b"}]),
+            clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "m"},
+                         {"id": "club-b", "name": "Other SC", "slug": "o"}]),
+            season_snapshots=_Coll([]))
+        prof = asyncio.run(server.fleet_profile("F1"))
+        assert len(prof["records"]) == 2
+        assert [s["series_name"] for s in prof["series"]] == ["Spring Series", "Late Spring"]
+
     def test_unknown_fleet_404(self):
         server.db = self._db()
         try:
@@ -314,6 +348,22 @@ class TestFleetSearch:
         assert out[0]["fleet_id"] == "F1"
         assert set(out[0]["clubs"]) == {"Medway YC", "Other SC"}
         assert set(out[0]["classes"]) == {"Sonata", "Wayfarer"}
+        assert out[0]["records"] == 2
+
+    def test_search_groups_same_name_sail_even_when_fleet_ids_differ(self):
+        """The same boat recorded at two clubs under different fleet_ids (never
+        linked) appears ONCE because the name and sail number match."""
+        b1 = _boat("b1", "Watersong", "8420", "c1", 2026, fleet_id="F1")
+        b2 = _boat("b2", "Water Song", "8420", "c2", 2027, fleet_id="F2")
+        server.db = types.SimpleNamespace(
+            boats=_Coll([b1, b2]),
+            classes=_Coll([{"id": "c1", "name": "Sonata", "club_id": "club-a"},
+                           {"id": "c2", "name": "Wayfarer", "club_id": "club-b"}]),
+            clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "m"},
+                         {"id": "club-b", "name": "Other SC", "slug": "o"}]))
+        out = asyncio.run(server.fleet_search("watersong"))
+        assert len(out) == 1
+        assert set(out[0]["clubs"]) == {"Medway YC", "Other SC"}
         assert out[0]["records"] == 2
 
     def test_search_by_sail_number_token(self):

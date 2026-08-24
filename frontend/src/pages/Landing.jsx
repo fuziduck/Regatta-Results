@@ -38,7 +38,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
   const [boats, setBoats] = useState({});
 
   useEffect(() => {
-    api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then(setRaces);
+    api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then((rs) => setRaces((rs || []).filter((r) => !r.abandoned)));
     api.getBoats({ class_id: classId, club_id: clubId }).then((bs) => {
       const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m);
     });

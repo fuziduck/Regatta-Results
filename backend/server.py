@@ -733,6 +733,14 @@ class ResultAdjustInput(BaseModel):
     expected_version: Optional[int] = None
 
 
+class RaceAbandonInput(BaseModel):
+    """Mark a race abandoned (or restore it). An abandoned race is excluded
+    from series scoring entirely: it does not count as a race sailed, so the
+    series has fewer races scored and the discard schedule (especially
+    increasing discards) may reduce accordingly."""
+    abandoned: bool = True
+
+
 class LockSeriesInput(BaseModel):
     """Administrator confirmation for locking/unlocking/archiving a season.
     The reason is mandatory for the audit trail; confirm must be explicitly
@@ -1690,7 +1698,7 @@ async def clubs_directory(year: Optional[int] = None):
         class_info = []
         for c in classes:
             latest = None
-            q = {"class_id": c["id"], "status": "published"}
+            q = {"class_id": c["id"], "status": "published", "abandoned": {"$ne": True}}
             if year:
                 q["year"] = year
             # NB: chained .sort() calls REPLACE each other in PyMongo ("only
@@ -1706,17 +1714,44 @@ async def clubs_directory(year: Optional[int] = None):
                 bids = [x["boat_id"] for x in finished]
                 boats = {b["id"]: b for b in await db.boats.find({"id": {"$in": bids}}, {"_id": 0}).to_list(50)}
                 mode = None
+                ser = None
                 if r.get("series_id"):
-                    ser = await db.series.find_one({"id": r["series_id"]}, {"_id": 0, "scoring_mode": 1})
+                    ser = await db.series.find_one({"id": r["series_id"]},
+                                                   {"_id": 0, "id": 1, "scoring_mode": 1,
+                                                    "name": 1, "planned_races": 1,
+                                                    "lock_status": 1})
                     mode = (ser or {}).get("scoring_mode")
+                top3 = [{"position": x["position"],
+                         "boat": boats.get(x["boat_id"], {}).get("name", "?"),
+                         "sail_no": boats.get(x["boat_id"], {}).get("sail_no", "")}
+                        for x in finished]
+                is_overall = False
+                if ser and (ser.get("planned_races") or 0) > 0:
+                    # A series is "complete" once every planned race has been
+                    # sailed and published. When the most recent race belongs to
+                    # a complete series, the front page shows the OVERALL series
+                    # result rather than the last race's top three.
+                    raced = await db.races.count_documents(
+                        {"series_id": ser["id"], "status": "published",
+                         "abandoned": {"$ne": True}})
+                    is_overall = raced >= ser.get("planned_races", 0)
+                if is_overall:
+                    full = await db.series.find_one({"id": ser["id"]}, {"_id": 0})
+                    payload = await _standings_for_series(full)
+                    if payload is None:
+                        payload = await compute_series_standings(full)
+                    standings = payload.get("standings") or []
+                    top3 = [{"position": s.get("rank", i + 1),
+                             "boat": s.get("boat_name", "?"),
+                             "sail_no": s.get("sail_no", "")}
+                            for i, s in enumerate(standings[:3])]
                 latest = {
                     "race_number": r.get("race_number"),
                     "date": r.get("date"),
                     "scoring_mode": mode or c.get("scoring_mode") or "one_design",
-                    "top3": [{"position": x["position"],
-                               "boat": boats.get(x["boat_id"], {}).get("name", "?"),
-                               "sail_no": boats.get(x["boat_id"], {}).get("sail_no", "")}
-                              for x in finished],
+                    "is_overall": is_overall,
+                    "series_name": ser.get("name") if (is_overall and ser) else None,
+                    "top3": top3,
                 }
             planned_series = []
             # Show the season's planned series for the current year too — so a
@@ -2768,6 +2803,32 @@ async def set_race_status(race_id: str, status: str, request: Request,
     return updated
 
 
+@api_router.post("/races/{race_id}/abandon")
+async def set_race_abandoned(race_id: str, data: RaceAbandonInput, request: Request,
+                             user: dict = Depends(require_officer)):
+    """Mark a race abandoned (or restore it). The race keeps its record and
+    results (the committee may need them), but it is excluded from series
+    scoring: it no longer counts as a race sailed, so the series has fewer
+    races scored and its discard schedule (especially increasing discards)
+    adjusts automatically. Blocked for locked/archived seasons."""
+    race = await _race_of_club(race_id, user)
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version_query(request)
+    result = await db.races.update_one(
+        _version_filter(race_id, expected),
+        {"$set": {"abandoned": bool(data.abandoned)},
+         "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    club_id = await _class_club_id(race.get("class_id"))
+    await _log_audit(request=None, user=user,
+                     action="RACE_ABANDONED" if data.abandoned else "RACE_RESTORED",
+                     description=f"Race {race.get('race_number')} "
+                                 f"{'abandoned' if data.abandoned else 'restored to the series'}",
+                     resource_type="race", resource_id=race_id, club_id=club_id)
+    return await db.races.find_one({"id": race_id}, {"_id": 0})
+
+
 @api_router.delete("/races/{race_id}")
 async def delete_race(race_id: str, request: Request,
                       user: dict = Depends(require_officer)):
@@ -3473,7 +3534,8 @@ async def _series_scores(series, race_numbers=None):
     per-race entry dicts, aligned to race_meta; cfg: the series' effective
     scoring config; races: the published races scored. If race_numbers is
     given (a set/list of the series' race numbers), only those races count."""
-    races = await db.races.find({"series_id": series["id"], "status": "published"}, {"_id": 0}).to_list(1000)
+    races = await db.races.find({"series_id": series["id"], "status": "published",
+                                 "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     if race_numbers is not None:
         keep = {int(n) for n in race_numbers}
@@ -3635,7 +3697,8 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     # Freeze each mini-series view too, so a locked season's mini standings
     # are equally immutable.
     if series.get("mini_series"):
-        all_races = await db.races.find({"series_id": series["id"], "status": "published"},
+        all_races = await db.races.find({"series_id": series["id"], "status": "published",
+                                         "abandoned": {"$ne": True}},
                                         {"_id": 0, "race_number": 1}).to_list(1000)
         groups = _normalize_mini_groups(series, all_races)
         mini_payloads = {}
@@ -3903,7 +3966,8 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     frozen = await _standings_for_series(series, mini=mini)
     if frozen is not None:
         return frozen
-    all_races = await db.races.find({"series_id": series_id, "status": "published"},
+    all_races = await db.races.find({"series_id": series_id, "status": "published",
+                                     "abandoned": {"$ne": True}},
                                     {"_id": 0, "race_number": 1}).to_list(1000)
     groups = _normalize_mini_groups(series, all_races)
     if mini < 1 or mini > len(groups):
@@ -3994,12 +4058,17 @@ async def fleet_search(q: Optional[str] = None, limit: int = 25):
     groups = {}
     order = []
     for b in docs:
-        fid = b.get("fleet_id") or b["id"]
-        if fid not in groups:
-            groups[fid] = {"fleet_id": fid, "name": b.get("name"), "sail_no": b.get("sail_no"),
+        # Public grouping is by the normalized sail-number + name identity key:
+        # the same boat recorded at two clubs (even under different fleet_ids)
+        # appears once when its name and sail number match. Records without a
+        # key fall back to their fleet identity, then their own id.
+        gid = b.get("fleet_key") or b.get("fleet_id") or b["id"]
+        if gid not in groups:
+            groups[gid] = {"fleet_id": b.get("fleet_id") or b["id"], "name": b.get("name"),
+                           "sail_no": b.get("sail_no"),
                            "clubs": [], "classes": [], "records": 0}
-            order.append(fid)
-        g = groups[fid]
+            order.append(gid)
+        g = groups[gid]
         cls = classes.get(b.get("class_id"), {})
         club = clubs.get(cls.get("club_id"), {})
         if club.get("name") and club["name"] not in g["clubs"]:
@@ -4022,9 +4091,18 @@ async def fleet_profile(fleet_id: str):
                                   {"_id": 0}).to_list(2000)
     if not members:
         raise HTTPException(status_code=404, detail="Boat not found")
+    # The public career spans every record sharing the boat's normalized
+    # name+sail key too — so a boat that races under two clubs groups into one
+    # profile even when its club records were never explicitly linked.
+    key = next((m.get("fleet_key") for m in members if m.get("fleet_key")), None)
+    if key:
+        known = {m["id"] for m in members}
+        more = await db.boats.find({"fleet_key": key, "id": {"$nin": list(known)}},
+                                   {"_id": 0}).to_list(2000)
+        members.extend(more)
     ids = [m["id"] for m in members]
-    races = await db.races.find({"status": "published", "results.boat_id": {"$in": ids}},
-                                {"_id": 0}).to_list(5000)
+    races = await db.races.find({"status": "published", "results.boat_id": {"$in": ids},
+                                 "abandoned": {"$ne": True}}, {"_id": 0}).to_list(5000)
     series_ids = {r.get("series_id") for r in races if r.get("series_id")}
     series_docs = {s["id"]: s for s in await db.series.find(
         {"id": {"$in": list(series_ids)}}, {"_id": 0}).to_list(1000)}

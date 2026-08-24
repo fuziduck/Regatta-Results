@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -311,6 +311,10 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
     s === "setup" ? "Result recalled — race is back in setup" :
     `Marked ${s}`
   ).then((r) => { if (r && s === "published") onBack(); });
+  const abandon = (flag) => runMutation(
+    () => api.abandonRace(raceId, flag, version),
+    flag ? "Race abandoned — removed from series scoring" : "Race restored to the series"
+  );
   const remove = () => runMutation(() => api.deleteRace(raceId, version), "Race deleted").then((r) => { if (r) onBack(); });
   const gun = () => runMutation(() => api.startRace(raceId, new Date().toISOString(), version), "Race started — timer running");
   const clearGun = () => runMutation(() => api.startRace(raceId, null, version), "Timer reset to scheduled start");
@@ -341,10 +345,16 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
             <div className="text-xs text-muted-foreground">Race {race.race_number} · {fmtDate(race.date)} · Start {race.start_time}</div>
           </div>
           <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
+          {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300" data-testid="abandoned-badge">Abandoned</Badge>}
         </div>
       </div>
 
       <div className="max-w-5xl mx-auto px-4 pt-5 space-y-6">
+        {race.abandoned && (
+          <section className="rounded-xl border border-red-300 bg-red-50 dark:bg-red-500/10 dark:border-red-500/40 p-4 text-sm text-red-700 dark:text-red-300 flex items-center gap-2" data-testid="abandoned-banner">
+            <FlagOff className="w-4 h-4 shrink-0" /> This race is abandoned — it is excluded from the series scoring, so the series has one fewer race scored and its discards may reduce. Use “Restore race” below to count it again.
+          </section>
+        )}
         {/* Live timing */}
         <section className="rounded-2xl overflow-hidden bg-ocean-dark text-white relative" data-testid="timing-strip">
           <div className="absolute inset-0 bg-gradient-to-br from-ocean-dark via-ocean to-ocean-light opacity-90" />
@@ -578,6 +588,17 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
       {/* Sticky action bar */}
       <div className="fixed bottom-0 inset-x-0 z-40 backdrop-blur-xl bg-background/90 border-t border-border">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
+          {race.abandoned ? (
+            <Button variant="outline" className="h-12 border-emerald-500 text-emerald-700 gap-1.5" data-testid="restore-race-btn"
+              onClick={() => { if (window.confirm("Restore this race to the series? It will count towards the series scoring again.")) abandon(false); }}>
+              <Undo2 className="w-4 h-4" /> Restore race
+            </Button>
+          ) : (
+            <Button variant="outline" className="h-12 border-red-400 text-red-600 gap-1.5" data-testid="abandon-race-btn"
+              onClick={() => { if (window.confirm("Abandon this race? It will be removed from the series scoring — the series will have one fewer race scored and its discards may reduce. Its results are kept for the record.")) abandon(true); }}>
+              <FlagOff className="w-4 h-4" /> Abandon race
+            </Button>
+          )}
           <Button variant="outline" className="text-destructive border-destructive/40" data-testid="delete-race-btn" onClick={remove}><Trash2 className="w-4 h-4" /></Button>
           {race.status === "published" ? (
             <Button variant="outline" className="flex-1 h-12 border-amber-500 text-amber-700" data-testid="recall-btn"
@@ -703,6 +724,7 @@ export default function Officer() {
         <div className="text-xs text-muted-foreground mt-1">{fmtDate(r.date)} · Start {r.start_time}</div>
       </div>
       <Badge className={STATUS_BADGE[r.status]}>{r.status}</Badge>
+      {r.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
     </button>
   );
 

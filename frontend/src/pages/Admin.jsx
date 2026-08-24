@@ -21,7 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2 } from "lucide-react";
+import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -701,8 +701,13 @@ function SeriesTab({ classes, clubId }) {
                       <p className="text-[11px] text-muted-foreground">Discard N after M races scored (e.g. 1 discard from the 6th race, 2 from the 9th).</p>
                       {(form.scoring_config.discard_schedule || []).map((step, i) => (
                         <div key={i} className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-muted-foreground w-8">R{step.after_races}+</span>
-                          <Input type="number" min="0" className="h-8" value={step.discards} onChange={(e) => {
+                          <span className="text-[11px] text-muted-foreground shrink-0">after</span>
+                          <Input type="number" min="1" className="h-8 w-20" value={step.after_races} onChange={(e) => {
+                            const steps = (form.scoring_config.discard_schedule || []).map((s, j) => j === i ? { ...s, after_races: e.target.value } : s);
+                            patchCfg({ discard_schedule: steps });
+                          }} data-testid={`series-discard-after-${i}`} />
+                          <span className="text-[11px] text-muted-foreground shrink-0">races, discard</span>
+                          <Input type="number" min="0" className="h-8 w-16" value={step.discards} onChange={(e) => {
                             const steps = (form.scoring_config.discard_schedule || []).map((s, j) => j === i ? { ...s, discards: e.target.value } : s);
                             patchCfg({ discard_schedule: steps });
                           }} data-testid={`series-discard-step-${i}`} />
@@ -710,7 +715,14 @@ function SeriesTab({ classes, clubId }) {
                         </div>
                       ))}
                       <Button type="button" size="sm" variant="outline" data-testid="series-discard-step-add"
-                        onClick={() => patchCfg({ discard_schedule: [...(form.scoring_config.discard_schedule || []), { after_races: (form.scoring_config.discard_schedule?.length || 0) * 3 + 3, discards: (form.scoring_config.discard_schedule?.length || 0) }] })}>
+                        onClick={() => {
+                          const steps = form.scoring_config.discard_schedule || [];
+                          const last = steps[steps.length - 1];
+                          patchCfg({ discard_schedule: [...steps, {
+                            after_races: (Number(last?.after_races) || 0) + 3,
+                            discards: last ? (Number(last.discards) || 0) + 1 : 1,
+                          }] });
+                        }}>
                         <Plus className="w-3.5 h-3.5" /> Add discard step
                       </Button>
                     </div>
@@ -1093,6 +1105,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">Race {race.race_number} · {fmtDate(race.date)}</span>
               <Badge className={race.status === "published" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : race.status === "provisional" ? "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" : "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300"}>{race.status}</Badge>
+              {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
             </div>
             <div className="flex items-center gap-2">
               {race.status === "published" ? (
@@ -1197,14 +1210,20 @@ export default function Admin() {
         <div className="mb-6" />
         {clubId && <ClubIconField clubId={clubId} />}
         <Tabs defaultValue="boats">
-          <TabsList className="flex flex-wrap h-auto gap-1" data-testid="admin-tabs">
-            <TabsTrigger value="boats" data-testid="tab-boats">Boats</TabsTrigger>
-            <TabsTrigger value="classes" data-testid="tab-classes">Classes</TabsTrigger>
-            <TabsTrigger value="series" data-testid="tab-series">Series</TabsTrigger>
-            <TabsTrigger value="historic" data-testid="tab-historic">Historic Results</TabsTrigger>
-            <TabsTrigger value="users" data-testid="tab-users">Logins</TabsTrigger>
-            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
-          </TabsList>
+          {/* The tab bar stays a single row: on narrow screens it scrolls
+              horizontally instead of wrapping into a tall stack of tabs. */}
+          <div className="overflow-x-auto -mb-1 pb-1" data-testid="admin-tabs-wrap">
+            <TabsList className="h-auto w-max min-w-full gap-1" data-testid="admin-tabs">
+              <TabsTrigger value="classes" data-testid="tab-classes" className="gap-1.5 py-1.5"><Layers className="w-4 h-4" /> Classes</TabsTrigger>
+              <TabsTrigger value="boats" data-testid="tab-boats" className="gap-1.5 py-1.5"><Sailboat className="w-4 h-4" /> Boats</TabsTrigger>
+              <TabsTrigger value="series" data-testid="tab-series" className="gap-1.5 py-1.5"><Trophy className="w-4 h-4" /> Series</TabsTrigger>
+              <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
+              <TabsTrigger value="historic" data-testid="tab-historic" className="gap-1.5 py-1.5"><Archive className="w-4 h-4" /> Historic Results</TabsTrigger>
+              <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
+              <TabsTrigger value="users" data-testid="tab-users" className="gap-1.5 py-1.5"><Users className="w-4 h-4" /> Logins</TabsTrigger>
+              <TabsTrigger value="activity" data-testid="tab-activity" className="gap-1.5 py-1.5"><ScrollText className="w-4 h-4" /> Activity</TabsTrigger>
+            </TabsList>
+          </div>
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>

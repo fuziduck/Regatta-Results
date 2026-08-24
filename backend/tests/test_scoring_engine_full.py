@@ -279,6 +279,92 @@ class _Coll:
         return self.items[0] if self.items else None
 
 
+class _FilterColl:
+    """Filter-aware collection applying the abandoned-exclusion query the
+    scoring engine uses (`abandoned != true`), so abandoned races are dropped
+    exactly as MongoDB would."""
+
+    def __init__(self, items):
+        self.items = list(items)
+
+    def find(self, filt=None, projection=None):
+        out = self.items
+        if filt and filt.get("abandoned") == {"$ne": True}:
+            out = [d for d in out if not d.get("abandoned")]
+        return _Cursor(out)
+
+    async def find_one(self, filt=None, projection=None):
+        return (await self.find(filt, projection).to_list(1))[0] if self.items else None
+
+
+def _standings_filtered(series, boats, races):
+    """Compute standings with the races collection applying the abandoned
+    filter (races keeps its published status in every fixture)."""
+    server.db = types.SimpleNamespace(
+        races=_FilterColl(races), boats=_Coll(boats),
+        classes=_Coll([{"id": "c1", "club_id": "club-1"}]), clubs=_Coll([]))
+    return asyncio.run(server.compute_series_standings(series))
+
+
+class TestAbandonedRaces:
+    def test_abandoned_race_reduces_race_count_and_discards(self):
+        """An abandoned race is not scored: the series has one fewer race and,
+        with an increasing discard schedule, the discard threshold is not
+        reached until the scheduled race count applies."""
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {"discard_policy": "increasing",
+                                     "discard_schedule": [{"after_races": 4, "discards": 1}]}}
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(3, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(4, [_fin("b1", 1), _fin("b2", 2)], abandoned=True),
+            _race(5, [_fin("b1", 1), _fin("b2", 2)]),
+        ]
+        st = _standings_filtered(series, boats, races)
+        assert st["race_count"] == 4           # abandoned race not counted
+        assert st["discards"] == 1             # 4 races scored -> 1 discard
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert len(by_id["b1"]["scores"]) == 4  # no score row for the abandoned race
+        assert by_id["b1"]["net"] == 3.0        # 1,1,1,1 discard one -> 3
+
+    def test_abandoned_race_below_discard_threshold(self):
+        """If abandoning drops the scored races below the schedule threshold,
+        no discard applies yet — exactly the 'changes the discards' rule."""
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {"discard_policy": "increasing",
+                                     "discard_schedule": [{"after_races": 4, "discards": 1}]}}
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(3, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(4, [_fin("b1", 1), _fin("b2", 2)], abandoned=True),
+        ]
+        st = _standings_filtered(series, boats, races)
+        assert st["race_count"] == 3
+        assert st["discards"] == 0             # threshold (4 races) not reached
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["net"] == 3.0        # 1+1+1, nothing discarded
+
+    def test_abandoned_race_caps_fixed_discards(self):
+        """Fixed discards still cannot exceed races scored - 1."""
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 2}
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(3, [_fin("b1", 1), _fin("b2", 2)], abandoned=True),
+            _race(4, [_fin("b1", 1), _fin("b2", 2)]),
+        ]
+        st = _standings_filtered(series, boats, races)
+        assert st["race_count"] == 3
+        assert st["discards"] == 2             # min(2, 3-1) — never discard every race
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["net"] == 1.0        # 1,1,1 discard two
+
+
 class TestDiscards:
     def test_multiple_discards(self):
         series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 2}
