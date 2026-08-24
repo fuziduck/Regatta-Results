@@ -82,10 +82,14 @@ export function SeriesStandingsTable({ data }) {
         </TableBody>
       </Table>
       <div className="text-xs text-muted-foreground px-3 py-2 bg-muted/30">
+        {data.locked && <span className="font-semibold text-emerald-700">🔒 Season locked</span>}
         {data.race_count} race{data.race_count !== 1 ? "s" : ""} sailed
         {data.discards > 0 ? ` · ${data.discards} discard${data.discards !== 1 ? "s" : ""} applied (shown in brackets)` : " · no discards yet"}
-        {data.use_a5_3 ? " · RRS A5.3 start-area scoring in effect" : ""}
-        {data.use_finishers ? " · finishers + 1 scoring in effect" : ""}
+        {data.scoring_config?.a5_convention === "a5_3" ? " · RRS A5.3 start-area scoring in effect" : ""}
+        {data.scoring_config?.a5_convention === "finishers" ? " · finishers + 1 scoring in effect" : ""}
+        {data.scoring_config?.tle?.enabled ? ` · TLE in effect${data.scoring_config.tle.time_limit_minutes ? ` (${data.scoring_config.tle.time_limit_minutes} min)` : ""}` : ""}
+        {data.engine_version ? ` · engine ${data.engine_version}` : ""}
+        {data.snapshot_version ? ` · snapshot v${data.snapshot_version}${data.locked_at ? ` ${new Date(data.locked_at).toLocaleDateString()}` : ""}` : ""}
       </div>
     </div>
   );

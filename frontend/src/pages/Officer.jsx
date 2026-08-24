@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2 } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700",
@@ -144,6 +144,12 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   const [boats, setBoats] = useState({});
   const [notif, setNotif] = useState({ course: "", special_rules: "", life_jackets: false, start_time: "" });
   const now = useNow();
+  // DPI / RDG decision panel: which boat's committee decision is being
+  // recorded, and the form fields for it (points are never inferred).
+  const [panelBoat, setPanelBoat] = useState(null);
+  const emptyDecision = { penalty_points: "", reason: "", decision_maker: "", date: "", notes: "" };
+  const [decision, setDecision] = useState(emptyDecision);
+  const [validateMsg, setValidateMsg] = useState(null);
 
   const refresh = useCallback(async () => {
     const r = await api.getRace(raceId);
@@ -163,53 +169,105 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   const toFinish = racing.filter((r) => r.code === "DNS").sort((a, b) => (boats[a.boat_id]?.sail_no || "").localeCompare(boats[b.boat_id]?.sail_no || ""));
   const finished = race.results.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
 
-  const saveNotif = async () => {
-    // Re-capture the device offset so a notice start-time change keeps the
-    // scheduled-start fallback aligned with device-UTC finish times.
-    await api.updateNotifications(raceId, { ...notif, start_tz_offset_minutes: -new Date().getTimezoneOffset() });
-    toast.success("Notice updated & published to landing page"); refresh();
+  // Optimistic concurrency: every mutation carries the version of the race
+  // this screen loaded, so a concurrent edit by another scorer is rejected
+  // (409) instead of silently overwritten — with a clear reload message.
+  const version = race.version;
+  const runMutation = async (fn, okMsg) => {
+    try {
+      const r = await fn();
+      if (okMsg) toast.success(okMsg);
+      refresh();
+      return r;
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("This result has been changed by another user. Your version is out of date. Reload the latest results before making further changes.");
+        refresh();
+      } else {
+        toast.error(e.response?.data?.detail || "Something went wrong");
+      }
+      return null;
+    }
   };
-  const toggleBoat = async (boatId) => {
+  const saveNotif = () =>
+    runMutation(() => api.updateNotifications(raceId, { ...notif, start_tz_offset_minutes: -new Date().getTimezoneOffset() }, version), "Notice updated & published to landing page");
+  const toggleBoat = (boatId) => {
     const selected = new Set(racing.map((r) => r.boat_id));
     if (selected.has(boatId)) selected.delete(boatId); else selected.add(boatId);
-    await api.selectBoats(raceId, [...selected]); refresh();
+    return runMutation(() => api.selectBoats(raceId, [...selected], version));
   };
-  const finish = async (boatId) => {
-    await api.recordFinish(raceId, boatId, new Date().toISOString());
-    toast.success(`${boats[boatId]?.name} finished`); refresh();
+  const finish = (boatId) =>
+    runMutation(() => api.recordFinish(raceId, boatId, new Date().toISOString(), version), `${boats[boatId]?.name} finished`);
+  const undo = (boatId) => runMutation(() => api.undoFinish(raceId, boatId, version));
+  const changeCode = async (boatId, code) => {
+    if (code === "DPI" || code === "RDG") {
+      // The committee's decision (points + basis) is recorded together — the
+      // engine will not infer a DPI/RDG score.
+      const entry = race.results.find((r) => r.boat_id === boatId);
+      setDecision({
+        penalty_points: entry?.penalty_points ?? "",
+        reason: entry?.[`${code.toLowerCase()}_reason`] || "",
+        decision_maker: entry?.[`${code.toLowerCase()}_decision_maker`] || "",
+        date: entry?.[`${code.toLowerCase()}_date`] || "",
+        notes: entry?.[`${code.toLowerCase()}_notes`] || "",
+      });
+      setPanelBoat(boatId);
+      return;
+    }
+    setPanelBoat(null);
+    return runMutation(() => api.adjustResult(raceId, boatId, { code }, version));
   };
-  const undo = async (boatId) => { await api.undoFinish(raceId, boatId); refresh(); };
-  const changeCode = async (boatId, code) => { await api.adjustResult(raceId, boatId, { code }); refresh(); };
-  const changePos = async (boatId, position) => { await api.adjustResult(raceId, boatId, { position: Number(position) }); refresh(); };
-  const changeElapsed = async (boatId, seconds) => { await api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }); refresh(); };
-  const setStatus = async (s) => {
-    await api.setStatus(raceId, s);
-    toast.success(
-      s === "published" ? "Results published to landing page!" :
-      s === "setup" ? "Result recalled — race is back in setup" :
-      `Marked ${s}`
-    );
-    if (s === "published") onBack(); else refresh();
+  const saveDecision = async (r) => {
+    const code = r.code;
+    const pts = Number(decision.penalty_points);
+    if (Number.isNaN(pts) || decision.penalty_points === "") {
+      return toast.error(`${code} requires the committee-entered points — the system will not guess a score`);
+    }
+    const prefix = code.toLowerCase();
+    const payload = { code, penalty_points: pts };
+    ["reason", "decision_maker", "date", "notes"].forEach((k) => {
+      const v = (decision[k] || "").trim();
+      if (v) payload[`${prefix}_${k}`] = v;
+    });
+    const res = await runMutation(
+      () => api.adjustResult(raceId, r.boat_id, payload, version),
+      code === "DPI" ? "Discretionary penalty recorded" : "Redress decision recorded");
+    if (res) setPanelBoat(null);
   };
-  const remove = async () => { await api.deleteRace(raceId); toast.success("Race deleted"); onBack(); };
-  const gun = async () => {
-    await api.startRace(raceId, new Date().toISOString());
-    toast.success("Race started — timer running");
-    refresh();
+  const checkResults = async () => {
+    try {
+      const v = await api.validateRace(raceId);
+      const errs = v.errors || [];
+      const warns = v.warnings || [];
+      if (!errs.length && !warns.length) {
+        setValidateMsg({ level: "ok", text: "No validation issues — results are consistent." });
+      } else {
+        setValidateMsg({ level: errs.length ? "error" : "warning",
+          text: [...errs.map((e) => `⚠ ${e.message}`), ...warns.map((w) => `· ${w.message}`)].join("\n") });
+      }
+    } catch (e) {
+      setValidateMsg({ level: "error", text: e.response?.data?.detail || "Validation unavailable" });
+    }
   };
-  const clearGun = async () => {
-    await api.startRace(raceId, null);
-    toast.success("Timer reset to scheduled start");
-    refresh();
-  };
+  const changePos = (boatId, position) => runMutation(() => api.adjustResult(raceId, boatId, { position: Number(position) }, version));
+  const changeElapsed = (boatId, seconds) => runMutation(() => api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }, version));
+  const setStatus = (s) => runMutation(
+    () => api.setStatus(raceId, s, version),
+    s === "published" ? "Results published to landing page!" :
+    s === "setup" ? "Result recalled — race is back in setup" :
+    `Marked ${s}`
+  ).then((r) => { if (r && s === "published") onBack(); });
+  const remove = () => runMutation(() => api.deleteRace(raceId, version), "Race deleted").then((r) => { if (r) onBack(); });
+  const gun = () => runMutation(() => api.startRace(raceId, new Date().toISOString(), version), "Race started — timer running");
+  const clearGun = () => runMutation(() => api.startRace(raceId, null, version), "Timer reset to scheduled start");
   const applyToDay = async () => {
     const selected = racing.map((r) => r.boat_id);
     let applied = 0;
     for (const other of dayRaces) {
       const fresh = await api.getRace(other.id);
       if (fresh.results.some((r) => r.code === "FINISHED")) continue; // never clobber a scored race
-      await api.selectBoats(other.id, selected);
-      applied += 1;
+      const ok = await runMutation(() => api.selectBoats(other.id, selected, fresh.version));
+      if (ok) applied += 1;
     }
     toast.success(
       applied
@@ -351,18 +409,28 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
 
         {/* Provisional / adjust */}
         <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-heading uppercase tracking-tight mb-3">Provisional results & penalties</h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-heading uppercase tracking-tight">Provisional results & penalties</h3>
+            <Button size="sm" variant="outline" className="h-8 border-ocean/40 text-ocean" data-testid="validate-btn" onClick={checkResults}>Check results</Button>
+          </div>
+          {validateMsg && (
+            <div className={`mb-3 rounded-lg p-3 text-xs whitespace-pre-line ${validateMsg.level === "ok" ? "bg-emerald-50 text-emerald-800" : validateMsg.level === "error" ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"}`} data-testid="validate-msg">
+              {validateMsg.text}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th><th className="w-28">Elapsed</th><th className="w-40">Code / Penalty (RRS)</th></tr></thead>
+              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th><th className="w-28">Elapsed</th><th className="w-44">Code / Penalty (RRS)</th></tr></thead>
               <tbody data-testid="adjust-table">
                 {[...race.results].sort((a, b) => {
                   if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
                   if (a.code === "FINISHED") return -1; if (b.code === "FINISHED") return 1; return 0;
                 }).map((r) => {
                   const b = boats[r.boat_id] || {};
+                  const isManual = r.code === "DPI" || r.code === "RDG";
                   return (
-                    <tr key={r.boat_id} className="border-b last:border-0">
+                    <Fragment key={r.boat_id}>
+                    <tr className="border-b last:border-0">
                       <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
                       <td>
                         {r.code === "FINISHED"
@@ -375,12 +443,53 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
                           : <span className="text-muted-foreground">—</span>}
                       </td>
                       <td>
-                        <Select value={r.code} onValueChange={(v) => changeCode(r.boat_id, v)}>
-                          <SelectTrigger className="h-8" data-testid={`code-select-${b.sail_no}`}><SelectValue /></SelectTrigger>
-                          <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{c.code}</SelectItem>)}</SelectContent>
-                        </Select>
+                        <div className="flex items-center gap-1.5">
+                          <Select value={r.code} onValueChange={(v) => changeCode(r.boat_id, v)}>
+                            <SelectTrigger className="h-8" data-testid={`code-select-${b.sail_no}`}><SelectValue /></SelectTrigger>
+                            <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{c.code}</SelectItem>)}</SelectContent>
+                          </Select>
+                          {isManual && (
+                            <Button size="icon" variant="ghost" className="h-8 w-8 text-ocean" title="Record / edit the committee decision"
+                              data-testid={`decision-btn-${b.sail_no}`}
+                              onClick={() => {
+                                setDecision({
+                                  penalty_points: r.penalty_points ?? "",
+                                  reason: r[`${r.code.toLowerCase()}_reason`] || "",
+                                  decision_maker: r[`${r.code.toLowerCase()}_decision_maker`] || "",
+                                  date: r[`${r.code.toLowerCase()}_date`] || "",
+                                  notes: r[`${r.code.toLowerCase()}_notes`] || "",
+                                });
+                                setPanelBoat(panelBoat === r.boat_id ? null : r.boat_id);
+                              }}>
+                              <Pencil className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                        {isManual && r.penalty_points != null && r.penalty_points !== "" && (
+                          <div className="text-[11px] text-muted-foreground mt-0.5">
+                            {r.penalty_points} pts{r[`${r.code.toLowerCase()}_decision_maker`] ? ` · ${r[`${r.code.toLowerCase()}_decision_maker`]}` : ""}
+                          </div>
+                        )}
                       </td>
                     </tr>
+                    {panelBoat === r.boat_id && (
+                      <tr className="border-b bg-muted/30">
+                        <td colSpan={4} className="py-3">
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            <div className="space-y-1"><Label className="text-[10px] uppercase">Resulting points</Label><Input type="number" min="0" step="0.5" className="h-8" value={decision.penalty_points} onChange={(e) => setDecision({ ...decision, penalty_points: e.target.value })} data-testid={`decision-points-${b.sail_no}`} /></div>
+                            <div className="space-y-1"><Label className="text-[10px] uppercase">Decision-maker / committee</Label><Input className="h-8" value={decision.decision_maker} onChange={(e) => setDecision({ ...decision, decision_maker: e.target.value })} data-testid={`decision-maker-${b.sail_no}`} /></div>
+                            <div className="space-y-1"><Label className="text-[10px] uppercase">Date</Label><Input type="date" className="h-8" value={decision.date} onChange={(e) => setDecision({ ...decision, date: e.target.value })} data-testid={`decision-date-${b.sail_no}`} /></div>
+                            <div className="space-y-1"><Label className="text-[10px] uppercase">Reason / rule basis</Label><Input className="h-8" value={decision.reason} onChange={(e) => setDecision({ ...decision, reason: e.target.value })} data-testid={`decision-reason-${b.sail_no}`} placeholder="e.g. RRS 44.1(b)" /></div>
+                            <div className="col-span-full space-y-1"><Label className="text-[10px] uppercase">Notes</Label><Input className="h-8" value={decision.notes} onChange={(e) => setDecision({ ...decision, notes: e.target.value })} data-testid={`decision-notes-${b.sail_no}`} /></div>
+                          </div>
+                          <div className="flex items-center justify-between mt-2">
+                            <p className="text-[11px] text-muted-foreground">{r.code === "DPI" ? "Discretionary penalty — imposed by the committee; the score is recorded, never inferred." : "Redress granted — the boat's score is adjusted without changing other boats' positions unless the committee directed it."}</p>
+                            <Button size="sm" className="bg-ocean hover:bg-ocean-dark h-8" data-testid={`decision-save-${b.sail_no}`} onClick={() => saveDecision(r)}>Save decision</Button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -576,7 +685,7 @@ export default function Officer() {
               <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 gap-1.5" data-testid="confirm-day-btn"
                 onClick={async () => {
                   if (!window.confirm(`Publish all ${dayUnpublished.length} results for ${fmtDate(schedDate)}? Race-day notices for these races will clear from the landing page.`)) return;
-                  for (const item of dayUnpublished) await api.setStatus(item.race_id, "published");
+                  for (const item of dayUnpublished) await api.setStatus(item.race_id, "published", item.version);
                   toast.success("All results for the day confirmed & published");
                   loadRaces(); loadScheduled();
                 }}>

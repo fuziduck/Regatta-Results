@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 import os
 import io
 import json
@@ -385,6 +386,54 @@ async def _race_of_club(race_id: str, user: dict):
 
 
 # ---------------------------------------------------------------------------
+# Optimistic concurrency control
+# ---------------------------------------------------------------------------
+def _expected_version(data) -> Optional[int]:
+    """The expected_version a client claims its edit is based on, or None when
+    the client did not send one (legacy clients are allowed but their writes
+    still bump the version). Rejects non-integer values outright."""
+    v = getattr(data, "expected_version", None)
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="expected_version must be an integer (the version you loaded)")
+
+
+def _version_filter(doc_id: str, expected: Optional[int]) -> dict:
+    """Document predicate for an atomic optimistic update: the id always, plus
+    the version when the client supplied one. The database itself rejects the
+    write when the version no longer matches (modified_count == 0)."""
+    filt = {"id": doc_id}
+    if expected is not None:
+        filt["version"] = expected
+    return filt
+
+
+def _raise_stale(expected: Optional[int]):
+    """409 when an optimistic update matched nothing. When the client sent an
+    expected_version the cause is a concurrent change; without one it is a
+    deleted record."""
+    detail = STALE_VERSION_MSG if expected is not None else "Record no longer exists"
+    raise HTTPException(status_code=409, detail=detail)
+
+
+def _expected_version_query(request: Request) -> Optional[int]:
+    """expected_version supplied as a query parameter (for endpoints without a
+    JSON body, e.g. status transitions and deletes)."""
+    raw = request.query_params.get("expected_version")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="expected_version must be an integer (the version you loaded)")
+
+
+# ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 class LoginInput(BaseModel):
@@ -451,6 +500,11 @@ class BoatInput(BaseModel):
     helm: str
     year: int
     active: bool = True
+    # Optimistic concurrency control: the version this edit was based on
+    # (from a previous GET). When set, the update only applies if the stored
+    # version still matches — otherwise 409 Conflict is returned instead of
+    # silently overwriting a concurrent change.
+    expected_version: Optional[int] = None
     # IRC Time Correction Coefficient (rating certificate); None for
     # one-design classes. Corrected time = elapsed x TCC.
     tcc: Optional[float] = None
@@ -504,11 +558,21 @@ class SeriesInput(BaseModel):
     # championship using its full standings and its own discards.
     mini_series: bool = False
     mini_series_groups: Optional[List[MiniSeriesGroup]] = None
+    # Versioned scoring-rule configuration for this season (the "rules of the
+    # series"): RRS edition, A5 convention, TLE rule, SCP/ZFP penalty rule,
+    # duty/average-points rule and the discard policy. Stored on the series so
+    # every season carries its own snapshot of the rules that applied to it.
+    # See _normalize_scoring_config() for the canonical shape and defaults.
+    scoring_config: Optional[dict] = None
+    # Optimistic concurrency control: version this edit was based on (see
+    # BoatInput.expected_version).
+    expected_version: Optional[int] = None
 
 
 class GenScheduleInput(BaseModel):
     start_date: str
     count: Optional[int] = None
+    expected_version: Optional[int] = None
 
 
 class RaceCreateInput(BaseModel):
@@ -529,19 +593,23 @@ class RaceNotificationInput(BaseModel):
     life_jackets: Optional[bool] = None
     start_time: Optional[str] = None
     start_tz_offset_minutes: Optional[int] = None
+    expected_version: Optional[int] = None
 
 
 class StartRaceInput(BaseModel):
     start_time: Optional[str] = None  # ISO timestamp; null clears the gun
+    expected_version: Optional[int] = None
 
 
 class SelectBoatsInput(BaseModel):
     boat_ids: List[str]
+    expected_version: Optional[int] = None
 
 
 class FinishInput(BaseModel):
     boat_id: str
     finish_time: Optional[str] = None
+    expected_version: Optional[int] = None
 
 
 class ResultAdjustInput(BaseModel):
@@ -553,6 +621,30 @@ class ResultAdjustInput(BaseModel):
     # finish-button tap recorded the wrong duration). Converts to finish_time
     # from the race start and re-sequences the race.
     elapsed_seconds: Optional[float] = None
+    # DPI (Discretionary Penalty Imposed) decision record: which committee
+    # imposed it, on what basis, when, and any notes. Stored on the result so
+    # the redress/penalty is auditable and identifiable as a decision, never
+    # as an ordinary finishing position.
+    dpi_reason: Optional[str] = None
+    dpi_decision_maker: Optional[str] = None
+    dpi_date: Optional[str] = None
+    dpi_notes: Optional[str] = None
+    # RDG (Redress Granted) decision record — same shape as the DPI record.
+    rdg_reason: Optional[str] = None
+    rdg_decision_maker: Optional[str] = None
+    rdg_date: Optional[str] = None
+    rdg_notes: Optional[str] = None
+    # Optimistic concurrency control (see BoatInput.expected_version).
+    expected_version: Optional[int] = None
+
+
+class LockSeriesInput(BaseModel):
+    """Administrator confirmation for locking/unlocking/archiving a season.
+    The reason is mandatory for the audit trail; confirm must be explicitly
+    true so no accidental click finalises (or unfinalises) a season."""
+    confirm: bool = False
+    reason: str = ""
+    expected_version: Optional[int] = None
 
 
 # RRS Appendix A10 scoring abbreviations (2025-2028).
@@ -563,7 +655,7 @@ RRS_CODES = [
     {"code": "OCS", "label": "OCS — On course side at start"},
     {"code": "UFD", "label": "UFD — Disqualification under rule 30.3"},
     {"code": "BFD", "label": "BFD — Disqualification under rule 30.4"},
-    {"code": "ZFP", "label": "ZFP — 20% penalty under rule 30.2 (scored per rule 44.3(c))"},
+    {"code": "ZFP", "label": "ZFP — Z flag penalty (rule 30.2, scored per the series penalty rule)"},
     {"code": "SCP", "label": "SCP — Scoring penalty taken (rule 44.3)"},
     {"code": "NSC", "label": "NSC — Did not sail the course"},
     {"code": "DNF", "label": "DNF — Did not finish"},
@@ -572,6 +664,7 @@ RRS_CODES = [
     {"code": "DNE", "label": "DNE — Disqualification not excludable"},
     {"code": "DPI", "label": "DPI — Discretionary penalty imposed (manual points)"},
     {"code": "RDG", "label": "RDG — Redress given (manual points)"},
+    {"code": "TLE", "label": "TLE — Time limit expired (scored per the series TLE rule)"},
     {"code": "OOD", "label": "OOD — Officer of the Day duty (average of own other race scores)"},
 ]
 # Rule A2.1: only DNE may not be excluded from a series score.
@@ -579,11 +672,39 @@ NON_DISCARDABLE = {"DNE"}
 FINISH_CODES = {"FINISHED"}
 # Codes that mean the boat did not finish (or never started): scoring them on a
 # boat that had finished triggers RRS A6.1 (boats behind move up one place).
-POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC", "OOD"}
+POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC", "OOD", "TLE"}
 # Duty codes (Sailwave club convention): the boat did not race — it did its
 # club duty (Officer of the Day, rescue boat, crew) — and scores the average
 # of its own points in the series' other races where it actually sailed.
 DUTY_CODES = {"OOD"}
+# TLE — Time Limit Expired: the boat failed to finish within the series'
+# configured time limit. Scored per the series' TLE rule, never as a place.
+TLE_CODES = {"TLE"}
+# Penalties applied on top of a finishing place (RRS 44.3(c) / 30.2). The
+# applicable percentage/points/places come from the series scoring config.
+PENALTY_CODES = {"SCP", "ZFP"}
+# Manual-points codes: the race committee / protest committee decides the
+# resulting score (DPI — discretionary penalty; RDG — redress granted).
+MANUAL_POINT_CODES = {"DPI", "RDG"}
+# Version of this scoring engine. Every locked-season snapshot records the
+# engine version that produced it, so a future rewrite can never be mistaken
+# for the rules that actually applied to a historical season.
+SCORING_ENGINE_VERSION = "2.2.0"
+# Season lifecycle. LIVE (open) -> PROVISIONAL (per-race published results) ->
+# FINAL (locked: results are served from the frozen snapshot) -> ARCHIVED
+# (terminal: the same immutability, but the season can no longer be edited in
+# place at all — correcting requires the explicit unlock-for-correction flow,
+# which re-finalises as a NEW snapshot version).
+LOCK_OPEN = "open"
+LOCK_LOCKED = "locked"
+LOCK_ARCHIVED = "archived"
+# States in which the season's results are frozen and every normal mutation
+# of its races/results/config is rejected with 409.
+NOT_EDITABLE = frozenset({LOCK_LOCKED, LOCK_ARCHIVED})
+# Optimistic concurrency: shown when a write carries an expected_version that
+# no longer matches the stored version (another user changed the record first).
+STALE_VERSION_MSG = ("This record has been changed by another user. Your version is out of "
+                     "date. Reload the latest version before making further changes.")
 
 
 # ---------------------------------------------------------------------------
@@ -1979,8 +2100,10 @@ async def get_boats(request: Request, class_id: Optional[str] = None, year: Opti
 async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
+    doc.pop("expected_version", None)
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
+    doc["version"] = 1
     await db.boats.insert_one(doc)
     doc.pop("_id", None)
     await _log_audit(request=None, user=user, action="BOAT_CREATED",
@@ -1993,7 +2116,13 @@ async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
 async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(require_admin)):
     boat = await _boat_of_club(boat_id, user)
     cls = await _class_of_club(data.class_id, user)
-    await db.boats.update_one({"id": boat_id}, {"$set": data.model_dump()})
+    expected = _expected_version(data)
+    update = data.model_dump()
+    update.pop("expected_version", None)
+    result = await db.boats.update_one(_version_filter(boat_id, expected),
+                                       {"$set": update, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     await _log_audit(request=None, user=user, action="BOAT_UPDATED",
                      description=f"Updated boat {boat.get('name')}",
                      resource_type="boat", resource_id=boat_id, club_id=cls.get("club_id"))
@@ -2001,9 +2130,23 @@ async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(requir
 
 
 @api_router.delete("/boats/{boat_id}")
-async def delete_boat(boat_id: str, user: dict = Depends(require_admin)):
+async def delete_boat(boat_id: str, request: Request,
+                      user: dict = Depends(require_admin)):
     boat = await _boat_of_club(boat_id, user)
-    await db.boats.delete_one({"id": boat_id})
+    # A boat that took part in a locked season can never be deleted: the
+    # frozen snapshot references it by id, and the boat's own record keeps the
+    # results auditable. (Editing details is harmless — locked standings come
+    # from the snapshot, which stores its own copy of the boat's name.)
+    locked = await db.series.count_documents({"class_id": boat.get("class_id"),
+                                               "year": boat.get("year"),
+                                               "lock_status": {"$in": list(NOT_EDITABLE)}})
+    if locked:
+        raise HTTPException(status_code=409,
+                            detail="This boat took part in a locked or archived season and cannot be deleted.")
+    expected = _expected_version_query(request)
+    result = await db.boats.delete_one(_version_filter(boat_id, expected))
+    if result.deleted_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(boat.get("class_id"))
     await _log_audit(request=None, user=user, action="BOAT_DELETED",
                      description=f"Deleted boat {boat.get('name')}",
@@ -2040,10 +2183,12 @@ async def get_series(request: Request, class_id: Optional[str] = None, year: Opt
 async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
+    doc.pop("expected_version", None)
     if doc.get("schedule") is None:
         doc["schedule"] = []
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
+    doc["version"] = 1
     await db.series.insert_one(doc)
     doc.pop("_id", None)
     await _log_audit(request=None, user=user, action="SERIES_CREATED",
@@ -2068,11 +2213,18 @@ async def _sync_race_dates(series_id: str, schedule):
 @api_router.put("/series/{series_id}")
 async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(require_admin)):
     series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(series_id,
+                                    detail="Season results are locked — scoring rules cannot be changed. Use the administrator correction process to amend the season.")
     cls = await _class_of_club(data.class_id, user)
+    expected = _expected_version(data)
     update = data.model_dump()
+    update.pop("expected_version", None)
     if update.get("schedule") is None:
         update.pop("schedule", None)
-    await db.series.update_one({"id": series_id}, {"$set": update})
+    result = await db.series.update_one(_version_filter(series_id, expected),
+                                        {"$set": update, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     await _sync_race_dates(series_id, update.get("schedule"))
     await _log_audit(request=None, user=user, action="SERIES_UPDATED",
                      description=f"Updated series {series.get('name')}",
@@ -2088,6 +2240,9 @@ def _saturdays_from(start: str, n: int):
 @api_router.post("/series/{series_id}/generate-schedule")
 async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict = Depends(require_admin)):
     series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(series_id,
+                                    detail="Season results are locked — the schedule cannot be changed. Use the administrator correction process to amend the season.")
+    expected = _expected_version(data)
     total = data.count or series.get("planned_races", 0)
     races = await db.races.find({"series_id": series_id, "status": "published"}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
@@ -2096,7 +2251,11 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict =
         total = len(sailed_dates)
     future = _saturdays_from(data.start_date, total - len(sailed_dates))
     schedule = sailed_dates + future
-    await db.series.update_one({"id": series_id}, {"$set": {"schedule": schedule, "planned_races": total}})
+    result = await db.series.update_one(_version_filter(series_id, expected),
+                                        {"$set": {"schedule": schedule, "planned_races": total},
+                                         "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     await _sync_race_dates(series_id, schedule)
     club_id = await _class_club_id(series.get("class_id"))
     await _log_audit(request=None, user=user, action="SERIES_UPDATED",
@@ -2106,9 +2265,14 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict =
 
 
 @api_router.delete("/series/{series_id}")
-async def delete_series(series_id: str, user: dict = Depends(require_admin)):
+async def delete_series(series_id: str, request: Request,
+                        user: dict = Depends(require_admin)):
     series = await _series_of_club(series_id, user)
-    await db.series.delete_one({"id": series_id})
+    await _ensure_series_not_locked(series_id, detail="Season results are locked — the series cannot be deleted.")
+    expected = _expected_version_query(request)
+    result = await db.series.delete_one(_version_filter(series_id, expected))
+    if result.deleted_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(series.get("class_id"))
     await _log_audit(request=None, user=user, action="SERIES_DELETED",
                      description=f"Deleted series {series.get('name')}",
@@ -2176,6 +2340,13 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
         raise HTTPException(status_code=400, detail="Invalid class or series")
     _ensure_club(user, cls.get("club_id"))
     _ensure_club(user, await _class_club_id(series.get("class_id")))
+    # Integrity: the race's class must be the series' class — a race cannot be
+    # attached to a series from another fleet/class.
+    if series.get("class_id") != data.class_id:
+        raise HTTPException(status_code=400,
+                            detail="Class does not match the series — a race must belong to its series' fleet")
+    await _ensure_series_not_locked(series["id"],
+                                    detail="Season results are locked — new races cannot be created.")
     year = series["year"]
     boats = await _class_active_boats(data.class_id, year)
     results = [{
@@ -2202,6 +2373,7 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
         "entries_count": len(results),
         "results": results,
         "created_at": now_iso(),
+        "version": 1,  # optimistic concurrency counter, bumped on every mutation
     }
     await db.races.insert_one(doc)
     doc.pop("_id", None)
@@ -2216,8 +2388,14 @@ async def start_race(race_id: str, data: StartRaceInput, user: dict = Depends(re
     """Set (or clear) the actual start time ('gun'). Device time is captured on
     the client and sent here; the timer runs from this instant."""
     race = await _race_of_club(race_id, user)
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version(data)
     actual_start = data.start_time or None
-    await db.races.update_one({"id": race_id}, {"$set": {"actual_start": actual_start}})
+    result = await db.races.update_one(_version_filter(race_id, expected),
+                                       {"$set": {"actual_start": actual_start},
+                                        "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     updated = await db.races.find_one({"id": race_id}, {"_id": 0})
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_UPDATED",
@@ -2229,8 +2407,14 @@ async def start_race(race_id: str, data: StartRaceInput, user: dict = Depends(re
 @api_router.put("/races/{race_id}/notifications")
 async def update_notifications(race_id: str, data: RaceNotificationInput, user: dict = Depends(require_officer)):
     race = await _race_of_club(race_id, user)
-    update = {k: v for k, v in data.model_dump().items() if v is not None}
-    await db.races.update_one({"id": race_id}, {"$set": update})
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version(data)
+    update = {k: v for k, v in data.model_dump().items()
+              if v is not None and k != "expected_version"}
+    result = await db.races.update_one(_version_filter(race_id, expected),
+                                       {"$set": update, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_UPDATED",
                      description=f"Updated notifications for race {race.get('race_number')}",
@@ -2241,6 +2425,8 @@ async def update_notifications(race_id: str, data: RaceNotificationInput, user: 
 @api_router.post("/races/{race_id}/select-boats")
 async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depends(require_officer)):
     race = await _race_of_club(race_id, user)
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version(data)
     selected = set(data.boat_ids)
     results = race["results"]
     previously_finished = {r["boat_id"] for r in results if r.get("code") == "FINISHED"}
@@ -2256,7 +2442,10 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
     # boats behind her up one place.
     if any(r["boat_id"] in previously_finished and r["code"] != "FINISHED" for r in results):
         await _resequence_race(race)
-    await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    result = await db.races.update_one(_version_filter(race_id, expected),
+                                       {"$set": {"results": results}, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_UPDATED",
                      description=f"Updated starters for race {race.get('race_number')} ({len(selected)} boats)",
@@ -2267,6 +2456,8 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
 @api_router.post("/races/{race_id}/finish")
 async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(require_officer)):
     race = await _race_of_club(race_id, user)
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version(data)
     results = race["results"]
     for r in results:
         if r["boat_id"] == data.boat_id:
@@ -2275,7 +2466,10 @@ async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(re
             r["position"] = None  # set by re-sequencing below
     # Re-sequence all finishers: one-design by finish time, IRC by corrected time.
     await _resequence_race(race)
-    await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    result = await db.races.update_one(_version_filter(race_id, expected),
+                                       {"$set": {"results": results}, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RESULTS_SUBMITTED",
                      description=f"Finish recorded for boat {data.boat_id} in race {race.get('race_number')}",
@@ -2286,6 +2480,8 @@ async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(re
 @api_router.post("/races/{race_id}/undo-finish")
 async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(require_officer)):
     race = await _race_of_club(race_id, user)
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version(data)
     results = race["results"]
     for r in results:
         if r["boat_id"] == data.boat_id:
@@ -2295,7 +2491,10 @@ async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(requ
     # Re-sequence the remaining finishers per the class scoring mode (finish
     # time for one-design, corrected time for IRC/PY handicap classes).
     await _resequence_race(race)
-    await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    result = await db.races.update_one(_version_filter(race_id, expected),
+                                       {"$set": {"results": results}, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RESULTS_UPDATED",
                      description=f"Finish undone for boat {data.boat_id} in race {race.get('race_number')}",
@@ -2307,18 +2506,46 @@ async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(requ
 async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
                         user: dict = Depends(require_officer)):
     race = await _race_of_club(race_id, user)
+    await _ensure_series_not_locked(race.get("series_id"))
     results = race["results"]
     target = next((r for r in results if r["boat_id"] == boat_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail="Boat not in race")
     prev_code = target.get("code")
+    new_code = data.code if data.code is not None else prev_code
     if data.code is not None:
         target["code"] = data.code
-        # ZFP/SCP/DPI/RDG boats finished (or were scored by the jury), so their
-        # finishing place is kept; only true non-finishers lose their place.
-        if data.code not in ("FINISHED", "ZFP", "SCP", "RDG", "DPI"):
+        # ZFP/SCP boats finished, so their finishing place is kept; RDG/DPI
+        # boats are scored by the committee's manual points (place irrelevant);
+        # TLE boats crossed after the limit and score per the TLE rule; all
+        # other codes lose their place.
+        if data.code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES, *TLE_CODES):
             target["position"] = None
+        # Leaving a manual-points code clears the committee's points so they
+        # can never leak into a later finishing-place score.
+        if prev_code in MANUAL_POINT_CODES and data.code not in MANUAL_POINT_CODES:
+            target["penalty_points"] = 0
+    # DPI/RDG are decisions, never inferences: the resulting score must be
+    # entered by the committee on THIS request rather than guessed. The stored
+    # penalty_points default of 0 must never satisfy the requirement — a
+    # boat moved to DPI/RDG without an explicit committee score would
+    # silently score 0, so the field is mandatory when entering the code.
+    if new_code in MANUAL_POINT_CODES and data.penalty_points is None:
+        raise HTTPException(status_code=400,
+                            detail=f"{new_code} requires the resulting points entered by the committee "
+                                   "(penalty_points) — the system will not infer a score.")
+    for field in ("dpi_reason", "dpi_decision_maker", "dpi_date", "dpi_notes",
+                  "rdg_reason", "rdg_decision_maker", "rdg_date", "rdg_notes"):
+        value = getattr(data, field)
+        if value is not None:
+            target[field] = value
     if data.position is not None:
+        # A non-finish code cannot carry a finishing position: DNC/DNS/OCS/
+        # NSC/DNF/RET/DSQ/DNE/UFD/BFD boats have no place, and TLE boats are
+        # scored by the TLE rule, not by where they crossed.
+        if new_code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES):
+            raise HTTPException(status_code=400,
+                                detail=f"A boat scored {new_code} cannot carry a finishing position — {new_code} boats are not placed.")
         target["position"] = data.position
     if data.finish_time is not None:
         target["finish_time"] = data.finish_time
@@ -2342,7 +2569,11 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
         resequence = True
     if resequence:
         await _resequence_race(race)
-    await db.races.update_one({"id": race_id}, {"$set": {"results": results}})
+    expected = _expected_version(data)
+    result = await db.races.update_one(_version_filter(race_id, expected),
+                                       {"$set": {"results": results}, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RESULTS_UPDATED",
                      description=f"Result adjusted for boat {boat_id} in race {race.get('race_number')} (code {target.get('code')})",
@@ -2350,12 +2581,40 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     return await db.races.find_one({"id": race_id}, {"_id": 0})
 
 
+@api_router.get("/races/{race_id}/validation")
+async def race_validation(race_id: str, request: Request, user: dict = Depends(require_officer)):
+    """Validation report for a race: errors (structurally invalid result
+    combinations) and warnings (missing decision records, penalty basis,
+    TLE rule not configured...). The series' scoring config is taken into
+    account, so a TLE warning only appears when no TLE rule is configured."""
+    race = await _race_of_club(race_id, user)
+    series = {}
+    if race.get("series_id"):
+        series = await db.series.find_one({"id": race["series_id"]}, {"_id": 0}) or {}
+    cfg = _series_scoring_config(series)
+    issues = validate_race_results(race.get("results", []), cfg)
+    return {
+        "race_id": race_id,
+        "errors": [w for w in issues if w["level"] == "error"],
+        "warnings": [w for w in issues if w["level"] == "warning"],
+        "all": issues,
+    }
+
+
 @api_router.post("/races/{race_id}/status/{status}")
-async def set_race_status(race_id: str, status: str, user: dict = Depends(require_officer)):
+async def set_race_status(race_id: str, status: str, request: Request,
+                          user: dict = Depends(require_officer)):
     if status not in ("setup", "provisional", "published"):
         raise HTTPException(status_code=400, detail="Invalid status")
     race = await _race_of_club(race_id, user)
-    await db.races.update_one({"id": race_id}, {"$set": {"status": status, "published_at": now_iso() if status == "published" else None}})
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version_query(request)
+    result = await db.races.update_one(
+        _version_filter(race_id, expected),
+        {"$set": {"status": status, "published_at": now_iso() if status == "published" else None},
+         "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     if status == "published":
         action = "RESULTS_PUBLISHED"
@@ -2366,13 +2625,35 @@ async def set_race_status(race_id: str, status: str, user: dict = Depends(requir
     await _log_audit(request=None, user=user, action=action,
                      description=f"Race {race.get('race_number')} status -> {status}",
                      resource_type="race", resource_id=race_id, club_id=club_id)
-    return await db.races.find_one({"id": race_id}, {"_id": 0})
+    updated = await db.races.find_one({"id": race_id}, {"_id": 0})
+    # Validate before publishing (Requirement 7: race result saved -> validate
+    # -> recalculate series -> update standings). The standings are computed on
+    # read, so they always reflect the latest published races; publishing
+    # attaches the validation report so the committee can see warnings/errors.
+    if status == "published" and updated:
+        series = {}
+        if updated.get("series_id"):
+            series = await db.series.find_one({"id": updated["series_id"]}, {"_id": 0}) or {}
+        issues = validate_race_results(updated.get("results", []), _series_scoring_config(series))
+        errors = [w for w in issues if w["level"] == "error"]
+        warnings = [w for w in issues if w["level"] == "warning"]
+        if errors or warnings:
+            logger.warning("RACE PUBLISH VALIDATION race=%s errors=%d warnings=%d",
+                           race_id, len(errors), len(warnings))
+        updated = dict(updated)
+        updated["validation"] = {"errors": errors, "warnings": warnings}
+    return updated
 
 
 @api_router.delete("/races/{race_id}")
-async def delete_race(race_id: str, user: dict = Depends(require_officer)):
+async def delete_race(race_id: str, request: Request,
+                      user: dict = Depends(require_officer)):
     race = await _race_of_club(race_id, user)
-    await db.races.delete_one({"id": race_id})
+    await _ensure_series_not_locked(race.get("series_id"))
+    expected = _expected_version_query(request)
+    result = await db.races.delete_one(_version_filter(race_id, expected))
+    if result.deleted_count == 0:
+        _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_DELETED",
                      description=f"Deleted race {race.get('race_number')} ({race.get('date')})",
@@ -2567,6 +2848,13 @@ async def get_notifications(request: Request, club_id: Optional[str] = None):
 
 # ---------------------------------------------------------------------------
 # Scoring — RRS Appendix A (Low Point System) + rule 44.3(c)
+#
+# The engine is rules-configurable per series/season: the default is RRS
+# 2025-2028 Appendix A Low Point, and every alternative (A5.3 start-area
+# scoring, the finishers+1 RYA/Sailwave convention, the TLE rule, the SCP/ZFP
+# penalty percentage, duty/average points and the discard policy) is a
+# versioned setting on the series. Historical seasons carry their own
+# snapshot of these rules, so changing them never rewrites past results.
 # ---------------------------------------------------------------------------
 def round_half_up(x: float) -> int:
     """RRS 44.3(c): round to the nearest whole number, 0.5 rounded upward."""
@@ -2579,8 +2867,97 @@ def _start_area_entries(results) -> int:
     return len([r for r in results if r.get("code") not in ("DNC", *DUTY_CODES)])
 
 
+def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
+    """The canonical, complete scoring-rule configuration for a series.
+
+    This is the baseline RRS 2025-2028 Appendix A Low Point configuration:
+
+    - a5_convention "a5_2": every non-finish code (DNC, DNS, OCS, UFD, BFD,
+      DNF, RET, DSQ, DNE, NSC) scores series entries + 1 (A5.2 default).
+      "a5_3" scores start-area codes start-area entries + 1 (A5.3 SI option);
+      "finishers" scores them finishers + 1 (RYA/Sailwave convention, DNC
+      always series entries + 1).
+    - tle: Time Limit Expired rule. Disabled by default; when enabled the
+      race committee records a boat as TLE and it scores per `method`
+      ("dnf" = the active A5 DNF score, "finishers_plus_1", or "dnc").
+    - scp/zfp: penalty rule per RRS 44.3(c)/30.2 — a percentage of the DNF
+      score added to the boat's place, rounded half-up, never worse than DNF
+      (that cap is itself configurable via cap_dnf).
+    - duty: the boat's own average of its other sailed races in the series.
+    - discard_policy: "fixed" (the series' discards field) or "increasing"
+      (discard_schedule: discard N after M races scored).
+    """
+    if use_finishers:
+        convention = "finishers"
+    elif use_a5_3:
+        convention = "a5_3"
+    else:
+        convention = "a5_2"
+    return {
+        "rrs_edition": "RRS 2025-2028",
+        "a5_convention": convention,
+        "discard_policy": "fixed",
+        "discard_schedule": [],
+        "tle": {"enabled": False, "time_limit_minutes": None, "method": "dnf"},
+        "scp": {"method": "percent", "value": 20.0, "cap_dnf": True},
+        "zfp": {"method": "percent", "value": 20.0, "cap_dnf": True},
+        "duty": {"enabled": True, "method": "average_own_sailed", "round": 2},
+    }
+
+
+def _series_scoring_config(series: dict) -> dict:
+    """The effective scoring config for a series: its own scoring_config
+    (if stored) merged over the baseline defaults, with legacy flat flags
+    (use_a5_3 / use_finishers) honoured when no explicit config exists."""
+    cfg = _default_scoring_config(bool(series.get("use_a5_3")),
+                                  bool(series.get("use_finishers")))
+    sc = series.get("scoring_config")
+    if isinstance(sc, dict):
+        for key in ("rrs_edition", "a5_convention", "discard_policy", "discard_schedule"):
+            if sc.get(key) is not None:
+                cfg[key] = sc[key]
+        for key in ("tle", "scp", "zfp", "duty"):
+            if isinstance(sc.get(key), dict):
+                merged = dict(cfg[key])
+                merged.update({k: v for k, v in sc[key].items() if v is not None})
+                cfg[key] = merged
+    return cfg
+
+
+def _resolve_a5_base(cfg: dict, series_entries: int, start_area_entries: int,
+                     finishers: int) -> int:
+    """The DNF-equivalent score under the series' active A5 convention."""
+    convention = cfg.get("a5_convention", "a5_2")
+    if convention == "finishers":
+        return finishers + 1
+    if convention == "a5_3":
+        return start_area_entries + 1
+    return series_entries + 1
+
+
+def _effective_discards(cfg: dict, race_count: int, configured_discards: int) -> int:
+    """Discards to apply for a series with `race_count` races scored.
+
+    "increasing" policy: the largest schedule step whose after_races threshold
+    has been reached (e.g. [{3,0},{6,1}] -> no discard until 6 races scored,
+    then 1). "fixed" (and mini-series groups) use the configured count.
+    """
+    if cfg.get("discard_policy") == "increasing":
+        steps = sorted(
+            (s for s in (cfg.get("discard_schedule") or [])
+             if isinstance(s, dict) and s.get("after_races")),
+            key=lambda s: int(s["after_races"]),
+        )
+        d = 0
+        for s in steps:
+            if race_count >= int(s["after_races"]):
+                d = int(s.get("discards") or 0)
+        return d
+    return int(configured_discards or 0)
+
+
 def result_points(r, series_entries, start_area_entries, use_a5_3=False,
-                  use_finishers=False, finishers=0):
+                  use_finishers=False, finishers=0, cfg=None):
     """Points for one boat in one race under RRS Appendix A.
 
     series_entries:    boats entered in the series.
@@ -2593,38 +2970,117 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
                        scores series entries + 1). Takes precedence over
                        use_a5_3 when both are set.
     finishers:         boats that finished the race (for use_finishers).
+    cfg:               the series scoring config (see _default_scoring_config).
+                       When omitted a default config is built from the legacy
+                       use_a5_3 / use_finishers flags, so callers that only
+                       have the flags keep working.
+
+    Every code has an underlying scoring rule here — none is a mere text
+    label:
+
+    FINISHED -> her place (ties split later per RRS A7).
+    RDG/DPI  -> the manual points the committee decided (fallback: DNF score).
+    SCP/ZFP  -> her place made worse by the series' configured penalty
+                (percent of DNF, or points/places), capped at DNF when the
+                series rules impose that limit.
+    TLE      -> the series' configured TLE rule (default: the DNF score).
+    DNC      -> series entries + 1 under every convention.
+    DNS/OCS/UFD/BFD/NSC/DNF/RET/DSQ/DNE -> the active A5 base: series
+                entries + 1 (A5.2 default), start-area entries + 1 (A5.3),
+                or finishers + 1 (RYA/Sailwave convention).
+    OOD      -> duty average, filled in later by _apply_duty_points().
     """
+    if cfg is None:
+        cfg = _default_scoring_config(use_a5_3, use_finishers)
     code = r.get("code")
-    # Base DNF score under the active convention: A5.2 default = series
-    # entries + 1; A5.3 = start-area entries + 1; finishers = finishers + 1.
-    if use_finishers:
-        dnf = finishers + 1
-    elif use_a5_3:
-        dnf = start_area_entries + 1
-    else:
-        dnf = series_entries + 1
+    dnf = _resolve_a5_base(cfg, series_entries, start_area_entries, finishers)
     if code == "FINISHED":
         base = float(r["position"]) if r.get("position") else float(dnf)
         base += float(r.get("penalty_points") or 0)
         return base
-    if code in ("RDG", "DPI"):
+    if code in MANUAL_POINT_CODES:
         pts = r.get("penalty_points")
         return float(pts) if pts is not None else float(dnf)
-    if code in ("ZFP", "SCP"):
-        # Rule 44.3(c): her score without the penalty (her finishing place) made
-        # worse by 20% of the DNF score, rounded half-up, never worse than DNF.
+    if code in PENALTY_CODES:
+        rule = cfg["scp"] if code == "SCP" else cfg["zfp"]
         place = r.get("position")
         if not place:
             return float(dnf)
-        penalty = round_half_up(0.2 * dnf)
-        return min(float(place) + penalty, float(dnf))
+        if rule.get("method") == "percent":
+            # RRS 44.3(c): score without the penalty (her finishing place) made
+            # worse by the configured percentage of the DNF score, rounded
+            # half-up.
+            penalty = round_half_up(float(rule.get("value", 20.0)) / 100.0 * dnf)
+        else:  # "points" / "places": add the configured number outright.
+            penalty = float(rule.get("value", 0.0))
+        pts = float(place) + penalty
+        if rule.get("cap_dnf", True):
+            pts = min(pts, float(dnf))
+        return pts
+    if code in TLE_CODES:
+        # The TLE rule is stored on the series so a future change of the
+        # club's TLE convention never recalculates a historical season.
+        method = (cfg.get("tle") or {}).get("method", "dnf")
+        if method == "finishers_plus_1":
+            return float(finishers + 1)
+        if method == "dnc":
+            return float(series_entries + 1)
+        return float(dnf)
     # A5.2 (default): DNC, DNS, OCS, UFD, BFD, DNF, RET, DSQ, DNE and NSC all
     # score one more than the number of boats entered in the series.
     # A5.3 (SI option) / finishers convention: only DNC uses the series total;
     # the other codes use the active base (start-area or finishers).
-    if code != "DNC" and (use_a5_3 or use_finishers):
+    if code != "DNC" and cfg.get("a5_convention") in ("a5_3", "finishers"):
         return float(dnf)
     return float(series_entries + 1)
+
+
+def validate_race_results(results, cfg=None) -> list:
+    """Flag potentially invalid result combinations so the race committee is
+    warned before publishing. Returns [{level: "error"|"warning", message}].
+
+    Errors are structurally invalid (a boat scored twice — which would allow
+    e.g. DNF AND DSQ simultaneously; a non-finish code carrying a position;
+    DPI/RDG without the committee-entered score). Warnings are omissions the
+    scoring rules ask the committee to record (a DPI without its decision
+    basis, a TLE without an enabled TLE rule, a penalty without a place).
+    """
+    issues = []
+    seen = {}
+    for r in results:
+        bid = r.get("boat_id")
+        code = r.get("code")
+        if bid in seen:
+            issues.append({"level": "error",
+                           "message": f"Boat {bid} appears more than once in this race — a boat cannot be scored twice (e.g. DNF and DSQ together)."})
+        seen[bid] = True
+        if not code:
+            continue
+        if code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES, *TLE_CODES) \
+                and r.get("position") is not None:
+            issues.append({"level": "error",
+                           "message": f"Boat {bid} is scored {code} but also carries a finishing position — {code} boats are not placed."})
+        if code == "FINISHED" and r.get("position") is None:
+            issues.append({"level": "warning",
+                           "message": f"Boat {bid} is marked finished but has no finishing position — re-sequence the race."})
+        if code in MANUAL_POINT_CODES and r.get("penalty_points") is None:
+            issues.append({"level": "error",
+                           "message": f"Boat {bid} is scored {code} without the committee-entered points — the resulting score must be recorded, never inferred."})
+        if code in PENALTY_CODES and r.get("position") is None:
+            issues.append({"level": "warning",
+                           "message": f"Boat {bid} is scored {code} but has no finishing place to apply the penalty to — the penalty rule cannot be applied."})
+        if code in TLE_CODES:
+            tle = (cfg or {}).get("tle") or {}
+            if not tle.get("enabled"):
+                issues.append({"level": "warning",
+                               "message": f"Boat {bid} is scored TLE but this series has no TLE rule configured — check the series scoring settings."})
+        if code == "DPI" and not (r.get("dpi_decision_maker") or r.get("dpi_reason")):
+            issues.append({"level": "warning",
+                           "message": f"DPI for boat {bid} should record the decision-maker/committee and the reason for the discretionary penalty."})
+        if code == "RDG" and not (r.get("rdg_decision_maker") or r.get("rdg_reason")):
+            issues.append({"level": "warning",
+                           "message": f"RDG for boat {bid} should record the redress decision (RRS 62.2) and the committee that granted it."})
+    return issues
 
 
 def _parse_iso(s):
@@ -2859,27 +3315,40 @@ def _normalize_mini_groups(series, races):
     return out
 
 
-def _apply_duty_points(agg, entries_by_race):
+def _apply_duty_points(agg, entries_by_race, cfg=None):
     """Duty races (OOD — Officer of the Day) score the boat's own average of
     its OTHER races in the series where it actually sailed (code not DNC and
     not another duty), matching the Sailwave club convention of "OOD average
     points excluding DNC". A boat with no other sailed races falls back to
     the DNC score (series entries + 1) so duty can never score better than a
-    finish in a tiny fleet."""
+    finish in a tiny fleet.
+
+    The duty rule comes from the series scoring config (cfg["duty"]); the
+    rounding precision is configurable (default 2 dp). This runs on every
+    standings computation, so a duty score is always the average of the
+    races scored to date — it is dynamically recalculated after every race
+    until the series is completed, before discards are applied."""
+    duty_cfg = (cfg or _default_scoring_config()).get("duty") or {}
+    precision = int(duty_cfg.get("round", 2))
+    if not duty_cfg.get("enabled", True):
+        # Series opted out of duty scoring: OOD entries keep their base
+        # non-finish score instead of the average.
+        return
     for entries in agg.values():
         sailed = [e["points"] for e in entries if e["code"] not in ("DNC", *DUTY_CODES)]
         for i, e in enumerate(entries):
             if e["code"] in DUTY_CODES:
                 if sailed:
-                    e["points"] = round(sum(sailed) / len(sailed), 2)
+                    e["points"] = round(sum(sailed) / len(sailed), precision)
                 else:
                     e["points"] = float(entries_by_race[i] + 1)
 
 
 async def _series_scores(series, race_numbers=None):
-    """Return (agg, boat_map, race_meta, use_a5_3). agg: boat_id -> list of
-    per-race entry dicts, aligned to race_meta. If race_numbers is given (a
-    set/list of the series' race numbers), only those races count."""
+    """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
+    per-race entry dicts, aligned to race_meta; cfg: the series' effective
+    scoring config; races: the published races scored. If race_numbers is
+    given (a set/list of the series' race numbers), only those races count."""
     races = await db.races.find({"series_id": series["id"], "status": "published"}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     if race_numbers is not None:
@@ -2887,8 +3356,7 @@ async def _series_scores(series, race_numbers=None):
         races = [r for r in races if int(r.get("race_number") or 0) in keep]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     boat_map = {b["id"]: b for b in boats}
-    use_a5_3 = bool(series.get("use_a5_3", False))
-    use_finishers = bool(series.get("use_finishers", False))
+    cfg = _series_scoring_config(series)
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     agg = {bid: [] for bid in boat_map}
     entries_by_race = []
@@ -2908,10 +3376,10 @@ async def _series_scores(series, race_numbers=None):
             else:
                 code = r.get("code")
                 per_boat[bid] = {
-                    "points": result_points(r, series_entries, start_entries, use_a5_3,
-                                             use_finishers, finishers),
+                    "points": result_points(r, series_entries, start_entries,
+                                             finishers=finishers, cfg=cfg),
                     "discardable": code not in NON_DISCARDABLE,
-                    "position": r.get("position") if code == "FINISHED" else None,
+                    "position": r.get("position") if code in ("FINISHED", *PENALTY_CODES) else None,
                     "code": code,
                 }
         # RRS A7: boats tied on the finishing line (equal stored position) split
@@ -2927,21 +3395,25 @@ async def _series_scores(series, race_numbers=None):
                     per_boat[bid]["points"] = shared
         for bid, e in per_boat.items():
             agg[bid].append(e)
-    _apply_duty_points(agg, entries_by_race)
-    return agg, boat_map, race_meta, use_a5_3, use_finishers
+    _apply_duty_points(agg, entries_by_race, cfg)
+    return agg, boat_map, race_meta, cfg, races
 
 
 async def compute_series_standings(series, race_numbers=None, discards=None):
-    agg, boat_map, race_meta, use_a5_3, use_finishers = await _series_scores(series, race_numbers)
+    agg, boat_map, race_meta, cfg, races = await _series_scores(series, race_numbers)
     club_name = await _club_name_of_class(series.get("class_id"))
     race_count = len(race_meta)
     # Effective discards never remove every race: at least one always counts.
     # Rule A2.1 also discards the earliest of equal worst scores (stable sort).
-    # A mini-series view uses that group's discard count; the full series its own.
+    # A mini-series view uses that group's discard count; the full series its
+    # own (fixed count or the increasing schedule from the scoring config).
     if discards is not None:
         configured_discards = discards
     else:
         configured_discards = series.get("discards", 0)
+    discard_policy = cfg.get("discard_policy", "fixed")
+    if discards is None and discard_policy == "increasing":
+        configured_discards = _effective_discards(cfg, race_count, configured_discards)
     discards = min(configured_discards, max(0, race_count - 1))
     rows = []
     for bid, entries in agg.items():
@@ -2975,10 +3447,14 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)
-    payload = {"race_count": race_count, "discards": discards,
+    payload = {"race_count": race_count, "races_scored": race_count,
+               "discards": discards, "discards_applied": discards,
                "configured_discards": configured_discards,
-               "use_a5_3": use_a5_3,
-               "use_finishers": use_finishers,
+               "discard_policy": discard_policy,
+               "use_a5_3": cfg.get("a5_convention") == "a5_3",
+               "use_finishers": cfg.get("a5_convention") == "finishers",
+               "engine_version": SCORING_ENGINE_VERSION,
+               "scoring_config": cfg,
                "planned_races": series.get("planned_races", 0),
                "schedule": series.get("schedule", []),
                "races": race_meta, "standings": rows}
@@ -2992,6 +3468,297 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Season locking — immutable historical snapshots
+# ---------------------------------------------------------------------------
+# Once a season is finalised (locked), its results are served from a saved
+# snapshot rather than recomputed, so later changes to the scoring engine,
+# TLE rule, handicap system, duty calculation, discard rules, penalties,
+# boats or series configuration can never rewrite history. Correcting a
+# genuine error is an administrator-only flow: unlock for correction (with
+# confirmation + reason), fix the data, then re-lock — which preserves the
+# previous version and records exactly what changed.
+
+def _standings_diff(prev: dict, new: dict) -> list:
+    """Per-boat rank/net differences between two standings payloads, for the
+    amendment record of a re-locked season."""
+    def index(p):
+        return {r["boat_id"]: r for r in p.get("standings", [])}
+    prev_by = index(prev or {})
+    new_by = index(new or {})
+    changes = []
+    for bid in sorted(set(prev_by) | set(new_by)):
+        a, b = prev_by.get(bid), new_by.get(bid)
+        if not a or not b:
+            changes.append({"boat_id": bid,
+                            "rank_before": (a or {}).get("rank"), "rank_after": (b or {}).get("rank"),
+                            "net_before": (a or {}).get("net"), "net_after": (b or {}).get("net"),
+                            "note": "boat added/removed by amendment"})
+        elif a.get("rank") != b.get("rank") or a.get("net") != b.get("net"):
+            changes.append({"boat_id": bid, "rank_before": a.get("rank"), "rank_after": b.get("rank"),
+                            "net_before": a.get("net"), "net_after": b.get("net")})
+    return changes
+
+
+async def _build_snapshot_doc(series: dict, user: dict, version: int,
+                              reason: str = "", prev_payload: Optional[dict] = None) -> dict:
+    """Capture EVERYTHING needed to display a historical season without ever
+    recomputing it: final standings payload, per-race raw results with their
+    computed points, duty/TLE/penalty/redress decisions, discards, tie-breaks,
+    the ratings used, the scoring-rule configuration and who locked it."""
+    agg, boat_map, race_meta, cfg, races = await _series_scores(series)
+    payload = await compute_series_standings(series)
+    # Freeze each mini-series view too, so a locked season's mini standings
+    # are equally immutable.
+    if series.get("mini_series"):
+        all_races = await db.races.find({"series_id": series["id"], "status": "published"},
+                                        {"_id": 0, "race_number": 1}).to_list(1000)
+        groups = _normalize_mini_groups(series, all_races)
+        mini_payloads = {}
+        for gi, group in enumerate(groups, start=1):
+            try:
+                mini_payloads[str(gi)] = await compute_series_standings(
+                    series, race_numbers=group["race_numbers"], discards=group["discards"])
+            except Exception:
+                continue
+        if mini_payloads:
+            payload["mini_payloads"] = mini_payloads
+    races_detail = []
+    for i, race in enumerate(races):
+        present = {r["boat_id"]: r for r in race.get("results", [])}
+        entries = []
+        for bid in boat_map:
+            e = agg[bid][i]
+            raw = present.get(bid) or {}
+            dpi = {k: raw.get(k) for k in ("dpi_reason", "dpi_decision_maker", "dpi_date", "dpi_notes")
+                   if raw.get(k)}
+            rdg = {k: raw.get(k) for k in ("rdg_reason", "rdg_decision_maker", "rdg_date", "rdg_notes")
+                   if raw.get(k)}
+            entries.append({
+                "boat_id": bid, "boat_name": boat_map[bid].get("name"),
+                "sail_no": boat_map[bid].get("sail_no"),
+                "code": e["code"], "position": raw.get("position"),
+                "finish_time": raw.get("finish_time"),
+                "penalty_points": raw.get("penalty_points"),
+                "points": e["points"], "discardable": e["discardable"],
+                "dpi": dpi or None, "rdg": rdg or None,
+            })
+        races_detail.append({
+            "race_number": race.get("race_number"), "date": race.get("date"),
+            "status": race.get("status"), "entries_count": race.get("entries_count"),
+            "start_time": race.get("start_time"), "actual_start": race.get("actual_start"),
+            "results": entries,
+        })
+    amendment = None
+    if prev_payload is not None:
+        amendment = {"reason": reason or "", "changes": _standings_diff(prev_payload, payload)}
+    return {
+        "id": new_id(), "series_id": series["id"], "series_name": series.get("name"),
+        "class_id": series.get("class_id"), "year": series.get("year"),
+        "version": version, "status": LOCK_LOCKED,
+        "locked_at": now_iso(), "locked_by": user.get("username"),
+        "locked_by_user_id": user.get("user_id"),
+        "engine_version": SCORING_ENGINE_VERSION,
+        "scoring_config": cfg,
+        "nor_si_settings": {
+            "schedule": series.get("schedule", []),
+            "planned_races": series.get("planned_races", 0),
+            "scoring_mode": series.get("scoring_mode"),
+            "included_in_overall": series.get("included_in_overall", True),
+            "order": series.get("order", 0),
+            "use_a5_3": bool(series.get("use_a5_3")),
+            "use_finishers": bool(series.get("use_finishers")),
+        },
+        "payload": payload, "races": races_detail,
+        # Frozen boat identity + ratings: the historical result references
+        # these copies, never the live boat records.
+        "boats": {bid: {"name": b.get("name"), "sail_no": b.get("sail_no"),
+                         "helm": b.get("helm"), "home_club": b.get("home_club"),
+                         "tcc": b.get("tcc"), "py": b.get("py"),
+                         "boat_type": b.get("boat_type")}
+                   for bid, b in boat_map.items()},
+        "ratings": {bid: {"tcc": b.get("tcc"), "py": b.get("py")} for bid, b in boat_map.items()},
+        # Scoring engine + rules versions that produced this result.
+        "scoring_engine_version": SCORING_ENGINE_VERSION,
+        "scoring_rules_version": cfg.get("rrs_edition", "RRS 2025-2028"),
+        "amendment": amendment,
+    }
+
+
+async def _standings_for_series(series: dict, mini: Optional[int] = None):
+    """Standings for a series: the frozen snapshot when the season is FINAL
+    (locked) or ARCHIVED — so history is never recomputed — otherwise the live
+    calculation."""
+    if series.get("lock_status") in NOT_EDITABLE:
+        snaps = await db.season_snapshots.find(
+            {"series_id": series["id"], "status": {"$in": [LOCK_LOCKED, LOCK_ARCHIVED]}}, {"_id": 0})\
+            .sort("version", -1).to_list(1)
+        snap = snaps[0] if snaps else None
+        if snap and snap.get("payload"):
+            payload = dict(snap["payload"])
+            if mini is not None:
+                mp = payload.get("mini_payloads") or {}
+                if str(mini) not in mp:
+                    raise HTTPException(status_code=404, detail="Mini series not found")
+                return dict(mp[str(mini)])
+            payload.update({
+                "locked": True, "snapshot_version": snap.get("version"),
+                "locked_at": snap.get("locked_at"), "locked_by": snap.get("locked_by"),
+                "engine_version": snap.get("engine_version", payload.get("engine_version")),
+                "scoring_engine_version": snap.get("scoring_engine_version", SCORING_ENGINE_VERSION),
+                "scoring_rules_version": snap.get("scoring_rules_version"),
+            })
+            if series.get("lock_status") == LOCK_ARCHIVED:
+                payload["archived"] = True
+            return payload
+    return None
+
+
+async def _ensure_series_not_locked(series_id: Optional[str],
+                                    detail: str = "Season results are locked — they are final. Use the administrator correction process to amend them."):
+    """409 when a series' season is FINAL (locked) or ARCHIVED. Every normal
+    (non-admin-amendment) mutation of a race, result or series config goes
+    through this guard."""
+    if not series_id:
+        return
+    series = await db.series.find_one({"id": series_id}, {"_id": 0, "lock_status": 1})
+    if series and series.get("lock_status") in NOT_EDITABLE:
+        raise HTTPException(status_code=409, detail=detail)
+
+
+@api_router.post("/series/{series_id}/lock")
+async def lock_series(series_id: str, data: LockSeriesInput, request: Request,
+                      user: dict = Depends(require_admin)):
+    """Finalise a season: compute the results once, store the immutable
+    snapshot, and mark the series locked. Requires explicit confirmation and
+    a reason (both audited). A re-lock after a correction creates a NEW
+    version, preserving the previous one and recording what changed."""
+    series = await _series_of_club(series_id, user)
+    if not data.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation is required to lock this season")
+    if not (data.reason or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required when locking a season")
+    if series.get("lock_status") == LOCK_LOCKED:
+        raise HTTPException(status_code=400, detail="This season is already locked")
+    if series.get("lock_status") == LOCK_ARCHIVED:
+        raise HTTPException(status_code=400,
+                            detail="This season is archived — open it for correction (unlock) before locking again.")
+    expected = _expected_version(data)
+    snaps = await db.season_snapshots.find({"series_id": series_id}, {"_id": 0})\
+        .sort("version", -1).to_list(1)
+    prev = snaps[0] if snaps else None
+    version = int((prev or {}).get("version", 0)) + 1
+    doc = await _build_snapshot_doc(series, user, version, data.reason,
+                                    (prev or {}).get("payload"))
+    await db.season_snapshots.update_many({"series_id": series_id, "status": {"$in": [LOCK_LOCKED, LOCK_ARCHIVED]}},
+                                          {"$set": {"status": "superseded"}})
+    try:
+        await db.season_snapshots.insert_one(doc)
+    except DuplicateKeyError:
+        # Another administrator locked (or is locking) this season at the same
+        # version — the database's unique (series_id, version) index refuses
+        # the duplicate snapshot rather than corrupting history.
+        raise HTTPException(status_code=409,
+                            detail="This season was locked by another user at the same time. Reload and try again.")
+    result = await db.series.update_one(
+        _version_filter(series_id, expected),
+        {"$set": {
+            "lock_status": LOCK_LOCKED, "lock_version": version,
+            "locked_at": doc["locked_at"], "locked_by": user.get("username"),
+            "unlocked_at": "", "unlocked_by": "", "unlock_reason": "",
+        }, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    club_id = await _class_club_id(series.get("class_id"))
+    action = "SERIES_LOCKED" if version == 1 else "SEASON_AMENDED"
+    description = (f"Locked season for series {series.get('name')} (version {version})"
+                   if version == 1 else
+                   f"Amended locked season for series {series.get('name')} — new version {version} "
+                   f"({len(doc.get('amendment', {}).get('changes', []))} standings changes)")
+    await _log_audit(request=request, user=user, action=action,
+                     description=f"{description}. Reason: {data.reason}",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"ok": True, "version": version, "amendment": doc.get("amendment"),
+            "locked_at": doc["locked_at"]}
+
+
+@api_router.post("/series/{series_id}/unlock")
+async def unlock_series(series_id: str, data: LockSeriesInput, request: Request,
+                        user: dict = Depends(require_admin)):
+    """Open a locked season for correction (administrator-only, confirmed +
+    reasoned). The last locked snapshot is preserved (marked superseded) so
+    nothing is ever silently overwritten; re-locking creates a new version."""
+    series = await _series_of_club(series_id, user)
+    if not data.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation is required to unlock this season")
+    if not (data.reason or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required when unlocking a season")
+    if series.get("lock_status") not in (LOCK_LOCKED, LOCK_ARCHIVED):
+        raise HTTPException(status_code=400, detail="This season is not locked")
+    expected = _expected_version(data)
+    result = await db.series.update_one(_version_filter(series_id, expected), {"$set": {
+        "lock_status": LOCK_OPEN, "unlocked_at": now_iso(),
+        "unlocked_by": user.get("username"), "unlock_reason": data.reason,
+    }, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    await db.season_snapshots.update_many(
+        {"series_id": series_id, "status": {"$in": [LOCK_LOCKED, LOCK_ARCHIVED]}},
+        {"$set": {"status": "superseded"}})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=request, user=user, action="SEASON_UNLOCKED",
+                     description=f"Season opened for correction: {series.get('name')}. Reason: {data.reason}",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"ok": True}
+
+
+@api_router.post("/series/{series_id}/archive")
+async def archive_series(series_id: str, data: LockSeriesInput, request: Request,
+                         user: dict = Depends(require_admin)):
+    """Move a FINAL (locked) season to the terminal ARCHIVED state. ARCHIVED
+    seasons are served from their frozen snapshot forever; the only way back
+    is the audited administrator unlock-for-correction flow."""
+    series = await _series_of_club(series_id, user)
+    if not data.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation is required to archive this season")
+    if not (data.reason or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required when archiving a season")
+    if series.get("lock_status") != LOCK_LOCKED:
+        raise HTTPException(status_code=400,
+                            detail="Only a locked (FINAL) season can be archived")
+    expected = _expected_version(data)
+    result = await db.series.update_one(_version_filter(series_id, expected), {"$set": {
+        "lock_status": LOCK_ARCHIVED, "archived_at": now_iso(),
+        "archived_by": user.get("username"), "archive_reason": data.reason,
+    }, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    await db.season_snapshots.update_many(
+        {"series_id": series_id, "status": LOCK_LOCKED},
+        {"$set": {"status": LOCK_ARCHIVED}})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=request, user=user, action="SEASON_ARCHIVED",
+                     description=f"Archived season: {series.get('name')}. Reason: {data.reason}",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"ok": True, "archived_at": now_iso()}
+
+
+@api_router.get("/series/{series_id}/snapshots")
+async def series_snapshots(series_id: str, request: Request,
+                           user: dict = Depends(require_admin)):
+    """Version history of a season: every locked snapshot and its amendment
+    record, newest first (payload kept — the UI shows the standings via the
+    regular standings endpoint, which serves the locked snapshot)."""
+    series = await _series_of_club(series_id, user)
+    snaps = await db.season_snapshots.find({"series_id": series_id}, {"_id": 0})\
+        .sort("version", -1).to_list(100)
+    for s in snaps:
+        s.pop("payload", None)
+        s.pop("races", None)
+        s.pop("ratings", None)
+    return snaps
+
+
 @api_router.get("/standings/series/{series_id}")
 async def series_standings(series_id: str, request: Request, club_id: Optional[str] = None,
                            mini: Optional[int] = None):
@@ -3002,10 +3769,16 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     if club and (await _class_club_id(series.get("class_id"))) != club:
         raise HTTPException(status_code=404, detail="Series not found")
     if mini is None:
+        frozen = await _standings_for_series(series)
+        if frozen is not None:
+            return frozen
         return await compute_series_standings(series)
     # Mini-series view: standings over one of the series' named mini groups.
     if not series.get("mini_series"):
         raise HTTPException(status_code=400, detail="This series is not split into mini series")
+    frozen = await _standings_for_series(series, mini=mini)
+    if frozen is not None:
+        return frozen
     all_races = await db.races.find({"series_id": series_id, "status": "published"},
                                     {"_id": 0, "race_number": 1}).to_list(1000)
     groups = _normalize_mini_groups(series, all_races)
@@ -3035,7 +3808,8 @@ async def overall_standings(class_id: str, year: int, request: Request, club_id:
     series_names = []
     for series in sorted(all_series, key=lambda s: s.get("order", 0)):
         series_names.append(series["name"])
-        result = await compute_series_standings(series)
+        frozen = await _standings_for_series(series)
+        result = frozen if frozen is not None else await compute_series_standings(series)
         for row in result["standings"]:
             totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + row["net"]
             per_series_nets.setdefault(row["boat_id"], {})[series["name"]] = row["net"]
@@ -3251,6 +4025,52 @@ app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_CSRFOriginMiddleware)
 
 
+async def _backfill_versions():
+    """Give every pre-existing race/series/boat/class/club/snapshot the
+    optimistic-concurrency counter (version=1) so the first concurrent write
+    after this deploy is already guarded. Idempotent and cheap."""
+    for coll in (db.races, db.series, db.boats, db.classes, db.clubs,
+                 db.season_snapshots, db.users):
+        try:
+            await coll.update_many({"version": {"$exists": False}},
+                                   {"$set": {"version": 1}})
+        except Exception as exc:
+            logger.warning("VERSION BACKFILL FAILED (%s): %s", coll.name, exc)
+
+
+async def _ensure_db_constraints():
+    """Database-level integrity constraints (second line of defence):
+    - unique `id` on every entity collection (guarantees a guessed id can
+      only ever hit at most one document of that collection);
+    - unique club slug;
+    - unique (series, race_number) so a series can never gain a duplicate
+      race; a race's series ownership is enforced by the app layer.
+    - unique (club_id, username) per club user.
+    All idempotent (create_index is a no-op if the index already exists)."""
+    plans = {
+        db.races: [([("id", 1)], {"unique": True}),
+                   ([("series_id", 1), ("race_number", 1)], {"unique": True})],
+        db.series: [([("id", 1)], {"unique": True})],
+        db.boats: [([("id", 1)], {"unique": True})],
+        db.classes: [([("id", 1)], {"unique": True})],
+        db.clubs: [([("id", 1)], {"unique": True}),
+                   ([("slug", 1)], {"unique": True})],
+        db.season_snapshots: [([("id", 1)], {"unique": True}),
+                              ([("series_id", 1), ("version", 1)], {"unique": True})],
+        db.users: [([("id", 1)], {"unique": True}),
+                   ([("club_id", 1), ("username", 1)],
+                    {"unique": True, "partialFilterExpression": {"club_id": {"$exists": True}}})],
+        db.audit_logs: [([("id", 1)], {"unique": True})],
+    }
+    for coll, indexes in plans.items():
+        for keys, kwargs in indexes:
+            try:
+                await coll.create_index(keys, **kwargs)
+            except Exception as exc:
+                logger.warning("INDEX CREATION FAILED (%s %s): %s",
+                               coll.name, keys, exc)
+
+
 @app.on_event("startup")
 async def startup():
     await ensure_default_club()
@@ -3258,6 +4078,14 @@ async def startup():
     await ensure_webmaster_user()
     await _ensure_all_user_token_versions()
     await run_seed()
+    # Integrity layer: backfill the optimistic-concurrency counter on legacy
+    # documents, then enforce unique-id / ownership constraints at the
+    # database level so the DB is a second line of defence behind the API.
+    try:
+        await _backfill_versions()
+        await _ensure_db_constraints()
+    except Exception as exc:
+        logger.warning("DB CONSTRAINT SETUP FAILED: %s", exc)
     # Indexes for the audit log (idempotent; speeds up club-scoped,
     # newest-first reads and the webmaster filters).
     try:

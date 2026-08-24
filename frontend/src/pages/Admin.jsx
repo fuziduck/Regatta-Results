@@ -200,10 +200,20 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
       py: form.py === "" ? null : Number(form.py), boat_type: form.boat_type,
       home_club: (form.home_club || "").trim(),
     };
-    if (editing) await api.updateBoat(editing, payload); else await api.createBoat(payload);
+    try {
+      if (editing) await api.updateBoat(editing, payload, boats.find((b) => b.id === editing)?.version);
+      else await api.createBoat(payload);
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("This boat has been changed by another user. Reload the latest details before editing again.");
+        load();
+        return;
+      }
+      throw e;
+    }
     toast.success("Saved"); setOpen(false); setEditing(null); setForm(blank); load();
   };
-  const del = async (id) => { await api.deleteBoat(id); toast.success("Deleted"); load(); };
+  const del = async (id) => { await api.deleteBoat(id, boats.find((b) => b.id === id)?.version); toast.success("Deleted"); load(); };
   const cname = (id) => classes.find((c) => c.id === id)?.name || "—";
   // Fallback for boats created before home_club existed: derive from the class's club.
   const clubOf = (b) => {
@@ -309,10 +319,43 @@ function SeriesTab({ classes, clubId }) {
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [] };
-  const [form, setForm] = useState(blank);
+  const [lockDialog, setLockDialog] = useState(null); // {mode: "lock"|"unlock", series}
+  const [lockReason, setLockReason] = useState("");
+  const [lockBusy, setLockBusy] = useState(false);
+  const [snapSeries, setSnapSeries] = useState(null); // series whose snapshot history is shown
+  const [snapshots, setSnapshots] = useState([]);
+  // Canonical default scoring-rule configuration (RRS 2025-2028 Appendix A
+  // Low Point): A5.2 default, no TLE, 20% SCP/ZFP capped at DNF, fixed
+  // discards, duty = average of the boat's own sailed races.
+  const defaultScoringConfig = () => ({
+    rrs_edition: "RRS 2025-2028",
+    a5_convention: "a5_2",
+    discard_policy: "fixed",
+    discard_schedule: [],
+    tle: { enabled: false, time_limit_minutes: null, method: "dnf" },
+    scp: { method: "percent", value: 20, cap_dnf: true },
+    zfp: { method: "percent", value: 20, cap_dnf: true },
+    duty: { enabled: true, method: "average_own_sailed", round: 2 },
+  });
+  // Rebuild a form scoring_config from a stored series (legacy flat flags are
+  // normalised into the versioned config so old seasons keep their rules).
+  const scoringConfigFromSeries = (s) => {
+    const cfg = { ...defaultScoringConfig(), ...((s.scoring_config && typeof s.scoring_config === "object") ? s.scoring_config : {}) };
+    if (!s.scoring_config) {
+      cfg.a5_convention = s.use_finishers ? "finishers" : s.use_a5_3 ? "a5_3" : "a5_2";
+    }
+    cfg.tle = { ...cfg.tle, ...((s.scoring_config?.tle) || {}) };
+    cfg.scp = { ...defaultScoringConfig().scp, ...cfg.scp };
+    cfg.zfp = { ...defaultScoringConfig().zfp, ...cfg.zfp };
+    cfg.duty = { ...defaultScoringConfig().duty, ...cfg.duty };
+    return cfg;
+  };
+  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig() });
+  const [form, setForm] = useState(blank());
   const [schedStart, setSchedStart] = useState("2026-08-08");
   const [autoSize, setAutoSize] = useState(5);
+  const patchCfg = (patch) => setForm((f) => ({ ...f, scoring_config: { ...f.scoring_config, ...patch } }));
+  const patchCfgNested = (key, patch) => setForm((f) => ({ ...f, scoring_config: { ...f.scoring_config, [key]: { ...f.scoring_config[key], ...patch } } }));
   // How many races the admin can assign into mini series (planned count, or
   // the schedule length if that is set instead).
   const miniRaceTotal = Math.max(Number(form.planned_races) || 0, (form.schedule || []).length);
@@ -360,9 +403,36 @@ function SeriesTab({ classes, clubId }) {
 
   const save = async () => {
     if (!form.name || !form.class_id) return toast.error("Name and class required");
-    const payload = { ...form, discards: Number(form.discards), order: Number(form.order), year: Number(form.year), planned_races: Number(form.planned_races), schedule: form.schedule || [] };
-    if (editing) await api.updateSeries(editing, payload); else await api.createSeries(payload);
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank, class_id: classFilter });
+    const cfg = form.scoring_config || defaultScoringConfig();
+    // Keep the legacy flat flags in sync so older UI (and the API contract)
+    // still sees the A5 convention; the versioned scoring_config is the
+    // source of truth the engine actually reads.
+    const convention = cfg.a5_convention;
+    const payload = {
+      ...form, discards: Number(form.discards), order: Number(form.order),
+      year: Number(form.year), planned_races: Number(form.planned_races),
+      schedule: form.schedule || [],
+      use_a5_3: convention === "a5_3", use_finishers: convention === "finishers",
+      scoring_config: {
+        ...cfg,
+        tle: { ...cfg.tle, time_limit_minutes: cfg.tle.time_limit_minutes ? Number(cfg.tle.time_limit_minutes) : null },
+        scp: { ...cfg.scp, value: Number(cfg.scp.value) || 0 },
+        zfp: { ...cfg.zfp, value: Number(cfg.zfp.value) || 0 },
+        discard_schedule: (cfg.discard_schedule || []).map((s) => ({ after_races: Number(s.after_races) || 0, discards: Number(s.discards) || 0 })),
+      },
+    };
+    try {
+      if (editing) await api.updateSeries(editing, payload, series.find((s) => s.id === editing)?.version);
+      else await api.createSeries(payload);
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
+        load();
+        return;
+      }
+      throw e;
+    }
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank(), class_id: classFilter });
     reloadYears(); load();
   };
   const genSchedule = async () => {
@@ -372,8 +442,15 @@ function SeriesTab({ classes, clubId }) {
     toast.success("Weekly schedule generated"); load();
   };
   const setSchedDate = (idx, val) => setForm((f) => { const sc = [...(f.schedule || [])]; sc[idx] = val; return { ...f, schedule: sc }; });
-  const del = async (id) => { await api.deleteSeries(id); toast.success("Deleted"); load(); };
-  const quickSet = async (s, patch) => { await api.updateSeries(s.id, { ...s, ...patch }); load(); };
+  const del = async (id) => { await api.deleteSeries(id, series.find((x) => x.id === id)?.version); toast.success("Deleted"); load(); };
+  const quickSet = async (s, patch) => {
+    try { await api.updateSeries(s.id, { ...s, ...patch }, s.version); }
+    catch (e) {
+      if (e.response?.status === 409) toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
+      else toast.error(e.response?.data?.detail || "Could not update series");
+    }
+    load();
+  };
 
   return (
     <div>
@@ -392,8 +469,8 @@ function SeriesTab({ classes, clubId }) {
             <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
         </div>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank, class_id: classFilter }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank, class_id: classFilter, order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter }); } }}>
+          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank(), class_id: classFilter, order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} series</DialogTitle></DialogHeader>
             <div className="space-y-3">
@@ -422,8 +499,100 @@ function SeriesTab({ classes, clubId }) {
                 <div className="space-y-1.5"><Label>Order</Label><Input type="number" data-testid="series-order-input" value={form.order} onChange={(e) => setForm({ ...form, order: e.target.value })} /></div>
               </div>
               <div className="flex items-center gap-2"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
-              <div className="flex items-center gap-2"><Switch checked={form.use_a5_3} onCheckedChange={(v) => setForm({ ...form, use_a5_3: v })} data-testid="series-a53-switch" /><Label>RRS A5.3 — boats that came to the start area score as starters + 1</Label></div>
-              <div className="flex items-center gap-2"><Switch checked={form.use_finishers} onCheckedChange={(v) => setForm({ ...form, use_finishers: v })} data-testid="series-fins-switch" /><Label>Score DNF/RET/DSQ as finishers + 1 (RYA convention)</Label></div>
+              <div className="rounded-lg border border-border p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="font-heading uppercase text-sm">Scoring rules <span className="text-muted-foreground font-body font-normal normal-case text-xs">({(form.scoring_config || defaultScoringConfig()).rrs_edition})</span></Label>
+                </div>
+                <p className="text-xs text-muted-foreground">Baseline is RRS 2025–2028 Appendix A Low Point. Alternatives are stored per season, so a change in future years never rewrites historical results.</p>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">A5 non-finishers scoring</Label>
+                  <Select value={form.scoring_config?.a5_convention || "a5_2"} onValueChange={(v) => patchCfg({ a5_convention: v })}>
+                    <SelectTrigger className="h-9" data-testid="series-a5-select"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="a5_2">A5.2 default — DNC/DNS/… score series entries + 1</SelectItem>
+                      <SelectItem value="a5_3">A5.3 — start-area boats score starters + 1 (DNC keeps series + 1)</SelectItem>
+                      <SelectItem value="finishers">Finishers + 1 (RYA/Sailwave convention; DNC keeps series + 1)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="rounded-md border border-border/70 p-2.5 space-y-2">
+                  <div className="flex items-center gap-2"><Switch checked={!!form.scoring_config?.tle?.enabled} onCheckedChange={(v) => patchCfgNested("tle", { enabled: v })} data-testid="series-tle-switch" /><Label className="text-xs font-semibold">TLE — Time Limit Expired rule</Label></div>
+                  {form.scoring_config?.tle?.enabled && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1"><Label className="text-xs">Time limit (minutes)</Label><Input type="number" min="1" className="h-8" value={form.scoring_config.tle.time_limit_minutes || ""} onChange={(e) => patchCfgNested("tle", { time_limit_minutes: e.target.value })} data-testid="series-tle-minutes" placeholder="e.g. 120" /></div>
+                      <div className="space-y-1"><Label className="text-xs">TLE scoring method</Label>
+                        <Select value={form.scoring_config?.tle?.method || "dnf"} onValueChange={(v) => patchCfgNested("tle", { method: v })}>
+                          <SelectTrigger className="h-8" data-testid="series-tle-method"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="dnf">Score as DNF (active A5 base)</SelectItem>
+                            <SelectItem value="finishers_plus_1">Finishers + 1</SelectItem>
+                            <SelectItem value="dnc">Series entries + 1</SelectItem>
+                          </SelectContent>
+                        </Select></div>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {["scp", "zfp"].map((key) => {
+                    const p = form.scoring_config?.[key] || defaultScoringConfig()[key];
+                    return (
+                      <div key={key} className="rounded-md border border-border/70 p-2.5 space-y-2">
+                        <Label className="text-xs font-semibold uppercase">{key} penalty</Label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-1"><Label className="text-[10px] text-muted-foreground">Rule</Label>
+                            <Select value={p.method} onValueChange={(v) => patchCfgNested(key, { method: v })}>
+                              <SelectTrigger className="h-8" data-testid={`series-${key}-method`}><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="percent">% of DNF</SelectItem>
+                                <SelectItem value="points">+ points</SelectItem>
+                                <SelectItem value="places">+ places</SelectItem>
+                              </SelectContent>
+                            </Select></div>
+                          <div className="space-y-1"><Label className="text-[10px] text-muted-foreground">{p.method === "percent" ? "% of DNF" : "Amount"}</Label><Input type="number" min="0" step="0.5" className="h-8" value={p.value} onChange={(e) => patchCfgNested(key, { value: e.target.value })} data-testid={`series-${key}-value`} /></div>
+                        </div>
+                        <div className="flex items-center gap-2"><Switch checked={!!p.cap_dnf} onCheckedChange={(v) => patchCfgNested(key, { cap_dnf: v })} data-testid={`series-${key}-cap`} /><Label className="text-[11px]">Never worse than DNF</Label></div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="rounded-md border border-border/70 p-2.5 space-y-2">
+                  <div className="flex items-center gap-2"><Switch checked={!!form.scoring_config?.duty?.enabled} onCheckedChange={(v) => patchCfgNested("duty", { enabled: v })} data-testid="series-duty-switch" /><Label className="text-xs font-semibold">Duty / Average Points (OOD)</Label></div>
+                  {form.scoring_config?.duty?.enabled && <p className="text-[11px] text-muted-foreground">A duty boat scores the average of her own sailed races, recalculated after every scored race before discards apply.</p>}
+                </div>
+                <div className="rounded-md border border-border/70 p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold">Discards</Label>
+                    <Select value={form.scoring_config?.discard_policy || "fixed"} onValueChange={(v) => patchCfg({ discard_policy: v })}>
+                      <SelectTrigger className="h-8 w-44" data-testid="series-discard-policy"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="fixed">Fixed (use the Discards field)</SelectItem>
+                        <SelectItem value="increasing">Increasing with races scored</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.scoring_config?.discard_policy === "increasing" ? (
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] text-muted-foreground">Discard N after M races scored (e.g. 1 discard from the 6th race, 2 from the 9th).</p>
+                      {(form.scoring_config.discard_schedule || []).map((step, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-muted-foreground w-8">R{step.after_races}+</span>
+                          <Input type="number" min="0" className="h-8" value={step.discards} onChange={(e) => {
+                            const steps = (form.scoring_config.discard_schedule || []).map((s, j) => j === i ? { ...s, discards: e.target.value } : s);
+                            patchCfg({ discard_schedule: steps });
+                          }} data-testid={`series-discard-step-${i}`} />
+                          <Button type="button" size="sm" variant="ghost" className="text-destructive h-7" onClick={() => patchCfg({ discard_schedule: (form.scoring_config.discard_schedule || []).filter((_, j) => j !== i) })}><Trash2 className="w-3.5 h-3.5" /></Button>
+                        </div>
+                      ))}
+                      <Button type="button" size="sm" variant="outline" data-testid="series-discard-step-add"
+                        onClick={() => patchCfg({ discard_schedule: [...(form.scoring_config.discard_schedule || []), { after_races: (form.scoring_config.discard_schedule?.length || 0) * 3 + 3, discards: (form.scoring_config.discard_schedule?.length || 0) }] })}>
+                        <Plus className="w-3.5 h-3.5" /> Add discard step
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">Set the discard count in the Discards field above.</p>
+                  )}
+                </div>
+              </div>
               <div className="rounded-lg border border-border p-3 space-y-3">
                 <div className="flex items-center gap-2"><Switch checked={form.mini_series} onCheckedChange={(v) => setForm({ ...form, mini_series: v })} data-testid="series-mini-switch" /><Label className="font-heading uppercase text-sm">Split into mini series</Label></div>
                 {form.mini_series && (
@@ -499,8 +668,11 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>A5.3</TableHead><TableHead>Fin+1</TableHead><TableHead>Mini</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-          <TableBody>{series.map((s) => (
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+          <TableBody>{series.map((s) => {
+            const cfg = scoringConfigFromSeries(s);
+            const locked = s.lock_status === "locked" || s.lock_status === "archived";
+            return (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
@@ -509,17 +681,110 @@ function SeriesTab({ classes, clubId }) {
               <TableCell className="font-mono">{s.discards}</TableCell>
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
-              <TableCell><Switch checked={!!s.use_a5_3} onCheckedChange={(v) => quickSet(s, { use_a5_3: v })} data-testid={`a53-toggle-${s.name}`} /></TableCell>
-              <TableCell><Switch checked={!!s.use_finishers} onCheckedChange={(v) => quickSet(s, { use_finishers: v })} data-testid={`fins-toggle-${s.name}`} /></TableCell>
+              <TableCell className="text-xs text-muted-foreground max-w-44">
+                <span className="font-mono">{cfg.a5_convention.toUpperCase()}</span>
+                {cfg.tle?.enabled && <span className="text-amber-700 font-semibold"> · TLE</span>}
+                <span className="text-[10px] block">SCP {cfg.scp.value}{cfg.scp.method === "percent" ? "%" : ""} · ZFP {cfg.zfp.value}{cfg.zfp.method === "percent" ? "%" : ""} · {cfg.discard_policy === "increasing" ? "incr. discards" : `${s.discards} discard${s.discards === 1 ? "" : "s"}`}</span>
+              </TableCell>
               <TableCell>{s.mini_series ? <Badge className="bg-purple-100 text-purple-800">{s.mini_series_groups?.length || 0} mini series</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
-              <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0 })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [] }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+              <TableCell>
+                {s.lock_status === "archived" ? <Badge className="bg-slate-700 text-white gap-1"><Archive className="w-3 h-3" /> Archived v{s.lock_version || 1}</Badge>
+                  : locked ? <Badge className="bg-emerald-600 text-white gap-1"><ShieldCheck className="w-3 h-3" /> Locked v{s.lock_version || 1}</Badge>
+                  : <Badge variant="outline" className="text-muted-foreground">Open</Badge>}
+              </TableCell>
+              <TableCell className="text-right whitespace-nowrap">
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0 })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
+                {locked ? (
+                  <>
+                    {s.lock_status === "locked" && (
+                      <Button size="sm" variant="outline" className="text-slate-700 border-slate-400/60 h-8" data-testid={`archive-${s.name}`} onClick={() => { setLockDialog({ mode: "archive", series: s }); setLockReason(""); }}>Archive</Button>
+                    )}
+                    <Button size="sm" variant="outline" className="text-amber-700 border-amber-400/60 h-8" data-testid={`unlock-${s.name}`} onClick={() => { setLockDialog({ mode: "unlock", series: s }); setLockReason(""); }}>Unlock</Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="outline" className="text-emerald-700 border-emerald-500/60 h-8" data-testid={`lock-${s.name}`} onClick={() => { setLockDialog({ mode: "lock", series: s }); setLockReason(""); }}>Lock season</Button>
+                )}
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
-            </TableRow>))}
+            </TableRow>
+          );})}
             {!series.length && <TableRow><TableCell colSpan={11} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
+
+      {/* Lock / unlock confirmation (admin-only, reason recorded in audit) */}
+      <Dialog open={!!lockDialog} onOpenChange={(o) => { if (!o) setLockDialog(null); }}>
+        <DialogContent data-testid="lock-dialog">
+          <DialogHeader><DialogTitle className="font-heading uppercase">{
+            lockDialog?.mode === "lock" ? "Lock season — results become final" :
+            lockDialog?.mode === "archive" ? "Archive season — results become permanent" :
+            "Open season for correction"
+          }</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {lockDialog?.mode === "lock"
+                ? <>This captures the season's results, scoring rules, TLE rule, discards, penalties and rankings into an immutable snapshot. Future rule or engine changes will never alter them. Re-locking after a correction creates a new version (the previous one is preserved).</>
+                : lockDialog?.mode === "archive"
+                ? <>This moves the locked season to the terminal ARCHIVED state. Archived results are served from their frozen snapshot forever; only the audited administrator unlock-for-correction flow can open them again.</>
+                : <>This opens the season for an administrator-only correction. The last locked snapshot is preserved; re-locking records exactly what changed in a new version.</>}
+            </p>
+            <div className="space-y-1.5"><Label>Reason (recorded in the audit trail)</Label><Input data-testid="lock-reason-input" value={lockReason} onChange={(e) => setLockReason(e.target.value)} placeholder="e.g. Season finalised — 2026 results" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLockDialog(null)}>Cancel</Button>
+            <Button className={lockDialog?.mode === "lock" ? "bg-emerald-600 hover:bg-emerald-700" : lockDialog?.mode === "archive" ? "bg-slate-700 hover:bg-slate-800" : "bg-amber-600 hover:bg-amber-700"} disabled={lockBusy || !lockReason.trim()} data-testid="lock-confirm-btn"
+              onClick={async () => {
+                setLockBusy(true);
+                try {
+                  const { mode, series: s2 } = lockDialog;
+                  const body = mode === "lock" ? await api.lockSeries(s2.id, lockReason.trim(), s2.version)
+                    : mode === "archive" ? await api.archiveSeries(s2.id, lockReason.trim(), s2.version)
+                    : await api.unlockSeries(s2.id, lockReason.trim(), s2.version);
+                  toast.success(mode === "lock" ? `Season locked (version ${body.version || 1}) — results are final`
+                    : mode === "archive" ? "Season archived — results are now permanent"
+                    : "Season opened for correction");
+                  setLockDialog(null); load();
+                } catch (e) {
+                  if (e.response?.status === 409) toast.error("This season was changed by another user. Reload the series list before locking or unlocking again.");
+                  else toast.error(e.response?.data?.detail || "Could not update season lock");
+                } finally { setLockBusy(false); }
+              }}>
+              {lockDialog?.mode === "lock" ? "Lock season" : lockDialog?.mode === "archive" ? "Archive season" : "Open for correction"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Snapshot history */}
+      <Dialog open={!!snapSeries} onOpenChange={(o) => { if (!o) setSnapSeries(null); }}>
+        <DialogContent data-testid="snapshots-dialog">
+          <DialogHeader><DialogTitle className="font-heading uppercase">Snapshot history — {snapSeries?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {!snapshots.length && <p className="text-sm text-muted-foreground">This season has not been locked yet.</p>}
+            {snapshots.map((s) => (
+              <div key={s.version} className="rounded-lg border border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-heading uppercase text-sm">Version {s.version} <Badge className={s.status === "locked" ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700"}>{s.status}</Badge></span>
+                  <span className="font-mono text-xs text-muted-foreground">{new Date(s.locked_at).toLocaleString()}</span>
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">Locked by <span className="font-semibold">{s.locked_by}</span> · engine {s.engine_version} · {s.scoring_config?.rrs_edition}</div>
+                {s.amendment && s.amendment.changes?.length > 0 && (
+                  <div className="mt-2 text-xs">
+                    <div className="font-semibold text-amber-700">Amended — {s.amendment.changes.length} standings change{s.amendment.changes.length === 1 ? "" : "s"}:</div>
+                    <ul className="list-disc pl-4 text-muted-foreground mt-1">
+                      {s.amendment.changes.slice(0, 8).map((c, i) => (
+                        <li key={i} className="font-mono">{c.boat_id}: rank {c.rank_before ?? "—"} → {c.rank_after ?? "—"} (net {c.net_before ?? "—"} → {c.net_after ?? "—"})</li>
+                      ))}
+                      {s.amendment.changes.length > 8 && <li>…and {s.amendment.changes.length - 8} more</li>}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -535,6 +800,9 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
   const [races, setRaces] = useState([]);
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
+  const [lockDialog, setLockDialog] = useState(null);
+  const [lockReason, setLockReason] = useState("");
+  const [lockBusy, setLockBusy] = useState(false);
 
   useEffect(() => { if (!classId && classes[0]) setClassId(classes[0].id); }, [classes]); // eslint-disable-line
   // Reset filters only when the club actually changes — not on first mount,
@@ -554,9 +822,28 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
   useEffect(() => { if (seriesId) api.getRaces({ series_id: seriesId, ...(clubId ? { club_id: clubId } : {}) }).then(setRaces); }, [seriesId, clubId]);
 
   const openRace = async (id) => setRace(await api.getRace(id));
-  const change = async (boatId, patch) => { const r = await api.adjustResult(race.id, boatId, patch); setRace(r); toast.success("Result updated"); };
+  const change = async (boatId, patch) => {
+    try {
+      const r = await api.adjustResult(race.id, boatId, patch, race.version);
+      setRace(r); toast.success("Result updated");
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("This result has been changed by another user. Reload the latest results before making further changes.");
+        setRace(await api.getRace(race.id));
+      } else toast.error(e.response?.data?.detail || "Could not update result");
+    }
+  };
   const setStatus = async (s) => {
-    await api.setStatus(race.id, s);
+    try {
+      await api.setStatus(race.id, s, race.version);
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("This result has been changed by another user. Reload the latest results before making further changes.");
+        setRace(await api.getRace(race.id));
+        return;
+      }
+      return toast.error(e.response?.data?.detail || "Could not change status");
+    }
     const r = await api.getRace(race.id);
     setRace(r);
     api.getRaces({ series_id: seriesId }).then(setRaces);
@@ -581,17 +868,93 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
         </Select>
       </div>
 
-      {seriesId && (
-        <div className="flex flex-wrap gap-2 mb-4">
-          {races.map((r) => (
-            <Button key={r.id} variant={race?.id === r.id ? "default" : "outline"} size="sm" data-testid={`hist-race-${r.id}`}
-              className={race?.id === r.id ? "bg-ocean" : ""} onClick={() => openRace(r.id)}>
-              R{r.race_number} · {fmtDate(r.date)} · {r.status}
+      {seriesId && (() => {
+        const sel = seriesList.find((s) => s.id === seriesId);
+        const locked = sel && (sel.lock_status === "locked" || sel.lock_status === "archived");
+        const archived = sel?.lock_status === "archived";
+        return (
+          <>
+            {sel && (
+              <div className={`rounded-xl border p-3 mb-4 flex flex-wrap items-center justify-between gap-3 ${archived ? "border-slate-600 bg-slate-100" : locked ? "border-emerald-500/50 bg-emerald-50" : "border-border bg-muted/40"}`} data-testid="hist-lock-banner">
+                <div className="flex items-center gap-2 text-sm">
+                  {archived ? <Archive className="w-4 h-4 text-slate-700" /> : locked ? <ShieldCheck className="w-4 h-4 text-emerald-700" /> : <Anchor className="w-4 h-4 text-muted-foreground" />}
+                  <span className="font-semibold">{archived ? "Season archived — results are permanent" : locked ? "Season locked — results are final" : "Season open"}</span>
+                  {locked && <span className="text-xs text-muted-foreground">v{sel.lock_version || 1} · locked by {sel.locked_by || "—"} · results are served from the saved snapshot and cannot be changed through normal editing.</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                  {locked && (
+                    <>
+                      {!archived && (
+                        <Button size="sm" variant="outline" className="border-slate-600 text-slate-700 h-8" data-testid="hist-archive-btn"
+                          onClick={() => { setLockDialog("archive"); setLockReason(""); }}>Archive</Button>
+                      )}
+                      <Button size="sm" variant="outline" className="border-amber-500 text-amber-700 h-8" data-testid="hist-unlock-btn"
+                        onClick={() => { setLockDialog("unlock"); setLockReason(""); }}>Open for correction</Button>
+                    </>
+                  )}
+                  {!locked && (
+                    <Button size="sm" variant="outline" className="border-emerald-500 text-emerald-700 h-8" data-testid="hist-lock-btn"
+                      onClick={() => { setLockDialog("lock"); setLockReason(""); }}>Lock season (finalise)</Button>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {races.map((r) => (
+                <Button key={r.id} variant={race?.id === r.id ? "default" : "outline"} size="sm" data-testid={`hist-race-${r.id}`}
+                  className={race?.id === r.id ? "bg-ocean" : ""} onClick={() => openRace(r.id)}>
+                  R{r.race_number} · {fmtDate(r.date)} · {r.status}
+                </Button>
+              ))}
+              {!races.length && <p className="text-sm text-muted-foreground">No races in this series.</p>}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Lock / unlock / archive confirmation (historic results tab) */}
+      <Dialog open={!!lockDialog} onOpenChange={(o) => { if (!o) setLockDialog(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle className="font-heading uppercase">{
+            lockDialog === "lock" ? "Lock season — results become final" :
+            lockDialog === "archive" ? "Archive season — results become permanent" :
+            "Open season for correction"
+          }</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {lockDialog === "lock"
+                ? "The current results, scoring rules, discards, penalties and rankings are captured into an immutable snapshot. Re-locking after a correction creates a new version — the previous one is always preserved."
+                : lockDialog === "archive"
+                ? "The locked season moves to the terminal ARCHIVED state. Its results are served from the frozen snapshot forever; only the audited administrator unlock-for-correction flow can open them again."
+                : "Only continue to fix a genuine scoring error. The last locked snapshot is preserved; re-locking records exactly what changed."}
+            </p>
+            <div className="space-y-1.5"><Label>Reason (recorded in the audit trail)</Label><Input value={lockReason} onChange={(e) => setLockReason(e.target.value)} data-testid="hist-lock-reason" placeholder={lockDialog === "lock" ? "e.g. 2026 season finalised" : "e.g. Position error in race 4"} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLockDialog(null)}>Cancel</Button>
+            <Button className={lockDialog === "lock" ? "bg-emerald-600 hover:bg-emerald-700" : lockDialog === "archive" ? "bg-slate-700 hover:bg-slate-800" : "bg-amber-600 hover:bg-amber-700"} disabled={lockBusy || !lockReason.trim()} data-testid="hist-lock-confirm"
+              onClick={async () => {
+                setLockBusy(true);
+                try {
+                  const sel = seriesList.find((s) => s.id === seriesId);
+                  const body = lockDialog === "lock" ? await api.lockSeries(seriesId, lockReason.trim(), sel?.version)
+                    : lockDialog === "archive" ? await api.archiveSeries(seriesId, lockReason.trim(), sel?.version)
+                    : await api.unlockSeries(seriesId, lockReason.trim(), sel?.version);
+                  toast.success(lockDialog === "lock" ? `Season locked (version ${body.version || 1})`
+                    : lockDialog === "archive" ? "Season archived — results are now permanent"
+                    : "Season opened for correction — fix the results, then re-lock");
+                  setLockDialog(null);
+                  api.getSeries({ class_id: classId, year: yearFilter, ...(clubId ? { club_id: clubId } : {}) }).then(setSeriesList);
+                } catch (e) {
+                  if (e.response?.status === 409) toast.error("This season was changed by another user. Reload the series list before locking or unlocking again.");
+                  else toast.error(e.response?.data?.detail || "Could not update season lock");
+                } finally { setLockBusy(false); }
+              }}>
+              {lockDialog === "lock" ? "Lock season" : lockDialog === "archive" ? "Archive season" : "Open for correction"}
             </Button>
-          ))}
-          {!races.length && <p className="text-sm text-muted-foreground">No races in this series.</p>}
-        </div>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {race && (
         <div className="space-y-3">

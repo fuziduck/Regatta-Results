@@ -15,6 +15,14 @@ export function formatApiError(detail) {
   return String(detail);
 }
 
+// Optimistic concurrency: the UI sends the version of the record it loaded
+// (e.g. race.version); the server rejects the write with 409 if the record
+// has since been changed by someone else, instead of silently overwriting it.
+export const withVer = (body, version) => (version == null ? body : { ...body, expected_version: version });
+export const verQuery = (version) => (version == null ? {} : { expected_version: version });
+// Shown when the server returns 409 for a stale concurrent write.
+export const STALE_VERSION_MSG = "This result has been changed by another user. Your version is out of date. Reload the latest results before making further changes.";
+
 export const api = {
   login: (role, username, passcode, club_id) =>
     client.post("/auth/login", { role, username, passcode, club_id }).then((r) => r.data),
@@ -61,27 +69,32 @@ export const api = {
 
   getBoats: (params = {}) => client.get("/boats", { params }).then((r) => r.data),
   createBoat: (d) => client.post("/boats", d).then((r) => r.data),
-  updateBoat: (id, d) => client.put(`/boats/${id}`, d).then((r) => r.data),
-  deleteBoat: (id) => client.delete(`/boats/${id}`).then((r) => r.data),
+  updateBoat: (id, d, v) => client.put(`/boats/${id}`, withVer(d, v)).then((r) => r.data),
+  deleteBoat: (id, v) => client.delete(`/boats/${id}`, { params: verQuery(v) }).then((r) => r.data),
 
   getSeries: (params = {}) => client.get("/series", { params }).then((r) => r.data),
   createSeries: (d) => client.post("/series", d).then((r) => r.data),
-  updateSeries: (id, d) => client.put(`/series/${id}`, d).then((r) => r.data),
-  deleteSeries: (id) => client.delete(`/series/${id}`).then((r) => r.data),
+  updateSeries: (id, d, v) => client.put(`/series/${id}`, withVer(d, v)).then((r) => r.data),
+  deleteSeries: (id, v) => client.delete(`/series/${id}`, { params: verQuery(v) }).then((r) => r.data),
   generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
   scheduledRaces: (date) => client.get("/scheduled-races", { params: date ? { date } : {} }).then((r) => r.data),
+  lockSeries: (id, reason, v) => client.post(`/series/${id}/lock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
+  unlockSeries: (id, reason, v) => client.post(`/series/${id}/unlock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
+  archiveSeries: (id, reason, v) => client.post(`/series/${id}/archive`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
+  getSeriesSnapshots: (id, club_id) => client.get(`/series/${id}/snapshots`, { params: club_id ? { club_id } : {} }).then((r) => r.data),
 
   getRaces: (params = {}) => client.get("/races", { params }).then((r) => r.data),
   getRace: (id) => client.get(`/races/${id}`).then((r) => r.data),
   createRace: (d) => client.post("/races", d).then((r) => r.data),
-  updateNotifications: (id, d) => client.put(`/races/${id}/notifications`, d).then((r) => r.data),
-  selectBoats: (id, boat_ids) => client.post(`/races/${id}/select-boats`, { boat_ids }).then((r) => r.data),
-  recordFinish: (id, boat_id, finish_time) => client.post(`/races/${id}/finish`, { boat_id, finish_time }).then((r) => r.data),
-  undoFinish: (id, boat_id) => client.post(`/races/${id}/undo-finish`, { boat_id }).then((r) => r.data),
-  startRace: (id, start_time) => client.post(`/races/${id}/start`, { start_time }).then((r) => r.data),
-  adjustResult: (id, boat_id, d) => client.put(`/races/${id}/result/${boat_id}`, d).then((r) => r.data),
-  setStatus: (id, status) => client.post(`/races/${id}/status/${status}`).then((r) => r.data),
-  deleteRace: (id) => client.delete(`/races/${id}`).then((r) => r.data),
+  updateNotifications: (id, d, v) => client.put(`/races/${id}/notifications`, withVer(d, v)).then((r) => r.data),
+  selectBoats: (id, boat_ids, v) => client.post(`/races/${id}/select-boats`, withVer({ boat_ids }, v)).then((r) => r.data),
+  recordFinish: (id, boat_id, finish_time, v) => client.post(`/races/${id}/finish`, withVer({ boat_id, finish_time }, v)).then((r) => r.data),
+  undoFinish: (id, boat_id, v) => client.post(`/races/${id}/undo-finish`, withVer({ boat_id }, v)).then((r) => r.data),
+  startRace: (id, start_time, v) => client.post(`/races/${id}/start`, withVer({ start_time }, v)).then((r) => r.data),
+  adjustResult: (id, boat_id, d, v) => client.put(`/races/${id}/result/${boat_id}`, withVer(d, v)).then((r) => r.data),
+  validateRace: (id) => client.get(`/races/${id}/validation`).then((r) => r.data),
+  setStatus: (id, status, v) => client.post(`/races/${id}/status/${status}`, null, { params: verQuery(v) }).then((r) => r.data),
+  deleteRace: (id, v) => client.delete(`/races/${id}`, { params: verQuery(v) }).then((r) => r.data),
 
   getNotifications: (params = {}) => client.get("/notifications", { params }).then((r) => r.data),
   seriesStandings: (id, club_id, mini) => client.get(`/standings/series/${id}`, { params: { ...(club_id ? { club_id } : {}), ...(mini ? { mini } : {}) } }).then((r) => r.data),
