@@ -8,7 +8,7 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Anchor, CalendarDays, LogIn, Sailboat, Trophy } from "lucide-react";
+import { Anchor, CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
   return <ClubBadge club={club} size={size} textSize="text-3xl" />;
@@ -91,6 +91,11 @@ export default function Clubs() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            <Link to="/boats">
+              <Button variant="ghost" size="sm" data-testid="boats-link" className="gap-1.5 text-muted-foreground hover:text-ocean">
+                <Search className="w-4 h-4" /> Boats
+              </Button>
+            </Link>
             <Link to="/login">
               <Button variant="outline" size="sm" data-testid="officials-login-btn" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
                 <LogIn className="w-4 h-4" /> Officials

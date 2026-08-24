@@ -71,6 +71,10 @@ export const api = {
   createBoat: (d) => client.post("/boats", d).then((r) => r.data),
   updateBoat: (id, d, v) => client.put(`/boats/${id}`, withVer(d, v)).then((r) => r.data),
   deleteBoat: (id, v) => client.delete(`/boats/${id}`, { params: verQuery(v) }).then((r) => r.data),
+  // Shared boat registry: one physical boat may race at several clubs or in
+  // several classes; search groups its records under a single fleet identity.
+  fleetSearch: (q) => client.get("/fleet/search", { params: { q } }).then((r) => r.data),
+  fleetProfile: (id) => client.get(`/fleet/${id}`).then((r) => r.data),
 
   getSeries: (params = {}) => client.get("/series", { params }).then((r) => r.data),
   createSeries: (d) => client.post("/series", d).then((r) => r.data),

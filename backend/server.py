@@ -377,6 +377,93 @@ async def _boat_of_club(boat_id: str, user: dict):
     return boat
 
 
+# ---------------------------------------------------------------------------
+# Fleet identity: one boat, many records
+# ---------------------------------------------------------------------------
+# The same physical boat can race at several clubs, or in several classes at
+# the same club. Each club/class keeps its OWN boat record — its helm, PY/TCC
+# rating, home-club label and season are club/class-specific — and all the
+# records that represent the same boat share a `fleet_id`. The identity is
+# derived from the sail number + name so boats link automatically across
+# clubs, but a record can always be kept separate (two genuinely different
+# boats with identical details) or linked explicitly.
+
+def _clean_fleet_part(s):
+    """Lowercase alphanumerics only, so 'GBR 4502', 'gbr-4502' and 'GBR4502'
+    all normalise to the same key part."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def fleet_key(name, sail_no):
+    """The canonical identity key: sail number first, then boat name."""
+    return f"{_clean_fleet_part(sail_no)}|{_clean_fleet_part(name)}"
+
+
+async def _fleet_candidates(key: str, exclude_boat_id: Optional[str] = None):
+    """Every boat record in the database sharing a fleet identity key."""
+    q = {"fleet_key": key}
+    if exclude_boat_id:
+        q["id"] = {"$ne": exclude_boat_id}
+    return await db.boats.find(q, {"_id": 0}).to_list(2000)
+
+
+async def _fleet_candidate_summary(boats):
+    """Human-readable summaries of candidate boats for the admin to choose
+    between (link, or keep as a separate identity)."""
+    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    out = []
+    for b in boats:
+        cls = classes.get(b.get("class_id"), {})
+        club = clubs.get(cls.get("club_id"), {})
+        out.append({
+            "boat_id": b["id"],
+            "fleet_id": b.get("fleet_id") or b["id"],
+            "name": b.get("name"), "sail_no": b.get("sail_no"),
+            "class_name": cls.get("name", "—"),
+            "club_name": club.get("name", "—"),
+            "year": b.get("year"),
+        })
+    return out
+
+
+async def _resolve_fleet_identity(data, editing=None):
+    """Decide the fleet identity for a boat being created or edited.
+
+    Returns (fleet_id, fleet_key, ambiguous_candidates). Priority:
+    1. an explicit `fleet_id` links to that identity;
+    2. `separate_fleet` forces a brand-new identity (identical-details case);
+    3. an already-linked boat whose name/sail didn't change keeps its identity;
+    4. otherwise auto-link to the first boat with the same key in a different
+       class+year (the shared-registry case);
+    5. matches only within the same class+year are ambiguous — the caller
+       receives the candidates to ask the admin, instead of silently merging
+       what may be a duplicate entry.
+    """
+    key = fleet_key(data.name, data.sail_no)
+    if data.fleet_id:
+        target = await db.boats.find_one({"id": data.fleet_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=400,
+                                detail="The boat to link this fleet identity to no longer exists.")
+        return target.get("fleet_id") or target["id"], key, None
+    if data.separate_fleet:
+        return new_id(), key, None
+    if editing:
+        if editing.get("fleet_id") and key == editing.get("fleet_key"):
+            return editing["fleet_id"], key, None
+        same = (editing.get("class_id"), editing.get("year"))
+    else:
+        same = (data.class_id, data.year)
+    candidates = await _fleet_candidates(key, exclude_boat_id=editing["id"] if editing else None)
+    linkable = [c for c in candidates if (c.get("class_id"), c.get("year")) != same]
+    if linkable:
+        return linkable[0].get("fleet_id") or linkable[0]["id"], key, None
+    if candidates:
+        return None, key, candidates
+    return new_id(), key, None
+
+
 async def _race_of_club(race_id: str, user: dict):
     race = await db.races.find_one({"id": race_id}, {"_id": 0})
     if not race:
@@ -517,6 +604,14 @@ class BoatInput(BaseModel):
     # Home club label shown on results (defaults to the club that set up the
     # fleet; free text so visiting boats from other clubs can be named).
     home_club: Optional[str] = ""
+    # Shared fleet identity: the same physical boat racing at another club or
+    # in another class. When set, this record joins that boat's identity; the
+    # server otherwise auto-links by normalized sail number + name (see
+    # _resolve_fleet_identity). `separate_fleet` forces a brand-new identity
+    # even when the details match an existing boat — two genuinely different
+    # boats with identical details must never be merged silently.
+    fleet_id: Optional[str] = None
+    separate_fleet: bool = False
 
 
 class MiniSeriesGroup(BaseModel):
@@ -2099,15 +2194,29 @@ async def get_boats(request: Request, class_id: Optional[str] = None, year: Opti
 @api_router.post("/boats")
 async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
+    fleet_id, key, ambiguous = await _resolve_fleet_identity(data)
+    if ambiguous:
+        raise HTTPException(status_code=409, detail={
+            "message": ("A boat with this name and sail number already exists in this class "
+                        "and year. It may be a duplicate entry, or a different boat that "
+                        "happens to share the same details — link them as one boat, or keep "
+                        "this one separate."),
+            "fleet_candidates": await _fleet_candidate_summary(ambiguous),
+        })
     doc = data.model_dump()
     doc.pop("expected_version", None)
+    doc.pop("separate_fleet", None)
     doc["id"] = new_id()
+    doc["fleet_id"] = fleet_id
+    doc["fleet_key"] = key
     doc["created_at"] = now_iso()
     doc["version"] = 1
     await db.boats.insert_one(doc)
     doc.pop("_id", None)
+    linked = fleet_id != doc["id"]
     await _log_audit(request=None, user=user, action="BOAT_CREATED",
-                     description=f"Created boat {doc.get('name')} ({doc.get('sail_no')})",
+                     description=f"Created boat {doc.get('name')} ({doc.get('sail_no')})"
+                                 + (" — linked to a shared boat identity" if linked else ""),
                      resource_type="boat", resource_id=doc["id"], club_id=cls.get("club_id"))
     return doc
 
@@ -2117,14 +2226,28 @@ async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(requir
     boat = await _boat_of_club(boat_id, user)
     cls = await _class_of_club(data.class_id, user)
     expected = _expected_version(data)
+    fleet_id, key, ambiguous = await _resolve_fleet_identity(data, editing=boat)
+    if ambiguous:
+        raise HTTPException(status_code=409, detail={
+            "message": ("Changing the boat to this name and sail number would match another "
+                        "boat in the same class and year. It may be a duplicate, or a "
+                        "different boat with identical details — link them as one boat, or "
+                        "keep this one separate."),
+            "fleet_candidates": await _fleet_candidate_summary(ambiguous),
+        })
     update = data.model_dump()
     update.pop("expected_version", None)
+    update.pop("separate_fleet", None)
+    update["fleet_id"] = fleet_id
+    update["fleet_key"] = key
     result = await db.boats.update_one(_version_filter(boat_id, expected),
                                        {"$set": update, "$inc": {"version": 1}})
     if result.modified_count == 0:
         _raise_stale(expected)
+    linked = fleet_id != boat_id
     await _log_audit(request=None, user=user, action="BOAT_UPDATED",
-                     description=f"Updated boat {boat.get('name')}",
+                     description=f"Updated boat {boat.get('name')}"
+                                 + (" — linked to a shared boat identity" if linked else ""),
                      resource_type="boat", resource_id=boat_id, club_id=cls.get("club_id"))
     return await db.boats.find_one({"id": boat_id}, {"_id": 0})
 
@@ -3794,12 +3917,9 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     return result
 
 
-@api_router.get("/standings/overall")
-async def overall_standings(class_id: str, year: int, request: Request, club_id: Optional[str] = None):
-    club = await _resolve_club_id(request, club_id)
-    if club and (await _class_club_id(class_id)) != club:
-        raise HTTPException(status_code=404, detail="Class not found")
-
+async def compute_overall_standings(class_id: str, year: int):
+    """Overall championship standings for a class and year (every series in
+    the class that counts towards the championship, summed by net score)."""
     all_series = await db.series.find({"class_id": class_id, "year": year, "included_in_overall": True}, {"_id": 0}).to_list(1000)
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
     club_name = await _club_name_of_class(class_id)
@@ -3840,6 +3960,139 @@ async def overall_standings(class_id: str, year: int, request: Request, club_id:
         r["rank"] = i + 1
         r.pop("_tb", None)
     return {"series_names": series_names, "standings": rows}
+
+
+@api_router.get("/standings/overall")
+async def overall_standings(class_id: str, year: int, request: Request, club_id: Optional[str] = None):
+    club = await _resolve_club_id(request, club_id)
+    if club and (await _class_club_id(class_id)) != club:
+        raise HTTPException(status_code=404, detail="Class not found")
+    return await compute_overall_standings(class_id, year)
+
+
+@api_router.get("/fleet/search")
+async def fleet_search(q: Optional[str] = None, limit: int = 25):
+    """Public boat search across every club: records whose boat name or sail
+    number contains any query token are grouped by fleet identity, so one
+    physical boat appears once with the clubs and classes it races for."""
+    tokens = [t for t in re.split(r"\s+", (q or "").strip()) if t]
+    if not tokens:
+        return []
+    cond = []
+    for t in tokens:
+        rx = re.escape(t)
+        cond.append({"name": {"$regex": rx, "$options": "i"}})
+        cond.append({"sail_no": {"$regex": rx, "$options": "i"}})
+    # Also match the normalized identity key, so "watersong" finds a record
+    # stored as "Water Song" and "8420" finds "GBR 8420".
+    clean_q = _clean_fleet_part(q)
+    if clean_q:
+        cond.append({"fleet_key": {"$regex": re.escape(clean_q), "$options": "i"}})
+    docs = await db.boats.find({"$or": cond}, {"_id": 0}).to_list(2000)
+    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    groups = {}
+    order = []
+    for b in docs:
+        fid = b.get("fleet_id") or b["id"]
+        if fid not in groups:
+            groups[fid] = {"fleet_id": fid, "name": b.get("name"), "sail_no": b.get("sail_no"),
+                           "clubs": [], "classes": [], "records": 0}
+            order.append(fid)
+        g = groups[fid]
+        cls = classes.get(b.get("class_id"), {})
+        club = clubs.get(cls.get("club_id"), {})
+        if club.get("name") and club["name"] not in g["clubs"]:
+            g["clubs"].append(club["name"])
+        if cls.get("name") and cls["name"] not in g["classes"]:
+            g["classes"].append(cls["name"])
+        g["records"] += 1
+    out = [groups[fid] for fid in order]
+    out.sort(key=lambda g: (g["name"] or "").lower())
+    return out[: max(1, min(limit, 50))]
+
+
+@api_router.get("/fleet/{fleet_id}")
+async def fleet_profile(fleet_id: str):
+    """A boat's career: every series (across clubs and classes) it has
+    published results in, its final position in each, plus the club/class
+    records that make up its shared identity and its overall-championship
+    positions. Locked/archived seasons are served from their frozen snapshots."""
+    members = await db.boats.find({"$or": [{"fleet_id": fleet_id}, {"id": fleet_id}]},
+                                  {"_id": 0}).to_list(2000)
+    if not members:
+        raise HTTPException(status_code=404, detail="Boat not found")
+    ids = [m["id"] for m in members]
+    races = await db.races.find({"status": "published", "results.boat_id": {"$in": ids}},
+                                {"_id": 0}).to_list(5000)
+    series_ids = {r.get("series_id") for r in races if r.get("series_id")}
+    series_docs = {s["id"]: s for s in await db.series.find(
+        {"id": {"$in": list(series_ids)}}, {"_id": 0}).to_list(1000)}
+    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    series_out = []
+    for sid in sorted(series_ids):
+        series = series_docs.get(sid)
+        if not series:
+            continue
+        try:
+            frozen = await _standings_for_series(series)
+            standings = frozen if frozen is not None else await compute_series_standings(series)
+        except HTTPException:
+            continue
+        row = next((r for r in standings.get("standings", []) if r["boat_id"] in ids), None)
+        if row is None:
+            continue
+        cls = classes.get(series.get("class_id"), {})
+        club = clubs.get(cls.get("club_id"), {})
+        series_out.append({
+            "series_id": sid,
+            "series_name": series.get("name"),
+            "class_id": series.get("class_id"),
+            "class_name": cls.get("name", "—"),
+            "club_name": club.get("name", "—"),
+            "club_slug": club.get("slug", ""),
+            "year": series.get("year"),
+            "rank": row.get("rank"),
+            "net": row.get("net"),
+            "total": row.get("total"),
+            "races_scored": standings.get("race_count", 0),
+            "discards": standings.get("discards", 0),
+            "locked": bool(standings.get("locked")),
+            "archived": bool(standings.get("archived")),
+        })
+    series_out.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or "",
+                                   x.get("series_name") or ""), reverse=True)
+    # Overall championship position per class+year the boat raced in.
+    overall = []
+    seen_cy = set()
+    for s in series_out:
+        cy = (s.get("class_id"), s.get("year"))
+        if cy in seen_cy:
+            continue
+        seen_cy.add(cy)
+        try:
+            payload = await compute_overall_standings(s["class_id"], s["year"])
+        except HTTPException:
+            continue
+        row = next((r for r in payload.get("standings", []) if r["boat_id"] in ids), None)
+        if row:
+            overall.append({"class_name": s["class_name"], "club_name": s["club_name"],
+                            "year": s["year"], "rank": row.get("rank"), "net": row.get("net")})
+    overall.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
+    primary = min(members, key=lambda m: m.get("created_at") or "")
+    records = []
+    for m in members:
+        cls = classes.get(m.get("class_id"), {})
+        club = clubs.get(cls.get("club_id"), {})
+        records.append({
+            "boat_id": m["id"], "class_name": cls.get("name", "—"),
+            "club_name": club.get("name", "—"), "club_slug": club.get("slug", ""),
+            "year": m.get("year"), "helm": m.get("helm"), "home_club": m.get("home_club"),
+        })
+    records.sort(key=lambda r: (r["club_name"], r["class_name"], r["year"] or 0))
+    return {"fleet_id": fleet_id, "name": primary.get("name"), "sail_no": primary.get("sail_no"),
+            "records": records, "series": series_out, "overall": overall}
 
 
 @api_router.get("/rrs-codes")
@@ -4039,6 +4292,42 @@ async def _backfill_versions():
             logger.warning("VERSION BACKFILL FAILED (%s): %s", coll.name, exc)
 
 
+async def _backfill_fleet_identities():
+    """Give every boat a fleet identity so the shared-boat registry works for
+    boats created before this feature. Records are linked only when the match
+    is unambiguous (no other record with the same sail-number+name key in the
+    same class+year); genuinely identical boats are left unlinked for the
+    admin to resolve explicitly. Idempotent."""
+    try:
+        boats = await db.boats.find({}, {"_id": 0}).to_list(20000)
+    except Exception as exc:
+        logger.warning("FLEET BACKFILL FAILED: %s", exc)
+        return
+    by_key = {}
+    for b in boats:
+        key = b.get("fleet_key") or fleet_key(b.get("name", ""), b.get("sail_no", ""))
+        by_key.setdefault(key, []).append(b)
+    for key, group in by_key.items():
+        for b in group:
+            if b.get("fleet_id") and b.get("fleet_key"):
+                continue
+            others = [x for x in group if x["id"] != b["id"]]
+            own = (b.get("class_id"), b.get("year"))
+            linkable = [x for x in others if (x.get("class_id"), x.get("year")) != own]
+            if linkable:
+                target = linkable[0]
+                fid = target.get("fleet_id") or target["id"]
+            elif not others:
+                fid = b["id"]  # singleton: its own id is its identity
+            else:
+                continue  # only same-class+year duplicates: leave for the admin
+            try:
+                await db.boats.update_one({"id": b["id"]},
+                                          {"$set": {"fleet_id": fid, "fleet_key": key}})
+            except Exception as exc:
+                logger.warning("FLEET BACKFILL UPDATE FAILED (%s): %s", b["id"], exc)
+
+
 async def _ensure_db_constraints():
     """Database-level integrity constraints (second line of defence):
     - unique `id` on every entity collection (guarantees a guessed id can
@@ -4052,7 +4341,8 @@ async def _ensure_db_constraints():
         db.races: [([("id", 1)], {"unique": True}),
                    ([("series_id", 1), ("race_number", 1)], {"unique": True})],
         db.series: [([("id", 1)], {"unique": True})],
-        db.boats: [([("id", 1)], {"unique": True})],
+        db.boats: [([("id", 1)], {"unique": True}),
+                   ([("fleet_key", 1)], {})],
         db.classes: [([("id", 1)], {"unique": True})],
         db.clubs: [([("id", 1)], {"unique": True}),
                    ([("slug", 1)], {"unique": True})],
@@ -4085,6 +4375,7 @@ async def startup():
     try:
         await _backfill_versions()
         await _ensure_db_constraints()
+        await _backfill_fleet_identities()
     except Exception as exc:
         logger.warning("DB CONSTRAINT SETUP FAILED: %s", exc)
     # Indexes for the audit log (idempotent; speeds up club-scoped,

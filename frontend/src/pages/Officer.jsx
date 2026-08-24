@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil } from "lucide-react";
+import { Anchor, LogOut, Plus, ChevronLeft, Flag, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -144,6 +144,12 @@ function NewRaceDialog({ onCreated, clubId }) {
 function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
+  const [boatsReady, setBoatsReady] = useState(false);
+  // How the boat buttons are ordered: "last" = the same order as the most
+  // recent race's results in this series, "alpha" = boat name, "sail" = sail
+  // number. Applies to the boats-racing chips and the big finish buttons.
+  const [boatOrder, setBoatOrder] = useState("last");
+  const [lastOrder, setLastOrder] = useState([]);
   const [notif, setNotif] = useState({ course: "", special_rules: "", life_jackets: false, start_time: "" });
   const now = useNow();
   // DPI / RDG decision panel: which boat's committee decision is being
@@ -161,15 +167,54 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
 
   useEffect(() => {
     refresh();
-    api.getBoats({ class_id: meta.class_id }).then((bs) => { const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m); });
+    api.getBoats({ class_id: meta.class_id }).then((bs) => { const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m); })
+      .catch(() => {})
+      .finally(() => setBoatsReady(true));
   }, [raceId]); // eslint-disable-line
+
+  // Capture the boat order of the most recent race in the series so the
+  // buttons can default to "the same order as the last set of results".
+  useEffect(() => {
+    if (!race || !race.series_id) return;
+    api.getRaces({ series_id: race.series_id })
+      .then((races) => {
+        const others = (races || [])
+          .filter((r) => r.id !== race.id && (r.results || []).length > 0)
+          .sort((a, b) => {
+            const ka = `${a.date || ""}|${String(a.race_number || 0).padStart(4, "0")}`;
+            const kb = `${b.date || ""}|${String(b.race_number || 0).padStart(4, "0")}`;
+            return ka < kb ? 1 : ka > kb ? -1 : 0;
+          });
+        if (others[0]) setLastOrder(others[0].results.map((r) => r.boat_id));
+      })
+      .catch(() => {});
+  }, [race]); // eslint-disable-line
 
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
   const startRef = startRefMs(race);
   const racing = race.results.filter((r) => r.code !== "DNC");
-  const toFinish = racing.filter((r) => r.code === "DNS").sort((a, b) => (boats[a.boat_id]?.sail_no || "").localeCompare(boats[b.boat_id]?.sail_no || ""));
+  const orderBoatIds = (list) => {
+    if (boatOrder === "alpha") {
+      return [...list].sort((a, b) => (boats[a.boat_id]?.name || "").localeCompare(boats[b.boat_id]?.name || "", undefined, { numeric: true, sensitivity: "base" }));
+    }
+    if (boatOrder === "sail") {
+      return [...list].sort((a, b) => (boats[a.boat_id]?.sail_no || "").localeCompare(boats[b.boat_id]?.sail_no || "", undefined, { numeric: true }));
+    }
+    // "last" (default): position in the most recent race's results, then
+    // boats that weren't in it (e.g. new boats) keep their stored order.
+    const idx = (bid) => {
+      const i = lastOrder.indexOf(bid);
+      return i === -1 ? lastOrder.length : i;
+    };
+    return [...list].sort((a, b) => idx(a.boat_id) - idx(b.boat_id));
+  };
+  const toFinish = orderBoatIds(racing.filter((r) => r.code === "DNS"));
   const finished = race.results.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
+  // Big fleets (say a dozen or more boats still racing) get a compact layout:
+  // more columns and smaller name/sail text so every boat is visible on one
+  // screen instead of overflowing a huge wall of buttons.
+  const crowded = toFinish.length > 12;
 
   // Optimistic concurrency: every mutation carries the version of the race
   // this screen loaded, so a concurrent edit by another scorer is rejected
@@ -198,6 +243,13 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
     if (selected.has(boatId)) selected.delete(boatId); else selected.add(boatId);
     return runMutation(() => api.selectBoats(raceId, [...selected], version));
   };
+  // Championship regattas: one tap puts every boat on the race as racing.
+  const selectAll = () => {
+    const all = race.results.map((r) => r.boat_id);
+    return runMutation(() => api.selectBoats(raceId, all, version), `${all.length} boats selected as racing`);
+  };
+  const clearAll = () =>
+    runMutation(() => api.selectBoats(raceId, [], version), "Selection cleared — every boat scores DNC");
   const finish = (boatId) =>
     runMutation(() => api.recordFinish(raceId, boatId, new Date().toISOString(), version), `${boats[boatId]?.name} finished`);
   const undo = (boatId) => runMutation(() => api.undoFinish(raceId, boatId, version));
@@ -350,16 +402,25 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
 
         {/* Boat selection */}
         <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-heading uppercase tracking-tight mb-1">Boats racing today</h3>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <h3 className="font-heading uppercase tracking-tight">Boats racing today</h3>
+            <div className="flex items-center gap-1.5">
+              <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" data-testid="select-all-boats-btn" onClick={selectAll}>
+                <ListChecks className="w-3.5 h-3.5" /> All
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-muted-foreground" data-testid="clear-all-boats-btn" onClick={clearAll}>Clear</Button>
+            </div>
+          </div>
           <p className="text-sm text-muted-foreground mb-3">Tap to include. Unselected boats score <strong>DNC</strong>.</p>
           <div className="flex flex-wrap gap-2" data-testid="boat-select-list">
-            {race.results.map((r) => {
+            {!boatsReady && <p className="text-sm text-muted-foreground">Loading boats…</p>}
+            {boatsReady && orderBoatIds(race.results).map((r) => {
               const b = boats[r.boat_id] || {};
               const isRacing = r.code !== "DNC";
               return (
                 <button key={r.boat_id} data-testid={`boat-toggle-${b.sail_no}`} onClick={() => toggleBoat(r.boat_id)}
-                  className={`px-3 py-2 rounded-lg border text-sm font-semibold transition-transform active:scale-95 ${isRacing ? "bg-ocean text-white border-ocean" : "bg-background border-border text-muted-foreground"}`}>
-                  {b.name} <span className="font-mono text-xs opacity-80">{b.sail_no}</span>
+                  className={`rounded-lg border font-semibold transition-transform active:scale-95 ${crowded ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"} ${isRacing ? "bg-ocean text-white border-ocean" : "bg-background border-border text-muted-foreground"}`}>
+                  {b.name} <span className={`font-mono opacity-80 ${crowded ? "text-[10px]" : "text-xs"}`}>{b.sail_no}</span>
                 </button>
               );
             })}
@@ -373,20 +434,34 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
 
         {/* Finish recording */}
         <section>
-          <h3 className="font-heading uppercase tracking-tight mb-1 flex items-center gap-2"><Timer className="w-5 h-5 text-safety" /> Record finishes</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+            <h3 className="font-heading uppercase tracking-tight flex items-center gap-2"><Timer className="w-5 h-5 text-safety" /> Record finishes</h3>
+            <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground">Order</Label>
+              <Select value={boatOrder} onValueChange={setBoatOrder}>
+                <SelectTrigger className="h-8 w-44" data-testid="finish-order-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="last">Last results</SelectItem>
+                  <SelectItem value="alpha">Alphabetical</SelectItem>
+                  <SelectItem value="sail">Sail number</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <p className="text-sm text-muted-foreground mb-3">Big tap = finish time captured now. {toFinish.length} still racing.</p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3" data-testid="finish-grid">
-            {toFinish.map((r) => {
+          <div className={`grid gap-2 sm:gap-3 ${crowded ? "grid-cols-3 sm:grid-cols-4 lg:grid-cols-5" : "grid-cols-2 sm:grid-cols-3"}`} data-testid="finish-grid">
+            {!boatsReady && <div className="col-span-full text-sm text-muted-foreground py-4">Loading boats…</div>}
+            {boatsReady && toFinish.map((r) => {
               const b = boats[r.boat_id] || {};
               return (
                 <button key={r.boat_id} data-testid={`finish-btn-${b.sail_no}`} onClick={() => finish(r.boat_id)}
-                  className="race-btn h-28 rounded-2xl bg-safety text-white flex flex-col items-center justify-center transition-transform active:scale-95 hover:bg-safety-dark">
-                  <span className="font-heading text-2xl uppercase tracking-tight leading-none">{b.name}</span>
-                  <span className="font-mono text-sm opacity-90 mt-1">{b.sail_no}</span>
+                  className={`race-btn rounded-2xl bg-safety text-white flex flex-col items-center justify-center text-center px-1 transition-transform active:scale-95 hover:bg-safety-dark ${crowded ? "h-16 sm:h-20" : "h-28"}`}>
+                  <span className={`font-heading uppercase tracking-tight leading-none ${crowded ? "text-sm sm:text-base" : "text-2xl"}`}>{b.name}</span>
+                  <span className={`font-mono opacity-90 mt-0.5 ${crowded ? "text-sm sm:text-base" : "text-2xl mt-1"}`}>{b.sail_no}</span>
                 </button>
               );
             })}
-            {toFinish.length === 0 && <div className="col-span-full text-sm text-muted-foreground py-4">All racing boats have finished, or none selected yet.</div>}
+            {boatsReady && toFinish.length === 0 && <div className="col-span-full text-sm text-muted-foreground py-4">All racing boats have finished, or none selected yet.</div>}
           </div>
 
           {finished.length > 0 && (

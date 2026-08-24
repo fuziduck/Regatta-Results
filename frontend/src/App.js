@@ -3,8 +3,11 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import Clubs from "@/pages/Clubs";
 import Landing from "@/pages/Landing";
+import Boats from "@/pages/Boats";
+import Boat from "@/pages/Boat";
 import Login from "@/pages/Login";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
@@ -25,11 +28,14 @@ function App() {
   return (
     <div className="App">
       <ThemeProvider>
+      <TooltipProvider delayDuration={200}>
       <AuthProvider>
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Clubs />} />
             <Route path="/club/:slug" element={<Landing />} />
+            <Route path="/boats" element={<Boats />} />
+            <Route path="/boat/:fleetId" element={<Boat />} />
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
@@ -41,6 +47,7 @@ function App() {
         </BrowserRouter>
         <Toaster position="top-center" richColors />
       </AuthProvider>
+      </TooltipProvider>
       </ThemeProvider>
     </div>
   );

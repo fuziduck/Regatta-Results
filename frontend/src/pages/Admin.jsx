@@ -16,11 +16,12 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive } from "lucide-react";
+import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2 } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -185,6 +186,13 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   const [editing, setEditing] = useState(null);
   const blank = { name: "", sail_no: "", class_id: "", home_club: clubName || "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", py: "", boat_type: "" };
   const [form, setForm] = useState(blank);
+  // Shared boat identity: matches found for the typed name+sail, and the
+  // admin's choice — link to an existing fleet identity, or keep separate
+  // (a different boat with identical details).
+  const [fleetMatches, setFleetMatches] = useState([]);
+  const [fleetChoice, setFleetChoice] = useState("auto"); // auto | link | separate
+  const [fleetTarget, setFleetTarget] = useState("");
+  const [fleetBusy, setFleetBusy] = useState(false);
 
   const load = useCallback(() => {
     const p = classFilter === "all" ? { year: yearFilter } : { class_id: classFilter, year: yearFilter };
@@ -192,6 +200,41 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   }, [classFilter, yearFilter, clubId]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setClassFilter("all"); setYearFilter(CURRENT_YEAR); }, [clubId]);
+
+  // Debounced fleet lookup while the dialog is open: show whether the typed
+  // boat already exists elsewhere so the admin can link (or keep separate).
+  useEffect(() => {
+    if (!open || !form.name.trim() || !form.sail_no.trim()) {
+      setFleetMatches([]);
+      return;
+    }
+    setFleetBusy(true);
+    const t = setTimeout(() => {
+      api.fleetSearch(`${form.name} ${form.sail_no}`)
+        .then((res) => {
+          const editingBoat = editing ? boats.find((b) => b.id === editing) : null;
+          const ownFid = editingBoat?.fleet_id;
+          const matches = (res || []).filter((m) => m.fleet_id !== ownFid);
+          setFleetMatches(matches);
+          if (matches.length > 0) {
+            // Default to linking unless the match is in the same club+class
+            // (which usually means a duplicate entry, not the shared boat).
+            const curClass = classes.find((c) => c.id === form.class_id);
+            const curClub = clubs.find((c) => c.id === curClass?.club_id)?.name;
+            const sameSpot = matches.some(
+              (m) => m.clubs.includes(curClub) && m.classes.includes(curClass?.name));
+            setFleetChoice(sameSpot ? "separate" : "link");
+            setFleetTarget(sameSpot ? "" : matches[0].fleet_id);
+          } else {
+            setFleetChoice("auto");
+            setFleetTarget("");
+          }
+        })
+        .catch(() => {})
+        .finally(() => setFleetBusy(false));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [open, form.name, form.sail_no, form.class_id, editing, boats, classes, clubs]);
 
   const save = async () => {
     if (!form.name || !form.sail_no || !form.class_id || !form.helm) return toast.error("All fields required");
@@ -202,18 +245,31 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
       py: form.py === "" ? null : Number(form.py), boat_type: form.boat_type,
       home_club: (form.home_club || "").trim(),
     };
+    if (fleetChoice === "link" && fleetTarget) payload.fleet_id = fleetTarget;
+    else if (fleetChoice === "separate" && fleetMatches.length > 0) payload.separate_fleet = true;
     try {
       if (editing) await api.updateBoat(editing, payload, boats.find((b) => b.id === editing)?.version);
       else await api.createBoat(payload);
     } catch (e) {
       if (e.response?.status === 409) {
+        const detail = e.response.data?.detail;
+        if (detail && Array.isArray(detail.fleet_candidates)) {
+          setFleetMatches(detail.fleet_candidates.map((c) => ({
+            fleet_id: c.fleet_id, name: c.name, sail_no: c.sail_no,
+            clubs: [c.club_name], classes: [c.class_name], records: 1,
+          })));
+          setFleetChoice("separate");
+          setFleetTarget("");
+          toast.error(detail.message || "This boat matches an existing boat — choose how to handle it.");
+          return;
+        }
         toast.error("This boat has been changed by another user. Reload the latest details before editing again.");
         load();
         return;
       }
       throw e;
     }
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm(blank); load();
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm(blank); setFleetMatches([]); setFleetChoice("auto"); setFleetTarget(""); load();
   };
   const del = async (id) => { await api.deleteBoat(id, boats.find((b) => b.id === id)?.version); toast.success("Deleted"); load(); };
   const cname = (id) => classes.find((c) => c.id === id)?.name || "—";
@@ -263,6 +319,39 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
               <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank if not IRC-rated" /></div>
               <div className="space-y-1.5"><Label>PY (Portsmouth)</Label><Input type="number" step="1" min="0" data-testid="boat-py-input" value={form.py} onChange={(e) => setForm({ ...form, py: e.target.value })} placeholder="e.g. 1013 — blank if not PY-rated" /></div>
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
+              {fleetMatches.length > 0 && (
+                <div className="col-span-2 rounded-lg border border-ocean/30 bg-ocean/5 p-3 space-y-2" data-testid="fleet-link-panel">
+                  <p className="text-xs font-semibold text-ocean dark:text-ocean-light uppercase tracking-wide flex items-center gap-1">
+                    <Link2 className="w-3.5 h-3.5" /> Same boat elsewhere?
+                  </p>
+                  {fleetBusy && fleetMatches.length === 0 && <p className="text-xs text-muted-foreground">Checking…</p>}
+                  {fleetMatches.map((m) => (
+                    <label key={m.fleet_id} className="flex items-start gap-2 text-sm cursor-pointer">
+                      <input type="radio" name="fleet-choice" className="mt-1 accent-ocean"
+                        checked={fleetChoice === "link" && fleetTarget === m.fleet_id}
+                        onChange={() => { setFleetChoice("link"); setFleetTarget(m.fleet_id); }} />
+                      <span>
+                        <span className="font-semibold">{m.name}</span> <span className="font-mono text-xs text-muted-foreground">#{m.sail_no}</span>
+                        <span className="block text-xs text-muted-foreground">{m.clubs.join(", ")} · {m.classes.join(", ")}</span>
+                      </span>
+                    </label>
+                  ))}
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input type="radio" name="fleet-choice" className="mt-1 accent-ocean"
+                      checked={fleetChoice === "separate"}
+                      onChange={() => { setFleetChoice("separate"); setFleetTarget(""); }} />
+                    <span>
+                      <span className="font-semibold">Keep as a separate boat</span>
+                      <span className="block text-xs text-muted-foreground">A different boat that happens to share the same name and sail number.</span>
+                    </span>
+                  </label>
+                  <p className="text-[11px] text-muted-foreground">
+                    {fleetChoice === "link"
+                      ? "Linked boats share one identity — their results across clubs and classes appear together on the boat's public page."
+                      : "This boat will keep its own identity — its results stay separate from any same-named boat."}
+                  </p>
+                </div>
+              )}
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-boat-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
@@ -273,7 +362,12 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
           <TableBody>{boats.map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
-              <TableCell className="font-semibold">{b.name}</TableCell>
+              <TableCell className="font-semibold">
+                {b.name}
+                {b.fleet_id && b.fleet_id !== b.id && (
+                  <Link2 title="Shares one boat identity with records at other clubs/classes" className="w-3.5 h-3.5 inline ml-1.5 text-ocean dark:text-ocean-light" data-testid={`linked-${b.sail_no}`} />
+                )}
+              </TableCell>
               <TableCell>{cname(b.class_id)}</TableCell>
               <TableCell className="text-muted-foreground">{showClub(b)}</TableCell>
               <TableCell>{b.helm}</TableCell>
@@ -473,7 +567,7 @@ function SeriesTab({ classes, clubId }) {
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter }); } }}>
           <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank(), class_id: classFilter, order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[85vh] overflow-y-auto">
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} series</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Series name</Label><Input data-testid="series-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Early Spring" /></div>
@@ -500,14 +594,24 @@ function SeriesTab({ classes, clubId }) {
                 <div className="space-y-1.5"><Label>Planned races</Label><Input type="number" min="0" data-testid="series-planned-input" value={form.planned_races} onChange={(e) => setForm({ ...form, planned_races: e.target.value })} /></div>
                 <div className="space-y-1.5"><Label>Order</Label><Input type="number" data-testid="series-order-input" value={form.order} onChange={(e) => setForm({ ...form, order: e.target.value })} /></div>
               </div>
-              <div className="flex items-center gap-2"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={form.included_in_overall} onCheckedChange={(v) => setForm({ ...form, included_in_overall: v })} data-testid="series-overall-switch" /><Label>Counts toward overall championship</Label></div>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">This series' net scores are included in the class's overall championship table.</TooltipContent>
+              </Tooltip>
               <div className="rounded-lg border border-border p-3 space-y-3">
                 <div className="flex items-center justify-between">
                   <Label className="font-heading uppercase text-sm">Scoring rules <span className="text-muted-foreground font-body font-normal normal-case text-xs">({(form.scoring_config || defaultScoringConfig()).rrs_edition})</span></Label>
                 </div>
                 <p className="text-xs text-muted-foreground">Baseline is RRS 2025–2028 Appendix A Low Point. Alternatives are stored per season, so a change in future years never rewrites historical results.</p>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">A5 non-finishers scoring</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="w-fit cursor-help"><Label className="text-xs">A5 non-finishers scoring</Label></div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs">How boats that do not finish are scored. A5.2 (default): every non-finish code scores series entries + 1. A5.3: boats that came to the start area score starters + 1. Finishers + 1: the RYA/Sailwave convention.</TooltipContent>
+                  </Tooltip>
                   <Select value={form.scoring_config?.a5_convention || "a5_2"} onValueChange={(v) => patchCfg({ a5_convention: v })}>
                     <SelectTrigger className="h-9" data-testid="series-a5-select"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -518,7 +622,12 @@ function SeriesTab({ classes, clubId }) {
                   </Select>
                 </div>
                 <div className="rounded-md border border-border/70 p-2.5 space-y-2">
-                  <div className="flex items-center gap-2"><Switch checked={!!form.scoring_config?.tle?.enabled} onCheckedChange={(v) => patchCfgNested("tle", { enabled: v })} data-testid="series-tle-switch" /><Label className="text-xs font-semibold">TLE — Time Limit Expired rule</Label></div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={!!form.scoring_config?.tle?.enabled} onCheckedChange={(v) => patchCfgNested("tle", { enabled: v })} data-testid="series-tle-switch" /><Label className="text-xs font-semibold">TLE — Time Limit Expired rule</Label></div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs">When on, the race committee can record a boat as TLE when it fails to finish within the time limit. It scores per the method below — default: one more than the number of boats that finished the race.</TooltipContent>
+                  </Tooltip>
                   {form.scoring_config?.tle?.enabled && (
                     <div className="grid grid-cols-2 gap-2">
                       <div className="space-y-1"><Label className="text-xs">Time limit (minutes)</Label><Input type="number" min="1" className="h-8" value={form.scoring_config.tle.time_limit_minutes || ""} onChange={(e) => patchCfgNested("tle", { time_limit_minutes: e.target.value })} data-testid="series-tle-minutes" placeholder="e.g. 120" /></div>
@@ -552,18 +661,33 @@ function SeriesTab({ classes, clubId }) {
                             </Select></div>
                           <div className="space-y-1"><Label className="text-[10px] text-muted-foreground">{p.method === "percent" ? "% of DNF" : "Amount"}</Label><Input type="number" min="0" step="0.5" className="h-8" value={p.value} onChange={(e) => patchCfgNested(key, { value: e.target.value })} data-testid={`series-${key}-value`} /></div>
                         </div>
-                        <div className="flex items-center gap-2"><Switch checked={!!p.cap_dnf} onCheckedChange={(v) => patchCfgNested(key, { cap_dnf: v })} data-testid={`series-${key}-cap`} /><Label className="text-[11px]">Never worse than DNF</Label></div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={!!p.cap_dnf} onCheckedChange={(v) => patchCfgNested(key, { cap_dnf: v })} data-testid={`series-${key}-cap`} /><Label className="text-[11px]">Never worse than DNF</Label></div>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-xs">RRS 44.3(c)/30.2: the penalty can never give a boat a worse score than its DNF score would be.</TooltipContent>
+                        </Tooltip>
                       </div>
                     );
                   })}
                 </div>
                 <div className="rounded-md border border-border/70 p-2.5 space-y-2">
-                  <div className="flex items-center gap-2"><Switch checked={!!form.scoring_config?.duty?.enabled} onCheckedChange={(v) => patchCfgNested("duty", { enabled: v })} data-testid="series-duty-switch" /><Label className="text-xs font-semibold">Duty / Average Points (OOD)</Label></div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={!!form.scoring_config?.duty?.enabled} onCheckedChange={(v) => patchCfgNested("duty", { enabled: v })} data-testid="series-duty-switch" /><Label className="text-xs font-semibold">Duty / Average Points (OOD)</Label></div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs">A boat on duty (OOD) scores the average of her own sailed races in the series, recalculated after every race before discards apply.</TooltipContent>
+                  </Tooltip>
                   {form.scoring_config?.duty?.enabled && <p className="text-[11px] text-muted-foreground">A duty boat scores the average of her own sailed races, recalculated after every scored race before discards apply.</p>}
                 </div>
                 <div className="rounded-md border border-border/70 p-2.5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs font-semibold">Discards</Label>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="w-fit cursor-help"><Label className="text-xs font-semibold">Discards</Label></div>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-xs">How many worst results are dropped from each boat's series total. Fixed uses the Discards field; increasing adds discards as more races are sailed (per the schedule below). A DNE can never be discarded.</TooltipContent>
+                    </Tooltip>
                     <Select value={form.scoring_config?.discard_policy || "fixed"} onValueChange={(v) => patchCfg({ discard_policy: v })}>
                       <SelectTrigger className="h-8 w-44" data-testid="series-discard-policy"><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -596,7 +720,12 @@ function SeriesTab({ classes, clubId }) {
                 </div>
               </div>
               <div className="rounded-lg border border-border p-3 space-y-3">
-                <div className="flex items-center gap-2"><Switch checked={form.mini_series} onCheckedChange={(v) => setForm({ ...form, mini_series: v })} data-testid="series-mini-switch" /><Label className="font-heading uppercase text-sm">Split into mini series</Label></div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={form.mini_series} onCheckedChange={(v) => setForm({ ...form, mini_series: v })} data-testid="series-mini-switch" /><Label className="font-heading uppercase text-sm">Split into mini series</Label></div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-xs">Championships within a long series: each mini series has its own discards and standings, while the full series keeps its own discards and still counts toward the overall championship.</TooltipContent>
+                </Tooltip>
                 {form.mini_series && (
                   <>
                     <p className="text-xs text-muted-foreground">Give each mini series a name, pick which races it contains and set its own discards. The full series keeps its own discards and still counts toward the overall championship.</p>
