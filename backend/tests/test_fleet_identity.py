@@ -270,6 +270,61 @@ class TestFleetProfile:
         assert len(prof["overall"]) == 2
         assert all(o["rank"] == 1 for o in prof["overall"])
 
+    def test_full_dnc_series_hidden_from_career(self):
+        """A series where the boat was DNC in every race (never actually
+        sailed it) must not appear on the boat search page."""
+        db = self._db()
+        server.db = db
+        s3 = {"id": "s3", "name": "Summer Series", "class_id": "c1", "year": 2026,
+              "scoring_mode": "one_design", "discards": 0, "included_in_overall": True,
+              "order": 0, "lock_status": None}
+        r3 = {"id": "r3", "series_id": "s3", "class_id": "c1", "year": 2026,
+              "race_number": 1, "date": "2026-07-25", "status": "published",
+              "entries_count": 2,
+              "results": [
+                  {"boat_id": "b1", "code": "DNC", "position": None,
+                   "finish_time": None, "penalty_points": 0},
+                  {"boat_id": "b3", "code": "FINISHED", "position": 1,
+                   "finish_time": "2026-07-25T10:00:00Z", "penalty_points": 0}]}
+        db.series.items.append(s3)
+        db.races.items.append(r3)
+        db.boats.items.append(_boat("b3", "Screwloose", "8410", "c1", 2026, fleet_id="F3"))
+        prof = asyncio.run(server.fleet_profile("F1"))
+        assert [s["series_name"] for s in prof["series"]] == ["Spring Series", "Late Spring"]
+
+    def test_series_kept_when_boat_raced_any_race(self):
+        """DNCs alongside a genuine result keep the series on the career — the
+        boat did race it, so only all-DNC series are hidden."""
+        db = self._db()
+        server.db = db
+        s3 = {"id": "s3", "name": "Summer Series", "class_id": "c1", "year": 2026,
+              "scoring_mode": "one_design", "discards": 0, "included_in_overall": True,
+              "order": 0, "lock_status": None}
+        r3 = {"id": "r3", "series_id": "s3", "class_id": "c1", "year": 2026,
+              "race_number": 1, "date": "2026-07-25", "status": "published",
+              "entries_count": 2,
+              "results": [
+                  {"boat_id": "b1", "code": "DNC", "position": None,
+                   "finish_time": None, "penalty_points": 0},
+                  {"boat_id": "b3", "code": "FINISHED", "position": 1,
+                   "finish_time": "2026-07-25T10:00:00Z", "penalty_points": 0}]}
+        r4 = {"id": "r4", "series_id": "s3", "class_id": "c1", "year": 2026,
+              "race_number": 2, "date": "2026-08-01", "status": "published",
+              "entries_count": 2,
+              "results": [
+                  {"boat_id": "b1", "code": "FINISHED", "position": 2,
+                   "finish_time": "2026-08-01T10:02:00Z", "penalty_points": 0},
+                  {"boat_id": "b3", "code": "FINISHED", "position": 1,
+                   "finish_time": "2026-08-01T10:01:00Z", "penalty_points": 0}]}
+        db.series.items.append(s3)
+        db.races.items.extend([r3, r4])
+        db.boats.items.append(_boat("b3", "Screwloose", "8410", "c1", 2026, fleet_id="F3"))
+        prof = asyncio.run(server.fleet_profile("F1"))
+        names = [s["series_name"] for s in prof["series"]]
+        assert "Summer Series" in names
+        summer = next(s for s in prof["series"] if s["series_name"] == "Summer Series")
+        assert summer["net"] == 5.0  # DNC (3) + 2nd (2)
+
     def test_locked_season_served_from_snapshot(self):
         snapshot = {"id": "snap1", "series_id": "s1", "status": server.LOCK_LOCKED,
                     "version": 1, "locked_at": "2026-09-01T00:00:00+00:00",

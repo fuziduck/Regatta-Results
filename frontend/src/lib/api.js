@@ -47,6 +47,12 @@ export const api = {
     a.click();
     a.remove();
   },
+  // Restore a backup ZIP. Webmaster only.
+  restoreBackup: (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return client.post("/admin/backup/restore", fd).then((r) => r.data);
+  },
 
   getClubs: () => client.get("/clubs").then((r) => r.data),
   getClubDirectory: (year) => client.get("/clubs/directory", { params: year ? { year } : {} }).then((r) => r.data),

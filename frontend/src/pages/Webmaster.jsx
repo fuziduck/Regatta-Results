@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download } from "lucide-react";
+import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D" };
 
@@ -46,12 +46,51 @@ function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
 
 function BackupSection({ clubs }) {
   const [clubId, setClubId] = useState("");
+  const [restoreFile, setRestoreFile] = useState(null);
+  const [restoreScope, setRestoreScope] = useState(null); // "all" or "club"
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const fileInputAllRef = useRef(null);
+  const fileInputClubRef = useRef(null);
+
+  const handleFileSelected = (e, scope) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.endsWith(".zip")) {
+      toast.error("Backup file must be a .zip archive");
+      e.target.value = "";
+      return;
+    }
+    setRestoreFile(file);
+    setRestoreScope(scope);
+    setRestoreConfirmOpen(true);
+    e.target.value = "";
+  };
+
+  const doRestore = async () => {
+    if (!restoreFile) return;
+    setRestoring(true);
+    try {
+      const result = await api.restoreBackup(restoreFile);
+      const count = result.restored?.length || 0;
+      const errMsgs = result.errors?.length ? ` (${result.errors.length} skipped)` : "";
+      toast.success(`Backup restored successfully — ${count} collection${count === 1 ? "" : "s"} updated${errMsgs}`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Restore failed — please check the backup file");
+    } finally {
+      setRestoring(false);
+      setRestoreConfirmOpen(false);
+      setRestoreFile(null);
+      setRestoreScope(null);
+    }
+  };
+
   return (
     <div>
       <div className="mb-6">
         <h1 className="text-3xl uppercase tracking-tighter mb-1">Backups</h1>
         <p className="text-muted-foreground text-sm">
-          Download a zip of JSON exports — a single club's data, or everything. Backups never contain passcodes, hashes or reset tokens.
+          Download or restore a zip of JSON exports. Backups never contain passcodes, hashes or reset tokens.
         </p>
       </div>
       <div className="rounded-2xl border border-border bg-card p-5 space-y-4 max-w-2xl">
@@ -60,13 +99,30 @@ function BackupSection({ clubs }) {
             <div className="font-heading text-lg uppercase tracking-tight">Full system backup</div>
             <p className="text-xs text-muted-foreground mt-0.5">Every club — clubs, users, classes, boats, series, races, results, adverts and the audit log.</p>
           </div>
-          <Button
-            className="gap-2 bg-ocean hover:bg-ocean-dark"
-            data-testid="backup-all-btn"
-            onClick={() => api.downloadBackup(null, true)}
-          >
-            <Download className="w-4 h-4" /> Download all
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              className="gap-2 bg-ocean hover:bg-ocean-dark"
+              data-testid="backup-all-btn"
+              onClick={() => api.downloadBackup(null, true)}
+            >
+              <Download className="w-4 h-4" /> Download all
+            </Button>
+            <input
+              ref={fileInputAllRef}
+              type="file"
+              accept=".zip"
+              className="hidden"
+              onChange={(e) => handleFileSelected(e, "all")}
+            />
+            <Button
+              variant="outline"
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+              data-testid="restore-all-btn"
+              onClick={() => fileInputAllRef.current?.click()}
+            >
+              <Upload className="w-4 h-4" /> Restore all
+            </Button>
+          </div>
         </div>
         <div className="border-t border-border pt-4 flex flex-wrap items-end gap-3">
           <div className="space-y-1.5 flex-1 min-w-52">
@@ -81,17 +137,79 @@ function BackupSection({ clubs }) {
               {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
-          <Button
-            variant="outline"
-            className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
-            disabled={!clubId}
-            data-testid="backup-club-btn"
-            onClick={() => api.downloadBackup(clubId, true)}
-          >
-            <Download className="w-4 h-4" /> Download club backup
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+              disabled={!clubId}
+              data-testid="backup-club-btn"
+              onClick={() => api.downloadBackup(clubId, true)}
+            >
+              <Download className="w-4 h-4" /> Download club backup
+            </Button>
+            <input
+              ref={fileInputClubRef}
+              type="file"
+              accept=".zip"
+              className="hidden"
+              onChange={(e) => handleFileSelected(e, "club")}
+            />
+            <Button
+              variant="outline"
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+              disabled={!clubId}
+              data-testid="restore-club-btn"
+              onClick={() => fileInputClubRef.current?.click()}
+            >
+              <Upload className="w-4 h-4" /> Restore club
+            </Button>
+          </div>
         </div>
       </div>
+
+      <Dialog open={restoreConfirmOpen} onOpenChange={(o) => { if (!o && !restoring) { setRestoreConfirmOpen(false); setRestoreFile(null); setRestoreScope(null); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-heading uppercase">
+              {restoreScope === "all" ? "Restore full system backup" : "Restore club backup"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              You are about to restore from <span className="font-semibold text-foreground">{restoreFile?.name || "backup"}</span>.
+            </p>
+            {restoreScope === "all" ? (
+              <p className="text-sm text-destructive font-semibold">
+                This will replace ALL clubs, users, classes, boats, series, races, adverts and audit logs with the contents of the backup. This cannot be undone.
+              </p>
+            ) : (
+              <p className="text-sm text-destructive font-semibold">
+                This will replace data for the selected club only. Other clubs, global adverts and the webmaster account are not affected.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Security fields (passcodes, reset tokens) are never imported. Users will need their existing passcodes to sign in.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={restoring}
+              onClick={() => { setRestoreConfirmOpen(false); setRestoreFile(null); setRestoreScope(null); }}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="gap-2 bg-destructive hover:bg-destructive/90 text-white"
+              disabled={restoring}
+              data-testid="restore-confirm-btn"
+              onClick={doRestore}
+            >
+              {restoring ? "Restoring…" : "Restore backup"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

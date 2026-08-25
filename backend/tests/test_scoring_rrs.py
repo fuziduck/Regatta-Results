@@ -221,6 +221,64 @@ def _standings(use_a5_3, use_finishers=False):
     return asyncio.run(server.compute_series_standings(series))
 
 
+def _standings_entered_only(races):
+    """Class has 4 boats; only the boats that appear in the given published
+    races are considered entered in the series."""
+    import asyncio
+    import types
+    series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0}
+    boats = [{"id": f"b{i}", "name": f"Boat {i}", "sail_no": str(i),
+              "helm": "H", "class_id": "c1", "year": 2026} for i in range(1, 5)]
+    server.db = types.SimpleNamespace(races=_Coll(races), boats=_Coll(boats))
+    return asyncio.run(server.compute_series_standings(series))
+
+
+class TestStandingsOnlyEnteredBoats:
+    """A series' standings contain only the boats that actually appear in its
+    published races. Boats registered in the class that never raced the series
+    are not part of it (e.g. a one-off regatta whose fleet is a subset of the
+    club's full class fleet) and must not clutter its results table."""
+
+    def _race(self, results):
+        return {"id": "r1", "series_id": "s1", "class_id": "c1", "year": 2026,
+                "race_number": 1, "date": "2026-05-02", "status": "published",
+                "entries_count": 3, "results": results}
+
+    def test_boat_absent_from_every_race_is_excluded(self):
+        race = self._race([
+            {"boat_id": "b1", "code": "FINISHED", "position": 1,
+             "finish_time": "2026-05-02T10:05:00Z", "penalty_points": 0},
+            {"boat_id": "b2", "code": "FINISHED", "position": 2,
+             "finish_time": "2026-05-02T10:06:00Z", "penalty_points": 0},
+            # b3 came to the area but never finished (still entered), b4 never
+            # appears anywhere in the series.
+            {"boat_id": "b3", "code": "DNS", "position": None,
+             "finish_time": None, "penalty_points": 0},
+        ])
+        st = _standings_entered_only([race])
+        ids = {r["boat_id"] for r in st["standings"]}
+        assert ids == {"b1", "b2", "b3"}
+        assert "b4" not in ids
+        assert st["races_scored"] == 1
+
+    def test_absent_boat_excluded_even_when_series_has_multiple_races(self):
+        race = self._race([
+            {"boat_id": "b1", "code": "FINISHED", "position": 1,
+             "finish_time": "2026-05-02T10:05:00Z", "penalty_points": 0},
+            {"boat_id": "b2", "code": "DNC", "position": None,
+             "finish_time": None, "penalty_points": 0},
+        ])
+        st = _standings_entered_only([race])
+        ids = {r["boat_id"] for r in st["standings"]}
+        assert ids == {"b1", "b2"}
+
+    def test_series_with_no_published_races_keeps_full_fleet(self):
+        st = _standings_entered_only([])
+        ids = {r["boat_id"] for r in st["standings"]}
+        assert ids == {"b1", "b2", "b3", "b4"}
+        assert all(r["net"] == 0.0 for r in st["standings"])
+
+
 class TestA53EndToEnd:
     """The A5.3 series flag must change how DNS (start-area codes) score."""
 

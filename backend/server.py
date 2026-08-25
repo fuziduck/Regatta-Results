@@ -3017,6 +3017,150 @@ async def club_backup(request: Request, club_id: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
+# Backup / restore (webmaster only)
+# ---------------------------------------------------------------------------
+# Collections included in a backup (insertion order matters for
+# referential consistency — clubs first, then users, etc.).
+BACKUP_COLLECTIONS = (
+    "clubs", "users", "classes", "boats", "series", "races",
+    "adverts", "audit_logs",
+)
+
+
+@api_router.post("/admin/backup/restore")
+async def restore_backup(request: Request, file: UploadFile = File(...),
+                         user: dict = Depends(require_webmaster)):
+    """Webmaster only: restore data from a backup ZIP.
+
+    Full-system backups (scope=all-clubs) replace every collection.
+    Club backups (scope=club) replace only that club's data — other clubs,
+    global adverts and global users are untouched.
+
+    Security fields (passcode_hash, reset tokens, lockout state) are
+    stripped from imported user records so a leaked backup cannot inject
+    credentials.
+    """
+    if not file.filename or not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400,
+                            detail="Backup file must be a .zip archive")
+    raw = await file.read()
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400,
+                            detail="Backup file too large (50 MB max)")
+
+    # Parse the zip and validate it looks like a valid backup.
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400,
+                            detail="File is not a valid ZIP archive")
+    names = set(zf.namelist())
+    if "metadata.json" not in names:
+        raise HTTPException(status_code=400,
+                            detail="Invalid backup: missing metadata.json")
+
+    meta = json.loads(zf.read("metadata.json"))
+    scope = meta.get("scope")
+    scope_club_id = meta.get("club_id")
+    if scope not in ("all-clubs", "club"):
+        raise HTTPException(status_code=400,
+                            detail=f"Unrecognised backup scope: {scope}")
+
+    # For a club-scoped backup, verify the club exists.
+    if scope == "club":
+        if not scope_club_id:
+            raise HTTPException(status_code=400,
+                                detail="Club backup missing club_id in metadata")
+        club_doc = await db.clubs.find_one({"id": scope_club_id}, {"_id": 0})
+        if not club_doc:
+            raise HTTPException(status_code=400,
+                                detail="The club in this backup no longer exists")
+
+    restored = []
+    errors = []
+
+    for coll_name in BACKUP_COLLECTIONS:
+        fname = f"{coll_name}.json"
+        if fname not in names:
+            errors.append(f"{coll_name}: not in backup (skipped)")
+            continue
+        try:
+            docs = json.loads(zf.read(fname))
+        except Exception as exc:
+            errors.append(f"{coll_name}: failed to parse — {exc}")
+            continue
+
+        if scope == "all-clubs":
+            # Full system restore: drop the collection and replace entirely.
+            await db[coll_name].drop()
+            if docs:
+                await db[coll_name].insert_many(docs, ordered=False)
+        else:
+            # Club-scoped restore: only touch data belonging to this club.
+            if coll_name == "clubs":
+                # Upsert the single club document.
+                existing = await db.clubs.find_one({"id": scope_club_id})
+                if existing:
+                    await db.clubs.update_one(
+                        {"id": scope_club_id},
+                        {"$set": {k: v for k, v in docs[0].items()
+                                   if k != "_id"}})
+                else:
+                    await db.clubs.insert_one(docs[0])
+            elif coll_name == "users":
+                # Replace only users belonging to this club (keep the
+                # webmaster and users of other clubs intact).
+                await db.users.delete_many({"club_id": scope_club_id})
+                if docs:
+                    cleaned = [_strip_backup_secrets(u) for u in docs]
+                    await db.users.insert_many(cleaned, ordered=False)
+            elif coll_name == "adverts":
+                # Adverts are global — only restore if this is a full backup.
+                errors.append("adverts: global collection (skipped for club restore)")
+                continue
+            elif coll_name == "audit_logs":
+                # Audit logs are append-only; insert without removing existing.
+                if docs:
+                    await db.audit_logs.insert_many(docs, ordered=False)
+            else:
+                # Class-scoped collections: delete existing, then insert.
+                if coll_name == "boats":
+                    # Boats are scoped by class_id, not club_id directly.
+                    # Classes were already replaced above, so use the
+                    # backup's class list to identify which boats to remove.
+                    backup_class_ids = {c["id"] for c in
+                                         json.loads(zf.read("classes.json"))}
+                    await db.boats.delete_many(
+                        {"class_id": {"$in": list(backup_class_ids)}})
+                elif coll_name in ("classes", "series", "races"):
+                    await db[coll_name].delete_many({"club_id": scope_club_id})
+                if docs:
+                    await db[coll_name].insert_many(docs, ordered=False)
+
+        restored.append(coll_name)
+
+    # Log the restore action.
+    scope_label = "full system" if scope == "all-clubs" else f"club {scope_club_id}"
+    desc = (f"{user.get('username')} restored {scope_label} from backup "
+            f"({meta.get('exported_at', '?')})")
+    await _log_audit(request=request, user=user, action="BACKUP_RESTORE",
+                     description=desc, resource_type="backup",
+                     resource_id=scope_club_id or "all",
+                     club_id=scope_club_id)
+    logger.info("BACKUP RESTORE scope=%s by=%s ip=%s", scope_club_id or "all",
+                user.get("username"), _client_ip(request))
+
+    return {
+        "scope": scope,
+        "club_id": scope_club_id,
+        "restored": restored,
+        "errors": errors,
+        "backup_exported_at": meta.get("exported_at"),
+        "backup_generated_by": meta.get("generated_by"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Notifications (public banner)
 # ---------------------------------------------------------------------------
 @api_router.get("/notifications")
@@ -3651,6 +3795,17 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
         keep = {int(n) for n in race_numbers}
         races = [r for r in races if int(r.get("race_number") or 0) in keep]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
+    # Only boats that actually appear in at least one published race of this
+    # series are entered in it. Boats registered in the class that never raced
+    # the series must not clutter its standings (e.g. a one-off regatta whose
+    # fleet is a subset of the club's full class fleet). Boats absent from an
+    # individual race still auto-score DNC as usual; boats absent from the
+    # whole series simply do not belong to it. A series with no published
+    # races yet keeps its full fleet (all-zero rows) as before.
+    entered = {r.get("boat_id") for race in races
+               for r in (race.get("results") or []) if r.get("boat_id")}
+    if races and entered:
+        boats = [b for b in boats if b.get("id") in entered]
     boat_map = {b["id"]: b for b in boats}
     cfg = _series_scoring_config(series)
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
@@ -4241,6 +4396,16 @@ async def fleet_profile(fleet_id: str):
     series_ids = {r.get("series_id") for r in races if r.get("series_id")}
     series_docs = {s["id"]: s for s in await db.series.find(
         {"id": {"$in": list(series_ids)}}, {"_id": 0}).to_list(1000)}
+    # The boat's own result per published race, grouped by series (used below
+    # to hide series she never actually raced).
+    boat_results_by_series = {}
+    for race in races:
+        sid = race.get("series_id")
+        if not sid:
+            continue
+        for res in race.get("results", []):
+            if res.get("boat_id") in ids:
+                boat_results_by_series.setdefault(sid, []).append(res)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
     clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
     series_out = []
@@ -4255,6 +4420,13 @@ async def fleet_profile(fleet_id: str):
             continue
         row = next((r for r in standings.get("standings", []) if r["boat_id"] in ids), None)
         if row is None:
+            continue
+        # A series where the boat was DNC in every published race is not part
+        # of her career — she never actually raced it (club fleets commonly
+        # list the whole fleet DNC in races she didn't sail). Hide it from the
+        # boat search page.
+        own = boat_results_by_series.get(sid, [])
+        if own and all((res.get("code") or "") == "DNC" for res in own):
             continue
         cls = classes.get(series.get("class_id"), {})
         club = clubs.get(cls.get("club_id"), {})
