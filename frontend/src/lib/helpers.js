@@ -174,3 +174,27 @@ export function passcodeError(p) {
 // data-driven (only years with a series actually appear), so this is just a
 // guard against junk values, not a hard limit on planning ahead.
 export const MAX_YEAR = CURRENT_YEAR + 10;
+
+// Returns the mini-series group (from a series' mini_series_groups) that
+// contains the given race number, or null when the race is not part of any
+// mini series. A series only has groups when its mini_series flag is on; each
+// race number may belong to at most one group (the admin UI enforces this).
+export function miniGroupForRace(series, raceNumber) {
+  if (!series || !series.mini_series || !Array.isArray(series.mini_series_groups)) {
+    return null;
+  }
+  return (
+    series.mini_series_groups.find((g) => (g.race_numbers || []).includes(raceNumber)) || null
+  );
+}
+
+// Short note for the race officer console explaining how a mini-series race
+// is scored. "additional" groups count each race separately in the series;
+// "combined" groups fold their races into a single daily result.
+export function miniSeriesNote(group) {
+  if (!group) return null;
+  const name = group.name ? `: ${group.name}` : "";
+  return group.scoring === "combined"
+    ? `Mini series${name} — combined into one daily result`
+    : `Mini series${name} — score as separate races`;
+}

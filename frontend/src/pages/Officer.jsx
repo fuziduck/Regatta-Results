@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ConsoleNav from "@/components/ConsoleNav";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, Plus, ChevronLeft, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks } from "lucide-react";
+import { Anchor, Plus, ChevronLeft, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -694,6 +694,21 @@ export default function Officer() {
     series_name: series[r.series_id]?.name || "Series",
   });
 
+  // Note shown on a race (or scheduled race) that belongs to a mini series,
+  // so the officer knows the race is part of a mini series and how it scores.
+  const MiniNote = ({ item }) => {
+    const mini = miniGroupForRace(series[item.series_id], item.race_number);
+    const note = miniSeriesNote(mini);
+    if (!note) return null;
+    return (
+      <div className="text-xs mt-1 flex items-center gap-1.5 text-ocean"
+        data-testid={`mini-note-${item.id || `${item.series_id}-${item.race_number}`}`}>
+        <Layers className="w-3.5 h-3.5 shrink-0" />
+        <span>{note}</span>
+      </div>
+    );
+  };
+
   const selectedRace = races.find((r) => r.id === selected);
   const switchClub = isWebmaster ? () => setSearchParams({}) : null;
 
@@ -740,6 +755,7 @@ export default function Officer() {
       <div className="flex-1">
         <div className="font-semibold leading-none">{classes[r.class_id]?.name} · {series[r.series_id]?.name}</div>
         <div className="text-xs text-muted-foreground mt-1">{fmtDate(r.date)} · Start {r.start_time}</div>
+        <MiniNote item={r} />
       </div>
       <Badge className={STATUS_BADGE[r.status]}>{r.status}</Badge>
       {r.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
@@ -786,6 +802,7 @@ export default function Officer() {
                     <div className="flex-1">
                       <div className="font-semibold leading-none">{item.class_name} · {item.series_name}</div>
                       <div className="text-xs text-muted-foreground mt-1">Start {item.start_time}</div>
+                      <MiniNote item={item} />
                     </div>
                     <Badge className={item.status === "scheduled" ? "bg-ocean/10 text-ocean" : STATUS_BADGE[item.status]}>
                       {item.status === "scheduled" ? "Score now" : item.status}

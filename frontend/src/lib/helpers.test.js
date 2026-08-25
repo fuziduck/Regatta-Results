@@ -1,4 +1,10 @@
-import { shouldWrapBoatName, wrapBoatName, BOAT_NAME_WRAP_LIMIT } from "./helpers";
+import {
+  shouldWrapBoatName,
+  wrapBoatName,
+  BOAT_NAME_WRAP_LIMIT,
+  miniGroupForRace,
+  miniSeriesNote,
+} from "./helpers";
 
 describe("shouldWrapBoatName (14-character threshold on the name itself)", () => {
   it("treats names under 14 characters as single-line", () => {
@@ -69,5 +75,68 @@ describe("wrapBoatName (break at the last space within the 14-character head)", 
     expect(wrapBoatName(null)).toBeNull();
     expect(wrapBoatName(undefined)).toBeUndefined();
     expect(wrapBoatName(42)).toBe(42);
+  });
+});
+
+describe("miniGroupForRace (which mini series a race belongs to)", () => {
+  const series = {
+    mini_series: true,
+    mini_series_groups: [
+      { name: "Morning", race_numbers: [1, 2], discards: 0, scoring: "additional" },
+      { name: "Afternoon", race_numbers: [3, 4], discards: 1, scoring: "combined" },
+    ],
+  };
+
+  it("returns the group whose race_numbers include the race", () => {
+    expect(miniGroupForRace(series, 1)).toEqual(series.mini_series_groups[0]);
+    expect(miniGroupForRace(series, 2)).toEqual(series.mini_series_groups[0]);
+    expect(miniGroupForRace(series, 3)).toEqual(series.mini_series_groups[1]);
+    expect(miniGroupForRace(series, 4)).toEqual(series.mini_series_groups[1]);
+  });
+
+  it("returns null for a race outside any group", () => {
+    expect(miniGroupForRace(series, 5)).toBeNull();
+    expect(miniGroupForRace(series, 0)).toBeNull();
+  });
+
+  it("returns null when the series is not a mini series or has no groups", () => {
+    expect(miniGroupForRace({ ...series, mini_series: false }, 1)).toBeNull();
+    expect(miniGroupForRace({ ...series, mini_series_groups: [] }, 1)).toBeNull();
+    expect(miniGroupForRace({ mini_series: true }, 1)).toBeNull();
+  });
+
+  it("is defensive about missing input", () => {
+    expect(miniGroupForRace(null, 1)).toBeNull();
+    expect(miniGroupForRace(undefined, 1)).toBeNull();
+    expect(miniGroupForRace(series, undefined)).toBeNull();
+  });
+
+  it("tolerates a group with no race_numbers", () => {
+    const s = { mini_series: true, mini_series_groups: [{ name: "Empty", race_numbers: [], scoring: "additional" }] };
+    expect(miniGroupForRace(s, 1)).toBeNull();
+  });
+});
+
+describe("miniSeriesNote (officer-facing note on a mini-series race)", () => {
+  it("tells the officer to score additional-mode races separately", () => {
+    expect(miniSeriesNote({ name: "Morning", scoring: "additional" })).toBe("Mini series: Morning — score as separate races");
+  });
+
+  it("notes combined-mode races fold into one daily result", () => {
+    expect(miniSeriesNote({ name: "Afternoon", scoring: "combined" })).toBe("Mini series: Afternoon — combined into one daily result");
+  });
+
+  it("defaults a missing scoring mode to additional", () => {
+    expect(miniSeriesNote({ name: "Plain" })).toBe("Mini series: Plain — score as separate races");
+  });
+
+  it("omits the group name when it is empty", () => {
+    expect(miniSeriesNote({ name: "", scoring: "additional" })).toBe("Mini series — score as separate races");
+    expect(miniSeriesNote({ name: "", scoring: "combined" })).toBe("Mini series — combined into one daily result");
+  });
+
+  it("returns null for a non-mini-series race", () => {
+    expect(miniSeriesNote(null)).toBeNull();
+    expect(miniSeriesNote(undefined)).toBeNull();
   });
 });
