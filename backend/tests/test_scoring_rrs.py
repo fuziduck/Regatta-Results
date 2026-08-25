@@ -746,8 +746,8 @@ class TestMiniSeries:
         assert st["discards"] == 0
         assert st["mini_series"]["enabled"] is True
         assert st["mini_series"]["groups"] == [
-            {"name": "Spring", "race_numbers": [1, 2], "discards": 1, "race_count": 2},
-            {"name": "Autumn", "race_numbers": [5, 6], "discards": 0, "race_count": 2},
+            {"name": "Spring", "race_numbers": [1, 2], "discards": 1, "scoring": "additional", "race_count": 2},
+            {"name": "Autumn", "race_numbers": [5, 6], "discards": 0, "scoring": "additional", "race_count": 2},
         ]
 
     def test_group_uses_only_its_races_and_its_own_discards(self):
@@ -779,9 +779,13 @@ class TestMiniSeries:
         ]}
         groups = server._normalize_mini_groups(series, races)
         assert groups == [
-            {"name": "First half", "race_numbers": [1, 2, 3], "discards": 1, "race_count": 3},
-            {"name": "Mini 2", "race_numbers": [4, 5, 6], "discards": 0, "race_count": 3},
+            {"name": "First half", "race_numbers": [1, 2, 3], "discards": 1, "scoring": "additional", "race_count": 3},
+            {"name": "Mini 2", "race_numbers": [4, 5, 6], "discards": 0, "scoring": "additional", "race_count": 3},
         ]
+        # A group can opt into the combined daily-result treatment.
+        groups3 = server._normalize_mini_groups({"mini_series": True, "mini_series_groups": [
+            {"name": "Day", "race_numbers": [2, 3], "scoring": "combined"}]}, races)
+        assert groups3[0]["scoring"] == "combined"
         # A group referencing races that have not been published reports 0.
         groups2 = server._normalize_mini_groups({"mini_series": True, "mini_series_groups": [
             {"name": "Later", "race_numbers": [9, 10]}]}, races)
@@ -800,15 +804,298 @@ class TestMiniSeries:
         assert groups[0]["race_count"] == 2
 
 
-class TestDutyPoints:
-    """OOD (Officer of the Day) duty races score the boat's own average of its
-    OTHER races in the series where it actually sailed (Sailwave club
-    convention: "OOD average points excluding DNC")."""
+class TestMiniSeriesCombined:
+    """Mini-series scoring treatment: "additional" (each mini race counts
+    individually in the main series) vs "combined" (the mini races aggregate
+    into ONE daily result — group discards first, then the average of the
+    counting races becomes a single main-series score)."""
 
-    def _run(self, races, use_a5_3=False):
+    def _series(self, groups, discards=0):
+        return {"id": "s1", "class_id": "c1", "year": 2026, "discards": discards,
+                "use_a5_3": False, "use_finishers": False,
+                "mini_series": True, "mini_series_groups": groups}
+
+    def _run(self, groups, races, discards=0, race_numbers=None, group_discards=None):
         import asyncio
         import types
-        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+        series = self._series(groups, discards)
+        boats = [{"id": f"b{i}", "name": f"Boat {i}", "sail_no": str(i),
+                  "helm": "H", "class_id": "c1", "year": 2026} for i in range(1, 4)]
+        server.db = types.SimpleNamespace(races=_Coll(races), boats=_Coll(boats))
+        return asyncio.run(server.compute_series_standings(
+            series, race_numbers=race_numbers, discards=group_discards))
+
+    def _race(self, rn, results, entries=None, date=None):
+        return {"id": f"r{rn}", "series_id": "s1", "class_id": "c1", "year": 2026,
+                "race_number": rn, "date": date or f"2026-05-{rn:02d}", "status": "published",
+                "entries_count": entries or len(results), "results": results}
+
+    def _res(self, bid, code, pos=None):
+        return {"boat_id": bid, "code": code, "position": pos,
+                "finish_time": None, "penalty_points": 0}
+
+    # 5-race series: race 3 is a normal race, races 2-4 form the "Day" mini
+    # series. b1 sails everything; b2 and b3 vary per test (absent = DNC).
+    def _five_races(self, b1_positions, extra=None):
+        # extra: race_number -> list of extra result dicts to append
+        races = []
+        for rn, pos in enumerate(b1_positions, start=1):
+            results = [self._res("b1", "FINISHED", pos)]
+            results += (extra or {}).get(rn, [])
+            races.append(self._race(rn, results))
+        return races
+
+    def test_additional_mode_counts_each_mini_race_individually(self):
+        # Mode A: mini races are individual main-series races, discardable
+        # separately under the main series' discard rules.
+        races = self._five_races([1, 2, 5, 9, 3])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "additional"}]
+        st = self._run(groups, races, discards=1)
+        assert st["race_count"] == 5
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        scores = by_id["b1"]["scores"]
+        assert [s["code"] for s in scores] == ["FINISHED"] * 5
+        # the mini races appear individually and the worst one (9) is discarded
+        assert scores[3]["points"] == 9.0 and scores[3]["discarded"] is True
+        assert by_id["b1"]["net"] == 1 + 2 + 5 + 3
+
+    def test_combined_mode_folds_group_into_single_daily_result(self):
+        # Mode B (the canonical example): 2, 5, 9 with 1 discard -> discard 9
+        # -> (2 + 5) / 2 = 3.5, ONE score in the main series.
+        races = self._five_races([1, 2, 5, 9, 3])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        assert st["race_count"] == 3
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        scores = by_id["b1"]["scores"]
+        assert [(s["code"], s["points"]) for s in scores] == \
+            [("FINISHED", 1.0), ("MINI", 3.5), ("FINISHED", 3.0)]
+        assert by_id["b1"]["net"] == 7.5
+        # the underlying mini races must NOT appear as extra main-series races
+        assert len(scores) == 3
+        # the combined unit's meta names the mini series
+        combined_meta = st["races"][1]
+        assert combined_meta["combined"] is True and combined_meta["mini_name"] == "Day"
+
+    def test_combined_average_is_average_not_sum(self):
+        # 2 + 5 + 9 = 16 summed, but the daily result is the AVERAGE 3.5.
+        races = self._five_races([1, 2, 5, 9, 3])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["scores"][1]["points"] == 3.5
+        assert by_id["b1"]["total"] == 7.5  # 1 + 3.5 + 3, not 1 + 7 + 3
+
+    def test_combined_with_two_races(self):
+        # Smallest meaningful mini series: two races, one discard -> the worse
+        # race drops and the remaining one is the day's result.
+        races = self._five_races([1, 2, 5, 3, 4])
+        groups = [{"name": "Sprint", "race_numbers": [2, 3], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        assert st["race_count"] == 4
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["scores"][1]["code"] == "MINI" and by_id["b1"]["scores"][1]["points"] == 2.0
+        assert by_id["b1"]["net"] == 10.0  # 1 + 2 + 3 + 4
+
+    def test_combined_with_all_races_counting(self):
+        # No group discards: the daily result averages every mini race.
+        races = self._five_races([1, 2, 4, 6, 3])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 0,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["scores"][1]["points"] == 4.0  # (2 + 4 + 6) / 3
+        assert by_id["b1"]["net"] == 8.0
+
+    def test_combined_with_multiple_discards(self):
+        # Two group discards: 2, 5, 9 -> drop 9 and 5 -> average = 2.0.
+        races = self._five_races([1, 2, 5, 9, 3])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 2,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["scores"][1]["points"] == 2.0
+        assert by_id["b1"]["net"] == 6.0  # 1 + 2 + 3
+
+    def test_combined_containing_dnc(self):
+        # 2, DNC(4), 9 with 1 discard -> the DNC is a real score (4) and 9 is
+        # the worst -> (2 + 4) / 2 = 3.0.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1)], entries=3),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1)], entries=3),
+            self._race(3, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1)], entries=3),
+            self._race(4, [self._res("b1", "FINISHED", 9), self._res("b2", "FINISHED", 1)], entries=3),
+            self._race(5, [self._res("b1", "FINISHED", 3)], entries=3),
+        ]
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["scores"][1]["points"] == 3.0
+
+    def test_combined_containing_dns_and_dsq(self):
+        # 2, DNS(4), DSQ(4), 1 discard -> drop one of the 4s -> (2 + 4) / 2 = 3.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1)], entries=3),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1)], entries=3),
+            self._race(3, [self._res("b1", "DNS"), self._res("b2", "FINISHED", 1)], entries=3),
+            self._race(4, [self._res("b1", "DSQ"), self._res("b2", "FINISHED", 1)], entries=3),
+            self._race(5, [self._res("b1", "FINISHED", 4)], entries=3),
+        ]
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["scores"][1]["code"] == "MINI"
+        assert by_id["b1"]["scores"][1]["points"] == 3.0
+
+    def test_sailor_misses_one_mini_race(self):
+        # b2 is absent from race 3 (DNC = 4 with 3 boats): 5, DNC(4), 9,
+        # 1 discard -> 9 dropped -> (5 + 4) / 2 = 4.5.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1)], entries=3),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 5), self._res("b3", "DNC")], entries=3),
+            self._race(3, [self._res("b1", "FINISHED", 5), self._res("b3", "DNC")], entries=3),
+            self._race(4, [self._res("b1", "FINISHED", 9), self._res("b2", "FINISHED", 9), self._res("b3", "DNC")], entries=3),
+            self._race(5, [self._res("b1", "FINISHED", 3), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")], entries=3),
+        ]
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b2"]["scores"][1]["code"] == "MINI"
+        assert by_id["b2"]["scores"][1]["points"] == 4.5
+
+    def test_sailor_misses_entire_mini_series(self):
+        # b3 DNCs every mini race (4 each, 3 boats) -> 1 discard -> average
+        # 4.0; the combined day is still a single score in the main series.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b3", "DNC")], entries=3),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")], entries=3),
+            self._race(3, [self._res("b1", "FINISHED", 5), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")], entries=3),
+            self._race(4, [self._res("b1", "FINISHED", 9), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")], entries=3),
+            self._race(5, [self._res("b1", "FINISHED", 3), self._res("b3", "DNC")], entries=3),
+        ]
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        scores = by_id["b3"]["scores"]
+        assert len(scores) == 3 and scores[1]["code"] == "MINI" and scores[1]["points"] == 4.0
+        assert by_id["b3"]["net"] == 12.0  # DNC(4) + day(4) + DNC(4)
+
+    def test_different_entries_between_mini_races(self):
+        # Each mini race has its own fleet size, so its DNC scores differ:
+        # race 2: 4 boats -> DNC 5; race 3: 5 boats -> DNC 6; race 4: 6 boats
+        # -> DNC 7. b2 misses all three -> 1 discard -> (5 + 6) / 2 = 5.5.
+        races = self._five_races([1, 2, 5, 9, 3], extra={5: [self._res("b2", "FINISHED", 1)]})
+        races[1] = self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "DNC")], entries=4)
+        races[2] = self._race(3, [self._res("b1", "FINISHED", 5), self._res("b2", "DNC")], entries=5)
+        races[3] = self._race(4, [self._res("b1", "FINISHED", 9), self._res("b2", "DNC")], entries=6)
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b2"]["scores"][1]["points"] == 5.5
+
+    def test_multiple_mini_series_in_one_main_series(self):
+        # Two combined groups + one normal race: each group folds independently
+        # and the units stay in chronological order.
+        races = self._five_races([1, 2, 3, 4, 8])
+        groups = [
+            {"name": "Morning", "race_numbers": [1, 2], "discards": 0, "scoring": "combined"},
+            {"name": "Afternoon", "race_numbers": [4, 5], "discards": 1, "scoring": "combined"},
+        ]
+        st = self._run(groups, races)
+        assert st["race_count"] == 3
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        scores = by_id["b1"]["scores"]
+        assert [(s["code"], s["points"]) for s in scores] == \
+            [("MINI", 1.5), ("FINISHED", 3.0), ("MINI", 4.0)]  # (1+2)/2, 3, (4+8)/2 w/ discard
+        assert by_id["b1"]["net"] == 8.5
+        assert [m.get("mini_name") for m in st["races"]] == ["Morning", None, "Afternoon"]
+
+    def test_combined_day_discardable_by_main_series(self):
+        # The folded day is one discardable unit: the main series discards it
+        # when it is the worst result.
+        races = self._five_races([1, 2, 5, 9, 2])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races, discards=1)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        scores = by_id["b1"]["scores"]
+        assert scores[1]["code"] == "MINI" and scores[1]["points"] == 3.5
+        # worst unit (3.5 > 1 and 3.5 > 2) is discarded
+        assert scores[1]["discarded"] is True
+        assert by_id["b1"]["net"] == 3.0  # 1 + 2
+
+    def test_combined_mini_view_reports_daily_average(self):
+        # The detailed mini view still shows the individual races, marks the
+        # group-discarded race, and reports the daily average per boat.
+        races = self._five_races([1, 2, 5, 9, 3])
+        groups = [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races, race_numbers=[2, 3, 4], group_discards=1)
+        assert st["race_count"] == 3 and st["mini_combined"]["name"] == "Day"
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        row = by_id["b1"]
+        # individual races shown, the worst (9) marked discarded
+        assert [(s["code"], s["points"]) for s in row["scores"]] == \
+            [("FINISHED", 2.0), ("FINISHED", 5.0), ("FINISHED", 9.0)]
+        assert row["scores"][2]["discarded"] is True
+        # the daily average that feeds the main series
+        assert row["combined_average"] == 3.5
+
+    def test_changing_treatment_recalculates_the_series(self):
+        # Same races, same group — only the treatment differs: the combined
+        # series scores the day as one result and must NOT match the
+        # additional-mode result.
+        races = self._five_races([1, 2, 5, 9, 3])
+        additional = self._run(
+            [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1, "scoring": "additional"}],
+            races)
+        combined = self._run(
+            [{"name": "Day", "race_numbers": [2, 3, 4], "discards": 1, "scoring": "combined"}],
+            races)
+        a = {r["boat_id"]: r for r in additional["standings"]}
+        c = {r["boat_id"]: r for r in combined["standings"]}
+        assert additional["race_count"] == 5 and combined["race_count"] == 3
+        assert a["b1"]["net"] == 20.0  # 1 + 2 + 5 + 9 + 3
+        assert c["b1"]["net"] == 7.5   # 1 + 3.5 + 3
+        assert a["b1"]["net"] != c["b1"]["net"]
+
+    def test_combined_group_on_different_days(self):
+        # Races sort by (date, race_number), so the group's races (10th-12th)
+        # sit after races 1 and 5. The combined unit carries the group's first
+        # race's date and is placed where the group sits chronologically.
+        races = self._five_races([1, 2, 5, 9, 3])
+        races[1]["date"] = "2026-05-10"
+        races[2]["date"] = "2026-05-11"
+        races[3]["date"] = "2026-05-12"
+        groups = [{"name": "May Day", "race_numbers": [2, 3, 4], "discards": 1,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        meta = st["races"]
+        # order: r1 (05-01), r5 (05-05), then the combined group
+        assert [m.get("race_number") for m in meta] == [1, 5, None]
+        assert meta[2]["combined"] is True and meta[2]["date"] == "2026-05-10"
+        assert meta[2]["mini_races"] == 3 and meta[2]["mini_name"] == "May Day"
+
+
+class TestDutyPoints:
+    """OOD (Officer of the Day) duty races score the boat's own average of
+    its scores across EVERY race in the series before discards — DNC (and
+    every other scoring code) included, at its existing numerical value.
+    Only other duty races are excluded from the average."""
+
+    def _run(self, races, use_a5_3=False, discards=0):
+        import asyncio
+        import types
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": discards,
                   "use_a5_3": use_a5_3, "use_finishers": False}
         boats = [{"id": f"b{i}", "name": f"Boat {i}", "sail_no": str(i),
                   "helm": "H", "class_id": "c1", "year": 2026} for i in range(1, 4)]
@@ -825,8 +1112,8 @@ class TestDutyPoints:
         return {"boat_id": bid, "code": code, "position": pos,
                 "finish_time": None, "penalty_points": 0}
 
-    def test_ood_scores_average_of_own_sailed_races(self):
-        # b1: 1st, 2nd, then OOD -> OOD = (1 + 2) / 2 = 1.5
+    def test_ood_scores_average_of_own_races_with_no_dnc(self):
+        # b1: 1st, 2nd, then OOD (no DNC for b1) -> OOD = (1 + 2) / 2 = 1.5
         races = [
             self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
             self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
@@ -838,8 +1125,9 @@ class TestDutyPoints:
         # OOD is discardable like any other scored race
         assert scores[2]["discarded"] is False and scores[2]["points"] == 1.5
 
-    def test_ood_excludes_dnc_from_the_average(self):
-        # b1: 1st, DNC, OOD -> average over sailed races only = [1] -> 1.0
+    def test_ood_includes_dnc_in_the_average(self):
+        # b1: 1st, DNC, OOD -> the DNC scores series entries + 1 = 4 (3 boats)
+        # and MUST feed the average: OOD = (1 + 4) / 2 = 2.5
         races = [
             self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
             self._race(2, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
@@ -847,10 +1135,43 @@ class TestDutyPoints:
         ]
         by_id = self._run(races)
         ood_score = by_id["b1"]["scores"][2]
-        assert ood_score["code"] == "OOD" and ood_score["points"] == 1.0
+        assert ood_score["code"] == "OOD" and ood_score["points"] == 2.5
 
-    def test_ood_falls_back_to_dnc_score_with_no_sailed_races(self):
-        # b3 never sails, only OOD + DNC -> OOD scores series entries + 1 = 4
+    def test_ood_with_multiple_dncs(self):
+        # b1: 1st, DNC, OOD, DNC -> OOD = (1 + 4 + 4) / 3 = 3.0
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(4, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        assert by_id["b1"]["scores"][2]["code"] == "OOD" and by_id["b1"]["scores"][2]["points"] == 3.0
+
+    def test_ood_average_uses_complete_pre_discard_series(self):
+        # The canonical case: every race counts, DNC converted to its existing
+        # numerical score, nothing removed before the average.
+        # b1: 3, 5, DNC, 8, 10, 12 -> DNC = 4 -> OOD = (3+5+4+8+10+12) / 6 = 7.0
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 3), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 5), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(4, [self._res("b1", "FINISHED", 8), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(5, [self._res("b1", "FINISHED", 10), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(6, [self._res("b1", "FINISHED", 12), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(7, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        scores = by_id["b1"]["scores"]
+        assert len(scores) == 7 and scores[6]["code"] == "OOD" and scores[6]["points"] == 7.0
+        # no race was removed for the average: the DNC and all six results are
+        # still in the series, and none is flagged discarded (discards = 0)
+        assert [s["discarded"] for s in scores] == [False] * 7
+        assert scores[2]["code"] == "DNC" and scores[2]["points"] == 4.0
+
+    def test_ood_with_only_dnc_and_duty_scores_dnc_value(self):
+        # b3 never sails: only DNC + OOD -> the DNC (series entries + 1 = 4)
+        # feeds the average, so OOD = 4.0 — duty never scores better than DNC
         races = [
             self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
             self._race(2, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "OOD")]),
@@ -858,8 +1179,27 @@ class TestDutyPoints:
         by_id = self._run(races)
         assert by_id["b3"]["scores"][1]["code"] == "OOD" and by_id["b3"]["scores"][1]["points"] == 4.0
 
+    def test_ood_falls_back_to_dnc_score_when_every_race_is_duty(self):
+        # b1 is on duty every race -> no non-duty races to average -> each OOD
+        # falls back to that race's DNC score (series entries + 1 = 4)
+        races = [
+            self._race(1, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        assert [(s["code"], s["points"]) for s in by_id["b1"]["scores"]] == [("OOD", 4.0), ("OOD", 4.0)]
+
+    def test_ood_in_one_race_series(self):
+        # smallest possible series: a single race, the boat on duty -> DNC score
+        races = [
+            self._race(1, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        assert by_id["b1"]["scores"][0]["code"] == "OOD" and by_id["b1"]["scores"][0]["points"] == 4.0
+
     def test_multiple_oods_do_not_average_each_other(self):
-        # b1: 1st, OOD, OOD -> both OODs average the one sailed race = 1.0
+        # b1: 1st, OOD, OOD -> both OODs average the non-duty races only = [1]
+        # (each OOD cannot average itself) -> 1.0
         races = [
             self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
             self._race(2, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
@@ -889,10 +1229,113 @@ class TestDutyPoints:
                       {"code": "OOD", "points": 99.0}]}
         server._apply_duty_points(agg, [3, 3, 3, 3])
         assert agg["b1"][3]["points"] == 1.33
-        # a boat with no sailed races falls back to that race's entries + 1
+        # a boat whose only non-duty race is a DNC scores the DNC value — the
+        # DNC feeds the average (4.0), it is not skipped
         agg2 = {"b2": [{"code": "DNC", "points": 4.0}, {"code": "OOD", "points": 99.0}]}
         server._apply_duty_points(agg2, [3, 3])
         assert agg2["b2"][1]["points"] == 4.0
+        # a boat on duty every race has nothing to average -> falls back to
+        # that race's DNC score (entries + 1)
+        agg3 = {"b3": [{"code": "OOD", "points": 99.0}, {"code": "OOD", "points": 99.0}]}
+        server._apply_duty_points(agg3, [3, 3])
+        assert [e["points"] for e in agg3["b3"]] == [4.0, 4.0]
+
+    def test_ood_dnc_is_discarded_from_net_but_still_counts_in_average(self):
+        # b1: 1st, 2nd, DNC, OOD with 1 discard. The DNC (4) feeds the OOD
+        # average: OOD = (1 + 2 + 4) / 3 = 2.33. The DNC is the worst race and
+        # is then discarded from the net: net = 1 + 2 + 2.33 = 5.33.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(4, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races, discards=1)
+        scores = by_id["b1"]["scores"]
+        assert scores[2]["code"] == "DNC" and scores[2]["discarded"] is True
+        assert scores[3]["code"] == "OOD" and scores[3]["points"] == 2.3
+        assert by_id["b1"]["net"] == 5.3
+
+    def test_ood_worst_sailed_race_discarded(self):
+        # b1: 1st, 5th, OOD with 1 discard (no DNCs) -> OOD = 3.0; the 5th is
+        # the worst race and is discarded: net = 1 + 3 = 4.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 5), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races, discards=1)
+        scores = by_id["b1"]["scores"]
+        assert scores[1]["discarded"] is True and scores[2]["code"] == "OOD"
+        assert scores[2]["points"] == 3.0 and by_id["b1"]["net"] == 4.0
+
+    def test_ood_multiple_discards(self):
+        # b1: 1st, 3rd, DNC, OOD, DNC with 2 discards -> OOD = (1+3+4+4)/4 = 3.0;
+        # both DNCs are discarded: net = 1 + 3 + 3 = 7.
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 3), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(4, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(5, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races, discards=2)
+        scores = by_id["b1"]["scores"]
+        assert [s["discarded"] for s in scores] == [False, False, True, False, True]
+        assert scores[3]["code"] == "OOD" and scores[3]["points"] == 3.0
+        assert by_id["b1"]["net"] == 7.0
+
+    def test_ood_early_in_series(self):
+        # duty on race 1: the OOD average is computed over the WHOLE series
+        # (races 2-3), not just the races after the duty
+        # b1: OOD, 1st, 2nd -> OOD = (1 + 2) / 2 = 1.5
+        races = [
+            self._race(1, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        assert by_id["b1"]["scores"][0]["code"] == "OOD" and by_id["b1"]["scores"][0]["points"] == 1.5
+
+    def test_ood_late_in_series_with_dnc(self):
+        # b1: 1st, DNC, 2nd, OOD -> OOD = (1 + 4 + 2) / 3 = 2.33
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(4, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        ood_score = by_id["b1"]["scores"][3]
+        assert ood_score["code"] == "OOD" and ood_score["points"] == 2.3
+
+    def test_multiple_ood_sailors(self):
+        # b2 and b3 each do one duty; every boat sails the other two races
+        # b2: 2nd, OOD, 3rd -> OOD = (2 + 3) / 2 = 2.5
+        # b3: OOD, 2nd, 1st -> OOD = (2 + 1) / 2 = 1.5
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "OOD")]),
+            self._race(2, [self._res("b1", "FINISHED", 3), self._res("b2", "OOD"), self._res("b3", "FINISHED", 2)]),
+            self._race(3, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 3), self._res("b3", "FINISHED", 1)]),
+        ]
+        by_id = self._run(races)
+        assert by_id["b2"]["scores"][1]["code"] == "OOD" and by_id["b2"]["scores"][1]["points"] == 2.5
+        assert by_id["b3"]["scores"][0]["code"] == "OOD" and by_id["b3"]["scores"][0]["points"] == 1.5
+
+    def test_ood_with_other_scoring_codes(self):
+        # b1: 1st, DNF, RET, DSQ, DNC, OOD. Under A5.2 every non-finish scores
+        # series entries + 1 = 4 -> OOD = (1 + 4 + 4 + 4 + 4) / 5 = 3.4
+        races = [
+            self._race(1, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2), self._res("b3", "DNC")]),
+            self._race(2, [self._res("b1", "DNF"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(3, [self._res("b1", "RET"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(4, [self._res("b1", "DSQ"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(5, [self._res("b1", "DNC"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+            self._race(6, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")]),
+        ]
+        by_id = self._run(races)
+        ood_score = by_id["b1"]["scores"][5]
+        assert ood_score["code"] == "OOD" and ood_score["points"] == 3.4
 
     def test_non_mini_series_has_no_metadata(self):
         import asyncio

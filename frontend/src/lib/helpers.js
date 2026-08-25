@@ -130,6 +130,33 @@ export const CODE_COLORS = {
 
 export const CURRENT_YEAR = new Date().getFullYear();
 
+// Boat-name wrapping threshold for results tables. Names longer than this
+// many characters wrap onto a second line at a space so a long name cannot
+// widen the whole results table (mirroring how the helm line wraps naturally
+// — the boat name simply stops forcing a single unbroken line). The threshold
+// is the NAME's character count, not its rendered pixel width, so it is
+// decided in code here and only the wrapping/width classes are applied via
+// CSS. Exactly at the limit the name still shows on one line.
+export const BOAT_NAME_WRAP_LIMIT = 14;
+export const shouldWrapBoatName = (name) =>
+  typeof name === "string" && name.length > BOAT_NAME_WRAP_LIMIT;
+
+// The display form of a boat name in results tables. Names over the limit
+// break onto a second line at the last space inside the first 14 characters
+// (e.g. "The Flying Fish" → "The Flying\nFish"), so the wrap is decided by
+// the name's character count, not by the rendered pixel width. Names without
+// a suitable space (a single word longer than the limit) are returned
+// unchanged and rely on the cell's overflow-wrap instead, so a long unbroken
+// word is only ever broken when it would otherwise overflow the column.
+// Render the result with whitespace-pre-line for the newline to take effect.
+export function wrapBoatName(name) {
+  if (!shouldWrapBoatName(name)) return name;
+  const head = name.slice(0, BOAT_NAME_WRAP_LIMIT);
+  const space = head.lastIndexOf(" ");
+  if (space <= 0) return name; // no usable space — leave natural wrapping
+  return `${name.slice(0, space)}\n${name.slice(space + 1)}`;
+}
+
 // Passcode policy hint — mirrors the backend validate_password_policy().
 export const PASSCODE_HINT =
   "At least 6 characters, with at least one number and one special character (e.g. sail1!).";

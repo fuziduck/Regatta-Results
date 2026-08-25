@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, MAX_YEAR, CODE_COLORS } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, MAX_YEAR, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,6 +12,8 @@ import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
+import { SITE_NAME, SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
+import { seriesNavModel } from "@/lib/seriesNav";
 import { Anchor, LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 
 function NotificationBanner({ items }) {
@@ -95,7 +97,10 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
                       return (
                         <tr key={r.boat_id} className="border-b last:border-0">
                           <td className="py-2 font-heading text-base">{r.code === "FINISHED" ? r.position : "–"}</td>
-                          <td><span className="font-semibold">{b.name}</span> <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
+                          <td className={shouldWrapBoatName(b.name) ? "max-w-52" : ""}>
+                            <span className={`font-semibold ${shouldWrapBoatName(b.name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"}`}>{wrapBoatName(b.name)}</span>{" "}
+                            <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>
+                          </td>
                           <td className="text-muted-foreground whitespace-nowrap">{b.home_club || "—"}</td>
                           <td className="text-muted-foreground">{b.helm}</td>
                           <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[r.code] || ""} text-[10px]`}>{r.code}</Badge></td>
@@ -122,7 +127,7 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
 // Presentational: renders the standings content for the class/series chosen
 // in the hero. All fetching lives in the Landing page so the selector tabs can
 // sit in the banner.
-function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData }) {
+function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData, adverts }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
   if (year !== CURRENT_YEAR && !hasData) {
@@ -148,7 +153,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
           <Button variant="outline" size="sm" data-testid="export-overall-pdf"
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
             disabled={!overall?.standings?.length}
-            onClick={() => exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon })}>
+            onClick={() => exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon, adverts })}>
             <Download className="w-4 h-4" /> PDF
           </Button>
         </div>
@@ -187,7 +192,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
               {groups.map((g, i) => (
                 <TabsTrigger key={i} value={String(i + 1)} data-testid={`mini-tab-${i + 1}`}
                   className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
-                  {g.name}{miniRange(g) ? ` · ${miniRange(g)}` : ""}
+                  {g.name}{miniRange(g) ? ` · ${miniRange(g)}` : ""}{g.scoring === "combined" ? " · combined" : ""}
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -199,7 +204,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
         <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
           className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
           disabled={!miniData?.standings?.length}
-          onClick={() => exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon })}>
+          onClick={() => exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon, adverts })}>
           <Download className="w-4 h-4" /> PDF
         </Button>
       </div>
@@ -293,6 +298,29 @@ export default function Landing() {
       .catch(() => {});
   }, [clubId, activeClass, activeSeries, activeMini, seriesData]);
 
+  // Navigation model for the year's series: a single-series year shows that
+  // series directly (no redundant Overall tab, no "(excl.)" label); with
+  // multiple series the Overall tab appears when the overall championship has
+  // rows and stays the default. See seriesNavModel for the rules.
+  const hasOverall = !!(overall && overall.standings && overall.standings.length > 0);
+  const nav = seriesNavModel(series, hasOverall);
+  useEffect(() => {
+    if (series.length === 0) return;
+    // Single-series year: land straight on the series, whatever the overall
+    // payload says (it would only repeat the same standings).
+    if (nav.single) {
+      if (activeSeries !== series[0].id) setActiveSeries(series[0].id);
+      return;
+    }
+    // Multi-series year: wait for the overall result to decide whether the
+    // Overall tab exists, then land on a valid tab.
+    if (overall === null) return; // overall not loaded yet
+    const valid = nav.showOverall
+      ? ["overall", ...series.map((s) => s.id)]
+      : series.map((s) => s.id);
+    if (!valid.includes(activeSeries)) setActiveSeries(nav.defaultTab);
+  }, [series, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
+
   // Future years only appear once this club has set up a series for them.
   // Future years are data-driven: any year a club has set a series up for.
   const futureYears = seasons.filter((y) => y > CURRENT_YEAR);
@@ -378,14 +406,16 @@ export default function Landing() {
               <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
               <Tabs value={activeSeries} onValueChange={setActiveSeries}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
-                  <TabsTrigger value="overall"
-                    className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
-                    Overall
-                  </TabsTrigger>
+                  {nav.showOverall && (
+                    <TabsTrigger value="overall"
+                      className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                      Overall
+                    </TabsTrigger>
+                  )}
                   {series.map((s) => (
                   <TabsTrigger key={s.id} value={s.id}
                     className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
-                      {s.name}{!s.included_in_overall && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
+                      {s.name}{nav.showExcl(s) && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
                     </TabsTrigger>
                   ))}
                 </TabsList>
@@ -482,6 +512,7 @@ export default function Landing() {
                 activeSeries={activeSeries}
                 activeMini={activeMini}
                 setActiveMini={setActiveMini}
+                adverts={adverts}
                 overall={overall}
                 seriesData={seriesData}
               />
@@ -491,11 +522,11 @@ export default function Landing() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <div className="font-heading uppercase tracking-tight">SailScore</div>
-        <p className="mt-1">Connecting sailing, one club at a time.</p>
+        <div className="font-heading uppercase tracking-tight">{SITE_NAME}</div>
+        <p className="mt-1">{SITE_TAGLINE}</p>
         <p className="mt-2 text-xs">
-          Website by L Hopper · Queries to{" "}
-          <a href="mailto:admin@sailscore.co.uk" className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">admin@sailscore.co.uk</a>
+          Website by {SITE_OWNER} · Queries to{" "}
+          <a href={`mailto:${SITE_CONTACT_EMAIL}`} className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">{SITE_CONTACT_EMAIL}</a>
         </p>
       </footer>
     </div>

@@ -3,8 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
-import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
-import ThemeToggle from "@/components/ThemeToggle";
+import ConsoleNav from "@/components/ConsoleNav";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -16,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, LogOut, Plus, ChevronLeft, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks } from "lucide-react";
+import { Anchor, Plus, ChevronLeft, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -46,7 +45,7 @@ function startRefMs(race) {
 }
 
 function TopBar({ clubName, onSwitchClub }) {
-  const { role, logout, updateSession } = useAuth();
+  const { role, updateSession } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const clubQuery = searchParams.get("club");
@@ -62,20 +61,31 @@ function TopBar({ clubName, onSwitchClub }) {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle light />
-          {(role === "admin" || role === "webmaster") && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate(clubQuery ? `/admin?club=${clubQuery}` : "/admin")}>Admin</Button>}
-          {role === "webmaster" && (
-            <>
-              {onSwitchClub && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={onSwitchClub}><Building2 className="w-4 h-4 mr-1" /> Switch club</Button>}
-              <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate("/webmaster")}>Webmaster</Button>
-            </>
-          )}
-          <ChangePasscodeDialog onChanged={updateSession} />
-          <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="logout-btn" onClick={() => { logout(); navigate("/"); }}>
-            <LogOut className="w-4 h-4 mr-1" /> Exit
-          </Button>
-        </div>
+        <ConsoleNav
+          menuLabel={clubName ? `${clubName} · Race Officer` : "Race Officer"}
+          onChangedPasscode={updateSession}
+          logoutTestId="logout-btn"
+          items={[
+            ...((role === "admin" || role === "webmaster") ? [{
+              key: "admin",
+              label: "Admin",
+              icon: null,
+              onClick: () => navigate(clubQuery ? `/admin?club=${clubQuery}` : "/admin"),
+            }] : []),
+            ...(role === "webmaster" && onSwitchClub ? [{
+              key: "switch",
+              label: "Switch club",
+              icon: <Building2 className="w-4 h-4 mr-1" />,
+              onClick: onSwitchClub,
+            }] : []),
+            ...(role === "webmaster" ? [{
+              key: "webmaster",
+              label: "Webmaster",
+              icon: null,
+              onClick: () => navigate("/webmaster"),
+            }] : []),
+          ]}
+        />
       </div>
     </header>
   );

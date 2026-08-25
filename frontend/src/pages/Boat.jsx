@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, ArrowLeft, LogIn, Sailboat, Search, Trophy, Medal, Lock, Archive } from "lucide-react";
 import { CURRENT_YEAR } from "@/lib/helpers";
+import { SITE_NAME, SITE_TAGLINE } from "@/lib/siteConfig";
 
 export default function Boat() {
   const { fleetId } = useParams();
@@ -226,8 +227,8 @@ export default function Boat() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <div className="font-heading uppercase tracking-tight">SailScore</div>
-        <p className="mt-1">Connecting sailing, one club at a time.</p>
+        <div className="font-heading uppercase tracking-tight">{SITE_NAME}</div>
+        <p className="mt-1">{SITE_TAGLINE}</p>
       </footer>
     </div>
   );

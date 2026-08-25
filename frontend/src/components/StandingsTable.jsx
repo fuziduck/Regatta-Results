@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Trophy } from "lucide-react";
+import { podiumPlace } from "@/lib/resultCellStyle";
+import { shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 
 // Keep the rank (#) column pinned at the left edge and offset the sticky Boat
 // column by the rank column's ACTUAL rendered width, so the two sit
@@ -30,6 +32,15 @@ const medal = (rank) => {
   if (rank === 2) return "text-slate-400";
   if (rank === 3) return "text-orange-600 dark:text-orange-400";
   return "text-muted-foreground";
+};
+
+// Web equivalents of the PDF export's podium fills (see resultCellStyle.js) —
+// medal backgrounds with dark text, so the highlight stays readable on screen
+// and in print. Dark-mode variants keep the same hues at lower opacity.
+const PODIUM_CELL = {
+  1: "bg-amber-400/70 dark:bg-amber-400/40", // gold
+  2: "bg-slate-300 dark:bg-slate-400/50", // silver
+  3: "bg-orange-400/70 dark:bg-orange-400/40", // bronze
 };export function SeriesStandingsTable({ data }) {
   const tableRef = useRef(null);
   useRankPinning(tableRef, [data]);
@@ -47,15 +58,26 @@ const medal = (rank) => {
   const contiguous = races.every((r, i) => r.race_number === i + 1);
   const planned = contiguous ? data.planned_races || 0 : races.length;
   const totalCols = Math.max(races.length, planned, contiguous ? schedule.length : 0);
-  const cols = Array.from({ length: totalCols }, (_, i) => ({
-    race_number: races[i]?.race_number ?? i + 1,
-    date: races[i]?.date ?? schedule[i] ?? null,
-  }));
+  // A combined mini-series day is a single scoring unit: it carries the mini
+  // series' name instead of a race number (see _fold_combined_mini_groups).
+  const cols = Array.from({ length: totalCols }, (_, i) => {
+    const r = races[i];
+    return {
+      race_number: r ? r.race_number : i + 1,
+      date: r ? r.date : schedule[i] ?? null,
+      mini_name: r ? r.mini_name : null,
+      combined: r ? !!r.combined : false,
+      mini_races: r ? r.mini_races : null,
+    };
+  });
   const fmtScore = (s) => {
     const val = Number.isInteger(s.points) ? s.points : s.points.toFixed(1);
-    const label = s.code && s.code !== "FINISHED" ? `${val} ${s.code}` : `${val}`;
+    const showCode = s.code && s.code !== "FINISHED" && s.code !== "MINI";
+    const label = showCode ? `${val} ${s.code}` : `${val}`;
     return s.discarded ? `(${label})` : label;
   };
+  const miniCombined = data.mini_combined || null;
+  const combinedGroups = (data.mini_series?.groups || []).filter((g) => g.scoring === "combined");
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
       <Table data-testid="series-standings-table" ref={tableRef}>
@@ -66,12 +88,15 @@ const medal = (rank) => {
             <TableHead className="text-white">Club</TableHead>
             {cols.map((r, i) => (
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
-                <div>R{r.race_number}</div>
-                {r.date
-                  ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>
-                  : <div className="text-[10px] font-body font-normal text-white/40 mt-0.5">TBC</div>}
+                <div>{r.mini_name || `R${r.race_number}`}</div>
+                {r.combined
+                  ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">combined{r.mini_races ? ` · ${r.mini_races} races` : ""}</div>
+                  : (r.date
+                    ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>
+                    : <div className="text-[10px] font-body font-normal text-white/40 mt-0.5">TBC</div>)}
               </TableHead>
             ))}
+            {miniCombined && <TableHead className="text-white text-center">Daily avg</TableHead>}
             <TableHead className="text-white text-center">Net</TableHead>
             <TableHead className="text-white text-center hidden sm:table-cell">Total</TableHead>
           </TableRow>
@@ -88,8 +113,14 @@ const medal = (rank) => {
                   {row.rank <= 3 && <Trophy className="w-4 h-4" />} {row.rank}
                 </span>
               </TableCell>
-              <TableCell className="sticky z-10 bg-inherit" style={{ left: "var(--rank-w, 3rem)" }}>
-                <Link to={`/boat/${row.boat_id}`} className="font-semibold leading-tight whitespace-nowrap hover:text-ocean transition-colors" data-testid={`boat-link-${row.sail_no}`}>{row.boat_name}</Link>
+              <TableCell className={`sticky z-10 bg-inherit${shouldWrapBoatName(row.boat_name) ? " max-w-52" : ""}`} style={{ left: "var(--rank-w, 3rem)" }}>
+                {/* Long names (>14 chars) wrap at a space onto a second line
+                    (wrapBoatName inserts the break at the last space within
+                    the 14-character head); short names keep the single
+                    unbroken line. The helm line below already wraps
+                    naturally — the boat name simply stops forcing the column
+                    wider. */}
+                <Link to={`/boat/${row.boat_id}`} className={`font-semibold leading-tight ${shouldWrapBoatName(row.boat_name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"} hover:text-ocean transition-colors`} data-testid={`boat-link-${row.sail_no}`}>{wrapBoatName(row.boat_name)}</Link>
                 <div className="font-mono text-xs text-muted-foreground">
                   <Link to={`/boat/${row.boat_id}`} className="hover:text-ocean transition-colors" data-testid={`boat-sail-link-${row.sail_no}`}>{row.sail_no}</Link> · {row.helm}
                 </div>
@@ -98,12 +129,21 @@ const medal = (rank) => {
               {cols.map((_, j) => {
                 const s = (row.scores || [])[j];
                 if (!s) return <TableCell key={j} className="text-center text-muted-foreground/30">–</TableCell>;
+                // Discard beats podium: a discarded 1st/2nd/3rd keeps the grey
+                // italic discard style, never the medal fill.
+                const place = podiumPlace(s);
+                const podium = place ? PODIUM_CELL[place] : "";
                 return (
-                  <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : ""} ${s.code && s.code !== "FINISHED" ? "text-red-600 dark:text-red-400" : ""}`}>
+                  <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : podium ? `${podium} font-bold` : ""} ${s.code && s.code !== "FINISHED" && s.code !== "MINI" ? "text-red-600 dark:text-red-400" : ""}`}>
                     {fmtScore(s)}
                   </TableCell>
                 );
               })}
+              {miniCombined && (
+                <TableCell className="text-center font-mono font-bold text-ocean" data-testid="daily-avg-cell">
+                  {row.combined_average != null ? row.combined_average : "–"}
+                </TableCell>
+              )}
               <TableCell className="text-center font-mono font-bold text-ocean">{row.net}</TableCell>
               <TableCell className="text-center font-mono text-muted-foreground hidden sm:table-cell">{row.total}</TableCell>
             </TableRow>
@@ -114,6 +154,8 @@ const medal = (rank) => {
         {data.locked && <span className="font-semibold text-emerald-700">🔒 Season locked</span>}
         {data.race_count} race{data.race_count !== 1 ? "s" : ""} sailed
         {data.discards > 0 ? ` · ${data.discards} discard${data.discards !== 1 ? "s" : ""} applied (shown in brackets)` : " · no discards yet"}
+        {combinedGroups.length > 0 ? ` · ${combinedGroups.length} combined mini-series day${combinedGroups.length !== 1 ? "s" : ""} (avg after mini discards)` : ""}
+        {miniCombined ? ` · daily result = average of counting mini races after ${miniCombined.discards || 0} discard${(miniCombined.discards || 0) !== 1 ? "s" : ""}` : ""}
         {data.scoring_config?.a5_convention === "a5_3" ? " · RRS A5.3 start-area scoring in effect" : ""}
         {data.scoring_config?.a5_convention === "finishers" ? " · finishers + 1 scoring in effect" : ""}
         {data.scoring_config?.tle?.enabled ? ` · TLE in effect${data.scoring_config.tle.time_limit_minutes ? ` (${data.scoring_config.tle.time_limit_minutes} min)` : ""}` : ""}
@@ -152,8 +194,8 @@ export function OverallStandingsTable({ data }) {
                   {row.rank <= 3 && <Trophy className="w-4 h-4" />} {row.rank}
                 </span>
               </TableCell>
-              <TableCell className="sticky z-10 bg-inherit" style={{ left: "var(--rank-w, 3rem)" }}>
-                <Link to={`/boat/${row.boat_id}`} className="font-semibold leading-tight hover:text-ocean transition-colors" data-testid={`boat-link-${row.sail_no}`}>{row.boat_name}</Link>
+              <TableCell className={`sticky z-10 bg-inherit${shouldWrapBoatName(row.boat_name) ? " max-w-52" : ""}`} style={{ left: "var(--rank-w, 3rem)" }}>
+                <Link to={`/boat/${row.boat_id}`} className={`font-semibold leading-tight ${shouldWrapBoatName(row.boat_name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"} hover:text-ocean transition-colors`} data-testid={`boat-link-${row.sail_no}`}>{wrapBoatName(row.boat_name)}</Link>
                 <div className="font-mono text-xs text-muted-foreground">
                   <Link to={`/boat/${row.boat_id}`} className="hover:text-ocean transition-colors" data-testid={`boat-sail-link-${row.sail_no}`}>{row.sail_no}</Link> · {row.helm}
                 </div>

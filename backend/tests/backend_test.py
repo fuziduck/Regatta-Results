@@ -629,8 +629,8 @@ class TestMiniSeriesEndpoint:
         full = requests.get(f"{API}/standings/series/{sid}").json()
         assert full["race_count"] == 3
         assert full["mini_series"]["groups"] == [
-            {"name": "Early", "race_numbers": [1, 2], "discards": 1, "race_count": 2},
-            {"name": "Late", "race_numbers": [3], "discards": 0, "race_count": 1},
+            {"name": "Early", "race_numbers": [1, 2], "discards": 1, "scoring": "additional", "race_count": 2},
+            {"name": "Late", "race_numbers": [3], "discards": 0, "scoring": "additional", "race_count": 1},
         ]
         m1 = requests.get(f"{API}/standings/series/{sid}", params={"mini": 1}).json()
         assert m1["race_count"] == 2 and m1["mini_index"] == 1 and m1["mini_name"] == "Early"
@@ -646,8 +646,77 @@ class TestMiniSeriesEndpoint:
                 requests.delete(f"{API}/races/{race['id']}", headers=h(club_officer_token))
             requests.delete(f"{API}/series/{s}", headers=h(club_admin_token))
 
+    def test_mini_combined_daily_result(self, club_officer_token, club_admin_token):
+        # A mini series with scoring "combined" folds into ONE main-series
+        # result: group discards first, then the average of the counting races.
+        r = requests.post(f"{API}/classes", json={"name": "Mini Combined Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Mini Combined Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 13,
+            "mini_series": True,
+            "mini_series_groups": [
+                {"name": "Regatta Day", "race_numbers": [1, 2, 3], "discards": 1,
+                 "scoring": "combined"},
+            ]},
+            headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        assert r.json()["mini_series_groups"][0]["scoring"] == "combined"
+        boats = []
+        for i, (nm, sl) in enumerate([("C One", "C1"), ("C Two", "C2")], start=1):
+            r = requests.post(f"{API}/boats", json={
+                "name": nm, "sail_no": sl, "class_id": cls["id"], "helm": f"H{i}",
+                "year": YEAR, "active": True}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json())
+        b = [x["id"] for x in boats]
+        created = []
+        try:
+            # Three races: C1 scores 2, 5, 9 (positions set explicitly); C2
+            # wins each race (position 1).
+            for rn, pos in [(1, 2), (2, 5), (3, 9)]:
+                r = requests.post(f"{API}/races", json={
+                    "date": f"{YEAR}-08-0{rn}", "class_id": cls["id"], "series_id": sid,
+                    "race_number": rn, "start_time": "10:30"}, headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                rid = r.json()["id"]
+                created.append(rid)
+                r = requests.put(f"{API}/races/{rid}/result/{b[1]}",
+                                 json={"code": "FINISHED", "position": 1}, headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                r = requests.put(f"{API}/races/{rid}/result/{b[0]}",
+                                 json={"code": "FINISHED", "position": pos}, headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
 
-# ---------- Duty points (OOD average, Sailwave club convention) ----------
+            full = requests.get(f"{API}/standings/series/{sid}").json()
+            # The whole mini series is ONE main-series scoring unit.
+            assert full["race_count"] == 1
+            row = next(x for x in full["standings"] if x["boat_id"] == b[0])
+            assert row["scores"][0]["code"] == "MINI"
+            # (2 + 5 + 9) with 1 discard -> discard 9 -> (2 + 5) / 2 = 3.5
+            assert row["scores"][0]["points"] == 3.5 and row["net"] == 3.5
+            assert full["mini_series"]["groups"][0]["scoring"] == "combined"
+
+            # The detailed mini view still shows the three individual races,
+            # marks the discarded one, and reports the daily average.
+            m1 = requests.get(f"{API}/standings/series/{sid}", params={"mini": 1}).json()
+            assert m1["race_count"] == 3 and m1["mini_combined"]["name"] == "Regatta Day"
+            row = next(x for x in m1["standings"] if x["boat_id"] == b[0])
+            assert [s["points"] for s in row["scores"]] == [2.0, 5.0, 9.0]
+            assert row["scores"][2]["discarded"] is True
+            assert row["combined_average"] == 3.5
+        finally:
+            for rid in created:
+                requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+
+# ---------- Duty points (OOD average over the series, DNC included) ----------
 class TestDutyPoints:
     def test_ood_scores_average_of_own_sailed_races(self, club_officer_token, club_admin_token):
         r = requests.post(f"{API}/classes", json={"name": "Duty Points Class", "default_start_time": "10:30"},
@@ -695,9 +764,11 @@ class TestDutyPoints:
 
             st = requests.get(f"{API}/standings/series/{sid}").json()
             row = next(x for x in st["standings"] if x["boat_id"] == b[0])
-            # D1: 1st + 2nd + OOD(avg 1.5) = 4.5
-            assert row["scores"][2]["code"] == "OOD" and row["scores"][2]["points"] == 1.5
-            assert row["net"] == 4.5
+            # D1: 1st + 2nd + OOD. The OOD average covers the whole series
+            # including D3's absence (DNC = series entries + 1 = 4):
+            # OOD = (1 + 2 + 4) / 3 = 2.33 -> displayed 2.3, net = 5.33.
+            assert row["scores"][2]["code"] == "OOD" and row["scores"][2]["points"] == 2.3
+            assert row["net"] == 5.3
             # D2: 2 + 1 + 1 = 4, so D2 wins the series on duty points
             row2 = next(x for x in st["standings"] if x["boat_id"] == b[1])
             assert row2["rank"] == 1 and row2["net"] == 4.0

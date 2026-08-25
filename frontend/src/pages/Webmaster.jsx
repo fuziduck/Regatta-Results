@@ -3,18 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubBadge from "@/components/ClubBadge";
+import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
 import AuditLog from "@/components/AuditLog";
-import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
-import ThemeToggle from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, LogOut, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download } from "lucide-react";
+import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D" };
 
@@ -98,7 +97,7 @@ function BackupSection({ clubs }) {
 }
 
 export default function Webmaster() {
-  const { logout, updateSession } = useAuth();
+  const { updateSession } = useAuth();
   const navigate = useNavigate();
   const [clubs, setClubs] = useState([]);
   const [open, setOpen] = useState(false);
@@ -141,15 +140,13 @@ export default function Webmaster() {
             <div className="w-9 h-9 rounded-lg bg-white/15 grid place-items-center"><Globe className="w-5 h-5" /></div>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">Webmaster</div>
           </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggle light />
-            <span className="text-xs text-white/70 mr-1">{clubs.length} club{clubs.length === 1 ? "" : "s"}</span>
-            <ChangePasscodeDialog onChanged={updateSession} />
-            <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="webmaster-logout-btn"
-              onClick={() => { logout(); navigate("/"); }}>
-              <LogOut className="w-4 h-4 mr-1" /> Exit
-            </Button>
-          </div>
+          <ConsoleNav
+            meta={`${clubs.length} club${clubs.length === 1 ? "" : "s"}`}
+            menuLabel={`Webmaster · ${clubs.length} club${clubs.length === 1 ? "" : "s"}`}
+            onChangedPasscode={updateSession}
+            logoutTestId="webmaster-logout-btn"
+            items={[]}
+          />
         </div>
       </header>
 

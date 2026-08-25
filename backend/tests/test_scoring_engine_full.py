@@ -508,8 +508,8 @@ class TestDutyRecalculation:
         st2 = _standings(self._series(), boats, [r1, r2])
         assert st2["standings"][0]["net"] == 3.0
 
-        # After race 3 (OOD): the duty score is the average of the two sailed
-        # races = (1 + 2) / 2 = 1.5 — recalculated, not fixed at an earlier value.
+        # After race 3 (OOD): the duty score is the average of the series so
+        # far = (1 + 2) / 2 = 1.5 — recalculated, not fixed at an earlier value.
         st3 = _standings(self._series(), boats, [r1, r2, r3])
         by_id = {r["boat_id"]: r for r in st3["standings"]}
         ood = by_id["b1"]["scores"][2]
@@ -538,6 +538,40 @@ class TestDutyRecalculation:
         # net = 1 + 3 = 4.
         assert by_id["b1"]["scores"][2]["points"] == 3.0
         assert by_id["b1"]["net"] == 4.0
+
+    def test_duty_average_includes_dnc_and_dnc_is_still_discardable(self):
+        # Full pipeline: the DNC (series entries + 1 = 4 with 3 boats) must feed
+        # the OOD average, and the DNC race itself must remain discardable so
+        # the discard applies AFTER the OOD score is fixed.
+        boats = [_boat(i) for i in range(1, 4)]
+        r1 = _race(1, [_fin("b1", 1), _fin("b2", 2), _fin("b3", 3)])
+        r2 = _race(2, [_fin("b2", 1), _fin("b3", 2)], entries=3)  # b1 absent -> DNC
+        r3 = _race(3, [_fin("b1", code="OOD"), _fin("b2", 1), _fin("b3", 2)])
+        r4 = _race(4, [_fin("b1", 2), _fin("b2", 1), _fin("b3", 3)])
+
+        # After r1+r2 only: no OOD yet; b1 = 1st + DNC(4) = 5.
+        st2 = _standings(self._series(), boats, [r1, r2])
+        by_id2 = {r["boat_id"]: r for r in st2["standings"]}
+        assert by_id2["b1"]["net"] == 5.0
+
+        # After r3 (OOD): the average covers the complete series including the
+        # DNC -> OOD = (1 + 4) / 2 = 2.5, net = 1 + 4 + 2.5 = 7.5.
+        st3 = _standings(self._series(), boats, [r1, r2, r3])
+        by_id3 = {r["boat_id"]: r for r in st3["standings"]}
+        ood = by_id3["b1"]["scores"][2]
+        assert ood["code"] == "OOD" and ood["points"] == 2.5
+        assert by_id3["b1"]["net"] == 7.5
+
+        # After r4: the OOD average moves to (1 + 4 + 2) / 3 = 2.33 (displayed
+        # 2.3), and the DNC (4) is the worst race, so with 1 discard it is
+        # dropped from the net: 1 + 2.33 + 2 = 5.33 (displayed 5.3).
+        series = {**self._series(), "discards": 1}
+        st4 = _standings(series, boats, [r1, r2, r3, r4])
+        by_id4 = {r["boat_id"]: r for r in st4["standings"]}
+        scores = by_id4["b1"]["scores"]
+        assert scores[1]["code"] == "DNC" and scores[1]["discarded"] is True
+        assert scores[2]["code"] == "OOD" and scores[2]["points"] == 2.3
+        assert by_id4["b1"]["net"] == 5.3
 
 
 class TestSeriesToDatePayload:

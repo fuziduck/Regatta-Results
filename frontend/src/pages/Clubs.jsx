@@ -9,6 +9,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
+import { SITE_NAME, SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
   return <ClubBadge club={club} size={size} textSize="text-3xl" />;
@@ -224,11 +225,11 @@ export default function Clubs() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <div className="font-heading uppercase tracking-tight">SailScore</div>
-        <p className="mt-1">Connecting sailing, one club at a time.</p>
+        <div className="font-heading uppercase tracking-tight">{SITE_NAME}</div>
+        <p className="mt-1">{SITE_TAGLINE}</p>
         <p className="mt-2 text-xs">
-          Website by L Hopper · Queries to{" "}
-          <a href="mailto:admin@sailscore.co.uk" className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">admin@sailscore.co.uk</a>
+          Website by {SITE_OWNER} · Queries to{" "}
+          <a href={`mailto:${SITE_CONTACT_EMAIL}`} className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">{SITE_CONTACT_EMAIL}</a>
         </p>
       </footer>
     </div>

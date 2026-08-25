@@ -616,10 +616,20 @@ class BoatInput(BaseModel):
 
 class MiniSeriesGroup(BaseModel):
     """One mini series inside a long series: which races it contains (by race
-    number) and how many discards it applies independently of the main series."""
+    number) and how many discards it applies independently of the main series.
+
+    scoring:
+      "additional" (default): each mini race is an individual main-series race
+      (scored, discardable and shown separately, as today).
+      "combined": the mini races are aggregated into ONE daily result for the
+      main series — the group's discards are applied first, then the average
+      of the counting races becomes a single score. The individual races stay
+      in the database and remain visible in the mini-series detail view.
+    """
     name: str = ""
     race_numbers: List[int] = []
     discards: int = 0
+    scoring: Literal["additional", "combined"] = "additional"
 
 
 class SeriesInput(BaseModel):
@@ -768,7 +778,7 @@ RRS_CODES = [
     {"code": "DPI", "label": "DPI — Discretionary penalty imposed (manual points)"},
     {"code": "RDG", "label": "RDG — Redress given (manual points)"},
     {"code": "TLE", "label": "TLE — Time limit expired (scored per the series TLE rule)"},
-    {"code": "OOD", "label": "OOD — Officer of the Day duty (average of own other race scores)"},
+    {"code": "OOD", "label": "OOD — Officer of the Day duty (average of own scores across the series, incl. DNC)"},
 ]
 # Rule A2.1: only DNE may not be excluded from a series score.
 NON_DISCARDABLE = {"DNE"}
@@ -776,10 +786,15 @@ FINISH_CODES = {"FINISHED"}
 # Codes that mean the boat did not finish (or never started): scoring them on a
 # boat that had finished triggers RRS A6.1 (boats behind move up one place).
 POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC", "OOD", "TLE"}
-# Duty codes (Sailwave club convention): the boat did not race — it did its
-# club duty (Officer of the Day, rescue boat, crew) — and scores the average
-# of its own points in the series' other races where it actually sailed.
+# Duty codes: the boat did not race — it did its club duty (Officer of the
+# Day, rescue boat, crew) — and scores the average of its own points across
+# every race in the series before discards, DNC included (see
+# _apply_duty_points).
 DUTY_CODES = {"OOD"}
+# Synthetic code attached to a combined mini-series daily result in standings
+# (see _fold_combined_mini_groups). It is display-only — it never appears on
+# a race result and is not part of RRS_CODES.
+MINI_COMBINED_CODE = "MINI"
 # TLE — Time Limit Expired: the boat failed to finish within the series'
 # configured time limit. Scored per the series' TLE rule, never as a place.
 TLE_CODES = {"TLE"}
@@ -792,7 +807,7 @@ MANUAL_POINT_CODES = {"DPI", "RDG"}
 # Version of this scoring engine. Every locked-season snapshot records the
 # engine version that produced it, so a future rewrite can never be mistaken
 # for the rules that actually applied to a historical season.
-SCORING_ENGINE_VERSION = "2.2.0"
+SCORING_ENGINE_VERSION = "2.4.0"
 # Season lifecycle. LIVE (open) -> PROVISIONAL (per-race published results) ->
 # FINAL (locked: results are served from the frozen snapshot) -> ARCHIVED
 # (terminal: the same immutability, but the season can no longer be edited in
@@ -3068,7 +3083,9 @@ def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
     - scp/zfp: penalty rule per RRS 44.3(c)/30.2 — a percentage of the DNF
       score added to the boat's place, rounded half-up, never worse than DNF
       (that cap is itself configurable via cap_dnf).
-    - duty: the boat's own average of its other sailed races in the series.
+    - duty: the boat's own average of its scores across the series before
+      discards (DNC and every other scoring code included, at its existing
+      rule value; only other duty races are excluded from the average).
     - discard_policy: "fixed" (the series' discards field) or "increasing"
       (discard_schedule: discard N after M races scored).
     """
@@ -3173,7 +3190,8 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
     DNS/OCS/UFD/BFD/NSC/DNF/RET/DSQ/DNE -> the active A5 base: series
                 entries + 1 (A5.2 default), start-area entries + 1 (A5.3),
                 or finishers + 1 (RYA/Sailwave convention).
-    OOD      -> duty average, filled in later by _apply_duty_points().
+    OOD      -> duty average over the series (DNC included), filled in later
+                by _apply_duty_points().
     """
     if cfg is None:
         cfg = _default_scoring_config(use_a5_3, use_finishers)
@@ -3476,11 +3494,14 @@ async def _club_name_of_class(class_id):
 def _normalize_mini_groups(series, races):
     """Normalize a series' mini-series groups for display and scoring.
 
-    Returns a list of dicts: {name, race_numbers, discards, race_count}.
+    Returns a list of dicts:
+    {name, race_numbers, discards, scoring, race_count}.
+    scoring is "additional" (each mini race counts individually in the main
+    series) or "combined" (the group aggregates into one daily result).
     Explicit groups (mini_series_groups) are honoured as-is; a legacy series
     stored with mini_series_size is split into consecutive chunks of that
-    size. race_count is how many of the group's race numbers actually have
-    published races in the series."""
+    size (always "additional"). race_count is how many of the group's race
+    numbers actually have published races in the series."""
     races = list(races)
     published_numbers = {r.get("race_number") for r in races}
     groups = series.get("mini_series_groups") or []
@@ -3494,19 +3515,99 @@ def _normalize_mini_groups(series, races):
     for i, g in enumerate(groups):
         rns = sorted({int(n) for n in (g.get("race_numbers") or []) if int(n) >= 1})
         name = (g.get("name") or "").strip() or f"Mini {i + 1}"
+        scoring = g.get("scoring") or "additional"
+        if scoring not in ("additional", "combined"):
+            scoring = "additional"
         out.append({"name": name, "race_numbers": rns,
                     "discards": int(g.get("discards", 0)),
+                    "scoring": scoring,
                     "race_count": len([n for n in rns if n in published_numbers])})
     return out
 
 
+def _mini_combined_score(entries, discards):
+    """Combine one boat's mini-series race entries into a single daily result.
+
+    The mini series' own discard rules apply first (the worst discardable
+    scores are dropped — DNE is never discardable — and at least one race
+    always counts), then the average of the counting races is returned, i.e.
+    the value used as ONE score in the main series.
+
+    Returns (average, drop): the daily-average points value and the set of
+    discarded entry indices (in the order the entries were given)."""
+    discardable_idx = sorted(
+        [i for i, e in enumerate(entries) if e["discardable"]],
+        key=lambda i: entries[i]["points"], reverse=True,
+    )
+    d = min(int(discards or 0), max(0, len(entries) - 1))
+    drop = set(discardable_idx[:d])
+    counting = [e["points"] for i, e in enumerate(entries) if i not in drop]
+    avg = sum(counting) / len(counting) if counting else 0.0
+    return avg, drop
+
+
+def _fold_combined_mini_groups(series, agg, race_meta):
+    """Fold mini series configured as "combined" into single daily results.
+
+    Each mini race is scored individually first (already in agg, including
+    duty points), then the group's discards are applied and the average of
+    the counting races becomes ONE main-series entry (code MINI_COMBINED_CODE)
+    positioned where the group's races sit chronologically. The group's
+    individual races are removed from race_meta — they no longer count as
+    separate main-series races. Groups with scoring "additional" are left
+    untouched. Returns (agg, race_meta)."""
+    groups = _normalize_mini_groups(series, race_meta)
+    combined = {tuple(g["race_numbers"]): g for g in groups
+                if g["scoring"] == "combined" and g["race_numbers"]}
+    if not combined:
+        return agg, race_meta
+    group_of_index = {}
+    group_idxs = {}
+    for i, m in enumerate(race_meta):
+        for nums, g in combined.items():
+            if m.get("race_number") in nums:
+                group_of_index[i] = nums
+                group_idxs.setdefault(nums, []).append(i)
+                break
+    if not group_of_index:
+        return agg, race_meta
+    new_meta = []
+    new_agg = {bid: [] for bid in agg}
+    consumed = set()
+    for i, m in enumerate(race_meta):
+        if i in consumed:
+            continue
+        nums = group_of_index.get(i)
+        if nums is None:
+            new_meta.append(m)
+            for bid, entries in agg.items():
+                new_agg[bid].append(entries[i])
+            continue
+        g = combined[nums]
+        idxs = group_idxs[nums]
+        consumed.update(idxs)
+        new_meta.append({
+            "race_number": None,
+            "date": race_meta[idxs[0]].get("date"),
+            "mini_name": g["name"],
+            "mini_races": len(idxs),
+            "combined": True,
+        })
+        for bid, entries in agg.items():
+            avg, _drop = _mini_combined_score([entries[j] for j in idxs], g["discards"])
+            new_agg[bid].append({"points": avg, "code": MINI_COMBINED_CODE,
+                                 "discardable": True, "position": None})
+    return new_agg, new_meta
+
+
 def _apply_duty_points(agg, entries_by_race, cfg=None):
     """Duty races (OOD — Officer of the Day) score the boat's own average of
-    its OTHER races in the series where it actually sailed (code not DNC and
-    not another duty), matching the Sailwave club convention of "OOD average
-    points excluding DNC". A boat with no other sailed races falls back to
-    the DNC score (series entries + 1) so duty can never score better than a
-    finish in a tiny fleet.
+    its scores across EVERY race in the series before discards — including
+    DNC (and DNS, RET, DNF, DSQ, etc.), each at its existing scoring-rule
+    value. Only the boat's other duty races are excluded from the average
+    (a duty score cannot average itself). A boat with no non-duty races
+    falls back to the DNC score (series entries + 1) so duty can never score
+    better than a finish in a tiny fleet.
 
     The duty rule comes from the series scoring config (cfg["duty"]); the
     rounding precision is configurable (default 2 dp). This runs on every
@@ -3520,20 +3621,29 @@ def _apply_duty_points(agg, entries_by_race, cfg=None):
         # non-finish score instead of the average.
         return
     for entries in agg.values():
-        sailed = [e["points"] for e in entries if e["code"] not in ("DNC", *DUTY_CODES)]
+        # Every race in the series contributes to the OOD average (DNC
+        # included, at its existing numerical score); only other duty races
+        # are left out — averaging a duty score into itself is circular.
+        counting = [e["points"] for e in entries if e["code"] not in DUTY_CODES]
         for i, e in enumerate(entries):
             if e["code"] in DUTY_CODES:
-                if sailed:
-                    e["points"] = round(sum(sailed) / len(sailed), precision)
+                if counting:
+                    e["points"] = round(sum(counting) / len(counting), precision)
                 else:
                     e["points"] = float(entries_by_race[i] + 1)
 
 
-async def _series_scores(series, race_numbers=None):
+async def _series_scores(series, race_numbers=None, fold_combined=False):
     """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
     per-race entry dicts, aligned to race_meta; cfg: the series' effective
     scoring config; races: the published races scored. If race_numbers is
-    given (a set/list of the series' race numbers), only those races count."""
+    given (a set/list of the series' race numbers), only those races count.
+
+    fold_combined: when True (the full-series view), mini series configured
+    with scoring "combined" are folded into single daily results — the
+    mini-series discards are applied, the counting races averaged, and each
+    group becomes ONE scoring unit (race_meta entry + agg entry) instead of
+    its individual races."""
     races = await db.races.find({"series_id": series["id"], "status": "published",
                                  "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
@@ -3582,13 +3692,29 @@ async def _series_scores(series, race_numbers=None):
         for bid, e in per_boat.items():
             agg[bid].append(e)
     _apply_duty_points(agg, entries_by_race, cfg)
+    if fold_combined:
+        agg, race_meta = _fold_combined_mini_groups(series, agg, race_meta)
     return agg, boat_map, race_meta, cfg, races
 
 
 async def compute_series_standings(series, race_numbers=None, discards=None):
-    agg, boat_map, race_meta, cfg, races = await _series_scores(series, race_numbers)
+    # The full series folds "combined" mini groups into one daily result each;
+    # a mini-series view (race_numbers given) always shows the individual
+    # races, so folding never applies there.
+    agg, boat_map, race_meta, cfg, races = await _series_scores(
+        series, race_numbers, fold_combined=(race_numbers is None))
     club_name = await _club_name_of_class(series.get("class_id"))
     race_count = len(race_meta)
+    # A mini-series view of a group configured as "combined" also reports the
+    # group's daily average per boat (after the group's own discards), so the
+    # detailed view can show exactly what feeds the main series.
+    combined_view = None
+    if series.get("mini_series") and race_numbers is not None:
+        requested = sorted({int(n) for n in race_numbers})
+        for g in _normalize_mini_groups(series, races):
+            if g.get("scoring") == "combined" and g["race_numbers"] == requested:
+                combined_view = g
+                break
     # Effective discards never remove every race: at least one always counts.
     # Rule A2.1 also discards the earliest of equal worst scores (stable sort).
     # A mini-series view uses that group's discard count; the full series its
@@ -3617,7 +3743,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
         a8_1, a8_2 = _a8_tiebreak(entries, drop)
         scores = [{"points": round(e["points"], 1), "code": e["code"], "discarded": i in drop}
                   for i, e in enumerate(entries)]
-        rows.append({
+        row = {
             "boat_id": bid,
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
@@ -3628,7 +3754,11 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
             "scores": scores,
             "positions": [e["position"] for e in entries],
             "_tb": (a8_1, a8_2),
-        })
+        }
+        if combined_view is not None:
+            avg, _drop = _mini_combined_score(entries, combined_view["discards"])
+            row["combined_average"] = round(avg, 2)
+        rows.append(row)
     rows.sort(key=lambda x: (x["net"], x["_tb"][0], x["_tb"][1]))
     for i, r in enumerate(rows):
         r["rank"] = i + 1
@@ -3647,8 +3777,13 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
     if series.get("mini_series"):
         payload["mini_series"] = {
             "enabled": True,
-            "groups": _normalize_mini_groups(series, race_meta),
+            # Computed from the underlying races (never the folded meta), so
+            # every group's race_count reflects its real published races.
+            "groups": _normalize_mini_groups(series, races),
         }
+        if combined_view is not None:
+            payload["mini_combined"] = {"name": combined_view["name"],
+                                         "discards": combined_view["discards"]}
     else:
         payload["mini_series"] = None
     return payload

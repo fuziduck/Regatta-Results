@@ -4,10 +4,9 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ClubBadge from "@/components/ClubBadge";
+import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
-import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
-import ThemeToggle from "@/components/ThemeToggle";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -21,7 +20,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { ShieldCheck, LogOut, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -94,7 +93,7 @@ function ClubIconField({ clubId }) {
 }
 
 function TopBar({ clubName, onSwitchClub }) {
-  const { role, logout, updateSession } = useAuth();
+  const { role, updateSession } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const clubQuery = searchParams.get("club");
@@ -110,20 +109,31 @@ function TopBar({ clubName, onSwitchClub }) {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle light />
-          <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate(clubQuery ? `/officer?club=${clubQuery}` : "/officer")}>Officer</Button>
-          {role === "webmaster" && (
-            <>
-              {onSwitchClub && <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={onSwitchClub}><Building2 className="w-4 h-4 mr-1" /> Switch club</Button>}
-              <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" onClick={() => navigate("/webmaster")}><Globe className="w-4 h-4 mr-1" /> Webmaster</Button>
-            </>
-          )}
-          <ChangePasscodeDialog onChanged={updateSession} />
-          <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid="admin-logout-btn" onClick={() => { logout(); navigate("/"); }}>
-            <LogOut className="w-4 h-4 mr-1" /> Exit
-          </Button>
-        </div>
+        <ConsoleNav
+          menuLabel={clubName ? `${clubName} · Race Admin` : "Race Admin"}
+          onChangedPasscode={updateSession}
+          logoutTestId="admin-logout-btn"
+          items={[
+            {
+              key: "officer",
+              label: "Officer",
+              icon: null,
+              onClick: () => navigate(clubQuery ? `/officer?club=${clubQuery}` : "/officer"),
+            },
+            ...(role === "webmaster" && onSwitchClub ? [{
+              key: "switch",
+              label: "Switch club",
+              icon: <Building2 className="w-4 h-4 mr-1" />,
+              onClick: onSwitchClub,
+            }] : []),
+            ...(role === "webmaster" ? [{
+              key: "webmaster",
+              label: "Webmaster",
+              icon: <Globe className="w-4 h-4 mr-1" />,
+              onClick: () => navigate("/webmaster"),
+            }] : []),
+          ]}
+        />
       </div>
     </header>
   );
@@ -422,7 +432,7 @@ function SeriesTab({ classes, clubId }) {
   const [snapshots, setSnapshots] = useState([]);
   // Canonical default scoring-rule configuration (RRS 2025-2028 Appendix A
   // Low Point): A5.2 default, no TLE, 20% SCP/ZFP capped at DNF, fixed
-  // discards, duty = average of the boat's own sailed races.
+  // discards, duty = average of the boat's results across the series (DNC included).
   const defaultScoringConfig = () => ({
     rrs_edition: "RRS 2025-2028",
     a5_convention: "a5_2",
@@ -447,6 +457,7 @@ function SeriesTab({ classes, clubId }) {
     return cfg;
   };
   const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig() });
+  const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
   const [schedStart, setSchedStart] = useState("2026-08-08");
   const [autoSize, setAutoSize] = useState(5);
@@ -470,7 +481,7 @@ function SeriesTab({ classes, clubId }) {
     return { ...f, mini_series_groups: groups };
   });
   const addMiniGroup = () => setForm((f) => ({
-    ...f, mini_series_groups: [...(f.mini_series_groups || []), { name: `Mini ${(f.mini_series_groups || []).length + 1}`, race_numbers: [], discards: 0 }],
+    ...f, mini_series_groups: [...(f.mini_series_groups || []), { name: `Mini ${(f.mini_series_groups || []).length + 1}`, race_numbers: [], discards: 0, scoring: "additional" }],
   }));
   const removeMiniGroup = (gi) => setForm((f) => ({
     ...f, mini_series_groups: (f.mini_series_groups || []).filter((_, idx) => idx !== gi),
@@ -481,7 +492,7 @@ function SeriesTab({ classes, clubId }) {
     const groups = [];
     for (let start = 1; start <= miniRaceTotal; start += size) {
       const race_numbers = Array.from({ length: Math.min(size, miniRaceTotal - start + 1) }, (_, k) => start + k);
-      groups.push({ name: `Mini ${groups.length + 1}`, race_numbers, discards: 0 });
+      groups.push({ name: `Mini ${groups.length + 1}`, race_numbers, discards: 0, scoring: "additional" });
     }
     setForm((f) => ({ ...f, mini_series_groups: groups }));
   };
@@ -676,9 +687,9 @@ function SeriesTab({ classes, clubId }) {
                     <TooltipTrigger asChild>
                       <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={!!form.scoring_config?.duty?.enabled} onCheckedChange={(v) => patchCfgNested("duty", { enabled: v })} data-testid="series-duty-switch" /><Label className="text-xs font-semibold">Duty / Average Points (OOD)</Label></div>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-xs">A boat on duty (OOD) scores the average of her own sailed races in the series, recalculated after every race before discards apply.</TooltipContent>
+                    <TooltipContent side="top" className="max-w-xs">A boat on duty (OOD) scores the average of her results across every race in the series — DNC included, at its normal score — recalculated after every race before discards apply.</TooltipContent>
                   </Tooltip>
-                  {form.scoring_config?.duty?.enabled && <p className="text-[11px] text-muted-foreground">A duty boat scores the average of her own sailed races, recalculated after every scored race before discards apply.</p>}
+                  {form.scoring_config?.duty?.enabled && <p className="text-[11px] text-muted-foreground">A duty boat scores the average of her results across the series (DNC included), recalculated after every scored race before discards apply.</p>}
                 </div>
                 <div className="rounded-md border border-border/70 p-2.5 space-y-2">
                   <div className="flex items-center justify-between">
@@ -756,6 +767,19 @@ function SeriesTab({ classes, clubId }) {
                           <div className="grid grid-cols-2 gap-2">
                             <div className="space-y-1"><Label className="text-xs">Name</Label><Input className="h-8" value={g.name} onChange={(e) => patchMiniGroup(gi, { name: e.target.value })} placeholder={`Mini ${gi + 1}`} data-testid={`mini-name-${gi}`} /></div>
                             <div className="space-y-1"><Label className="text-xs">Discards</Label><Input type="number" min="0" className="h-8" value={g.discards} onChange={(e) => patchMiniGroup(gi, { discards: e.target.value })} data-testid={`mini-discards-${gi}`} /></div>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs">Scoring treatment</Label>
+                            <Select value={miniGroupScoring(g)} onValueChange={(v) => patchMiniGroup(gi, { scoring: v })}>
+                              <SelectTrigger className="h-8" data-testid={`mini-scoring-${gi}`}><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="additional">Count as additional races</SelectItem>
+                                <SelectItem value="combined">Combine into one daily result</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {miniGroupScoring(g) === "combined" && (
+                              <p className="text-[11px] text-muted-foreground">The mini races are combined into ONE main-series result: the group's discards apply first, then the average of the counting races becomes each sailor's score for the day.</p>
+                            )}
                           </div>
                           <div>
                             <Label className="text-xs">Races</Label>
@@ -836,7 +860,7 @@ function SeriesTab({ classes, clubId }) {
                   : <Badge variant="outline" className="text-muted-foreground">Open</Badge>}
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0 })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
                   <>

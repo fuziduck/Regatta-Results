@@ -12,9 +12,14 @@ import { passcodeError, PASSCODE_HINT } from "@/lib/helpers";
  * Change your own passcode. Verifies the current passcode, revokes every
  * other session, and re-issues a fresh token for the current one via
  * onChanged (which must store the returned token, e.g. AuthContext.updateSession).
+ *
+ * Uncontrolled by default (the trigger button opens it). Pass `open` +
+ * `onOpenChange` to control it from outside — e.g. the console mobile menu
+ * opens it from a menu item while the trigger button stays desktop-only.
  */
-export default function ChangePasscodeDialog({ onChanged, buttonClassName = "" }) {
-  const [open, setOpen] = useState(false);
+export default function ChangePasscodeDialog({ onChanged, buttonClassName = "", open: controlledOpen, onOpenChange }) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -24,6 +29,12 @@ export default function ChangePasscodeDialog({ onChanged, buttonClassName = "" }
     setCurrent("");
     setNext("");
     setConfirm("");
+  };
+
+  const setOpen = (o) => {
+    if (controlledOpen === undefined) setInternalOpen(o);
+    if (!o) reset();
+    onOpenChange?.(o);
   };
 
   const submit = async (e) => {
@@ -46,7 +57,7 @@ export default function ChangePasscodeDialog({ onChanged, buttonClassName = "" }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button
           size="sm"
