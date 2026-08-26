@@ -697,18 +697,85 @@ class TestMiniSeriesEndpoint:
             assert full["race_count"] == 1
             row = next(x for x in full["standings"] if x["boat_id"] == b[0])
             assert row["scores"][0]["code"] == "MINI"
-            # (2 + 5 + 9) with 1 discard -> discard 9 -> (2 + 5) / 2 = 3.5
-            assert row["scores"][0]["points"] == 3.5 and row["net"] == 3.5
+            # C Two wins every race (avg 1.0 → position 1), C One scores
+            # 2+5+9 → avg 3.5 → position 2; the combined column carries the
+            # position, not the average.
+            assert row["scores"][0]["points"] == 2 and row["net"] == 2
             assert full["mini_series"]["groups"][0]["scoring"] == "combined"
 
             # The detailed mini view still shows the three individual races,
-            # marks the discarded one, and reports the daily average.
+            # marks the discarded one, and reports the finishing position.
             m1 = requests.get(f"{API}/standings/series/{sid}", params={"mini": 1}).json()
             assert m1["race_count"] == 3 and m1["mini_combined"]["name"] == "Regatta Day"
             row = next(x for x in m1["standings"] if x["boat_id"] == b[0])
             assert [s["points"] for s in row["scores"]] == [2.0, 5.0, 9.0]
             assert row["scores"][2]["discarded"] is True
-            assert row["combined_average"] == 3.5
+            assert row["combined_average"] == 2
+        finally:
+            for rid in created:
+                requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+    def test_mini_combined_detail_ranks_by_daily_result(self, club_officer_token, club_admin_token):
+        # A combined mini series detail page ranks boats by the daily result
+        # (the single score feeding the main series), not by the sum of the
+        # races — and the main series breaks ties on the folded column with
+        # the same mini countback, so the two views always agree.
+        r = requests.post(f"{API}/classes", json={"name": "Mini Rank Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Mini Rank Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 14,
+            "mini_series": True,
+            "mini_series_groups": [
+                {"name": "Day", "race_numbers": [1, 2], "discards": 0,
+                 "scoring": "combined"},
+            ]},
+            headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        boats = []
+        for i, nm in enumerate(["Alpha", "Bravo", "Charlie", "Delta"], start=1):
+            r = requests.post(f"{API}/boats", json={
+                "name": nm, "sail_no": f"RK{i}", "class_id": cls["id"], "helm": f"H{i}",
+                "year": YEAR, "active": True}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json())
+        b = [x["id"] for x in boats]
+        created = []
+        try:
+            # Race 1: Charlie 1st, Alpha 2nd, Bravo 3rd, Delta 4th.
+            # Race 2: Bravo 1st, Alpha 2nd, Charlie 3rd, Delta 4th.
+            # Daily averages: Alpha/Bravo/Charlie all 2.0, Delta 4.0 — the 2.0
+            # tie is broken by the mini countback: Bravo [1,3] beats Charlie
+            # [3,1] beats Alpha [2,2]. The net sums (all 4.0) would not.
+            for rn, pos in [(1, [2, 3, 1, 4]), (2, [2, 1, 3, 4])]:
+                r = requests.post(f"{API}/races", json={
+                    "date": f"{YEAR}-09-0{rn}", "class_id": cls["id"], "series_id": sid,
+                    "race_number": rn, "start_time": "10:30"}, headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+                rid = r.json()["id"]
+                created.append(rid)
+                for bi, p in enumerate(pos):
+                    requests.put(f"{API}/races/{rid}/result/{b[bi]}",
+                                 json={"code": "FINISHED", "position": p}, headers=h(club_officer_token))
+                requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+
+            mini = requests.get(f"{API}/standings/series/{sid}", params={"mini": 1}).json()
+            assert [x["boat_name"] for x in mini["standings"]] == ["Bravo", "Charlie", "Alpha", "Delta"]
+            # The combined_average field now carries the finishing position,
+            # not the daily average — Bravo 1st, Charlie 2nd, Alpha 3rd,
+            # Delta 4th.
+            assert [x["combined_average"] for x in mini["standings"]] == [1, 2, 3, 4]
+            # Every 2.0 boat nets 4.0, so net alone could not produce this
+            # order — the detail view must rank by the daily result.
+            assert all(x["net"] == 4.0 for x in mini["standings"][:3])
+            # The main series folds to one column and must agree exactly.
+            full = requests.get(f"{API}/standings/series/{sid}").json()
+            assert [x["boat_name"] for x in full["standings"]] == ["Bravo", "Charlie", "Alpha", "Delta"]
         finally:
             for rid in created:
                 requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))

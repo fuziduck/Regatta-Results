@@ -152,7 +152,7 @@ function NewRaceDialog({ onCreated, clubId }) {
   );
 }
 
-function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [] }) {
+function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
@@ -637,7 +637,7 @@ function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces 
                   <Layers className="w-4 h-4 text-ocean" /> Mini-series scoring
                 </h3>
                 <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" data-testid="batch-entry-btn" onClick={() => {
-                  if (miniGroups.length > 0) enterBatch({ group: miniGroups[0], groupIndex: 0, seriesId: meta(race).series_id, series: series, className: meta(race).class_name });
+                  if (miniGroups.length > 0 && onEnterBatch) onEnterBatch({ group: miniGroups[0], groupIndex: 0, seriesId: race.series_id || meta.series_id, series: series, className: meta.class_name });
                 }}>
                   <ListChecks className="w-3.5 h-3.5" /> Batch entry
                 </Button>
@@ -706,43 +706,53 @@ function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces 
   );
 }
 
-function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, seriesMap, onClose }) {
+export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, seriesMap, onClose }) {
   const [races, setRaces] = useState([]);
   const [boatsMap, setBoatsMap] = useState({});
   const [expandMap, setExpandMap] = useState({});
   const [loading, setLoading] = useState(true);
+  const [addingRace, setAddingRace] = useState(false);
+  // Combined-result preview for "combined" mini series: the mini standings
+  // view, which also carries each boat's daily average that feeds the series.
+  const [combined, setCombined] = useState(null);
+  const [combinedBusy, setCombinedBusy] = useState(false);
 
   const fetchRace = useCallback(async (raceId) => {
     try { return await api.getRace(raceId); } catch { return null; }
   }, []);
 
+  const loadGroup = useCallback(async (setLoadingOn = true) => {
+    const allRaces = await api.getRaces({ series_id: seriesId, club_id: clubId });
+    const groupRaces = [];
+    for (const r of allRaces) {
+      if ((group.race_numbers || []).includes(r.race_number)) {
+        const fresh = await fetchRace(r.id);
+        if (fresh) groupRaces.push(fresh);
+      }
+    }
+    groupRaces.sort((a, b) => a.race_number - b.race_number);
+    setRaces(groupRaces);
+    const classIds = [...new Set(groupRaces.map((r) => r.class_id))];
+    const bm = {};
+    for (const cid of classIds) {
+      try {
+        const bs = await api.getBoats({ class_id: cid });
+        bs.forEach((b) => (bm[b.id] = b));
+      } catch {}
+    }
+    setBoatsMap(bm);
+    if (setLoadingOn) setLoading(false);
+  }, [group, seriesId, clubId, fetchRace]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const allRaces = await api.getRaces({ series_id: seriesId, club_id: clubId });
-      const groupRaces = [];
-      for (const r of allRaces) {
-        if ((group.race_numbers || []).includes(r.race_number)) {
-          const fresh = await fetchRace(r.id);
-          if (fresh && !cancelled) groupRaces.push(fresh);
-        }
-      }
-      if (cancelled) return;
-      groupRaces.sort((a, b) => a.race_number - b.race_number);
-      setRaces(groupRaces);
-      const classIds = [...new Set(groupRaces.map((r) => r.class_id))];
-      const bm = {};
-      for (const cid of classIds) {
-        try {
-          const bs = await api.getBoats({ class_id: cid });
-          bs.forEach((b) => (bm[b.id] = b));
-        } catch {}
-      }
-      if (!cancelled) { setBoatsMap(bm); setLoading(false); }
+      await loadGroup(false);
+      if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [group, seriesId, clubId, fetchRace]);
+  }, [loadGroup]);
 
   const mutate = useCallback(async (fn, silent) => {
     try {
@@ -813,6 +823,33 @@ function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, se
     setRaces(updated);
   }, [races, group, seriesId, clubId, mutate, fetchRace]);
 
+  // Refresh the combined-result preview whenever the races change.
+  useEffect(() => {
+    if (group.scoring !== "combined") { setCombined(null); return; }
+    let cancelled = false;
+    setCombinedBusy(true);
+    api.seriesStandings(seriesId, clubId, groupIndex + 1)
+      .then((d) => { if (!cancelled) setCombined(d); })
+      .catch(() => { if (!cancelled) setCombined(null); })
+      .finally(() => { if (!cancelled) setCombinedBusy(false); });
+    return () => { cancelled = true; };
+  }, [group.scoring, groupIndex, seriesId, clubId, races.length]);
+
+  // Grow the mini series by one race on the day (only possible when it is the
+  // last group of the series — the backend enforces this too).
+  const addRace = useCallback(async () => {
+    setAddingRace(true);
+    try {
+      const res = await api.addMiniRace(seriesId, groupIndex, {});
+      toast.success(`Added race ${res.race.mini_group_label || res.race.race_number}`);
+      await loadGroup();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not add a race");
+    } finally {
+      setAddingRace(false);
+    }
+  }, [seriesId, groupIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toggleExpand = (raceId) => setExpandMap((prev) => ({ ...prev, [raceId]: !prev[raceId] }));
   const remaining = races.filter((r) => r.status !== "published");
   const allPublished = remaining.length === 0;
@@ -834,9 +871,18 @@ function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, se
           <div className="flex-1">
             <div className="font-heading text-lg uppercase tracking-tight leading-none">{group.name || `Mini ${groupIndex + 1}`}</div>
             <div className="text-xs text-muted-foreground">
-              {(group.race_numbers || []).length} races{group.discards > 0 ? ` · ${group.discards} discard${group.discards !== 1 ? "s" : ""}` : ""}
+              {races.length} race{races.length !== 1 ? "s" : ""}
+              {allPublished
+                ? " · all published"
+                : ` · ${remaining.length} remaining`}
+              {group.discards > 0 ? ` · ${group.discards} discard${group.discards !== 1 ? "s" : ""}` : ""}
             </div>
           </div>
+          {races.length > 0 && (
+            <Button variant="outline" size="sm" className="gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" data-testid="add-mini-race-btn" onClick={addRace} disabled={addingRace}>
+              <Plus className="w-4 h-4" /> {addingRace ? "Adding…" : "Add race"}
+            </Button>
+          )}
           {remaining.length > 0 && (
             <Button className="bg-emerald-600 hover:bg-emerald-700 gap-1.5" data-testid="publish-all-btn" onClick={publishAll}>
               <Send className="w-4 h-4" /> Publish all ({remaining.length})
@@ -858,6 +904,46 @@ function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, se
             <CheckCircle2 className="w-4 h-4 shrink-0" /> All {races.length} races in this group are published.
           </div>
         )}
+        {/* Combined-result preview: what the mini series contributes to the main series */}
+        {group.scoring === "combined" && (
+          <div className="rounded-xl border border-border bg-card overflow-hidden" data-testid="combined-preview">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-border/60">
+              <Layers className="w-4 h-4 text-ocean" />
+              <span className="font-heading uppercase tracking-tight text-sm">View combined result</span>
+              {combinedBusy && <span className="text-xs text-muted-foreground">…</span>}
+              <span className="ml-auto text-xs text-muted-foreground">daily average after {combined?.mini_combined?.discards || group.discards || 0} discard{(combined?.mini_combined?.discards || 0) !== 1 ? "s" : ""}</span>
+            </div>
+            {combined?.standings?.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-muted-foreground border-b text-[11px] uppercase tracking-wide">
+                      <th className="py-2 px-4">Pos</th><th className="py-2">Boat</th>
+                      {combined.races?.map((m, i) => (
+                        <th key={i} className="py-2 text-center font-mono">{m.mini_name || `R${m.race_number}`}</th>
+                      ))}
+                      <th className="py-2 px-4 text-center">Daily avg</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {combined.standings.map((row) => (
+                      <tr key={row.boat_id} className="border-b last:border-0">
+                        <td className="py-2 px-4 font-heading">{row.rank}</td>
+                        <td className="py-2 font-semibold whitespace-nowrap">{row.boat_name} <span className="font-mono text-xs text-muted-foreground">{row.sail_no}</span></td>
+                        {row.scores.map((s, i) => (
+                          <td key={i} className="py-2 text-center font-mono">{s.points}{s.discarded ? "*" : ""}</td>
+                        ))}
+                        <td className="py-2 px-4 text-center font-mono font-bold text-ocean">{row.combined_average != null ? row.combined_average : "–"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="px-4 py-3 text-sm text-muted-foreground">No published results yet — publish the races to see the combined result.</p>
+            )}
+          </div>
+        )}
         {races.map((race) => {
           const expanded = expandMap[race.id];
           const allBoats = race.results || [];
@@ -869,12 +955,14 @@ function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, se
             <section key={race.id} className="rounded-xl border border-border bg-card overflow-hidden" data-testid={`batch-race-${race.race_number}`}>
               {/* Race header */}
               <div className="flex items-center gap-3 px-4 py-3">
-                <div className="w-9 h-9 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg shrink-0">R{race.race_number}</div>
+                <div className="w-9 h-9 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg shrink-0">{race.mini_group_label || `R${race.race_number}`}</div>
                 <div className="flex-1 min-w-0">
                   <div className="font-semibold text-sm leading-none">{race.start_time || "TBD"}</div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5">{fmtDate(race.date)} · {cls.name || "Class"}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">{fmtDate(race.date)} · {cls.name || "Class"} · R{race.race_number}</div>
                 </div>
-                <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
+                <Badge className={STATUS_BADGE[race.status]}>
+                  {race.status === "setup" ? "Not started" : race.status === "finished" ? "Scored" : race.status}
+                </Badge>
                 {race.status !== "published" && (
                   <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 h-8 px-3 gap-1" data-testid={`publish-btn-${race.race_number}`} onClick={() => publish(race)}>
                     <Send className="w-3.5 h-3.5" /> Publish
@@ -1012,13 +1100,13 @@ export function SplitMiniDialog({ target, onClose, onSplit }) {
       <DialogContent data-testid="mini-split-dialog">
         <DialogHeader><DialogTitle className="font-heading uppercase tracking-tight">Split into a mini series</DialogTitle></DialogHeader>
         <p className="text-sm text-muted-foreground">
-          Run race {target?.race_number} as several races for this class today, scored together.
+          Run race {target?.race_number} as several shorter races for this class today, scored together as a mini series.
         </p>
         <div className="space-y-4">
           <div className="space-y-2">
             <Label>How many races?</Label>
-            <Input type="number" min="2" max="9" value={count}
-              onChange={(e) => setCount(Math.max(2, Math.min(9, Number(e.target.value) || 2)))}
+            <Input type="number" min="2" max="20" value={count}
+              onChange={(e) => setCount(Math.max(2, Math.min(20, Number(e.target.value) || 2)))}
               data-testid="mini-split-count" />
           </div>
           <div className="space-y-2">
@@ -1083,6 +1171,8 @@ export default function Officer() {
   const [pendingBatchRace, setPendingBatchRace] = useState(null);
   // Race-day split: the scheduled race the officer wants to expand into a mini series.
   const [splitTarget, setSplitTarget] = useState(null);
+
+  const enterBatch = (g) => { setBatchGroup(g); setBatchMode(true); };
 
   const loadRaces = useCallback(async () => {
     const params = clubId ? { club_id: clubId } : {};
@@ -1165,7 +1255,7 @@ export default function Officer() {
     );
   }
 
-  if (selected) {
+  if (selected && !batchMode) {
     const dayRaces = selectedRace ? races.filter((r) => r.id !== selectedRace.id && r.date === selectedRace.date) : [];
     return (
       <div className="min-h-screen bg-background">
@@ -1173,6 +1263,7 @@ export default function Officer() {
         <RaceConsole raceId={selected} meta={meta(selectedRace || {})}
           series={selectedRace ? series[selectedRace.series_id] : null} clubId={clubId}
           rrsCodes={rrsCodes} dayRaces={dayRaces}
+          onEnterBatch={enterBatch}
           onBack={() => { setSelected(null); loadRaces(); }} />
       </div>
     );
@@ -1222,7 +1313,6 @@ export default function Officer() {
     }
   });
 
-  const enterBatch = (g) => { setBatchGroup(g); setBatchMode(true); };
   const exitBatch = (raceId) => { setBatchMode(false); setBatchGroup(null); if (raceId) setPendingBatchRace(raceId); loadRaces(); loadScheduled(); };
   // After a successful race-day split, reload and drop straight into the batch
   // scoring page for the newly-created mini series.

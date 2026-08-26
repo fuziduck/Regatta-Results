@@ -8,9 +8,10 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Anchor, CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
+import { CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
 import BoatSearchBox from "@/components/BoatSearchBox";
-import { SITE_NAME, SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
+import Logo from "@/components/Logo";
+import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
   return <ClubBadge club={club} size={size} textSize="text-3xl" />;
@@ -90,13 +91,9 @@ export default function Clubs() {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Anchor className="w-5 h-5 text-white" /></div>
-            <div>
-              <div className="font-heading text-xl uppercase tracking-tight leading-none">SailScore</div>
-              <div className="text-[11px] text-muted-foreground leading-tight">Connecting sailing, one club at a time.</div>
-            </div>
-          </div>
+          <Link to="/" className="flex items-center">
+            <Logo className="h-11 w-auto" />
+          </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <Link to="/boats">
@@ -228,8 +225,8 @@ export default function Clubs() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <div className="font-heading uppercase tracking-tight">{SITE_NAME}</div>
-        <p className="mt-1">{SITE_TAGLINE}</p>
+        <Logo className="h-8 w-auto mx-auto" />
+        <p className="mt-2">{SITE_TAGLINE}</p>
         <p className="mt-2 text-xs">
           Website by {SITE_OWNER} · Queries to{" "}
           <a href={`mailto:${SITE_CONTACT_EMAIL}`} className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">{SITE_CONTACT_EMAIL}</a>

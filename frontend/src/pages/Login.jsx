@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Anchor, ShieldCheck, ArrowLeft, Globe, ChevronDown, Mail, Smartphone } from "lucide-react";
+import { ShieldCheck, ArrowLeft, Globe, ChevronDown, Mail, Smartphone } from "lucide-react";
+import Logo from "@/components/Logo";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 export default function Login() {
@@ -150,14 +151,12 @@ export default function Login() {
           <ArrowLeft className="w-4 h-4" /> Back to results
         </Link>
         <div className="bg-card rounded-2xl shadow-2xl p-8 border border-white/10">
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-11 h-11 rounded-xl bg-ocean grid place-items-center">
-              <Anchor className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-2xl uppercase tracking-tight leading-none text-foreground">Club Login</h1>
-              <p className="text-sm text-muted-foreground">{isWebmaster ? "Webmaster access" : (selectedClub ? selectedClub.name : "Officials access")}</p>
-            </div>
+          <div className="mb-1">
+            <Logo className="h-14 w-auto" />
+          </div>
+          <div className="mb-1">
+            <h1 className="text-2xl uppercase tracking-tight leading-none text-foreground">Club Login</h1>
+            <p className="text-sm text-muted-foreground">{isWebmaster ? "Webmaster access" : (selectedClub ? selectedClub.name : "Officials access")}</p>
           </div>
 
           {!isWebmaster ? (

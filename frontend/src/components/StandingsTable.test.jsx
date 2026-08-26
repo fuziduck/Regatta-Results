@@ -99,7 +99,7 @@ describe("combined mini-series drill-down link", () => {
     ],
   });
 
-  it("renders the combined column header as a drill-down link when onOpenMini is given", () => {
+  it("renders the combined column header as one mini-series link when onOpenMini is given", () => {
     const cb = jest.fn();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -113,7 +113,14 @@ describe("combined mini-series drill-down link", () => {
     });
     const link = container.querySelector('[data-testid="open-mini-1"]');
     expect(link).not.toBeNull();
+    // The single link carries the mini-series icon plus the day's name.
+    expect(link.querySelector("svg")).not.toBeNull();
     expect(link.textContent).toContain("Day");
+    // No separate "view mini series results" affordance — the caption just
+    // notes it was built from several races.
+    expect(container.querySelector('[data-testid^="open-mini-link-"]')).toBeNull();
+    expect(container.querySelector("thead").textContent).not.toContain("View mini series results");
+    expect(container.querySelector("thead").textContent).toContain("combined · 2 races");
     act(() => link.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(cb).toHaveBeenCalledWith(1);
   });

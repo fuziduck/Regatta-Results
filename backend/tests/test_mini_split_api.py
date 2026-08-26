@@ -75,6 +75,37 @@ class TestMiniSplitApi:
             # Later planned races moved up: 6 planned -> 7 planned.
             assert sr["planned_races"] == 7
             assert sr["schedule"][2] == sr["schedule"][3]  # sub-races share the day
+            # Parent/child stamps: children carry the group id and A/B labels.
+            sorted_races = sorted(body["races"], key=lambda x: x["race_number"])
+            assert [r["mini_group_id"] for r in sorted_races] == [0, 0]
+            assert [r["mini_group_label"] for r in sorted_races] == ["R3A", "R3B"]
+            # The stamps persist on the stored race documents.
+            stored = requests.get(f"{API}/races", params={"series_id": series["id"]},
+                                  headers=h(club_officer_token)).json()
+            by_num = {r["race_number"]: r for r in stored}
+            assert by_num[3]["mini_group_label"] == "R3A"
+            assert by_num[4]["mini_group_label"] == "R3B"
+        finally:
+            _cleanup(cls, series, boats, club_admin_token, club_officer_token)
+
+    def test_split_with_many_races(self, club_admin_token, club_officer_token):
+        """A mini series can hold any number of races — split race 2 into 5."""
+        cls, series, boats = _setup(club_admin_token, club_officer_token)
+        try:
+            r = requests.post(f"{API}/series/{series['id']}/mini-split", json={
+                "race_number": 2, "count": 5, "name": "Five Quick Ones", "scoring": "combined",
+            }, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert len(body["races"]) == 5
+            assert body["group"]["race_numbers"] == [2, 3, 4, 5, 6]
+            labels = sorted(r["mini_group_label"] for r in body["races"])
+            assert labels == ["R2A", "R2B", "R2C", "R2D", "R2E"]
+            # Later planned races shifted by 4.
+            fresh = requests.get(f"{API}/series", params={"class_id": cls["id"], "year": YEAR},
+                                 headers=h(club_admin_token)).json()
+            sr = next(s for s in fresh if s["id"] == series["id"])
+            assert sr["planned_races"] == 10
         finally:
             _cleanup(cls, series, boats, club_admin_token, club_officer_token)
 
@@ -89,6 +120,56 @@ class TestMiniSplitApi:
             assert body["group"]["race_numbers"] == [1, 2, 3]
             assert body["group"]["scoring"] == "additional"
             assert len(body["races"]) == 3
+        finally:
+            _cleanup(cls, series, boats, club_admin_token, club_officer_token)
+
+    def test_add_race_grows_mini_series_on_the_day(self, club_admin_token, club_officer_token):
+        """The officer can extend a mini series by one race and it keeps its
+        parent/child stamp and extends the group's race numbers."""
+        cls, series, boats = _setup(club_admin_token, club_officer_token)
+        try:
+            r = requests.post(f"{API}/series/{series['id']}/mini-split", json={
+                "race_number": 5, "count": 2, "name": "Afternoon", "scoring": "combined",
+            }, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            split = r.json()
+            gi = split["group_index"]
+            r = requests.post(f"{API}/series/{series['id']}/mini/{gi}/races",
+                              json={}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["group"]["race_numbers"] == [5, 6, 7]
+            assert body["race"]["mini_group_id"] == gi
+            assert body["race"]["mini_group_label"] == "R5C"
+            # The group in the series document grew too.
+            fresh = requests.get(f"{API}/series", params={"class_id": cls["id"], "year": YEAR},
+                                 headers=h(club_admin_token)).json()
+            sr = next(s for s in fresh if s["id"] == series["id"])
+            assert sr["mini_series_groups"][gi]["race_numbers"] == [5, 6, 7]
+        finally:
+            _cleanup(cls, series, boats, club_admin_token, club_officer_token)
+
+    def test_cannot_extend_mid_series_group(self, club_admin_token, club_officer_token):
+        """Growing a mini series is only allowed when it is the last group, so
+        later races never need renumbering."""
+        cls, series, boats = _setup(club_admin_token, club_officer_token)
+        try:
+            r = requests.post(f"{API}/series/{series['id']}/mini-split", json={
+                "race_number": 1, "count": 2, "name": "Morning", "scoring": "combined",
+            }, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            gi = r.json()["group_index"]
+            # Create a real race beyond the group (race 3 of the original plan)
+            # so extending the group would require renumbering it.
+            r = requests.post(f"{API}/races", json={
+                "date": f"{YEAR}-05-03", "class_id": cls["id"], "series_id": series["id"],
+                "race_number": 3, "start_time": "10:30"}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            # Group sits at the start with a created race after it: blocked.
+            r = requests.post(f"{API}/series/{series['id']}/mini/{gi}/races",
+                              json={}, headers=h(club_officer_token))
+            assert r.status_code == 400, r.text
+            assert "only the last" in r.json()["detail"].lower()
         finally:
             _cleanup(cls, series, boats, club_admin_token, club_officer_token)
 

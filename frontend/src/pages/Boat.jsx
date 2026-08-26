@@ -6,8 +6,9 @@ import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, ArrowLeft, LogIn, Sailboat, Search, Trophy, Medal, Lock, Archive } from "lucide-react";
+import Logo from "@/components/Logo";
 import { CURRENT_YEAR } from "@/lib/helpers";
-import { SITE_NAME, SITE_TAGLINE } from "@/lib/siteConfig";
+import { SITE_TAGLINE } from "@/lib/siteConfig";
 
 export default function Boat() {
   const { fleetId } = useParams();
@@ -46,8 +47,8 @@ export default function Boat() {
   const header = (
     <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
       <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Sailboat className="w-5 h-5 text-white" /></div>
+        <div className="flex items-center gap-3">
+          <Link to="/"><Logo className="h-11 w-auto" /></Link>
           <div className="font-heading text-xl uppercase tracking-tight leading-none">{profile?.name || "Boat"}</div>
         </div>
         <div className="flex items-center gap-2">
@@ -227,8 +228,8 @@ export default function Boat() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <div className="font-heading uppercase tracking-tight">{SITE_NAME}</div>
-        <p className="mt-1">{SITE_TAGLINE}</p>
+        <Logo className="h-8 w-auto mx-auto" />
+        <p className="mt-2">{SITE_TAGLINE}</p>
       </footer>
     </div>
   );

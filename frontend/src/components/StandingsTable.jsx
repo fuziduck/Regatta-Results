@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Trophy } from "lucide-react";
+import { Layers, Trophy } from "lucide-react";
 import { podiumPlace } from "@/lib/resultCellStyle";
 import { shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 
@@ -91,8 +91,9 @@ const PODIUM_CELL = {
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
                 {r.combined && onOpenMini ? (
                   <button onClick={() => onOpenMini(r.mini_index)} data-testid={`open-mini-${r.mini_index || i}`}
-                    className="underline decoration-dotted underline-offset-4 hover:text-safety transition-colors" title={`View the ${r.mini_races || ""} races that make up this combined result`}>
-                    {r.mini_name || `R${r.race_number}`}
+                    className="inline-flex items-center gap-1.5 underline decoration-dotted underline-offset-4 hover:text-safety transition-colors" title={`View the ${r.mini_races || ""} races that make up this combined result`}>
+                    <Layers className="w-3.5 h-3.5 shrink-0" />
+                    <span>{r.mini_name || `R${r.race_number}`}</span>
                   </button>
                 ) : (
                   <div>{r.mini_name || `R${r.race_number}`}</div>

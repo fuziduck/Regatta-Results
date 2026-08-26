@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
-import { Anchor, LogIn, Sailboat, Search, X } from "lucide-react";
+import { LogIn, Sailboat, Search, X } from "lucide-react";
+import Logo from "@/components/Logo";
 
 export default function Boats() {
   const [q, setQ] = useState("");
@@ -33,12 +34,8 @@ export default function Boats() {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Anchor className="w-5 h-5 text-white" /></div>
-            <div>
-              <div className="font-heading text-xl uppercase tracking-tight leading-none">SailScore</div>
-              <div className="text-[11px] text-muted-foreground leading-tight">Boat search</div>
-            </div>
+          <Link to="/" className="flex items-center">
+            <Logo className="h-11 w-auto" />
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
@@ -12,9 +12,10 @@ import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
-import { SITE_NAME, SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
+import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
-import { Anchor, LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
+import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
+import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 
 function NotificationBanner({ items }) {
@@ -235,6 +236,9 @@ export default function Landing() {
   const [series, setSeries] = useState([]);
   const [activeSeries, setActiveSeries] = useState("overall");
   const [activeMini, setActiveMini] = useState(null);
+  // Deep link from the site search: a ?series= id preselects that series on
+  // first load (applied once the series list arrives; consumed after).
+  const seriesParamRef = useRef(searchParams.get("series"));
   const [overall, setOverall] = useState(null);
   const [seriesData, setSeriesData] = useState({});
 
@@ -307,6 +311,12 @@ export default function Landing() {
   const nav = seriesNavModel(series, hasOverall);
   useEffect(() => {
     if (series.length === 0) return;
+    // Deep link from the site search: land on the requested series once.
+    const wanted = seriesParamRef.current;
+    if (wanted) {
+      seriesParamRef.current = null;
+      if (series.some((s) => s.id === wanted)) { setActiveSeries(wanted); return; }
+    }
     // Single-series year: land straight on the series, whatever the overall
     // payload says (it would only repeat the same standings).
     if (nav.single) {
@@ -347,8 +357,8 @@ export default function Landing() {
 
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg bg-ocean grid place-items-center"><Anchor className="w-5 h-5 text-white" /></div>
+          <div className="flex items-center gap-3">
+            <Link to="/"><Logo className="h-11 w-auto" /></Link>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
           </div>
           <div className="flex items-center gap-2">
@@ -525,8 +535,8 @@ export default function Landing() {
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <div className="font-heading uppercase tracking-tight">{SITE_NAME}</div>
-        <p className="mt-1">{SITE_TAGLINE}</p>
+        <Logo className="h-8 w-auto mx-auto" />
+        <p className="mt-2">{SITE_TAGLINE}</p>
         <p className="mt-2 text-xs">
           Website by {SITE_OWNER} · Queries to{" "}
           <a href={`mailto:${SITE_CONTACT_EMAIL}`} className="underline decoration-border underline-offset-2 hover:text-foreground transition-colors">{SITE_CONTACT_EMAIL}</a>

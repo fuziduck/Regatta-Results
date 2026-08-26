@@ -847,6 +847,12 @@ class MiniSeriesGroup(BaseModel):
       main series — the group's discards are applied first, then the average
       of the counting races becomes a single score. The individual races stay
       in the database and remain visible in the mini-series detail view.
+
+    Parent/child structure: a mini series is one scoring event (the parent)
+    whose child races are ordinary races stamped with mini_group_id (the
+    0-based index of this group on the series) and mini_group_label (e.g.
+    "R3A", "R3B"). Children are never deleted when combined — they remain for
+    audit, correction and the public breakdown.
     """
     name: str = ""
     race_numbers: List[int] = []
@@ -859,7 +865,7 @@ class MiniSplitInput(BaseModel):
     races for this class, scored either as ONE combined daily result or as
     `count` separate races in the main series (see MiniSeriesGroup.scoring)."""
     race_number: int = Field(..., ge=1, description="The race slot being split (1-based)")
-    count: int = Field(..., ge=2, le=9, description="How many races the mini series contains")
+    count: int = Field(..., ge=2, le=20, description="How many races the mini series contains")
     name: str = ""
     scoring: Literal["additional", "combined"] = "combined"
     # Optimistic concurrency: version the series doc this split is based on.
@@ -3043,6 +3049,20 @@ async def split_into_mini_series(series_id: str, data: MiniSplitInput,
     group = {"name": (data.name or "").strip() or f"Mini R{base}",
              "race_numbers": race_numbers, "discards": 0,
              "scoring": data.scoring}
+    # Parent/child structure: stamp each child race with its group so the
+    # relationship is explicit and survives any later renumbering. Labels run
+    # A, B, C… after the slot number: a split of race 3 into three races gives
+    # R3A, R3B, R3C.
+    group_index = len(groups)
+    for rn, r in zip(race_numbers, new_races):
+        suffix = chr(ord("A") + (rn - base))
+        label = f"R{base}{suffix}" if count > 1 else f"R{base}"
+        await db.races.update_one({"id": r["id"]},
+                                  {"$set": {"mini_group_id": group_index,
+                                            "mini_group_label": label},
+                                   "$inc": {"version": 1}})
+        r["mini_group_id"] = group_index
+        r["mini_group_label"] = label
     update = {"$set": {"mini_series": True, "mini_series_groups": groups + [group]},
               "$inc": {"version": 1}}
     if sched:
@@ -3057,8 +3077,93 @@ async def split_into_mini_series(series_id: str, data: MiniSplitInput,
                      description=f"Split race {base} into {count} races as mini series “{group['name']}” ({group['scoring']})",
                      resource_type="series", resource_id=series_id, club_id=club_id)
     return {"series": fresh, "group": group,
-            "group_index": len(fresh.get("mini_series_groups") or []) - 1,
+            "group_index": group_index,
             "races": new_races}
+
+
+class MiniAddRaceInput(BaseModel):
+    # The new race's date (defaults to the mini series' existing date).
+    date: Optional[str] = None
+    start_time: Optional[str] = None
+
+
+@api_router.post("/series/{series_id}/mini/{group_index}/races")
+async def add_mini_series_race(series_id: str, group_index: int,
+                               data: MiniAddRaceInput,
+                               user: dict = Depends(require_officer)):
+    """Grow a mini series by one race on the day: appends the next race number
+    to the group, slots it into the schedule and creates the child race (with
+    its parent/child stamp). Only allowed when the group sits at the end of
+    the series so no later race needs renumbering."""
+    series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(series_id,
+                                    detail="Season results are locked — the schedule cannot be changed.")
+    groups = list(series.get("mini_series_groups") or [])
+    if group_index < 0 or group_index >= len(groups):
+        raise HTTPException(status_code=404, detail="Mini series not found")
+    group = dict(groups[group_index])
+    nums = sorted({int(n) for n in (group.get("race_numbers") or []) if int(n) >= 1})
+    if not nums:
+        raise HTTPException(status_code=400, detail="Mini series has no races")
+    existing = await db.races.find({"series_id": series_id}, {"_id": 0, "race_number": 1}).to_list(1000)
+    last_group = nums[-1]
+    # Only grow when no created race exists beyond the group — extending would
+    # otherwise renumber real races (planned-but-not-created slots shift fine).
+    if any(r.get("race_number", 0) > last_group for r in existing):
+        raise HTTPException(status_code=400,
+                            detail="Only the last mini series in a series can be extended — add races to a later slot instead.")
+    new_num = last_group + 1
+    base = nums[0]
+    suffix = chr(ord("A") + len(nums))
+    label = f"R{base}{suffix}"
+    new_nums = nums + [new_num]
+    group["race_numbers"] = new_nums
+
+    cls = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0})
+    year = series["year"]
+    boats = await _class_active_boats(series.get("class_id"), year)
+    results = [{"boat_id": b["id"], "code": "DNC", "finish_time": None,
+                "position": None, "penalty_points": 0} for b in boats]
+    base_date = data.date or (await db.races.find_one(
+        {"series_id": series_id, "race_number": nums[-1]}, {"_id": 0, "date": 1}) or {}).get("date")
+    if not base_date and series.get("schedule") and new_num <= len(series["schedule"]):
+        base_date = series["schedule"][new_num - 1]
+    if not base_date:
+        raise HTTPException(status_code=400,
+                            detail="No date for the new race — set the mini series date first")
+    doc = {
+        "id": new_id(), "date": base_date, "class_id": series["class_id"],
+        "series_id": series_id, "year": year, "race_number": new_num,
+        "start_time": data.start_time or cls.get("default_start_time", "10:30"),
+        "start_tz_offset_minutes": None, "actual_start": None, "course": "",
+        "special_rules": "", "life_jackets": False, "status": "setup",
+        "entries_count": len(results), "results": results,
+        "created_at": now_iso(), "version": 1,
+        "mini_group_id": group_index, "mini_group_label": label,
+    }
+    await db.races.insert_one(doc)
+    doc.pop("_id", None)
+
+    # Slot the new race into the schedule right after the group's last race
+    # (same date) and bump the planned count.
+    sched = list(series.get("schedule") or [])
+    if sched:
+        insert_at = min(new_num - 1, len(sched))
+        sched[insert_at:insert_at] = [base_date]
+    groups[group_index] = group
+    update = {"$set": {"mini_series_groups": groups, "version": (series.get("version") or 0) + 1},
+              "$inc": {"planned_races": 1}}
+    if sched:
+        update["$set"]["schedule"] = sched
+    result = await db.series.update_one({"id": series_id}, update)
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Series changed — reload and try again")
+    fresh = await db.series.find_one({"id": series_id}, {"_id": 0})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="MINI_RACE_ADDED",
+                     description=f"Added race {label} to mini series “{group['name']}”",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"series": fresh, "group": group, "group_index": group_index, "race": doc}
 
 
 @api_router.delete("/series/{series_id}")
@@ -3172,6 +3277,12 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
         "created_at": now_iso(),
         "version": 1,  # optimistic concurrency counter, bumped on every mutation
     }
+    # If this race number sits inside an admin-configured mini series group,
+    # stamp it as a child race (parent/child structure).
+    gi, label = _mini_group_stamp(series, data.race_number)
+    if gi is not None:
+        doc["mini_group_id"] = gi
+        doc["mini_group_label"] = label
     await db.races.insert_one(doc)
     doc.pop("_id", None)
     await _log_audit(request=None, user=user, action="RACE_CREATED",
@@ -4261,6 +4372,23 @@ async def _club_name_of_class(class_id):
     return (club or {}).get("name", "")
 
 
+def _mini_group_stamp(series, race_number):
+    """Parent/child stamp for a race that belongs to a mini series.
+
+    Returns (mini_group_id, mini_group_label) — the 0-based group index on the
+    series and a display label like ("R3A", "R3B", "R3C") where 3 is the
+    group's first race number. Returns (None, None) for a normal race or a
+    race not covered by any group."""
+    groups = series.get("mini_series_groups") or []
+    for gi, g in enumerate(groups):
+        nums = sorted({int(n) for n in (g.get("race_numbers") or []) if int(n) >= 1})
+        if race_number in nums:
+            suffix = chr(ord("A") + nums.index(race_number))
+            label = f"R{nums[0]}{suffix}" if len(nums) > 1 else f"R{race_number}"
+            return gi, label
+    return None, None
+
+
 def _normalize_mini_groups(series, races):
     """Normalize a series' mini-series groups for display and scoring.
 
@@ -4368,10 +4496,27 @@ def _fold_combined_mini_groups(series, agg, race_meta):
             "mini_index": combined_index.get(nums),
             "combined": True,
         })
+        # First pass: compute each boat's daily average and A8 tieback so we
+        # can rank them within the mini-series day.
+        boat_scores = {}
         for bid, entries in agg.items():
-            avg, _drop = _mini_combined_score([entries[j] for j in idxs], g["discards"])
-            new_agg[bid].append({"points": avg, "code": MINI_COMBINED_CODE,
-                                 "discardable": True, "position": None})
+            mini_entries = [entries[j] for j in idxs]
+            avg, drop = _mini_combined_score(mini_entries, g["discards"])
+            mini_tb_1, mini_tb_2 = _a8_tiebreak(mini_entries, drop)
+            boat_scores[bid] = (avg, drop, mini_tb_1, mini_tb_2)
+        # Rank the fleet: best daily average first, then A8 countback over
+        # the day's races breaks ties — the rank (1 for 1st, 2 for 2nd, …)
+        # becomes the single score carried into the main series, matching
+        # the overall-championship convention for combined mini-series days.
+        sorted_bids = sorted(boat_scores, key=lambda b: (
+            boat_scores[b][0], boat_scores[b][2], boat_scores[b][3]))
+        ranks = {bid: i + 1 for i, bid in enumerate(sorted_bids)}
+        # Second pass: folded entry carries the rank, not the average.
+        for bid, entries in agg.items():
+            avg, drop, mini_tb_1, mini_tb_2 = boat_scores[bid]
+            new_agg[bid].append({"points": ranks[bid], "code": MINI_COMBINED_CODE,
+                                 "discardable": True, "position": None,
+                                 "mini_tb": [mini_tb_1, mini_tb_2]})
     return new_agg, new_meta
 
 
@@ -4543,12 +4688,37 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
         }
         if combined_view is not None:
             avg, _drop = _mini_combined_score(entries, combined_view["discards"])
-            row["combined_average"] = round(avg, 2)
+            row["_combined_avg"] = avg
+        # A combined column conceals the day's races, so the main series
+        # breaks ties on it with the mini day's own countback (see
+        # _fold_combined_mini_groups) — never more than one per boat.
+        row["_mini_tb"] = next((e.get("mini_tb") for e in entries if e.get("mini_tb")), None)
         rows.append(row)
-    rows.sort(key=lambda x: (x["net"], x["_tb"][0], x["_tb"][1]))
+
+    def _row_key(r):
+        # A combined mini view ranks by the daily result (the single score it
+        # contributes to the main series), not by the sum of its races; ties
+        # fall back to the mini races' A8 countback. Every other view ranks
+        # by net over its races.
+        key = [(r.get("_combined_avg", r["net"]) if combined_view is not None else r["net"]),
+               r["_tb"][0], r["_tb"][1]]
+        if combined_view is None and r["_mini_tb"] is not None:
+            key += list(r["_mini_tb"])
+        return key
+
+    rows.sort(key=_row_key)
+    # For a combined mini view, replace the average with the finishing
+    # position (1 for 1st, 2 for 2nd, …) — the same position-based
+    # scoring used in the overall championship for combined mini-series.
+    if combined_view is not None:
+        rank_map = {r["boat_id"]: i + 1 for i, r in enumerate(rows)}
+        for r in rows:
+            r["combined_average"] = rank_map[r["boat_id"]]
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)
+        r.pop("_mini_tb", None)
+        r.pop("_combined_avg", None)
     payload = {"race_count": race_count, "races_scored": race_count,
                "discards": discards, "discards_applied": discards,
                "configured_discards": configured_discards,
@@ -4916,9 +5086,17 @@ async def compute_overall_standings(class_id: str, year: int):
         series_names.append(series["name"])
         frozen = await _standings_for_series(series)
         result = frozen if frozen is not None else await compute_series_standings(series)
+        # A combined mini-series day contributes the finishing position
+        # (1 for 1st, 2 for 2nd, …) to the championship rather than the
+        # daily average points — the leaderboard order is what matters when
+        # several races fold into one championship slot.
+        groups = series.get("mini_series_groups") or []
+        use_position = (bool(series.get("mini_series")) and
+                        groups and all(g.get("scoring") == "combined" for g in groups))
         for row in result["standings"]:
-            totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + row["net"]
-            per_series_nets.setdefault(row["boat_id"], {})[series["name"]] = row["net"]
+            net = row["rank"] if use_position else row["net"]
+            totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + net
+            per_series_nets.setdefault(row["boat_id"], {})[series["name"]] = net
     rows = []
     for bid, total in totals.items():
         b = boat_map.get(bid)
@@ -5000,6 +5178,89 @@ async def fleet_search(q: Optional[str] = None, limit: int = 25):
     out = [groups[fid] for fid in order]
     out.sort(key=lambda g: (g["name"] or "").lower())
     return out[: max(1, min(limit, 50))]
+
+
+def _search_rx(q: str):
+    """A case-insensitive regex matching any query token anywhere in a field."""
+    tokens = [re.escape(t) for t in re.split(r"\s+", (q or "").strip()) if t]
+    return re.compile("|".join(tokens), re.IGNORECASE) if tokens else None
+
+
+@api_router.get("/search")
+async def unified_search(q: Optional[str] = None, limit: int = 8):
+    """Public site search: clubs, classes and series (by name) plus boats (by
+    name or sail number). Each type returns the fields needed to link straight
+    to its page — the club landing page for clubs/classes/series, the boat
+    career page for boats."""
+    rx = _search_rx(q)
+    if rx is None:
+        return {"clubs": [], "classes": [], "series": [], "boats": []}
+    lim = max(1, min(limit, 25))
+
+    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+
+    # Clubs: name or slug.
+    club_rows = await db.clubs.find({"$or": [{"name": rx}, {"slug": rx}]}, {"_id": 0}).to_list(100)
+    club_out = []
+    for c in club_rows:
+        n_classes = sum(1 for x in classes.values() if x.get("club_id") == c["id"])
+        club_out.append({"id": c["id"], "name": c.get("name"), "slug": c.get("slug"),
+                         "classes": n_classes})
+    club_out.sort(key=lambda c: (c["name"] or "").lower())
+
+    # Classes: name (club context attached).
+    class_rows = await db.classes.find({"name": rx}, {"_id": 0}).to_list(1000)
+    class_out = []
+    for c in class_rows:
+        club = clubs.get(c.get("club_id"), {})
+        n_series = await db.series.count_documents({"class_id": c["id"]})
+        class_out.append({"id": c["id"], "name": c.get("name"),
+                          "club_name": club.get("name", ""), "club_slug": club.get("slug", ""),
+                          "series": n_series})
+    class_out.sort(key=lambda c: (c["name"] or "").lower())
+
+    # Series: name (class + club context attached).
+    series_rows = await db.series.find({"name": rx}, {"_id": 0}).to_list(1000)
+    series_out = []
+    for s in series_rows:
+        cls = classes.get(s.get("class_id"), {})
+        club = clubs.get(cls.get("club_id"), {})
+        series_out.append({"id": s["id"], "name": s.get("name"), "year": s.get("year"),
+                           "class_id": s.get("class_id"), "class_name": cls.get("name", ""),
+                           "club_name": club.get("name", ""), "club_slug": club.get("slug", "")})
+    series_out.sort(key=lambda s: (s["name"] or "").lower())
+
+    # Boats: same grouped-by-identity logic as fleet_search.
+    boat_cond = []
+    for t in re.split(r"\s+", (q or "").strip()):
+        boat_cond.append({"name": rx})
+        boat_cond.append({"sail_no": rx})
+    clean_q = _clean_fleet_part(q)
+    if clean_q:
+        boat_cond.append({"fleet_key": {"$regex": re.escape(clean_q), "$options": "i"}})
+    boat_docs = await db.boats.find({"$or": boat_cond}, {"_id": 0}).to_list(2000)
+    groups = {}
+    order = []
+    for b in boat_docs:
+        gid = b.get("fleet_key") or b.get("fleet_id") or b["id"]
+        if gid not in groups:
+            groups[gid] = {"fleet_id": b.get("fleet_id") or b["id"], "name": b.get("name"),
+                           "sail_no": b.get("sail_no"), "clubs": [], "classes": [], "records": 0}
+            order.append(gid)
+        g = groups[gid]
+        cls = classes.get(b.get("class_id"), {})
+        club = clubs.get(cls.get("club_id"), {})
+        if club.get("name") and club["name"] not in g["clubs"]:
+            g["clubs"].append(club["name"])
+        if cls.get("name") and cls["name"] not in g["classes"]:
+            g["classes"].append(cls["name"])
+        g["records"] += 1
+    boat_out = [groups[fid] for fid in order]
+    boat_out.sort(key=lambda g: (g["name"] or "").lower())
+
+    return {"clubs": club_out[:lim], "classes": class_out[:lim],
+            "series": series_out[:lim], "boats": boat_out[:lim]}
 
 
 @api_router.get("/fleet/{fleet_id}")

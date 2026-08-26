@@ -92,6 +92,8 @@ export const api = {
   // several classes; search groups its records under a single fleet identity.
   fleetSearch: (q) => client.get("/fleet/search", { params: { q } }).then((r) => r.data),
   fleetProfile: (id) => client.get(`/fleet/${id}`).then((r) => r.data),
+  // Unified public search: clubs, classes, series and boats.
+  siteSearch: (q) => client.get("/search", { params: { q } }).then((r) => r.data),
 
   getSeries: (params = {}) => client.get("/series", { params }).then((r) => r.data),
   createSeries: (d) => client.post("/series", d).then((r) => r.data),
@@ -99,6 +101,7 @@ export const api = {
   deleteSeries: (id, v) => client.delete(`/series/${id}`, { params: verQuery(v) }).then((r) => r.data),
   generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
   splitMiniSeries: (id, d, v) => client.post(`/series/${id}/mini-split`, withVer(d, v)).then((r) => r.data),
+  addMiniRace: (id, gi, d) => client.post(`/series/${id}/mini/${gi}/races`, d).then((r) => r.data),
   scheduledRaces: (date) => client.get("/scheduled-races", { params: date ? { date } : {} }).then((r) => r.data),
   lockSeries: (id, reason, v) => client.post(`/series/${id}/lock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   unlockSeries: (id, reason, v) => client.post(`/series/${id}/unlock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),

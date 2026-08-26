@@ -760,7 +760,7 @@ function SeriesTab({ classes, clubId }) {
                 </Tooltip>
                 {form.mini_series && (
                   <>
-                    <p className="text-xs text-muted-foreground">Give each mini series a name, pick which races it contains and set its own discards. The full series keeps its own discards and still counts toward the overall championship.</p>
+                    <p className="text-xs text-muted-foreground">Give each mini series a name, pick which races it contains and set its own discards. A mini series can hold any number of races — scored either as <strong>one combined daily result</strong> or as separate races in the main series. The full series keeps its own discards and still counts toward the overall championship. On race day the race officer can also split a planned race into a mini series from their console.</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="flex items-center gap-2">
                         <Label className="text-xs">Races per mini</Label>
