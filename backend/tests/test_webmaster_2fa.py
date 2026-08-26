@@ -133,6 +133,46 @@ def make_session_request():
     return FakeRequest(cookies={server.SESSION_COOKIE: token})
 
 
+CLUB_ID = "club-1"
+OFFICER_ID = "off-1"
+OFFICER_EMAIL = "officer@test.club"
+OFFICER_PASSCODE = "off1234!"
+
+
+def make_club_db():
+    """A fake DB with a club + an officer account (email username), so the
+    club-staff 2FA flow can be exercised without the shared webmaster."""
+    db = make_db()
+    db.clubs.docs.append({"id": CLUB_ID, "name": "Test Club", "slug": "test-club"})
+    db.users.docs.append({
+        "id": OFFICER_ID, "club_id": CLUB_ID, "role": "officer",
+        "username": OFFICER_EMAIL, "name": "Officer",
+        "passcode_hash": server.hash_passcode(OFFICER_PASSCODE),
+        "active": True, "token_version": 0, "failed_attempts": 0,
+    })
+    return db
+
+
+def _officer_actor():
+    return {"user_id": OFFICER_ID, "username": OFFICER_EMAIL,
+            "role": "officer", "club_id": CLUB_ID}
+
+
+def _enable_officer_2fa(email=None):
+    req = FakeRequest()
+    actor = _officer_actor()
+    secret = asyncio.run(server.tfa_setup(req, actor))["secret"]
+    asyncio.run(server.tfa_enable(types.SimpleNamespace(
+        code=pyotp.TOTP(secret).now(), email=email), req, actor))
+    return secret
+
+
+def _login_officer(passcode=OFFICER_PASSCODE):
+    return asyncio.run(server.login(types.SimpleNamespace(
+        role="officer", username=OFFICER_EMAIL, passcode=passcode,
+        club_id=CLUB_ID), FakeRequest(ip="10.0.0.1")))
+
+
 def make_pending_request():
     """A request carrying a valid pending-2FA cookie (passcode step done)."""
     token = server.create_pending_2fa_token(USER_ID)
@@ -382,6 +422,76 @@ class TestForgotPassword:
         r = self._forgot("webmaster@test.club")
         assert r == {"ok": True}
         assert not r.get("dev_reset_token")
+
+
+# ---------------------------------------------------------------------------
+# Club staff 2FA (officer / admin accounts, not just the webmaster)
+# ---------------------------------------------------------------------------
+class TestClubUser2FA:
+    def _use_club_db(self):
+        server.db = make_club_db()
+
+    def test_status_uses_email_username_as_fallback(self):
+        self._use_club_db()
+        st = asyncio.run(server.tfa_status(FakeRequest(), _officer_actor()))
+        assert st["enabled"] is False
+        assert st["has_email"] is True  # username (their login email) is the fallback
+        assert "officer@test.club" not in st["email"]
+        assert st["email"].endswith("@test.club")
+
+    def test_enrollment_and_status_for_officer(self):
+        self._use_club_db()
+        _enable_officer_2fa()
+        st = asyncio.run(server.tfa_status(FakeRequest(), _officer_actor()))
+        assert st["enabled"] is True
+
+    def test_officer_login_requires_second_factor(self):
+        self._use_club_db()
+        _enable_officer_2fa()
+        resp = _login_officer()
+        assert resp.status_code == 200
+        assert '"requires_2fa":true' in resp.body.decode()
+        joined = " ".join(f"{k.decode()}={v.decode()}" for k, v in resp.raw_headers)
+        assert "scr_pending2fa=" in joined
+
+    def test_officer_2fa_completes_with_totp(self):
+        self._use_club_db()
+        secret = _enable_officer_2fa()
+        _login_officer()
+        req = FakeRequest(cookies={server.PENDING2FA_COOKIE:
+                                  server.create_pending_2fa_token(OFFICER_ID)})
+        resp = asyncio.run(server.login_2fa(types.SimpleNamespace(
+            code=pyotp.TOTP(secret).now(), method="totp"), req))
+        assert resp.status_code == 200
+        body = resp.body.decode()
+        assert '"role":"officer"' in body
+        assert f'"club_id":"{CLUB_ID}"' in body
+        joined = " ".join(f"{k.decode()}={v.decode()}" for k, v in resp.raw_headers)
+        assert "scr_token=" in joined
+
+    def test_officer_email_fallback_goes_to_username(self):
+        self._use_club_db()
+        _enable_officer_2fa(email=None)  # defaults to the email username
+        _login_officer()
+        req = FakeRequest(cookies={server.PENDING2FA_COOKIE:
+                                  server.create_pending_2fa_token(OFFICER_ID)})
+        resp = asyncio.run(server.send_email_2fa_code(req))
+        assert resp.get("ok") is True
+        dev = resp.get("dev_code")
+        assert dev and len(dev) == 6
+        final = asyncio.run(server.login_2fa(types.SimpleNamespace(
+            code=dev, method="email"), req))
+        assert final.status_code == 200
+
+    def test_officer_can_disable_2fa(self):
+        self._use_club_db()
+        secret = _enable_officer_2fa()
+        r = asyncio.run(server.tfa_disable(types.SimpleNamespace(
+            current_passcode=OFFICER_PASSCODE,
+            code=pyotp.TOTP(secret).now(), method="totp"),
+            FakeRequest(), _officer_actor()))
+        assert r["enabled"] is False
+        assert not server.db.users.docs[1].get("totp_enabled")
 
 
 # ---------------------------------------------------------------------------

@@ -103,8 +103,13 @@ export default function Login() {
     setLoading(true);
     try {
       const r = await login2fa(otpMethod, otpCode.trim());
-      toast.success("Signed in as Webmaster");
-      navigate("/webmaster");
+      if (r.role === "webmaster") {
+        toast.success("Signed in as Webmaster");
+        navigate("/webmaster");
+      } else {
+        toast.success(`Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
+        navigate(r.role === "admin" ? "/admin" : "/officer");
+      }
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Invalid verification code");
       setOtpCode("");

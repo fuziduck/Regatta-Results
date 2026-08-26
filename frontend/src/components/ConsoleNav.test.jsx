@@ -8,12 +8,30 @@ import { createRoot } from "react-dom/client";
 const mockLogout = jest.fn();
 const mockNavigate = jest.fn();
 const mockUpdate = jest.fn();
+// Mutable holder so individual tests can set the role (the Security entry is
+// hidden for the webmaster, who has a dedicated section instead).
+const mockAuth = { role: "webmaster", logout: mockLogout, updateSession: mockUpdate };
 
 jest.mock("@/context/AuthContext", () => ({
-  useAuth: () => ({ role: "webmaster", logout: mockLogout, updateSession: mockUpdate }),
+  useAuth: () => mockAuth,
 }));
 jest.mock("react-router-dom", () => ({ useNavigate: () => mockNavigate }));
 jest.mock("@/components/ThemeToggle", () => () => <button type="button" data-testid="theme-toggle" />);
+// The 2FA dialog fetches status when it opens. react-scripts sets
+// resetMocks:true, so the implementation is attached in beforeEach instead.
+jest.mock("@/lib/api", () => ({
+  api: {
+    get2faStatus: jest.fn(),
+    setup2fa: jest.fn(), enable2fa: jest.fn(), disable2fa: jest.fn(),
+    sendEmailCode: jest.fn(), update2faEmail: jest.fn(),
+  },
+  formatApiError: (d) => d || "error",
+}));
+const mockApi = require("@/lib/api").api;
+
+beforeEach(() => {
+  mockApi.get2faStatus.mockResolvedValue({ enabled: false, email: "", has_email: false, methods: ["totp"] });
+});
 
 import ConsoleNav from "./ConsoleNav";
 
@@ -165,6 +183,24 @@ describe("ConsoleNav mobile menu", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/");
   });
 
+  it("shows the Security entry for club staff but not the webmaster", () => {
+    mockAuth.role = "officer";
+    renderNav(baseProps());
+    expect(container.querySelector('[data-testid="security-btn"]')).not.toBeNull();
+    mockAuth.role = "webmaster";
+    renderNav(baseProps());
+    expect(container.querySelector('[data-testid="security-btn"]')).toBeNull();
+  });
+
+  it("opens the 2FA dialog from the desktop Security button", () => {
+    mockAuth.role = "officer";
+    renderNav(baseProps());
+    act(() => {
+      container.querySelector('[data-testid="security-btn"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-testid="security-dialog"]')).not.toBeNull();
+  });
+
   it("opens the passcode dialog from the menu", () => {
     renderNav(baseProps());
     openMenu();
@@ -172,5 +208,19 @@ describe("ConsoleNav mobile menu", () => {
       document.body.querySelector('[data-testid="menu-change-passcode"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("lists Security in the mobile menu for club staff", () => {
+    mockAuth.role = "officer";
+    renderNav(baseProps());
+    openMenu();
+    expect(document.body.querySelector('[data-testid="menu-security"]')).not.toBeNull();
+  });
+
+  it("omits Security from the mobile menu for the webmaster", () => {
+    mockAuth.role = "webmaster";
+    renderNav(baseProps());
+    openMenu();
+    expect(document.body.querySelector('[data-testid="menu-security"]')).toBeNull();
   });
 });

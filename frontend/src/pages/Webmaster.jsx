@@ -8,7 +8,7 @@ import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
 import AuditLog from "@/components/AuditLog";
-import WebmasterSecurity from "@/components/WebmasterSecurity";
+import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -389,7 +389,17 @@ export default function Webmaster() {
           </div>
         )}
         {section === "backup" && <BackupSection clubs={clubs} />}
-        {section === "security" && <WebmasterSecurity />}
+        {section === "security" && (
+          <div>
+            <div className="mb-6">
+              <h1 className="text-3xl uppercase tracking-tighter mb-1">Security</h1>
+              <p className="text-muted-foreground text-sm">
+                Two-factor authentication for the webmaster account — the one that can download every club's backup and restore the whole system.
+              </p>
+            </div>
+            <TwoFactorAuth />
+          </div>
+        )}
         </main>
       </div>
 

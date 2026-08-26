@@ -7,13 +7,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
-import { ShieldCheck, ShieldOff, Mail, Smartphone, KeyRound, Trash2 } from "lucide-react";
+import { ShieldCheck, ShieldOff, Mail, Smartphone } from "lucide-react";
 
-// Webmaster two-factor authentication: TOTP from an authenticator app, with
-// an emailed one-time code as the fallback recovery path. Backups and restore
-// are protected by this — an attacker who steals the session still cannot
-// turn it off without the passcode AND a live code.
-export default function WebmasterSecurity() {
+// Two-factor authentication (TOTP from an authenticator app, with an emailed
+// one-time code as the recovery fallback) for any signed-in account — the
+// webmaster console renders this as a section, club staff get it in a dialog
+// from the console top bar. Disabling requires the passcode AND a live code,
+// so a stolen session alone cannot turn it off.
+export default function TwoFactorAuth() {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -107,13 +108,13 @@ export default function WebmasterSecurity() {
     setBusy(true);
     try {
       await api.update2faEmail(emailPasscode, emailValue.trim());
-      toast.success("Fallback email updated");
+      toast.success("Recovery email updated");
       setEmailOpen(false);
       setEmailValue("");
       setEmailPasscode("");
       load();
     } catch (e) {
-      toast.error(formatApiError(e.response?.data?.detail) || "Could not update fallback email");
+      toast.error(formatApiError(e.response?.data?.detail) || "Could not update recovery email");
     } finally {
       setBusy(false);
     }
@@ -124,29 +125,18 @@ export default function WebmasterSecurity() {
   // The 2FA status is fetched on mount; until it resolves there is nothing
   // safe to render (status fields are read directly below).
   if (!status) {
-    return (
-      <div>
-        <div className="mb-6">
-          <h1 className="text-3xl uppercase tracking-tighter mb-1">Security</h1>
-          <p className="text-muted-foreground text-sm">
-            Two-factor authentication for the webmaster account — the one that can download every club's backup and restore the whole system.
-          </p>
-        </div>
-        <p className="text-sm text-muted-foreground">Loading security settings…</p>
-      </div>
-    );
+    return <p className="text-sm text-muted-foreground">Loading security settings…</p>;
   }
 
   return (
     <div>
-
       {!enabled && (
         <div className="rounded-2xl border border-amber-300 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/40 p-4 mb-5 text-sm text-amber-800 dark:text-amber-200" data-testid="2fa-warning">
           <div className="flex items-center gap-2 font-semibold">
-            <ShieldOff className="w-4 h-4" /> 2FA is off — backups & restore are protected by passcode only
+            <ShieldOff className="w-4 h-4" /> 2FA is off — sign-in is protected by passcode only
           </div>
           <p className="mt-1 text-xs opacity-90">
-            A leaked passcode would let someone download every club's data or overwrite the system. Enable two-factor authentication below.
+            A leaked passcode would let someone into this account. Enable two-factor authentication below.
           </p>
         </div>
       )}
@@ -162,7 +152,7 @@ export default function WebmasterSecurity() {
               <p className="text-xs text-muted-foreground mt-0.5">
                 {enabled
                   ? `Authenticator app${status.has_email ? " + emailed fallback code" : ""} required to sign in.`
-                  : "Sign-in currently requires only the webmaster passcode."}
+                  : "Sign-in currently requires only your passcode."}
               </p>
             </div>
           </div>
@@ -190,7 +180,7 @@ export default function WebmasterSecurity() {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            This backup email receives 2FA sign-in codes and the passcode-reset link if you ever forget your passcode. Keep it up to date.
+            Emailed one-time codes are your recovery path if the authenticator app is lost. Keep it up to date.
           </p>
         </div>
       </div>
@@ -219,10 +209,10 @@ export default function WebmasterSecurity() {
                 </InputOTP>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="enable-email">Fallback email (optional but recommended)</Label>
+                <Label htmlFor="enable-email">Recovery email (optional)</Label>
                 <Input id="enable-email" type="email" data-testid="enable-email-input" value={enableEmail}
                   onChange={(e) => setEnableEmail(e.target.value)} placeholder="you@example.org" />
-                <p className="text-xs text-muted-foreground">Used to email you a sign-in code if you lose the app.</p>
+                <p className="text-xs text-muted-foreground">Emailed to you for one-time sign-in codes if the app is lost.</p>
               </div>
               <DialogFooter>
                 <Button variant="outline" disabled={busy} onClick={() => setEnableOpen(false)}>Cancel</Button>
@@ -243,7 +233,7 @@ export default function WebmasterSecurity() {
           <DialogHeader><DialogTitle className="font-heading uppercase">Disable two-factor authentication</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-destructive font-semibold">
-              Disabling 2FA means backups & restore will be protected by the passcode alone. This requires your passcode AND a live code.
+              Disabling 2FA means sign-in is protected by the passcode alone. This requires your passcode AND a live code.
             </p>
             <div className="space-y-1.5">
               <Label htmlFor="disable-passcode">Current passcode</Label>
@@ -280,10 +270,10 @@ export default function WebmasterSecurity() {
       {/* Fallback email dialog */}
       <Dialog open={emailOpen} onOpenChange={(o) => { if (!o) setEmailOpen(false); }}>
         <DialogContent data-testid="fallback-email-dialog">
-          <DialogHeader><DialogTitle className="font-heading uppercase">Fallback email</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle className="font-heading uppercase">Recovery email</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Emailed sign-in codes are your recovery path if the authenticator app is lost. Confirm your passcode to change it.
+              Emailed one-time codes are your recovery path if the authenticator app is lost. Confirm your passcode to change it.
             </p>
             <div className="space-y-1.5">
               <Label htmlFor="fb-email">Email address</Label>

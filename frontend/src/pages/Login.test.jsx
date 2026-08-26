@@ -176,4 +176,22 @@ describe("two-step webmaster login", () => {
     expect(mockAuth.login2fa).toHaveBeenCalledWith("totp", "123456");
     expect(mockNavigate).toHaveBeenCalledWith("/webmaster");
   });
+
+  it("completes login for a club admin with a verification code", async () => {
+    mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "club", name: "Club" }]);
+    mockAuth.login.mockResolvedValue({ requires_2fa: true, methods: ["totp", "email"] });
+    mockAuth.login2fa.mockResolvedValue({ role: "admin", club_id: "c1", club_name: "Club" });
+    renderLogin();
+    await act(async () => {}); // flush the clubs fetch so clubId is set
+    typeUsername("admin@club.org");
+    act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "test1234!"));
+    await submitPasscode();
+    // The routing hint is "officer"; the account's real role comes from the server.
+    expect(mockAuth.login).toHaveBeenCalledWith("officer", "admin@club.org", "test1234!", "c1");
+    const otpEl = container.querySelector('[data-testid="otp-input"]');
+    const hidden = otpEl.tagName === "INPUT" ? otpEl : otpEl.querySelector("input");
+    act(() => setNativeValue(hidden, "123456"));
+    await submitPasscode();
+    expect(mockNavigate).toHaveBeenCalledWith("/admin");
+  });
 });

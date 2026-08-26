@@ -1,7 +1,7 @@
-// Regression: the Security console reads status fields directly in the
-// render, so it must not render them until get2faStatus resolves. Mounting
-// with a pending status fetch used to throw "Cannot read properties of null
-// (reading 'email')" and blank the whole page.
+// Regression: the 2FA panel reads status fields directly in the render, so it
+// must not render them until get2faStatus resolves. Mounting with a pending
+// status fetch used to throw "Cannot read properties of null (reading
+// 'email')" and blank the page.
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -18,7 +18,7 @@ jest.mock("@/lib/api", () => {
 });
 jest.mock("sonner", () => ({ toast: { error: jest.fn(), success: jest.fn(), info: jest.fn() } }));
 
-import WebmasterSecurity from "./WebmasterSecurity";
+import TwoFactorAuth from "./TwoFactorAuth";
 
 const mockApi = require("@/lib/api").api;
 
@@ -49,7 +49,7 @@ const renderPage = () => {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<WebmasterSecurity />);
+    root.render(<TwoFactorAuth />);
   });
   return container;
 };
@@ -68,13 +68,12 @@ afterEach(async () => {
   mockApi.get2faStatus.mockClear();
 });
 
-describe("WebmasterSecurity", () => {
+describe("TwoFactorAuth", () => {
   it("does not crash while the status fetch is pending", async () => {
     // Never-resolving promise: the component mounts with status === null.
     mockApi.get2faStatus.mockReturnValue(new Promise(() => {}));
     renderPage();
     await act(async () => {});
-    expect(container.textContent).toContain("Security");
     expect(container.textContent).toContain("Loading security settings");
   });
 
