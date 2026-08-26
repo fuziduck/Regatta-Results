@@ -16,6 +16,8 @@ jest.mock("@/lib/api", () => {
     getBoats: jest.fn(),
     seriesStandings: jest.fn(),
     addMiniRace: jest.fn(),
+    selectBoats: jest.fn(),
+    setStatus: jest.fn(),
   };
   return { api };
 });
@@ -59,17 +61,12 @@ beforeEach(() => {
     { id: "b1", name: "Bluebell", sail_no: "1" },
     { id: "b2", name: "Screwloose", sail_no: "2" },
   ]);
-  mockApi.seriesStandings.mockResolvedValue({
-    races: [{ race_number: 1, mini_name: "Day" }, { race_number: 2 }],
-    mini_combined: { discards: 0 },
-    standings: [
-      { rank: 1, boat_id: "b1", boat_name: "Bluebell", sail_no: "1", scores: [{ points: 1, discarded: false }, { points: 2, discarded: false }], combined_average: 1.5 },
-    ],
-  });
   mockApi.addMiniRace.mockResolvedValue({
     group: { name: "Day", race_numbers: [1, 2, 3], discards: 0, scoring: "combined" },
     race: { id: "r3", race_number: 3, mini_group_label: "R1C", mini_group_id: 0 },
   });
+  mockApi.selectBoats.mockResolvedValue({});
+  mockApi.setStatus.mockResolvedValue({});
 });
 
 afterEach(async () => {
@@ -98,14 +95,22 @@ describe("Mini series scoring page", () => {
     expect(container.textContent).toContain("Not started");
   });
 
-  it("renders the combined-result preview for combined scoring", async () => {
+  it("shows the races as a timeline with per-race steps in order", async () => {
     renderPage();
     await act(async () => {});
-    const preview = container.querySelector('[data-testid="combined-preview"]');
-    expect(preview).not.toBeNull();
-    expect(preview.textContent).toContain("View combined result");
-    expect(preview.textContent).toContain("Bluebell");
-    expect(preview.textContent).toContain("1.5"); // daily average
+    // 2 races → the timeline is pre-shown with both steps and connectors.
+    const timeline = container.querySelector('[data-testid="race-timeline"]');
+    expect(timeline).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-race-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-race-2"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid^="timeline-race-"]').length).toBe(2);
+    // Statuses: R1 published, R2 pending → "Published" and "Score now".
+    expect(container.querySelector('[data-testid="timeline-race-1"]').textContent).toContain("Published");
+    expect(container.querySelector('[data-testid="timeline-race-2"]').textContent).toContain("Score now");
+    // The next-race cue guides the officer race 1 → race 2.
+    const nextBtn = container.querySelector('[data-testid="next-race-btn-1"]');
+    expect(nextBtn).not.toBeNull();
+    expect(nextBtn.textContent).toContain("R1B");
   });
 
   it("adds a race to the mini series on the day", async () => {
@@ -118,6 +123,60 @@ describe("Mini series scoring page", () => {
     expect(mockApi.addMiniRace).toHaveBeenCalledWith("s1", 0, {});
     // The page reloads the group's races after adding.
     expect(mockApi.getRaces).toHaveBeenCalled();
+  });
+
+  it("shows the 3-step workflow banner and the fleet sign-on section", async () => {
+    renderPage();
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="workflow-steps"]')).not.toBeNull();
+    expect(container.textContent).toContain("Sign on the fleet");
+    expect(container.textContent).toContain("Score each race");
+    expect(container.textContent).toContain("Publish results");
+    // Fleet chips seeded from race 1's racing boats (both boats) with a count.
+    expect(container.querySelector('[data-testid="fleet-boat-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="fleet-boat-2"]')).not.toBeNull();
+    expect(container.textContent).toContain("2 of 2 boats");
+  });
+
+  it("applies the fleet selection to every unpublished race", async () => {
+    renderPage();
+    await act(async () => {});
+    const apply = container.querySelector('[data-testid="fleet-apply-btn"]');
+    expect(apply).not.toBeNull();
+    act(() => apply.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    // r1 is published (skipped), r2 is setup — signed on with both boats.
+    expect(mockApi.selectBoats).toHaveBeenCalledTimes(1);
+    expect(mockApi.selectBoats).toHaveBeenCalledWith("r2", ["b1", "b2"], 1);
+    // The page refreshes the group's races afterwards.
+    expect(mockApi.getRaces).toHaveBeenCalled();
+  });
+
+  it("auto-expands unpublished race cards so scoring controls are visible", async () => {
+    renderPage();
+    await act(async () => {});
+    // Race 2 is unpublished — its boat-selection controls show without clicking.
+    expect(container.textContent).toContain("Boats racing");
+    expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Boats racing");
+  });
+
+  it("shows a Scored badge once every racing boat has finished", async () => {
+    // Race 2 has both boats finished but is not yet published → "Scored".
+    mockApi.getRace.mockImplementation(async (id) => {
+      if (id === "r2") {
+        return {
+          id: "r2", race_number: 2, mini_group_label: "R1B", date: "2026-05-02", start_time: "11:30", class_id: "cl1", status: "setup", version: 1,
+          results: [
+            { boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:45:00Z" },
+            { boat_id: "b2", code: "FINISHED", position: 2, finish_time: "2026-05-02T11:46:00Z" },
+          ],
+        };
+      }
+      return races.find((r) => r.id === id);
+    });
+    renderPage();
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Scored");
   });
 });
 

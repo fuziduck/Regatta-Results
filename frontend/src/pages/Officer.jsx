@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ConsoleNav from "@/components/ConsoleNav";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel } from "@/lib/helpers";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, Plus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers } from "lucide-react";
+import { Anchor, Plus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers, Globe } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -45,7 +45,7 @@ function startRefMs(race) {
   return Number.isNaN(d.getTime()) ? null : d.getTime();
 }
 
-function TopBar({ clubName, onSwitchClub }) {
+function TopBar({ clubName, onSwitchClub, clubSlug }) {
   const { role, updateSession } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -73,6 +73,12 @@ function TopBar({ clubName, onSwitchClub }) {
               icon: null,
               onClick: () => navigate(clubQuery ? `/admin?club=${clubQuery}` : "/admin"),
             }] : []),
+            {
+              key: "site",
+              label: "View site",
+              icon: <Globe className="w-4 h-4 mr-1" />,
+              onClick: () => navigate(clubSlug ? `/club/${clubSlug}` : "/"),
+            },
             ...(role === "webmaster" && onSwitchClub ? [{
               key: "switch",
               label: "Switch club",
@@ -385,7 +391,7 @@ function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces 
           <Button variant="ghost" size="sm" onClick={onBack} data-testid="console-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
           <div className="flex-1">
             <div className="font-heading text-lg uppercase tracking-tight leading-none">{meta.class_name} · {meta.series_name}</div>
-            <div className="text-xs text-muted-foreground">Race {race.race_number} · {fmtDate(race.date)} · Start {race.start_time}</div>
+            <div className="text-xs text-muted-foreground">{race.mini_group_label || `Race ${race.race_number}`} · {fmtDate(race.date)} · Start {race.start_time}</div>
           </div>
           <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
           {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300" data-testid="abandoned-badge">Abandoned</Badge>}
@@ -712,10 +718,10 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
   const [expandMap, setExpandMap] = useState({});
   const [loading, setLoading] = useState(true);
   const [addingRace, setAddingRace] = useState(false);
-  // Combined-result preview for "combined" mini series: the mini standings
-  // view, which also carries each boat's daily average that feeds the series.
-  const [combined, setCombined] = useState(null);
-  const [combinedBusy, setCombinedBusy] = useState(false);
+  // Fleet sign-on: ONE boat selection shared across every race in the group.
+  const [fleetSelected, setFleetSelected] = useState([]);
+  const [fleetBusy, setFleetBusy] = useState(false);
+  const [fleetInitialised, setFleetInitialised] = useState(false);
 
   const fetchRace = useCallback(async (raceId) => {
     try { return await api.getRace(raceId); } catch { return null; }
@@ -754,6 +760,33 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     return () => { cancelled = true; };
   }, [loadGroup]);
 
+  // Auto-expand every unpublished race so the scoring controls are visible
+  // immediately — the officer scores race 1, then race 2, and so on down the
+  // page without clicking each card open. Once seeded, manual expand/collapse
+  // state is respected.
+  useEffect(() => {
+    if (loading) return;
+    setExpandMap((prev) => {
+      if (Object.keys(prev).length === races.length) return prev;
+      const map = {};
+      races.forEach((r) => (map[r.id] = r.status !== "published"));
+      return map;
+    });
+  }, [loading, races]);
+
+  // Seed the fleet selection from the first race once the group loads.
+  useEffect(() => {
+    if (loading || fleetInitialised || !races.length) return;
+    const first = races[0];
+    const racing = (first.results || []).filter((r) => r.code !== "DNC").map((r) => r.boat_id);
+    setFleetSelected(racing);
+    setFleetInitialised(true);
+  }, [loading, fleetInitialised, races]);
+
+  const allBoatIds = Object.keys(boatsMap);
+  const toggleFleetBoat = (bid) =>
+    setFleetSelected((prev) => (prev.includes(bid) ? prev.filter((x) => x !== bid) : [...prev, bid]));
+
   const mutate = useCallback(async (fn, silent) => {
     try {
       const r = await fn();
@@ -768,6 +801,33 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
       return null;
     }
   }, []);
+
+  // Apply the fleet selection to every unpublished race in the group, then
+  // refresh so the race cards reflect the signed-on fleet.
+  const applyFleet = useCallback(async () => {
+    setFleetBusy(true);
+    try {
+      let applied = 0;
+      for (const race of races) {
+        if (race.status === "published") continue;
+        const r = await mutate(() => api.selectBoats(race.id, fleetSelected, race.version), true);
+        if (r) applied++;
+      }
+      if (applied) toast.success(`Fleet signed on for ${applied} race${applied > 1 ? "s" : ""}`);
+      const allRaces = await api.getRaces({ series_id: seriesId, club_id: clubId });
+      const updated = [];
+      for (const r of allRaces) {
+        if ((group.race_numbers || []).includes(r.race_number)) {
+          const fresh = await fetchRace(r.id);
+          if (fresh) updated.push(fresh);
+        }
+      }
+      updated.sort((a, b) => a.race_number - b.race_number);
+      setRaces(updated);
+    } finally {
+      setFleetBusy(false);
+    }
+  }, [races, fleetSelected, group, seriesId, clubId, mutate, fetchRace]);
 
   const refreshRace = useCallback(async (raceId, setFn) => {
     const fresh = await fetchRace(raceId);
@@ -823,18 +883,6 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     setRaces(updated);
   }, [races, group, seriesId, clubId, mutate, fetchRace]);
 
-  // Refresh the combined-result preview whenever the races change.
-  useEffect(() => {
-    if (group.scoring !== "combined") { setCombined(null); return; }
-    let cancelled = false;
-    setCombinedBusy(true);
-    api.seriesStandings(seriesId, clubId, groupIndex + 1)
-      .then((d) => { if (!cancelled) setCombined(d); })
-      .catch(() => { if (!cancelled) setCombined(null); })
-      .finally(() => { if (!cancelled) setCombinedBusy(false); });
-    return () => { cancelled = true; };
-  }, [group.scoring, groupIndex, seriesId, clubId, races.length]);
-
   // Grow the mini series by one race on the day (only possible when it is the
   // last group of the series — the backend enforces this too).
   const addRace = useCallback(async () => {
@@ -853,6 +901,35 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
   const toggleExpand = (raceId) => setExpandMap((prev) => ({ ...prev, [raceId]: !prev[raceId] }));
   const remaining = races.filter((r) => r.status !== "published");
   const allPublished = remaining.length === 0;
+
+  // A race's step on the timeline: Published / Scored (all finishes in) /
+  // the first race still to score (Active) / everything later (Pending).
+  const raceState = (race) => {
+    if (race.status === "published") return "published";
+    const racing = (race.results || []).filter((r) => r.code !== "DNC");
+    if (racing.length > 0 && racing.every((r) => r.code === "FINISHED")) return "scored";
+    return "pending";
+  };
+  const firstActiveIdx = races.findIndex((r) => raceState(r) === "pending");
+  const stateFor = (race, i) => {
+    if (raceState(race) !== "pending") return raceState(race);
+    return i === firstActiveIdx ? "active" : "pending";
+  };
+  const goToRace = (race) => {
+    if (race.status !== "published" && !expandMap[race.id]) {
+      setExpandMap((prev) => ({ ...prev, [race.id]: true }));
+    }
+    requestAnimationFrame(() => {
+      document.getElementById(`batch-race-${race.race_number}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  const STEP_STYLES = {
+    published: "bg-emerald-600 text-white border-emerald-600",
+    scored: "bg-amber-400 text-white border-amber-400",
+    active: "bg-ocean text-white border-ocean ring-2 ring-ocean/30",
+    pending: "bg-muted text-muted-foreground border-border",
+  };
 
   if (loading) {
     return (
@@ -893,6 +970,87 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
 
       {/* Race cards */}
       <div className="max-w-5xl mx-auto px-4 pt-5 space-y-4">
+        {/* Workflow guidance: sign on → score each race → publish */}
+        <div className="rounded-xl border border-border bg-card px-4 py-3 text-sm flex flex-wrap items-center gap-x-4 gap-y-1" data-testid="workflow-steps">
+          <span className="flex items-center gap-1.5"><span className="w-5 h-5 rounded-full bg-ocean text-white grid place-items-center text-[11px] font-heading">1</span> Sign on the fleet</span>
+          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          <span className="flex items-center gap-1.5"><span className="w-5 h-5 rounded-full bg-ocean text-white grid place-items-center text-[11px] font-heading">2</span> Score each race</span>
+          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          <span className="flex items-center gap-1.5"><span className="w-5 h-5 rounded-full bg-emerald-600 text-white grid place-items-center text-[11px] font-heading">3</span> Publish results</span>
+        </div>
+
+        {/* Step 1 — sign on the fleet: ONE selection applied to every race */}
+        <div className="rounded-xl border border-border bg-card p-4" data-testid="fleet-signon">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <span className="w-6 h-6 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading font-bold text-sm">1</span>
+            <h3 className="font-heading uppercase tracking-tight text-sm">Sign on the fleet</h3>
+            <span className="ml-auto text-xs text-muted-foreground">{fleetSelected.length} of {allBoatIds.length} boats</span>
+          </div>
+          <p className="text-xs text-muted-foreground mb-2.5">Pick which boats are racing — the selection applies to every race in this mini series.</p>
+          {allBoatIds.length > 0 ? (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {allBoatIds.map((bid) => {
+                  const b = boatsMap[bid] || {};
+                  const on = fleetSelected.includes(bid);
+                  return (
+                    <button key={bid} onClick={() => toggleFleetBoat(bid)} data-testid={`fleet-boat-${b.sail_no || bid}`}
+                      className={`rounded-lg border px-2 py-1 text-xs font-semibold transition-all active:scale-95 ${on ? "bg-ocean text-white border-ocean" : "bg-background border-border text-muted-foreground hover:border-ocean/40"}`}>
+                      {b.name || "?"} <span className="font-mono opacity-80">{b.sail_no || ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 mt-3">
+                <Button size="sm" variant="outline" onClick={() => setFleetSelected([...allBoatIds])} data-testid="fleet-signon-all">Sign on all</Button>
+                <Button size="sm" variant="outline" onClick={() => setFleetSelected([])} data-testid="fleet-signon-none">Clear</Button>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 ml-auto gap-1.5" onClick={applyFleet} disabled={fleetBusy} data-testid="fleet-apply-btn">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {fleetBusy ? "Applying…" : "Apply to all races"}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">No boats registered for this class yet.</p>
+          )}
+        </div>
+
+        {/* Timeline: every race pre-shown in order, so the officer scores
+            race 1 → race 2 → … without hunting for the next card. Only shown
+            when the mini series has at least 2 races. */}
+        {races.length >= 2 && (
+          <div className="rounded-xl border border-border bg-card px-4 py-4" data-testid="race-timeline">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-6 h-6 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading font-bold text-sm">2</span>
+              <h3 className="font-heading uppercase tracking-tight text-sm">Races today</h3>
+              <span className="ml-auto text-xs text-muted-foreground">Tap a race to jump to its results</span>
+            </div>
+            <div className="flex items-start overflow-x-auto pb-1">
+              {races.map((race, i) => {
+                const st = stateFor(race, i);
+                const racing = (race.results || []).filter((r) => r.code !== "DNC");
+                const finished = racing.filter((r) => r.code === "FINISHED").length;
+                return (
+                  <div key={race.id} className="flex items-start">
+                    <button onClick={() => goToRace(race)} data-testid={`timeline-race-${race.race_number}`}
+                      className={`flex flex-col items-center gap-1.5 group text-center w-20 shrink-0`}>
+                      <span className={`w-10 h-10 rounded-full border-2 grid place-items-center font-heading text-sm transition-transform group-hover:scale-105 ${STEP_STYLES[st]}`}>
+                        {st === "published" ? <CheckCircle2 className="w-5 h-5" /> : (st === "scored" ? <CheckCircle2 className="w-5 h-5" /> : i + 1)}
+                      </span>
+                      <span className={`text-[11px] font-semibold leading-tight ${st === "pending" ? "text-muted-foreground" : "text-foreground"}`}>
+                        {race.mini_group_label || `Race ${race.race_number}`}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground leading-none">
+                        {st === "published" ? "Published" : st === "scored" ? "Scored" : st === "active" ? "Score now" : finished > 0 ? `${finished} finished` : "Waiting"}
+                      </span>
+                    </button>
+                    {i < races.length - 1 && <ChevronRight className="w-4 h-4 text-muted-foreground/40 mt-3.5 shrink-0" />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {group.scoring === "combined" && (
           <div className="rounded-xl border border-ocean/30 bg-ocean/5 p-3 text-sm text-ocean flex items-center gap-2" data-testid="combined-note">
             <Layers className="w-4 h-4 shrink-0" />
@@ -904,55 +1062,19 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
             <CheckCircle2 className="w-4 h-4 shrink-0" /> All {races.length} races in this group are published.
           </div>
         )}
-        {/* Combined-result preview: what the mini series contributes to the main series */}
-        {group.scoring === "combined" && (
-          <div className="rounded-xl border border-border bg-card overflow-hidden" data-testid="combined-preview">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-border/60">
-              <Layers className="w-4 h-4 text-ocean" />
-              <span className="font-heading uppercase tracking-tight text-sm">View combined result</span>
-              {combinedBusy && <span className="text-xs text-muted-foreground">…</span>}
-              <span className="ml-auto text-xs text-muted-foreground">daily average after {combined?.mini_combined?.discards || group.discards || 0} discard{(combined?.mini_combined?.discards || 0) !== 1 ? "s" : ""}</span>
-            </div>
-            {combined?.standings?.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-muted-foreground border-b text-[11px] uppercase tracking-wide">
-                      <th className="py-2 px-4">Pos</th><th className="py-2">Boat</th>
-                      {combined.races?.map((m, i) => (
-                        <th key={i} className="py-2 text-center font-mono">{m.mini_name || `R${m.race_number}`}</th>
-                      ))}
-                      <th className="py-2 px-4 text-center">Daily avg</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {combined.standings.map((row) => (
-                      <tr key={row.boat_id} className="border-b last:border-0">
-                        <td className="py-2 px-4 font-heading">{row.rank}</td>
-                        <td className="py-2 font-semibold whitespace-nowrap">{row.boat_name} <span className="font-mono text-xs text-muted-foreground">{row.sail_no}</span></td>
-                        {row.scores.map((s, i) => (
-                          <td key={i} className="py-2 text-center font-mono">{s.points}{s.discarded ? "*" : ""}</td>
-                        ))}
-                        <td className="py-2 px-4 text-center font-mono font-bold text-ocean">{row.combined_average != null ? row.combined_average : "–"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="px-4 py-3 text-sm text-muted-foreground">No published results yet — publish the races to see the combined result.</p>
-            )}
-          </div>
-        )}
-        {races.map((race) => {
+        {races.map((race, raceIdx) => {
           const expanded = expandMap[race.id];
           const allBoats = race.results || [];
           const racing = allBoats.filter((r) => r.code !== "DNC");
           const finished = racing.filter((r) => r.code === "FINISHED");
           const toFinish = racing.filter((r) => r.code === "DNS");
+          // A race is "Scored" once every boat signed on has a finish.
+          const scored = racing.length > 0 && racing.every((r) => r.code === "FINISHED");
+          const st = stateFor(race, raceIdx);
+          const nextRace = races[raceIdx + 1];
           const cls = classes[race.class_id] || {};
           return (
-            <section key={race.id} className="rounded-xl border border-border bg-card overflow-hidden" data-testid={`batch-race-${race.race_number}`}>
+            <section key={race.id} id={`batch-race-${race.race_number}`} className="rounded-xl border border-border bg-card overflow-hidden" data-testid={`batch-race-${race.race_number}`}>
               {/* Race header */}
               <div className="flex items-center gap-3 px-4 py-3">
                 <div className="w-9 h-9 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg shrink-0">{race.mini_group_label || `R${race.race_number}`}</div>
@@ -960,9 +1082,10 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
                   <div className="font-semibold text-sm leading-none">{race.start_time || "TBD"}</div>
                   <div className="text-[11px] text-muted-foreground mt-0.5">{fmtDate(race.date)} · {cls.name || "Class"} · R{race.race_number}</div>
                 </div>
-                <Badge className={STATUS_BADGE[race.status]}>
-                  {race.status === "setup" ? "Not started" : race.status === "finished" ? "Scored" : race.status}
+                <Badge className={race.status === "published" ? STATUS_BADGE.published : scored ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : STATUS_BADGE[race.status]}>
+                  {race.status === "published" ? "Published" : scored ? "Scored" : "Not started"}
                 </Badge>
+                {st === "active" && <span className="text-[10px] font-bold uppercase tracking-wide text-ocean">◄ You are here</span>}
                 {race.status !== "published" && (
                   <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 h-8 px-3 gap-1" data-testid={`publish-btn-${race.race_number}`} onClick={() => publish(race)}>
                     <Send className="w-3.5 h-3.5" /> Publish
@@ -1061,6 +1184,15 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
                   {finished.length === 0 && <p className="text-sm text-muted-foreground">No results recorded.</p>}
                 </div>
               )}
+              {/* Guide the officer through the sequence: race 1 → race 2 → … */}
+              {nextRace && (
+                <button onClick={() => goToRace(nextRace)}
+                  data-testid={`next-race-btn-${race.race_number}`}
+                  className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-sm font-semibold border-t border-border/60 bg-muted/40 hover:bg-ocean hover:text-white transition-colors text-left">
+                  <span>Next up: {nextRace.mini_group_label || `Race ${nextRace.race_number}`}</span>
+                  <ChevronRight className="w-4 h-4 shrink-0" />
+                </button>
+              )}
             </section>
           );
         })}
@@ -1148,14 +1280,19 @@ export default function Officer() {
   const clubParam = searchParams.get("club");
   const [clubs, setClubs] = useState([]);
 
+  // Every role loads the club list so the console can link back to the
+  // public results page (the auth session only carries the club id/name).
   useEffect(() => {
-    if (isWebmaster) api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
-  }, [isWebmaster]);
+    api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
+  }, []);
 
   const clubId = isWebmaster ? clubParam : authClubId;
   const clubName = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.name || null)
     : (authClubName || null);
+  const clubSlug = isWebmaster
+    ? (clubs.find((c) => c.id === clubParam)?.slug || null)
+    : (clubs.find((c) => c.id === authClubId)?.slug || null);
 
   const [races, setRaces] = useState([]);
   const [classes, setClasses] = useState({});
@@ -1259,7 +1396,7 @@ export default function Officer() {
     const dayRaces = selectedRace ? races.filter((r) => r.id !== selectedRace.id && r.date === selectedRace.date) : [];
     return (
       <div className="min-h-screen bg-background">
-        <TopBar clubName={clubName} onSwitchClub={switchClub} />
+        <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
         <RaceConsole raceId={selected} meta={meta(selectedRace || {})}
           series={selectedRace ? series[selectedRace.series_id] : null} clubId={clubId}
           rrsCodes={rrsCodes} dayRaces={dayRaces}
@@ -1281,10 +1418,23 @@ export default function Officer() {
     return publishedOrder === "desc" ? (ka < kb ? 1 : ka > kb ? -1 : 0) : (ka < kb ? -1 : ka > kb ? 1 : 0);
   });
 
-  const RaceRow = ({ r }) => (
-    <button data-testid={`race-item-${r.id}`} onClick={() => setSelected(r.id)}
+  const RaceRow = ({ r }) => {
+    // A mini-series race opens the batch scoring page for its whole group
+    // (all of R1A/R1B/R1C on one screen) — the single-race console is one
+    // tap further away via the card's "Open full race console" button.
+    const sr = series[r.series_id];
+    const mini = miniGroupForRace(sr, r.race_number);
+    return (
+    <button data-testid={`race-item-${r.id}`} onClick={() => {
+      if (mini) {
+        const idx = (sr.mini_series_groups || []).indexOf(mini);
+        enterBatch({ group: mini, groupIndex: idx, seriesId: sr.id, series: sr, className: classes[sr.class_id]?.name || "Class" });
+      } else {
+        setSelected(r.id);
+      }
+    }}
       className="w-full text-left rounded-xl border border-border bg-card p-4 flex items-center gap-3 hover:border-ocean transition-colors active:scale-[0.99]">
-      <div className="w-11 h-11 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg">R{r.race_number}</div>
+      <div className="w-11 h-11 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg">{raceLabel(r, sr)}</div>
       <div className="flex-1">
         <div className="font-semibold leading-none">{classes[r.class_id]?.name} · {series[r.series_id]?.name}</div>
         <div className="text-xs text-muted-foreground mt-1">{fmtDate(r.date)} · Start {r.start_time}</div>
@@ -1293,7 +1443,8 @@ export default function Officer() {
       <Badge className={STATUS_BADGE[r.status]}>{r.status}</Badge>
       {r.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
     </button>
-  );
+    );
+  };
 
   // ── Mini-series batch entry ───────────────────────────────────────
   // Collect all mini-series groups from in-progress races so the officer
@@ -1331,7 +1482,7 @@ export default function Officer() {
   if (batchMode && batchGroup) {
     return (
       <div className="min-h-screen bg-background">
-        <TopBar clubName={clubName} onSwitchClub={switchClub} />
+        <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
         <MiniSeriesBatchEntry
           group={batchGroup.group}
           groupIndex={batchGroup.groupIndex}
@@ -1347,7 +1498,7 @@ export default function Officer() {
 
   return (
     <div className="min-h-screen bg-background">
-      <TopBar clubName={clubName} onSwitchClub={switchClub} />
+      <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
       <main className="max-w-3xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -1380,9 +1531,20 @@ export default function Officer() {
                 {dayItems.map((item) => (
                   <div key={`${item.series_id}-${item.race_number}`} data-testid={`scheduled-${item.class_name}-${item.race_number}`}
                     className="w-full rounded-lg border border-border bg-card flex items-stretch hover:border-ocean transition-colors">
-                    <button onClick={() => startScheduled(item)}
+                    <button onClick={() => {
+                      const sri = series[item.series_id];
+                      const mini = miniGroupForRace(sri, item.race_number);
+                      // Created mini-series races open the whole group's batch
+                      // scoring page; plain races open their single-race console.
+                      if (mini && item.race_id) {
+                        const idx = (sri.mini_series_groups || []).indexOf(mini);
+                        enterBatch({ group: mini, groupIndex: idx, seriesId: sri.id, series: sri, className: item.class_name || classes[sri.class_id]?.name || "Class" });
+                      } else {
+                        startScheduled(item);
+                      }
+                    }}
                       className="flex-1 text-left p-3 flex items-center gap-3 active:scale-[0.99]">
-                      <div className="w-10 h-10 rounded-lg bg-safety/15 grid place-items-center text-safety font-heading">R{item.race_number}</div>
+                      <div className="w-10 h-10 rounded-lg bg-safety/15 grid place-items-center text-safety font-heading">{raceLabel(item, series[item.series_id])}</div>
                       <div className="flex-1">
                         <div className="font-semibold leading-none">{item.class_name} · {item.series_name}</div>
                         <div className="text-xs text-muted-foreground mt-1">Start {item.start_time}</div>

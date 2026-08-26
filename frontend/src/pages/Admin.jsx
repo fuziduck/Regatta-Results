@@ -19,8 +19,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -92,7 +94,7 @@ function ClubIconField({ clubId }) {
   );
 }
 
-function TopBar({ clubName, onSwitchClub }) {
+function TopBar({ clubName, onSwitchClub, clubSlug }) {
   const { role, updateSession } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -119,6 +121,12 @@ function TopBar({ clubName, onSwitchClub }) {
               label: "Officer",
               icon: null,
               onClick: () => navigate(clubQuery ? `/officer?club=${clubQuery}` : "/officer"),
+            },
+            {
+              key: "site",
+              label: "View site",
+              icon: <Globe className="w-4 h-4 mr-1" />,
+              onClick: () => navigate(clubSlug ? `/club/${clubSlug}` : "/"),
             },
             ...(role === "webmaster" && onSwitchClub ? [{
               key: "switch",
@@ -203,6 +211,10 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   const [fleetChoice, setFleetChoice] = useState("auto"); // auto | link | separate
   const [fleetTarget, setFleetTarget] = useState("");
   const [fleetBusy, setFleetBusy] = useState(false);
+  // Searchable "same boat elsewhere" dropdown: the match picker, not a wall
+  // of radios (an existing boat's name+sail can match dozens of records).
+  const [fleetSearchOpen, setFleetSearchOpen] = useState(false);
+  const [fleetQuery, setFleetQuery] = useState("");
 
   const load = useCallback(() => {
     const p = classFilter === "all" ? { year: yearFilter } : { class_id: classFilter, year: yearFilter };
@@ -335,17 +347,47 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
                     <Link2 className="w-3.5 h-3.5" /> Same boat elsewhere?
                   </p>
                   {fleetBusy && fleetMatches.length === 0 && <p className="text-xs text-muted-foreground">Checking…</p>}
-                  {fleetMatches.map((m) => (
-                    <label key={m.fleet_id} className="flex items-start gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="fleet-choice" className="mt-1 accent-ocean"
-                        checked={fleetChoice === "link" && fleetTarget === m.fleet_id}
-                        onChange={() => { setFleetChoice("link"); setFleetTarget(m.fleet_id); }} />
-                      <span>
-                        <span className="font-semibold">{m.name}</span> <span className="font-mono text-xs text-muted-foreground">#{m.sail_no}</span>
-                        <span className="block text-xs text-muted-foreground">{m.clubs.join(", ")} · {m.classes.join(", ")}</span>
-                      </span>
-                    </label>
-                  ))}
+                  {/* Searchable dropdown over the matches — the admin types to
+                      narrow, then picks one; no long radio list to scroll. */}
+                  <Popover open={fleetSearchOpen} onOpenChange={setFleetSearchOpen}>
+                    <PopoverTrigger asChild>
+                      <Button type="button" variant="outline" role="combobox" aria-expanded={fleetSearchOpen}
+                        className="w-full justify-between font-normal" data-testid="fleet-match-trigger">
+                        {fleetChoice === "link" && fleetTarget
+                          ? (() => { const sel = fleetMatches.find((m) => m.fleet_id === fleetTarget); return sel
+                              ? <span className="truncate"><span className="font-semibold">{sel.name}</span> <span className="font-mono text-xs text-muted-foreground">#{sel.sail_no}</span> <span className="text-xs text-muted-foreground">— {[...sel.clubs, ...sel.classes].join(", ")}</span></span>
+                              : <span className="text-muted-foreground">Choose a boat…</span>; })()
+                          : <span className="text-muted-foreground">Choose a boat…</span>}
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-80 p-0">
+                      <Command>
+                        <CommandInput placeholder="Search by name, sail no., club or class…" value={fleetQuery} onValueChange={setFleetQuery} data-testid="fleet-match-search" />
+                        <CommandList>
+                          <CommandEmpty>No matching boats.</CommandEmpty>
+                          <CommandGroup>
+                            {fleetMatches.filter((m) => {
+                              const q = fleetQuery.trim().toLowerCase();
+                              if (!q) return true;
+                              return [m.name, m.sail_no, ...(m.clubs || []), ...(m.classes || [])]
+                                .join(" ").toLowerCase().includes(q);
+                            }).map((m) => (
+                              <CommandItem key={m.fleet_id} value={`${m.name} ${m.sail_no} ${(m.clubs || []).join(" ")} ${(m.classes || []).join(" ")}`}
+                                onSelect={() => { setFleetChoice("link"); setFleetTarget(m.fleet_id); setFleetSearchOpen(false); }}
+                                data-testid={`fleet-match-${m.sail_no}`}>
+                                <Check className={`mr-2 h-4 w-4 ${fleetChoice === "link" && fleetTarget === m.fleet_id ? "opacity-100" : "opacity-0"}`} />
+                                <span className="min-w-0">
+                                  <span className="block font-semibold truncate">{m.name} <span className="font-mono text-xs text-muted-foreground">#{m.sail_no}</span></span>
+                                  <span className="block text-xs text-muted-foreground truncate">{m.clubs.join(", ")} · {m.classes.join(", ")}</span>
+                                </span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                   <label className="flex items-start gap-2 text-sm cursor-pointer">
                     <input type="radio" name="fleet-choice" className="mt-1 accent-ocean"
                       checked={fleetChoice === "separate"}
@@ -1189,14 +1231,19 @@ export default function Admin() {
   const clubParam = searchParams.get("club");
   const [clubs, setClubs] = useState([]);
 
+  // Every role loads the club list so the console can link back to the
+  // public results page (the auth session only carries the club id/name).
   useEffect(() => {
-    if (isWebmaster) api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
-  }, [isWebmaster]);
+    api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
+  }, []);
 
   const clubId = isWebmaster ? clubParam : authClubId;
   const clubName = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.name || null)
     : (authClubName || null);
+  const clubSlug = isWebmaster
+    ? (clubs.find((c) => c.id === clubParam)?.slug || null)
+    : (clubs.find((c) => c.id === authClubId)?.slug || null);
 
   const [classes, setClasses] = useState([]);
   const [rrsCodes, setRrsCodes] = useState([]);
@@ -1224,7 +1271,7 @@ export default function Admin() {
 
   return (
     <div className="min-h-screen bg-background">
-      <TopBar clubName={clubName} onSwitchClub={switchClub} />
+      <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
       <main className="max-w-6xl mx-auto px-4 py-8">
         <div className="flex flex-wrap items-end justify-between gap-3 mb-1">
           <div>

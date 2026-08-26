@@ -188,6 +188,23 @@ export function miniGroupForRace(series, raceNumber) {
   );
 }
 
+// The display label for a race (or scheduled race) on the officer's race-day
+// lists. Mini-series children show their parent/child label — R1A, R1B, R1C —
+// so the officer can see the mini series structure at a glance; everything
+// else is a plain R<number>. The label comes from the race's own stamp when
+// present, otherwise it is derived from the series' mini-series group config
+// (scheduled items are not created as races yet, so they have no stamp).
+export function raceLabel(item, series) {
+  if (!item || item.race_number == null) return "";
+  if (item.mini_group_label) return item.mini_group_label;
+  const g = miniGroupForRace(series, item.race_number);
+  if (g && (g.race_numbers || []).length > 1) {
+    const base = Math.min(...g.race_numbers);
+    return `R${base}${String.fromCharCode(65 + (item.race_number - base))}`;
+  }
+  return `R${item.race_number}`;
+}
+
 // Short note for the race officer console explaining how a mini-series race
 // is scored. "additional" groups count each race separately in the series;
 // "combined" groups fold their races into a single daily result.

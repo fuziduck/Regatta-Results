@@ -646,6 +646,93 @@ class TestMiniSeriesEndpoint:
                 requests.delete(f"{API}/races/{race['id']}", headers=h(club_officer_token))
             requests.delete(f"{API}/series/{s}", headers=h(club_admin_token))
 
+    def test_overall_dnc_default_for_series_not_raced(self, club_officer_token, club_admin_token):
+        """A boat that never signed onto a series scores DNC in EVERY race of
+        that series (net after the series' discards) in the overall
+        championship — never 0, and never a single flat DNC — so a part-time
+        boat can't float to the top of the leaderboard by skipping series."""
+        r = requests.post(f"{API}/classes", json={"name": "Overall DNC Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        boats = []
+        for i, (nm, sl) in enumerate([("Full Time", "F1"), ("Part Time", "P1"), ("Regular", "R1")], start=1):
+            r = requests.post(f"{API}/boats", json={
+                "name": nm, "sail_no": sl, "class_id": cls["id"], "helm": f"H{i}",
+                "year": YEAR, "active": True}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json())
+        b = [x["id"] for x in boats]
+        created = []
+        try:
+            # Series 1 (one race): all three boats race (Full Time 1st,
+            # Part Time 2nd, Regular 3rd). Series 2 (THREE races, one
+            # discard): only Full Time and Regular race — Part Time is
+            # absent entirely, so she must score DNC for every race of the
+            # series: (3 entries + 1) x (3 races - 1 discard) = 8, not 4.
+            r = requests.post(f"{API}/series", json={
+                "name": "DNC Series One", "class_id": cls["id"], "year": YEAR,
+                "discards": 0, "included_in_overall": True, "order": 21},
+                headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            sid1 = r.json()["id"]
+            created.append(("series", sid1))
+            rid = requests.post(f"{API}/races", json={
+                "date": f"{YEAR}-09-01", "class_id": cls["id"], "series_id": sid1,
+                "race_number": 1, "start_time": "10:30"}, headers=h(club_officer_token)).json()["id"]
+            created.append(("race", rid))
+            requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": b},
+                          headers=h(club_officer_token))
+            for pos, bid in enumerate(b, start=1):
+                requests.put(f"{API}/races/{rid}/result/{bid}",
+                             json={"code": "FINISHED", "position": pos},
+                             headers=h(club_officer_token))
+            requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+
+            r = requests.post(f"{API}/series", json={
+                "name": "DNC Series Two", "class_id": cls["id"], "year": YEAR,
+                "discards": 1, "included_in_overall": True, "order": 22},
+                headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            sid2 = r.json()["id"]
+            created.append(("series", sid2))
+            for rn in range(1, 4):
+                rid = requests.post(f"{API}/races", json={
+                    "date": f"{YEAR}-09-1{rn}", "class_id": cls["id"], "series_id": sid2,
+                    "race_number": rn, "start_time": "10:30"}, headers=h(club_officer_token)).json()["id"]
+                created.append(("race", rid))
+                racing = [b[0], b[2]]  # Full Time + Regular only
+                requests.post(f"{API}/races/{rid}/select-boats", json={"boat_ids": racing},
+                              headers=h(club_officer_token))
+                for pos, bid in enumerate(racing, start=1):
+                    requests.put(f"{API}/races/{rid}/result/{bid}",
+                                 json={"code": "FINISHED", "position": pos},
+                                 headers=h(club_officer_token))
+                requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+
+            overall = requests.get(f"{API}/standings/overall",
+                                   params={"class_id": cls["id"], "year": YEAR}).json()
+            by_id = {row["boat_id"]: row for row in overall["standings"]}
+            # Part Time skipped series 2 entirely: DNC = 3 boats + 1 = 4 per
+            # race, 3 races, 1 discard → 4 x 2 counting = 8. Total 2 + 8 = 10,
+            # below everyone who raced both series (Full Time 1+2=3,
+            # Regular 3+4=7). Never 0, never a single flat DNC, never at top.
+            pt = by_id[b[1]]
+            assert pt["per_series"]["DNC Series Two"] == 8.0
+            assert pt["net"] == 10.0
+            assert by_id[b[0]]["net"] == 3.0 and by_id[b[0]]["rank"] == 1
+            assert by_id[b[2]]["net"] == 7.0 and by_id[b[2]]["rank"] == 2
+            assert pt["rank"] == 3
+            # Series 1's net values are untouched (1, 2, 3).
+            assert by_id[b[1]]["per_series"]["DNC Series One"] == 2.0
+        finally:
+            for kind, ident in reversed(created):
+                if kind == "race":
+                    requests.delete(f"{API}/races/{ident}", headers=h(club_officer_token))
+                else:
+                    requests.delete(f"{API}/series/{ident}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
     def test_mini_combined_daily_result(self, club_officer_token, club_admin_token):
         # A mini series with scoring "combined" folds into ONE main-series
         # result: group discards first, then the average of the counting races.

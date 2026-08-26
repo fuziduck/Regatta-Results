@@ -131,6 +131,19 @@ describe("ConsoleNav desktop row", () => {
     });
     expect(onClick).toHaveBeenCalled();
   });
+
+  it("shows the View site item and navigates to the club landing page", () => {
+    const onViewSite = jest.fn();
+    renderNav(baseProps({ items: [
+      { key: "site", label: "View site", icon: null, testId: "nav-site", onClick: onViewSite },
+    ] }));
+    const row = container.querySelector(".hidden.lg\\:flex");
+    expect(row.textContent).toContain("View site");
+    act(() => {
+      container.querySelector('[data-testid="nav-site"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onViewSite).toHaveBeenCalled();
+  });
 });
 
 describe("ConsoleNav mobile menu", () => {

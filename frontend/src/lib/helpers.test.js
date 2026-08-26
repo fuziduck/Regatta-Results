@@ -4,6 +4,7 @@ import {
   BOAT_NAME_WRAP_LIMIT,
   miniGroupForRace,
   miniSeriesNote,
+  raceLabel,
 } from "./helpers";
 
 describe("shouldWrapBoatName (14-character threshold on the name itself)", () => {
@@ -114,6 +115,47 @@ describe("miniGroupForRace (which mini series a race belongs to)", () => {
   it("tolerates a group with no race_numbers", () => {
     const s = { mini_series: true, mini_series_groups: [{ name: "Empty", race_numbers: [], scoring: "additional" }] };
     expect(miniGroupForRace(s, 1)).toBeNull();
+  });
+});
+
+describe("raceLabel (R1A/R1B style labels for mini-series races)", () => {
+  const series = {
+    mini_series: true,
+    mini_series_groups: [
+      { name: "Morning", race_numbers: [1, 2], discards: 0, scoring: "additional" },
+      { name: "Afternoon", race_numbers: [3, 4, 5], discards: 1, scoring: "combined" },
+    ],
+  };
+
+  it("prefers the race's own mini_group_label stamp", () => {
+    expect(raceLabel({ race_number: 3, mini_group_label: "R3A" }, series)).toBe("R3A");
+    expect(raceLabel({ race_number: 4, mini_group_label: "R3B" }, series)).toBe("R3B");
+    expect(raceLabel({ race_number: 5, mini_group_label: "R3C" }, series)).toBe("R3C");
+  });
+
+  it("derives the A/B/C label from the group config when there is no stamp", () => {
+    expect(raceLabel({ race_number: 3 }, series)).toBe("R3A");
+    expect(raceLabel({ race_number: 4 }, series)).toBe("R3B");
+    expect(raceLabel({ race_number: 5 }, series)).toBe("R3C");
+    expect(raceLabel({ race_number: 1 }, series)).toBe("R1A");
+    expect(raceLabel({ race_number: 2 }, series)).toBe("R1B");
+  });
+
+  it("falls back to a plain R number for normal races", () => {
+    expect(raceLabel({ race_number: 6 }, series)).toBe("R6");
+    expect(raceLabel({ race_number: 6 }, null)).toBe("R6");
+    expect(raceLabel({ race_number: 6 }, { mini_series: true })).toBe("R6");
+  });
+
+  it("keeps a single-race mini group as a plain R number", () => {
+    const s = { mini_series: true, mini_series_groups: [{ name: "One", race_numbers: [2], scoring: "additional" }] };
+    expect(raceLabel({ race_number: 2 }, s)).toBe("R2");
+  });
+
+  it("is defensive about missing input", () => {
+    expect(raceLabel(null, series)).toBe("");
+    expect(raceLabel(undefined, series)).toBe("");
+    expect(raceLabel({}, series)).toBe("");
   });
 });
 

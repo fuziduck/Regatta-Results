@@ -5082,21 +5082,65 @@ async def compute_overall_standings(class_id: str, year: int):
     totals = {}
     per_series_nets = {}
     series_names = []
+    # A boat that never signed onto a series scores DNC in EVERY race of that
+    # series (with the series' discards applied) — never 0, and never a single
+    # flat DNC — so a boat that sits out a series (or several) can never float
+    # to the top of the championship. The DNC points mirror the series' own
+    # rule: series entries + 1 (the boats that actually raced the series, not
+    # the whole class fleet), net after the same discard policy the series
+    # would apply. A combined mini-series day already scores by finishing
+    # position, so its absent-boat score is the next position after the last
+    # boat. Series with no published races yet have no one to "sit out":
+    # everyone scores 0 until the series starts.
+    dnc_series_net = {}
+    use_position = {}
+    for series in all_series:
+        name = series["name"]
+        race_docs = await db.races.find({"series_id": series["id"], "status": "published",
+                                         "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
+        groups = series.get("mini_series_groups") or []
+        pos = bool(series.get("mini_series")) and groups and all(g.get("scoring") == "combined" for g in groups)
+        use_position[name] = pos
+        if not race_docs:
+            continue
+        # DNC per race = entries + 1: the number of boats that actually raced
+        # the series (falling back to the class fleet when the series is
+        # empty). RRS A5: DNC always scores series entries + 1.
+        raced_boats = {x.get("boat_id") for r in race_docs
+                       for x in (r.get("results") or []) if x.get("boat_id")}
+        entries = len(raced_boats) if raced_boats else len(boat_map)
+        dnc = float(entries + 1)
+        # The net an all-DNC boat scores in this series: every race is
+        # discardable and identical, so after the series' effective discards
+        # the counting races are race_count - discards (at least one counts).
+        cfg = _series_scoring_config(series)
+        discard_policy = cfg.get("discard_policy", "fixed")
+        configured = series.get("discards", 0)
+        if discard_policy == "increasing":
+            configured = _effective_discards(cfg, len(race_docs), configured)
+        discards = min(configured, max(0, len(race_docs) - 1))
+        counting = max(1, len(race_docs) - discards)
+        dnc_series_net[name] = dnc * counting
     for series in sorted(all_series, key=lambda s: s.get("order", 0)):
-        series_names.append(series["name"])
+        name = series["name"]
+        series_names.append(name)
         frozen = await _standings_for_series(series)
         result = frozen if frozen is not None else await compute_series_standings(series)
-        # A combined mini-series day contributes the finishing position
-        # (1 for 1st, 2 for 2nd, …) to the championship rather than the
-        # daily average points — the leaderboard order is what matters when
-        # several races fold into one championship slot.
-        groups = series.get("mini_series_groups") or []
-        use_position = (bool(series.get("mini_series")) and
-                        groups and all(g.get("scoring") == "combined" for g in groups))
+        pos = use_position[name]
         for row in result["standings"]:
-            net = row["rank"] if use_position else row["net"]
+            net = row["rank"] if pos else row["net"]
             totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + net
-            per_series_nets.setdefault(row["boat_id"], {})[series["name"]] = net
+            per_series_nets.setdefault(row["boat_id"], {})[name] = net
+        # Boats that never raced this series score its DNC net (DNC in every
+        # race, discards applied) so they sink below everyone who sailed it.
+        if name in dnc_series_net:
+            raced_ids = {row["boat_id"] for row in result["standings"]}
+            for bid in boat_map:
+                if bid in raced_ids:
+                    continue
+                dnc = dnc_series_net[name] if not pos else (len(result["standings"]) + 1)
+                totals[bid] = totals.get(bid, 0.0) + dnc
+                per_series_nets.setdefault(bid, {})[name] = dnc
     rows = []
     for bid, total in totals.items():
         b = boat_map.get(bid)
