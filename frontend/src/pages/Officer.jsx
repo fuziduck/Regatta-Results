@@ -158,7 +158,40 @@ function NewRaceDialog({ onCreated, clubId }) {
   );
 }
 
-function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch }) {
+// Collapsible race-day notice editor (start time, course, special rules,
+// life jackets) — used on the single-race console and on the mini-series
+// batch page so the notice is editable wherever results are scored. The
+// whole section is hidden when the club has race-day notices disabled.
+function RaceNoticeSection({ value, onChange, onSave, busy = false, saveLabel = "Publish notice", defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-xl border border-border bg-card p-4" data-testid="race-notice-section">
+      <button type="button" onClick={() => setOpen((o) => !o)} data-testid="race-notice-toggle"
+        className="w-full flex items-center gap-2 text-left">
+        <h3 className="font-heading uppercase tracking-tight text-ocean flex items-center gap-2"><Flag className="w-4 h-4" /> Race-day notice</h3>
+        <span className="ml-auto text-muted-foreground">{open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</span>
+      </button>
+      {open && (
+        <div className="mt-3">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5"><Label>Start time</Label><Input type="time" data-testid="notif-start-time" value={value.start_time} onChange={(e) => onChange({ ...value, start_time: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label>Course</Label><Input data-testid="notif-course" placeholder="e.g. Windward/Leeward, 3 laps" value={value.course} onChange={(e) => onChange({ ...value, course: e.target.value })} /></div>
+          </div>
+          <div className="space-y-1.5 mt-3"><Label>Special rules</Label><Textarea data-testid="notif-rules" rows={2} placeholder="Any special instructions for the day" value={value.special_rules} onChange={(e) => onChange({ ...value, special_rules: e.target.value })} /></div>
+          <div className="flex items-center justify-between mt-3 p-3 rounded-lg bg-muted/50">
+            <div className="flex items-center gap-2 font-semibold"><LifeBuoy className="w-5 h-5 text-safety" /> Life jackets required</div>
+            <Switch data-testid="notif-lifejackets" checked={!!value.life_jackets} onCheckedChange={(v) => onChange({ ...value, life_jackets: v })} />
+          </div>
+          <Button onClick={onSave} data-testid="save-notif-btn" className="mt-3 bg-ocean hover:bg-ocean-dark" disabled={busy}>
+            {busy ? "Saving…" : saveLabel}
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch, raceDayNotices = true }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
@@ -444,20 +477,11 @@ function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces 
           </div>
         </section>
 
-        {/* Race day notice */}
-        <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-heading uppercase tracking-tight text-ocean flex items-center gap-2 mb-3"><Flag className="w-4 h-4" /> Race-day notice</h3>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Start time</Label><Input type="time" data-testid="notif-start-time" value={notif.start_time} onChange={(e) => setNotif({ ...notif, start_time: e.target.value })} /></div>
-            <div className="space-y-1.5"><Label>Course</Label><Input data-testid="notif-course" placeholder="e.g. Windward/Leeward, 3 laps" value={notif.course} onChange={(e) => setNotif({ ...notif, course: e.target.value })} /></div>
-          </div>
-          <div className="space-y-1.5 mt-3"><Label>Special rules</Label><Textarea data-testid="notif-rules" rows={2} placeholder="Any special instructions for the day" value={notif.special_rules} onChange={(e) => setNotif({ ...notif, special_rules: e.target.value })} /></div>
-          <div className="flex items-center justify-between mt-3 p-3 rounded-lg bg-muted/50">
-            <div className="flex items-center gap-2 font-semibold"><LifeBuoy className="w-5 h-5 text-safety" /> Life jackets required</div>
-            <Switch data-testid="notif-lifejackets" checked={notif.life_jackets} onCheckedChange={(v) => setNotif({ ...notif, life_jackets: v })} />
-          </div>
-          <Button onClick={saveNotif} data-testid="save-notif-btn" className="mt-3 bg-ocean hover:bg-ocean-dark">Publish notice</Button>
-        </section>
+        {/* Race day notice — collapsible, hidden entirely when the club has
+            race-day notices disabled. */}
+        {raceDayNotices && (
+          <RaceNoticeSection value={notif} onChange={setNotif} onSave={saveNotif} />
+        )}
 
         {/* Boat selection */}
         <section className="rounded-xl border border-border bg-card p-4">
@@ -712,7 +736,7 @@ function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces 
   );
 }
 
-export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, seriesMap, onClose }) {
+export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, seriesMap, onClose, raceDayNotices = true }) {
   const [races, setRaces] = useState([]);
   const [boatsMap, setBoatsMap] = useState({});
   const [expandMap, setExpandMap] = useState({});
@@ -722,6 +746,10 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
   const [fleetSelected, setFleetSelected] = useState([]);
   const [fleetBusy, setFleetBusy] = useState(false);
   const [fleetInitialised, setFleetInitialised] = useState(false);
+  // Race-day notice: ONE notice (course, rules, jackets) that can be applied
+  // to every unpublished race in the group — mirroring the fleet sign-on.
+  const [notice, setNotice] = useState({ course: "", special_rules: "", life_jackets: false, start_time: "" });
+  const [noticeBusy, setNoticeBusy] = useState(false);
 
   const fetchRace = useCallback(async (raceId) => {
     try { return await api.getRace(raceId); } catch { return null; }
@@ -782,6 +810,19 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     setFleetSelected(racing);
     setFleetInitialised(true);
   }, [loading, fleetInitialised, races]);
+
+  // Seed the notice fields from the first unpublished race (or the first
+  // race) once the group loads, so the officer edits from the day's values.
+  useEffect(() => {
+    if (!races.length) return;
+    const first = races.find((r) => r.status !== "published") || races[0];
+    setNotice({
+      course: first.course || "",
+      special_rules: first.special_rules || "",
+      life_jackets: !!first.life_jackets,
+      start_time: first.start_time || "",
+    });
+  }, [races.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allBoatIds = Object.keys(boatsMap);
   const toggleFleetBoat = (bid) =>
@@ -890,6 +931,25 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     updated.sort((a, b) => a.race_number - b.race_number);
     setRaces(updated);
   }, [races, group, seriesId, clubId, mutate, fetchRace]);
+
+  // Apply the race-day notice to every unpublished race in the group, then
+  // refresh so the cards and the landing page reflect the new notices.
+  const saveNoticeAll = useCallback(async () => {
+    setNoticeBusy(true);
+    try {
+      const payload = { ...notice, start_tz_offset_minutes: -new Date().getTimezoneOffset() };
+      let applied = 0;
+      for (const race of races) {
+        if (race.status === "published") continue;
+        const r = await mutate(() => api.updateNotifications(race.id, payload, race.version), true);
+        if (r) applied++;
+      }
+      if (applied) toast.success(`Notice applied to ${applied} race${applied > 1 ? "s" : ""}`);
+      await loadGroup();
+    } finally {
+      setNoticeBusy(false);
+    }
+  }, [races, notice, mutate, loadGroup]);
 
   // Grow the mini series by one race on the day (only possible when it is the
   // last group of the series — the backend enforces this too).
@@ -1021,6 +1081,16 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
             <p className="text-sm text-muted-foreground">No boats registered for this class yet.</p>
           )}
         </div>
+
+        {/* Race-day notice: ONE notice for the whole mini series day, applied
+            to every unpublished race — hidden when the club disables notices. */}
+        {raceDayNotices && races.length > 0 && (
+          <RaceNoticeSection value={notice} onChange={setNotice}
+            onSave={() => saveNoticeAll(notice)} busy={noticeBusy}
+            saveLabel={races.filter((r) => r.status !== "published").length > 0
+              ? "Apply notice to all races"
+              : "Save notice"} />
+        )}
 
         {/* Timeline: every race pre-shown in order, so the officer scores
             race 1 → race 2 → … without hunting for the next card. Only shown
@@ -1306,6 +1376,12 @@ export default function Officer() {
   const clubSlug = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.slug || null)
     : (clubs.find((c) => c.id === authClubId)?.slug || null);
+  // Club preference: whether the race-day notice section is required. Clubs
+  // that don't use notices hide it from the officer consoles entirely.
+  const raceDayNotices = (() => {
+    const clubDoc = clubs.find((c) => c.id === clubId);
+    return clubDoc ? clubDoc.race_day_notices !== false : true;
+  })();
 
   const [races, setRaces] = useState([]);
   const [classes, setClasses] = useState({});
@@ -1414,6 +1490,7 @@ export default function Officer() {
           series={selectedRace ? series[selectedRace.series_id] : null} clubId={clubId}
           rrsCodes={rrsCodes} dayRaces={dayRaces}
           onEnterBatch={enterBatch}
+          raceDayNotices={raceDayNotices}
           onBack={() => { setSelected(null); loadRaces(); }} />
       </div>
     );
@@ -1503,6 +1580,7 @@ export default function Officer() {
           clubId={clubId}
           classes={classes}
           seriesMap={series}
+          raceDayNotices={raceDayNotices}
           onClose={exitBatch}
         />
       </div>

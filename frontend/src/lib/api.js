@@ -71,6 +71,7 @@ export const api = {
   getClubsManage: () => client.get("/clubs/manage").then((r) => r.data),
   createClub: (d) => client.post("/clubs", d).then((r) => r.data),
   updateClub: (id, d) => client.put(`/clubs/${id}`, d).then((r) => r.data),
+  updateClubSettings: (id, d) => client.put(`/clubs/${id}/settings`, d).then((r) => r.data),
   deleteClub: (id) => client.delete(`/clubs/${id}`).then((r) => r.data),
   uploadClubIcon: (id, file) => {
     const fd = new FormData();

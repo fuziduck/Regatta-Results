@@ -108,6 +108,42 @@ class TestWebmaster:
             r = requests.request(method, url, json=body, headers=h(club_admin_token))
             assert r.status_code == 403, f"{method} {url} should be 403 for admin"
 
+    def test_club_settings_race_day_notices(self, webmaster_token, club_admin_token,
+                                             club_officer_token, test_club, other_club_with_data):
+        # A club admin may toggle their own club's race-day notices setting.
+        r = requests.put(f"{API}/clubs/{test_club['id']}/settings",
+                         json={"race_day_notices": False}, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        assert r.json()["race_day_notices"] is False
+        # The setting is visible through the public clubs payload (officers
+        # read it to decide whether to show the notice section).
+        clubs = requests.get(f"{API}/clubs").json()
+        mine = next(c for c in clubs if c["id"] == test_club["id"])
+        assert mine.get("race_day_notices") is False
+        # It defaults to on for a fresh club.
+        fresh = requests.post(f"{API}/clubs", json={"name": "Settings Club", "color": "#333333"},
+                              headers=h(webmaster_token)).json()
+        assert fresh.get("race_day_notices", True) is True
+        # An officer may not change the club's settings.
+        r = requests.put(f"{API}/clubs/{test_club['id']}/settings",
+                         json={"race_day_notices": True}, headers=h(club_officer_token))
+        assert r.status_code == 403
+        # ... and a club admin may not change another club's settings.
+        r = requests.put(f"{API}/clubs/{other_club_with_data['id']}/settings",
+                         json={"race_day_notices": False}, headers=h(club_admin_token))
+        assert r.status_code == 403
+        # The webmaster may change any club's settings.
+        r = requests.put(f"{API}/clubs/{other_club_with_data['id']}/settings",
+                         json={"race_day_notices": False}, headers=h(webmaster_token))
+        assert r.status_code == 200
+        assert r.json()["race_day_notices"] is False
+        # Toggle back on and clean up.
+        requests.put(f"{API}/clubs/{other_club_with_data['id']}/settings",
+                     json={"race_day_notices": True}, headers=h(webmaster_token))
+        requests.put(f"{API}/clubs/{test_club['id']}/settings",
+                     json={"race_day_notices": True}, headers=h(club_admin_token))
+        requests.delete(f"{API}/clubs/{fresh['id']}", headers=h(webmaster_token))
+
     def test_webmaster_crud_club(self, webmaster_token):
         r = requests.post(f"{API}/clubs", json={"name": "Tmp Club", "color": "#111111"},
                           headers=h(webmaster_token))

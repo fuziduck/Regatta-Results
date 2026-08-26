@@ -18,6 +18,7 @@ jest.mock("@/lib/api", () => {
     addMiniRace: jest.fn(),
     selectBoats: jest.fn(),
     setStatus: jest.fn(),
+    updateNotifications: jest.fn(),
   };
   return { api };
 });
@@ -29,7 +30,7 @@ const mockApi = require("@/lib/api").api;
 
 let container;
 let root;
-const renderPage = () => {
+const renderPage = (extraProps = {}) => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -43,6 +44,7 @@ const renderPage = () => {
         classes={{}}
         seriesMap={{}}
         onClose={jest.fn()}
+        {...extraProps}
       />
     );
   });
@@ -67,6 +69,7 @@ beforeEach(() => {
   });
   mockApi.selectBoats.mockResolvedValue({});
   mockApi.setStatus.mockResolvedValue({});
+  mockApi.updateNotifications.mockResolvedValue({});
 });
 
 afterEach(async () => {
@@ -158,6 +161,47 @@ describe("Mini series scoring page", () => {
     // Race 2 is unpublished — its boat-selection controls show without clicking.
     expect(container.textContent).toContain("Boats racing");
     expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Boats racing");
+  });
+
+  it("shows the collapsible race-day notice section, applied to all races", async () => {
+    renderPage();
+    await act(async () => {});
+    const section = container.querySelector('[data-testid="race-notice-section"]');
+    expect(section).not.toBeNull();
+    expect(section.textContent).toContain("Race-day notice");
+    // r2 is unpublished → the action applies the notice to the group's races.
+    expect(section.textContent).toContain("Apply notice to all races");
+    // Collapsible: the toggle collapses the fields away.
+    act(() => section.querySelector('[data-testid="race-notice-toggle"]').dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="notif-course"]')).toBeNull();
+  });
+
+  it("applies the race-day notice to every unpublished race in the group", async () => {
+    renderPage();
+    await act(async () => {});
+    const course = container.querySelector('[data-testid="notif-course"]');
+    const setVal = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    act(() => {
+      setVal.call(course, "Windward/Leeward");
+      course.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {});
+    act(() => container.querySelector('[data-testid="save-notif-btn"]').dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    // r1 is published (skipped), r2 is setup — the notice lands on r2 only.
+    expect(mockApi.updateNotifications).toHaveBeenCalledTimes(1);
+    const [raceId, payload, version] = mockApi.updateNotifications.mock.calls[0];
+    expect(raceId).toBe("r2");
+    expect(payload.course).toBe("Windward/Leeward");
+    expect(payload.start_tz_offset_minutes).toEqual(expect.any(Number));
+    expect(version).toBe(1);
+  });
+
+  it("hides the race-day notice section when the club has notices disabled", async () => {
+    renderPage({ raceDayNotices: false });
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="race-notice-section"]')).toBeNull();
   });
 
   it("recalls a published race back to setup (like the main-series console)", async () => {

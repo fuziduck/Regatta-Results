@@ -779,6 +779,13 @@ class ClubInput(BaseModel):
     # No PIN fields: logins are individual user accounts managed per club.
 
 
+class ClubSettingsInput(BaseModel):
+    # Whether the race-day notice section (course, special rules, life
+    # jackets) is required in the race officer console. When off, the section
+    # is hidden entirely and no notice is expected for the club's races.
+    race_day_notices: bool = True
+
+
 class AdvertUpdate(BaseModel):
     """Editable advert metadata (the image itself is uploaded separately)."""
     name: Optional[str] = None
@@ -2355,6 +2362,24 @@ async def update_club(club_id: str, data: ClubInput, user: dict = Depends(requir
     logger.info("CLUB UPDATE id=%s by=%s", club_id, user.get("username"))
     await _log_audit(request=None, user=user, action="CLUB_UPDATED",
                      description=f"Updated club {club.get('name')}",
+                     resource_type="club", resource_id=club_id, club_id=club_id)
+    return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
+
+
+@api_router.put("/clubs/{club_id}/settings")
+async def update_club_settings(club_id: str, data: ClubSettingsInput,
+                               user: dict = Depends(require_admin)):
+    """Club-level preferences, e.g. whether race-day notices are required.
+    Race admins may change their own club's settings; the webmaster may
+    change any club's. Read through the public /clubs payload."""
+    _ensure_club(user, club_id)
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
+    await db.clubs.update_one({"id": club_id},
+                              {"$set": {"race_day_notices": data.race_day_notices}})
+    await _log_audit(request=None, user=user, action="CLUB_SETTINGS_UPDATED",
+                     description=f"Set race_day_notices={data.race_day_notices} for {club.get('name')}",
                      resource_type="club", resource_id=club_id, club_id=club_id)
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 

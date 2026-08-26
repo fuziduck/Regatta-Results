@@ -22,7 +22,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -89,6 +89,59 @@ function ClubIconField({ clubId }) {
             <ImageOff className="w-4 h-4" /> Remove
           </Button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Whether race-day notices (course, special rules, life jackets) are required
+// in the race officer console for this club. When off, the notice section is
+// hidden entirely — clubs that don't use them (e.g. casual one-race days)
+// skip the extra form. Race admins may change their own club; the webmaster
+// may change any club's.
+function ClubNoticeToggle({ clubId }) {
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    if (!clubId) return;
+    api.getClubs().then((cs) => {
+      const c = (cs || []).find((x) => x.id === clubId);
+      setEnabled(c ? c.race_day_notices !== false : true);
+    }).catch(() => {});
+  }, [clubId]);
+  useEffect(() => { load(); }, [load]);
+
+  const toggle = async (v) => {
+    const prev = enabled;
+    setBusy(true);
+    setEnabled(v);
+    try {
+      await api.updateClubSettings(clubId, { race_day_notices: v });
+      toast.success(v ? "Race-day notices enabled" : "Race-day notices disabled");
+    } catch (e) {
+      setEnabled(prev);
+      toast.error(e.response?.data?.detail || "Could not update this setting");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 mb-6 flex flex-wrap items-center gap-4" data-testid="race-notice-toggle-card">
+      <div className="w-12 h-12 rounded-lg bg-ocean/10 grid place-items-center text-ocean"><Flag className="w-6 h-6" /></div>
+      <div className="min-w-0 flex-1">
+        <div className="font-heading text-lg uppercase tracking-tight">Race-day notices</div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Race officers set a notice (course, special rules, life jackets) for each race day before racing.
+          Turn this off to hide the notice section from the race officer console entirely.
+        </p>
+      </div>
+      <div className="flex items-center gap-2.5">
+        {enabled
+          ? <span className="text-xs text-muted-foreground hidden sm:inline">Required</span>
+          : <span className="text-xs text-muted-foreground hidden sm:inline">Not required</span>}
+        <Switch checked={enabled} disabled={busy} onCheckedChange={toggle} data-testid="race-notice-enabled" />
       </div>
     </div>
   );
@@ -1289,6 +1342,7 @@ export default function Admin() {
         </div>
         <div className="mb-6" />
         {clubId && <ClubIconField clubId={clubId} />}
+        {clubId && <ClubNoticeToggle clubId={clubId} />}
         <Tabs defaultValue="boats">
           {/* The tab bar stays a single row: on narrow screens it scrolls
               horizontally instead of wrapping into a tall stack of tabs. */}
