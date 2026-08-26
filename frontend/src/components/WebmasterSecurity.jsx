@@ -121,14 +121,24 @@ export default function WebmasterSecurity() {
 
   const enabled = !!status?.enabled;
 
+  // The 2FA status is fetched on mount; until it resolves there is nothing
+  // safe to render (status fields are read directly below).
+  if (!status) {
+    return (
+      <div>
+        <div className="mb-6">
+          <h1 className="text-3xl uppercase tracking-tighter mb-1">Security</h1>
+          <p className="text-muted-foreground text-sm">
+            Two-factor authentication for the webmaster account — the one that can download every club's backup and restore the whole system.
+          </p>
+        </div>
+        <p className="text-sm text-muted-foreground">Loading security settings…</p>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-3xl uppercase tracking-tighter mb-1">Security</h1>
-        <p className="text-muted-foreground text-sm">
-          Two-factor authentication for the webmaster account — the one that can download every club's backup and restore the whole system.
-        </p>
-      </div>
 
       {!enabled && (
         <div className="rounded-2xl border border-amber-300 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/40 p-4 mb-5 text-sm text-amber-800 dark:text-amber-200" data-testid="2fa-warning">
