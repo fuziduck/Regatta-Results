@@ -144,6 +144,44 @@ class TestWebmaster:
                      json={"race_day_notices": True}, headers=h(club_admin_token))
         requests.delete(f"{API}/clubs/{fresh['id']}", headers=h(webmaster_token))
 
+    def test_notifications_hidden_when_club_disables_notices(self, club_admin_token,
+                                                             club_officer_token, test_club, test_class):
+        # An unpublished race with a course in the test club.
+        r = requests.post(f"{API}/series", json={
+            "name": "Notice Hide Series", "class_id": test_class["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 99}, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        r = requests.post(f"{API}/races", json={
+            "date": "2026-09-12", "class_id": test_class["id"], "series_id": sid,
+            "race_number": 1, "start_time": "10:30", "start_tz_offset_minutes": 0},
+            headers=h(club_officer_token))
+        assert r.status_code == 200, r.text
+        rid = r.json()["id"]
+        r = requests.put(f"{API}/races/{rid}/notifications", json={"course": "Windward/Leeward"},
+                         headers=h(club_officer_token))
+        assert r.status_code == 200, r.text
+
+        # The notice shows on the public feed for the club.
+        feed = requests.get(f"{API}/notifications",
+                            params={"club_id": test_club["id"]}).json()
+        assert any(n["race_id"] == rid for n in feed)
+
+        # Disabling race-day notices hides it from the public feed too.
+        requests.put(f"{API}/clubs/{test_club['id']}/settings",
+                     json={"race_day_notices": False}, headers=h(club_admin_token))
+        feed = requests.get(f"{API}/notifications",
+                            params={"club_id": test_club["id"]}).json()
+        assert not any(n["race_id"] == rid for n in feed)
+
+        # Re-enabling brings the notice back.
+        requests.put(f"{API}/clubs/{test_club['id']}/settings",
+                     json={"race_day_notices": True}, headers=h(club_admin_token))
+        feed = requests.get(f"{API}/notifications",
+                            params={"club_id": test_club["id"]}).json()
+        assert any(n["race_id"] == rid for n in feed)
+        requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+
     def test_webmaster_crud_club(self, webmaster_token):
         r = requests.post(f"{API}/clubs", json={"name": "Tmp Club", "color": "#111111"},
                           headers=h(webmaster_token))

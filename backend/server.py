@@ -3936,9 +3936,15 @@ async def get_notifications(request: Request, club_id: Optional[str] = None):
         q["class_id"] = {"$in": ids}
     races = await db.races.find(q, {"_id": 0}).to_list(500)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+    # Clubs that switched race-day notices off hide their notices from the
+    # public feed too — not just from the officer editor.
+    disabled_clubs = {c["id"] for c in await db.clubs.find(
+        {"race_day_notices": False}, {"_id": 0, "id": 1}).to_list(100)}
     out = []
     for r in races:
         cls = classes.get(r["class_id"], {})
+        if cls.get("club_id") in disabled_clubs:
+            continue
         out.append({
             "race_id": r["id"],
             "class_name": cls.get("name", "Class"),
