@@ -861,6 +861,22 @@ class TestMiniSeries:
         assert groups[0]["race_numbers"] == [1, 3]
         assert groups[0]["race_count"] == 2
 
+    def test_empty_groups_are_dropped(self):
+        # Groups created but never assigned races contribute nothing — they
+        # must not render as tabs/standings sections on the public page.
+        series = {"mini_series": True, "mini_series_groups": [
+            {"name": "Windward Leewards", "race_numbers": [], "discards": 1, "scoring": "combined"},
+            {"name": "Windward Leewards", "race_numbers": [], "discards": 0, "scoring": "combined"},
+            {"name": "Mini R1", "race_numbers": [], "discards": 0, "scoring": "combined"},
+            {"name": "Windward Leewards", "race_numbers": [2, 3], "discards": 0, "scoring": "combined"},
+        ]}
+        races = [{"race_number": 1}, {"race_number": 2}, {"race_number": 3}]
+        groups = server._normalize_mini_groups(series, races)
+        assert len(groups) == 1
+        assert groups[0]["name"] == "Windward Leewards"
+        assert groups[0]["race_numbers"] == [2, 3]
+        assert groups[0]["race_count"] == 2
+
 
 class TestMiniSeriesCombined:
     """Mini-series scoring treatment: "additional" (each mini race counts
@@ -1016,8 +1032,9 @@ class TestMiniSeriesCombined:
 
     def test_sailor_misses_one_mini_race(self):
         # b2 is absent from race 3 (DNC = 4 with 3 entries): 5, DNC(4), 9,
-        # 1 discard -> 9 dropped -> avg 4.5.  b1 avg 3.5; b3 avg 4.0.
-        # b1 1st, b3 2nd, b2 3rd.
+        # 1 discard -> 9 dropped -> avg 4.5.  b1 avg 3.5; b2 avg 4.5.
+        # b3 is DNC for the whole day → excluded from the day's finishing
+        # positions (scores DNC 4 instead), so b1 1st, b2 2nd.
         races = [
             self._race(1, [self._res("b1", "FINISHED", 1)], entries=3),
             self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 5), self._res("b3", "DNC")], entries=3),
@@ -1030,12 +1047,16 @@ class TestMiniSeriesCombined:
         st = self._run(groups, races)
         by_id = {r["boat_id"]: r for r in st["standings"]}
         assert by_id["b2"]["scores"][1]["code"] == "MINI"
-        assert by_id["b2"]["scores"][1]["points"] == 3
+        assert by_id["b2"]["scores"][1]["points"] == 2
+        assert by_id["b3"]["scores"][1]["code"] == "DNC"
+        assert by_id["b3"]["scores"][1]["points"] == 4
 
     def test_sailor_misses_entire_mini_series(self):
-        # b3 DNCs every mini race (4 each, 3 boats) -> 1 discard -> avg 4.0;
-        # b2 wins all → 1st; b1 2nd; b3 3rd.  The combined day is still a
-        # single score in the main series.
+        # b3 DNCs every mini race (4 each, 3 boats) — it never took part in
+        # the day, so it scores the SAME DNC the main series would award for
+        # a normal race (series entries + 1 = 4), not a finishing position.
+        # b2 wins all → 1st; b1 2nd. The combined day is still a single
+        # score in the main series.
         races = [
             self._race(1, [self._res("b1", "FINISHED", 1), self._res("b3", "DNC")], entries=3),
             self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1), self._res("b3", "DNC")], entries=3),
@@ -1048,14 +1069,17 @@ class TestMiniSeriesCombined:
         st = self._run(groups, races)
         by_id = {r["boat_id"]: r for r in st["standings"]}
         scores = by_id["b3"]["scores"]
-        assert len(scores) == 3 and scores[1]["code"] == "MINI" and scores[1]["points"] == 3
-        assert by_id["b3"]["net"] == 11.0  # DNC(4) + day(3) + DNC(4)
+        assert len(scores) == 3 and scores[1]["code"] == "DNC" and scores[1]["points"] == 4
+        assert by_id["b3"]["net"] == 12.0  # DNC(4) + day DNC(4) + DNC(4)
+        # The sailors' positions are unaffected by the DNC boat.
+        assert by_id["b2"]["scores"][1]["points"] == 1
+        assert by_id["b1"]["scores"][1]["points"] == 2
 
     def test_different_entries_between_mini_races(self):
         # Each mini race has its own fleet size, so its DNC scores differ:
         # race 2: 4 boats -> DNC 5; race 3: 5 boats -> DNC 6; race 4: 6 boats
         # -> DNC 7. b2 misses all three -> 1 discard -> avg 5.5; b1 avg
-        # 5.33. b1 wins → 1st, b2 2nd.
+        # 5.33. b1 wins → 1st, b2 keeps the DNC value (never a position).
         races = self._five_races([1, 2, 5, 9, 3], extra={5: [self._res("b2", "FINISHED", 1)]})
         races[1] = self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "DNC")], entries=4)
         races[2] = self._race(3, [self._res("b1", "FINISHED", 5), self._res("b2", "DNC")], entries=5)
@@ -1064,7 +1088,8 @@ class TestMiniSeriesCombined:
                    "scoring": "combined"}]
         st = self._run(groups, races)
         by_id = {r["boat_id"]: r for r in st["standings"]}
-        assert by_id["b2"]["scores"][1]["points"] == 2
+        assert by_id["b2"]["scores"][1]["code"] == "DNC"
+        assert by_id["b2"]["scores"][1]["points"] == 5.5  # (5 + 6) / 2 after 1 discard
 
     def test_multiple_mini_series_in_one_main_series(self):
         # Two combined groups + one normal race: each group folds independently

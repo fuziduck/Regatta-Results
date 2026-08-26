@@ -321,11 +321,21 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const emptyDecision = { penalty_points: "", reason: "", decision_maker: "", date: "", notes: "" };
   const [decision, setDecision] = useState(emptyDecision);
   const [validateMsg, setValidateMsg] = useState(null);
+  // When the race cannot be fetched (deleted/renumbered elsewhere), show a
+  // clear error with a way back instead of hanging on "Loading race…" forever.
+  const [loadError, setLoadError] = useState(null);
 
   const refresh = useCallback(async () => {
-    const r = await api.getRace(raceId);
-    setRace(r);
-    setNotif({ course: r.course || "", special_rules: r.special_rules || "", life_jackets: !!r.life_jackets, start_time: r.start_time || "" });
+    try {
+      const r = await api.getRace(raceId);
+      setRace(r);
+      setLoadError(null);
+      setNotif({ course: r.course || "", special_rules: r.special_rules || "", life_jackets: !!r.life_jackets, start_time: r.start_time || "" });
+    } catch (e) {
+      setLoadError(e.response?.status === 404
+        ? "This race no longer exists — it may have been deleted or merged elsewhere."
+        : (e.response?.data?.detail || "Could not load this race — please go back and try again."));
+    }
   }, [raceId]);
 
   useEffect(() => {
@@ -385,6 +395,14 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     return contig ? `R${nums[0]}–${nums[nums.length - 1]}` : `R${nums.join(",")}`;
   };
 
+  if (loadError) {
+    return (
+      <div className="p-8 max-w-md mx-auto flex flex-col items-start gap-4" data-testid="race-load-error">
+        <p className="text-muted-foreground">{loadError}</p>
+        <Button variant="outline" size="sm" onClick={onBack}><ChevronLeft className="w-4 h-4 mr-1" /> Back to race day</Button>
+      </div>
+    );
+  }
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
   const startRef = startRefMs(race);
@@ -1686,13 +1704,33 @@ export default function Officer() {
 
   const startScheduled = async (item) => {
     if (item.race_id) { setSelected(item.race_id); return; }
-    const race = await api.createRace({
-      date: item.date, class_id: item.class_id, series_id: item.series_id,
-      race_number: item.race_number, start_time: item.start_time,
-      start_tz_offset_minutes: -new Date().getTimezoneOffset(),
-    });
-    await loadRaces(); await loadScheduled();
-    setSelected(race.id);
+    let race = null;
+    try {
+      race = await api.createRace({
+        date: item.date, class_id: item.class_id, series_id: item.series_id,
+        race_number: item.race_number, start_time: item.start_time,
+        start_tz_offset_minutes: -new Date().getTimezoneOffset(),
+      });
+      await loadRaces(); await loadScheduled();
+      setSelected(race.id);
+    } catch (e) {
+      // A scheduled slot can be stale (the race was already created — e.g. by
+      // another device, another tab, or an earlier tap that landed). Refresh
+      // the list and open the existing race if it now exists; otherwise show
+      // the backend's reason so a failed setup is never silent.
+      const detail = e.response?.data?.detail || "Could not set up this race";
+      try {
+        const fresh = await api.scheduledRaces(clubId ? { club_id: clubId } : {});
+        setScheduled(fresh);
+        const existing = fresh.find((s) => s.series_id === item.series_id && s.race_number === item.race_number);
+        if (existing && existing.race_id) {
+          await loadRaces();
+          setSelected(existing.race_id);
+          return;
+        }
+      } catch (_) { /* fall through to the error toast */ }
+      toast.error(detail);
+    }
   };
 
   const meta = (r) => ({

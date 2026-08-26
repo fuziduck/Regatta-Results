@@ -4615,6 +4615,12 @@ def _normalize_mini_groups(series, races):
     out = []
     for i, g in enumerate(groups):
         rns = sorted({int(n) for n in (g.get("race_numbers") or []) if int(n) >= 1})
+        # A group with no races assigned contributes nothing to the series —
+        # drop it rather than rendering an empty tab/standings section. This
+        # hides leftover groups (e.g. created but never given races) from the
+        # public page, the officer console and the standings payload.
+        if not rns:
+            continue
         name = (g.get("name") or "").strip() or f"Mini {i + 1}"
         scoring = g.get("scoring") or "additional"
         if scoring not in ("additional", "combined"):
@@ -4700,10 +4706,16 @@ def _fold_combined_mini_groups(series, agg, race_meta):
             "combined": True,
         })
         # First pass: compute each boat's daily average and A8 tieback so we
-        # can rank them within the mini-series day.
+        # can rank them within the mini-series day. A boat that DNC'd every
+        # mini race did not take part in the day at all — it scores the same
+        # DNC the main series would award for a normal race, never a
+        # finishing position within the day.
         boat_scores = {}
+        dnc_only = set()
         for bid, entries in agg.items():
             mini_entries = [entries[j] for j in idxs]
+            if all(e["code"] == "DNC" for e in mini_entries):
+                dnc_only.add(bid)
             avg, drop = _mini_combined_score(mini_entries, g["discards"])
             mini_tb_1, mini_tb_2 = _a8_tiebreak(mini_entries, drop)
             boat_scores[bid] = (avg, drop, mini_tb_1, mini_tb_2)
@@ -4711,15 +4723,21 @@ def _fold_combined_mini_groups(series, agg, race_meta):
         # the day's races breaks ties — the rank (1 for 1st, 2 for 2nd, …)
         # becomes the single score carried into the main series, matching
         # the overall-championship convention for combined mini-series days.
-        sorted_bids = sorted(boat_scores, key=lambda b: (
-            boat_scores[b][0], boat_scores[b][2], boat_scores[b][3]))
+        # Boats DNC for the whole day are excluded (they score DNC instead).
+        sorted_bids = sorted((b for b in boat_scores if b not in dnc_only),
+                             key=lambda b: (boat_scores[b][0], boat_scores[b][2], boat_scores[b][3]))
         ranks = {bid: i + 1 for i, bid in enumerate(sorted_bids)}
         # Second pass: folded entry carries the rank, not the average.
         for bid, entries in agg.items():
             avg, drop, mini_tb_1, mini_tb_2 = boat_scores[bid]
-            new_agg[bid].append({"points": ranks[bid], "code": MINI_COMBINED_CODE,
-                                 "discardable": True, "position": None,
-                                 "mini_tb": [mini_tb_1, mini_tb_2]})
+            if bid in dnc_only:
+                new_agg[bid].append({"points": avg, "code": "DNC",
+                                     "discardable": True, "position": None,
+                                     "mini_tb": None})
+            else:
+                new_agg[bid].append({"points": ranks[bid], "code": MINI_COMBINED_CODE,
+                                     "discardable": True, "position": None,
+                                     "mini_tb": [mini_tb_1, mini_tb_2]})
     return new_agg, new_meta
 
 
@@ -4913,10 +4931,15 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
     # For a combined mini view, replace the average with the finishing
     # position (1 for 1st, 2 for 2nd, …) — the same position-based
     # scoring used in the overall championship for combined mini-series.
+    # A boat that DNC'd the entire day never receives a position: it shows
+    # the DNC value it contributes to the main series, consistent with the
+    # folded result.
     if combined_view is not None:
-        rank_map = {r["boat_id"]: i + 1 for i, r in enumerate(rows)}
+        participants = [r for r in rows
+                        if not all(s.get("code") == "DNC" for s in r.get("scores", []))]
+        rank_map = {r["boat_id"]: i + 1 for i, r in enumerate(participants)}
         for r in rows:
-            r["combined_average"] = rank_map[r["boat_id"]]
+            r["combined_average"] = rank_map.get(r["boat_id"], r.get("_combined_avg"))
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)

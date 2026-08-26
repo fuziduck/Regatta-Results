@@ -166,19 +166,15 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
 
   // Mini-series feature: the full standings payload carries the named groups,
   // and each mini view is keyed separately so it can be fetched independently.
+  // Groups with no races assigned are dropped (defence-in-depth; the backend
+  // normalizer already excludes them) so leftover empty groups never render
+  // as tabs with empty tables.
   const miniMeta = active.mini_series ? seriesData[active.id]?.mini_series : null;
-  const groups = (miniMeta && miniMeta.groups) || [];
+  const groups = ((miniMeta && miniMeta.groups) || []).filter((g) => (g.race_numbers || []).length > 0);
   const dataKey = activeMini ? `${active.id}:m${activeMini}` : active.id;
   const miniData = seriesData[dataKey];
   const activeGroup = activeMini ? groups[activeMini - 1] : null;
   const miniLabel = activeGroup ? ` · ${activeGroup.name}` : "";
-  const miniRange = (g) => {
-    const nums = g.race_numbers || [];
-    if (!nums.length) return "";
-    if (nums.length === 1) return `R${nums[0]}`;
-    const contig = nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
-    return contig ? `R${nums[0]}–${nums[nums.length - 1]}` : `R${nums.join(",")}`;
-  };
 
   return (
     <div className="pt-5">
@@ -194,7 +190,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
               {groups.map((g, i) => (
                 <TabsTrigger key={i} value={String(i + 1)} data-testid={`mini-tab-${i + 1}`}
                   className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
-                  {g.name}{miniRange(g) ? ` · ${miniRange(g)}` : ""}{g.scoring === "combined" ? " · combined" : ""}
+                  {g.name}
                 </TabsTrigger>
               ))}
             </TabsList>
