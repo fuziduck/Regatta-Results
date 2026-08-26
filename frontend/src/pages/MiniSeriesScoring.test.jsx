@@ -19,8 +19,33 @@ jest.mock("@/lib/api", () => {
     selectBoats: jest.fn(),
     setStatus: jest.fn(),
     updateNotifications: jest.fn(),
+    updateMiniGroupSettings: jest.fn(),
+    deleteRace: jest.fn(),
+    adjustResult: jest.fn(),
   };
   return { api };
+});
+
+// Radix select stays out of jsdom — mimic it with an inline mock: the
+// trigger renders its props (so data-testids land on a button) and every
+// SelectItem is a clickable button that fires onValueChange, so tests can
+// pick an outcome code without opening a portal.
+jest.mock("@/components/ui/select", () => {
+  const React = require("react");
+  const Ctx = React.createContext(null);
+  const Select = ({ value, onValueChange, children }) => (
+    <Ctx.Provider value={{ value, onValueChange }}>{children}</Ctx.Provider>
+  );
+  const SelectItem = ({ value, children }) => {
+    const ctx = React.useContext(Ctx);
+    return (
+      <button type="button" data-testid={`select-item-${value}`} onClick={() => ctx?.onValueChange?.(value)}>
+        {children}
+      </button>
+    );
+  };
+  const SelectTrigger = ({ children, ...rest }) => <button type="button" {...rest}>{children}</button>;
+  return { Select, SelectItem, SelectTrigger, SelectContent: ({ children }) => <>{children}</>, SelectValue: () => null };
 });
 jest.mock("sonner", () => ({ toast: { error: jest.fn(), success: jest.fn(), info: jest.fn() } }));
 
@@ -67,9 +92,12 @@ beforeEach(() => {
     group: { name: "Day", race_numbers: [1, 2, 3], discards: 0, scoring: "combined" },
     race: { id: "r3", race_number: 3, mini_group_label: "R1C", mini_group_id: 0 },
   });
+  mockApi.updateMiniGroupSettings.mockResolvedValue({});
   mockApi.selectBoats.mockResolvedValue({});
   mockApi.setStatus.mockResolvedValue({});
   mockApi.updateNotifications.mockResolvedValue({});
+  mockApi.deleteRace.mockResolvedValue({ ok: true });
+  mockApi.adjustResult.mockResolvedValue({});
 });
 
 afterEach(async () => {
@@ -126,6 +154,30 @@ describe("Mini series scoring page", () => {
     expect(mockApi.addMiniRace).toHaveBeenCalledWith("s1", 0, {});
     // The page reloads the group's races after adding.
     expect(mockApi.getRaces).toHaveBeenCalled();
+    // The new race card (race 3) is auto-expanded.
+    expect(mockApi.updateMiniGroupSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows a discards stepper that changes the group's discard count", async () => {
+    renderPage();
+    await act(async () => {});
+    const stepper = container.querySelector('[data-testid="mini-discards-stepper"]');
+    expect(stepper).not.toBeNull();
+    expect(container.querySelector('[data-testid="discards-value"]').textContent).toBe("0");
+    const plus = container.querySelector('[data-testid="discards-plus"]');
+    act(() => plus.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(mockApi.updateMiniGroupSettings).toHaveBeenCalledWith("s1", 0, { discards: 1 });
+    expect(container.querySelector('[data-testid="discards-value"]').textContent).toBe("1");
+    // Minus button now enabled — click to go back to 0.
+    const minus = container.querySelector('[data-testid="discards-minus"]');
+    expect(minus.disabled).toBe(false);
+    act(() => minus.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(mockApi.updateMiniGroupSettings).toHaveBeenCalledWith("s1", 0, { discards: 0 });
+    expect(container.querySelector('[data-testid="discards-value"]').textContent).toBe("0");
+    // Minus button now disabled when discards is 0.
+    expect(container.querySelector('[data-testid="discards-minus"]').disabled).toBe(true);
   });
 
   it("shows the 3-step workflow banner and the fleet sign-on section", async () => {
@@ -239,9 +291,119 @@ describe("Mini series scoring page", () => {
     await act(async () => {});
     expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Scored");
   });
+
+  it("lets the officer score a non-finish outcome (DNF) from the race card", async () => {
+    // Race 2: both boats signed on, still racing (DNS) — the outcome code
+    // select sits under each boat's finish button.
+    mockApi.getRace.mockImplementation(async (id) => {
+      if (id === "r2") {
+        return {
+          id: "r2", race_number: 2, mini_group_label: "R1B", date: "2026-05-02", start_time: "11:30", class_id: "cl1", status: "setup", version: 1,
+          results: [
+            { boat_id: "b1", code: "DNS", position: null, finish_time: null },
+            { boat_id: "b2", code: "DNS", position: null, finish_time: null },
+          ],
+        };
+      }
+      return races.find((r) => r.id === id);
+    });
+    renderPage();
+    await act(async () => {});
+    // The per-boat code trigger exists on the unpublished race card.
+    const codeTrigger = container.querySelector('[data-testid="batch-code-2-1"]');
+    expect(codeTrigger).not.toBeNull();
+    // Pick DNF for boat b1 (sail 1 by default) → adjustResult with the code.
+    act(() => {
+      container.querySelector('[data-testid="select-item-DNF"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(mockApi.adjustResult).toHaveBeenCalledWith("r2", "b1", { code: "DNF" }, 1);
+  });
+
+  it("marks a race as Scored once every boat has an outcome, not just finishes", async () => {
+    // Simulate the backend: the race's codes live in r2state and change when
+    // adjustResult is called, so the card's refresh reflects the new outcome.
+    const r2state = { b1: "DNF", b2: "DNS" };
+    mockApi.getRace.mockImplementation(async (id) => {
+      if (id === "r2") {
+        return {
+          id: "r2", race_number: 2, mini_group_label: "R1B", date: "2026-05-02", start_time: "11:30", class_id: "cl1", status: "setup", version: 1,
+          results: [
+            { boat_id: "b1", code: r2state.b1, position: null, finish_time: null },
+            { boat_id: "b2", code: r2state.b2, position: null, finish_time: null },
+          ],
+        };
+      }
+      return races.find((r) => r.id === id);
+    });
+    mockApi.adjustResult.mockImplementation(async (raceId, boatId, payload) => {
+      if (raceId === "r2" && payload.code) r2state[boatId] = payload.code;
+      return {};
+    });
+    renderPage();
+    await act(async () => {});
+    // One boat DNF, one still DNS → not Scored yet (still shows Not started).
+    expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Not started");
+    // Score the second boat's outcome too.
+    act(() => {
+      container.querySelector('[data-testid="select-item-RET"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(mockApi.adjustResult).toHaveBeenCalledWith("r2", "b2", { code: "RET" }, 1);
+    // The refresh picked up the new outcome → every boat now has one → Scored.
+    expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Scored");
+    // Both boats have outcomes → no boat is still racing, so the finish grid
+    // (and its outcome selects) is gone.
+    expect(container.querySelector('[data-testid="batch-code-2-1"]')).toBeNull();
+  });
+
+  it("adjusts a finished boat's position from the card without leaving the page", async () => {
+    mockApi.getRace.mockImplementation(async (id) => {
+      if (id === "r2") {
+        return {
+          id: "r2", race_number: 2, mini_group_label: "R1B", date: "2026-05-02", start_time: "11:30", class_id: "cl1", status: "setup", version: 1,
+          results: [
+            { boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:45:00Z" },
+            { boat_id: "b2", code: "FINISHED", position: 2, finish_time: "2026-05-02T11:46:00Z" },
+          ],
+        };
+      }
+      return races.find((r) => r.id === id);
+    });
+    renderPage();
+    await act(async () => {});
+    // Boat 1 is position 1 — the Up stepper is disabled, Down is enabled.
+    const down = container.querySelector('[data-testid="batch-pos-down-2-1"]');
+    expect(down.disabled).toBe(true);
+    const up = container.querySelector('[data-testid="batch-pos-up-2-1"]');
+    expect(up.disabled).toBe(false);
+    // Swap positions: 1 → 2.
+    act(() => up.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(mockApi.adjustResult).toHaveBeenCalledWith("r2", "b1", { position: 2 }, 1);
+  });
 });
 
 // Keeps the Officer import exercised (it is the module that exports the page).
+  it("deletes a race from the mini series after confirmation", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    await act(async () => {});
+    // Each race card has a delete button (the small trash icon).
+    const delBtn = container.querySelector('[data-testid="delete-race-btn-2"]');
+    expect(delBtn).not.toBeNull();
+    act(() => delBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockApi.deleteRace).toHaveBeenCalledTimes(1);
+    const [raceId, version] = mockApi.deleteRace.mock.calls[0];
+    expect(raceId).toBe("r2");
+    expect(version).toBe(1);
+    // The page refreshes the group after deletion.
+    expect(mockApi.getRaces).toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
 describe("Officer module", () => {
   it("is importable", () => {
     expect(typeof Officer).toBe("function");

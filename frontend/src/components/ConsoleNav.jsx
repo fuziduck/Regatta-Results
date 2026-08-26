@@ -4,7 +4,6 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
-import TwoFactorAuthDialog from "@/components/TwoFactorAuthDialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,7 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LogOut, KeyRound, Menu, ShieldCheck } from "lucide-react";
+import { LogOut, KeyRound, Menu } from "lucide-react";
 
 // Console top-bar navigation, shared by the Race Officer, Race Admin and
 // Webmaster consoles.
@@ -38,13 +37,12 @@ export default function ConsoleNav({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [passcodeOpen, setPasscodeOpen] = useState(false);
-  const [securityOpen, setSecurityOpen] = useState(false);
-  const { logout, role } = useAuth();
+  const { logout } = useAuth();
   const navigate = useNavigate();
 
-  // Club staff manage 2FA from the top bar; the webmaster has a dedicated
-  // Security section in the webmaster console, so the item is hidden there.
-  const showSecurity = !!role && role !== "webmaster";
+  // Club staff manage 2FA from a Security section in the console's main
+  // content (Race Admin & Race Officer pages); the webmaster has a dedicated
+  // Security section in the webmaster console.
 
   const visible = items.filter((i) => i.show !== false);
 
@@ -70,7 +68,6 @@ export default function ConsoleNav({
           </Button>
         ))}
         <ChangePasscodeDialog onChanged={onChangedPasscode} buttonClassName="text-white hover:bg-white/15" open={passcodeOpen} onOpenChange={setPasscodeOpen} />
-        {showSecurity && <TwoFactorAuthDialog open={securityOpen} onOpenChange={setSecurityOpen} />}
         <Button size="sm" variant="ghost" className="text-white hover:bg-white/15" data-testid={logoutTestId} onClick={exit}>
           <LogOut className="w-4 h-4 mr-1" /> Exit
         </Button>
@@ -94,11 +91,6 @@ export default function ConsoleNav({
           <DropdownMenuItem data-testid="menu-change-passcode" onSelect={() => { setMenuOpen(false); setPasscodeOpen(true); }}>
             <KeyRound className="w-4 h-4" /> Change passcode
           </DropdownMenuItem>
-          {showSecurity && (
-            <DropdownMenuItem data-testid="menu-security" onSelect={() => { setMenuOpen(false); setSecurityOpen(true); }}>
-              <ShieldCheck className="w-4 h-4" /> Security
-            </DropdownMenuItem>
-          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem data-testid="menu-logout-btn" onSelect={exit} className="text-destructive focus:text-destructive">
             <LogOut className="w-4 h-4" /> Exit

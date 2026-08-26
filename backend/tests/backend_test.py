@@ -566,6 +566,25 @@ class TestRaceFlow:
         # cleanup
         requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
 
+    def test_duplicate_race_number_rejected_with_clear_error(self, club_officer_token, club_admin_token):
+        """A race number may only be used once per series — the API must
+        answer 400 with a helpful message, not crash into the unique index
+        (which surfaced as an opaque 500 without CORS headers in the app)."""
+        cls, series, boats = self._make_series_and_boats(club_admin_token)
+        sid, cls_id = series["id"], cls["id"]
+        try:
+            payload = {"date": f"{YEAR}-05-15", "class_id": cls_id, "series_id": sid,
+                       "race_number": 1, "start_time": "10:45"}
+            r = requests.post(f"{API}/races", json=payload, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            r = requests.post(f"{API}/races", json=payload, headers=h(club_officer_token))
+            assert r.status_code == 400, r.text
+            assert "already exists" in r.json()["detail"]
+        finally:
+            for race in requests.get(f"{API}/races", params={"series_id": sid},
+                                     headers=h(club_officer_token)).json():
+                requests.delete(f"{API}/races/{race['id']}", headers=h(club_officer_token))
+
 
 # ---------- Scoring specifics ----------
 class TestScoring:
@@ -942,6 +961,50 @@ class TestMiniSeriesEndpoint:
                 requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
             requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
             requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+    def test_mini_group_discards_change(self, club_officer_token, club_admin_token):
+        """The race officer may change a mini-series group's discard count
+        from the batch scoring page without leaving for the admin editor."""
+        cls = None
+        try:
+            r = requests.post(f"{API}/classes", json={"name": "Discard Change Class", "default_start_time": "10:30"},
+                              headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            cls = r.json()
+            r = requests.post(f"{API}/series", json={
+                "name": "Discard Change Series", "class_id": cls["id"], "year": YEAR,
+                "discards": 0, "included_in_overall": False, "order": 10,
+                "planned_races": 2,
+                "schedule": ["2026-09-12", "2026-09-19"]},
+                headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            sid = r.json()["id"]
+            # Split into 2 races as a combined mini series.
+            r = requests.post(f"{API}/series/{sid}/mini-split",
+                              json={"race_number": 1, "count": 2, "name": "Discard Test",
+                                    "scoring": "combined"},
+                              headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            group_index = r.json()["group_index"]
+            groups = r.json()["series"]["mini_series_groups"]
+            assert groups[group_index]["discards"] == 0
+
+            # Officer sets discards to 1.
+            r = requests.put(f"{API}/series/{sid}/mini/{group_index}",
+                             json={"discards": 1}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            assert r.json()["group"]["discards"] == 1
+            groups = r.json()["series"]["mini_series_groups"]
+            assert groups[group_index]["discards"] == 1
+            # Reverting back to 0 also works.
+            r = requests.put(f"{API}/series/{sid}/mini/{group_index}",
+                             json={"discards": 0}, headers=h(club_officer_token))
+            assert r.status_code == 200
+            assert r.json()["group"]["discards"] == 0
+        finally:
+            if cls:
+                requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+                requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
 
 
 # ---------- Duty points (OOD average over the series, DNC included) ----------

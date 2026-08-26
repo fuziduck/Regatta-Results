@@ -103,6 +103,7 @@ export const api = {
   generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
   splitMiniSeries: (id, d, v) => client.post(`/series/${id}/mini-split`, withVer(d, v)).then((r) => r.data),
   addMiniRace: (id, gi, d) => client.post(`/series/${id}/mini/${gi}/races`, d).then((r) => r.data),
+  updateMiniGroupSettings: (id, gi, d, v) => client.put(`/series/${id}/mini/${gi}`, withVer(d, v)).then((r) => r.data),
   scheduledRaces: (date) => client.get("/scheduled-races", { params: date ? { date } : {} }).then((r) => r.data),
   lockSeries: (id, reason, v) => client.post(`/series/${id}/lock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   unlockSeries: (id, reason, v) => client.post(`/series/${id}/unlock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),

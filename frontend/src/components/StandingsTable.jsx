@@ -56,8 +56,13 @@ const PODIUM_CELL = {
   // so padding with an index-derived race number would invent a duplicate —
   // show only the races actually scored instead.
   const contiguous = races.every((r, i) => r.race_number === i + 1);
-  const planned = contiguous ? data.planned_races || 0 : races.length;
-  const totalCols = Math.max(races.length, planned, contiguous ? schedule.length : 0);
+  // When viewing a mini-series group (combined or individual), the parent
+  // series' planned_races / schedule would pad phantom columns for races
+  // outside the group — cap at the actual race count so only the group's
+  // races are shown.
+  const isMiniGroupView = !!data.mini_combined;
+  const planned = isMiniGroupView ? races.length : (contiguous ? data.planned_races || 0 : races.length);
+  const totalCols = isMiniGroupView ? races.length : Math.max(races.length, planned, contiguous ? schedule.length : 0);
   // A combined mini-series day is a single scoring unit: it carries the mini
   // series' name instead of a race number (see _fold_combined_mini_groups).
   const cols = Array.from({ length: totalCols }, (_, i) => {

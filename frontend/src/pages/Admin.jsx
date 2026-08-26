@@ -7,6 +7,7 @@ import ClubBadge from "@/components/ClubBadge";
 import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
+import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -1356,6 +1357,12 @@ export default function Admin() {
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="users" data-testid="tab-users" className="gap-1.5 py-1.5"><Users className="w-4 h-4" /> Logins</TabsTrigger>
               <TabsTrigger value="activity" data-testid="tab-activity" className="gap-1.5 py-1.5"><ScrollText className="w-4 h-4" /> Activity</TabsTrigger>
+              {!isWebmaster && (
+                <>
+                  <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
+                  <TabsTrigger value="security" data-testid="tab-security" className="gap-1.5 py-1.5"><ShieldCheck className="w-4 h-4" /> Security</TabsTrigger>
+                </>
+              )}
             </TabsList>
           </div>
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
@@ -1364,6 +1371,17 @@ export default function Admin() {
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
           <TabsContent value="activity" className="pt-6"><AuditLog clubId={clubId} webmaster={isWebmaster} /></TabsContent>
+          {!isWebmaster && (
+            <TabsContent value="security" className="pt-6" data-testid="tab-security-content">
+              <div className="mb-4">
+                <h2 className="text-2xl uppercase tracking-tighter">Security</h2>
+                <p className="text-muted-foreground text-sm">
+                  Two-factor authentication for this account — protect it against a leaked passcode.
+                </p>
+              </div>
+              <TwoFactorAuth />
+            </TabsContent>
+          )}
         </Tabs>
       </main>
     </div>

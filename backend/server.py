@@ -786,6 +786,12 @@ class ClubSettingsInput(BaseModel):
     race_day_notices: bool = True
 
 
+class MiniGroupSettingsInput(BaseModel):
+    # The race officer may change a mini-series group's discard count on the
+    # day without leaving the batch scoring page.
+    discards: int = 0
+
+
 class AdvertUpdate(BaseModel):
     """Editable advert metadata (the image itself is uploaded separately)."""
     name: Optional[str] = None
@@ -3191,6 +3197,39 @@ async def add_mini_series_race(series_id: str, group_index: int,
     return {"series": fresh, "group": group, "group_index": group_index, "race": doc}
 
 
+@api_router.put("/series/{series_id}/mini/{group_index}")
+async def update_mini_group_settings(
+        series_id: str, group_index: int, data: MiniGroupSettingsInput,
+        user: dict = Depends(require_officer)):
+    """Allow the race officer to change a mini-series group's discard count
+    on the day, without navigating to the admin series editor. Only the
+    officer's own club's series may be changed."""
+    series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(
+        series_id,
+        detail="Season results are locked — discards cannot be changed.")
+    groups = list(series.get("mini_series_groups") or [])
+    if group_index < 0 or group_index >= len(groups):
+        raise HTTPException(status_code=404, detail="Mini series group not found")
+    discards = max(0, data.discards)
+    groups[group_index]["discards"] = discards
+    new_version = (series.get("version") or 0) + 1
+    result = await db.series.update_one(
+        {"id": series_id},
+        {"$set": {"mini_series_groups": groups, "version": new_version}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Series changed — reload and try again")
+    fresh = await db.series.find_one({"id": series_id}, {"_id": 0})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(
+        request=None, user=user, action="MINI_GROUP_DISCARDS_CHANGED",
+        description=(
+            f"Set discards={discards} on mini series “{groups[group_index].get('name')}”"
+        ),
+        resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"series": fresh, "group": groups[group_index], "group_index": group_index}
+
+
 @api_router.delete("/series/{series_id}")
 async def delete_series(series_id: str, request: Request,
                         user: dict = Depends(require_admin)):
@@ -3274,6 +3313,13 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
                             detail="Class does not match the series — a race must belong to its series' fleet")
     await _ensure_series_not_locked(series["id"],
                                     detail="Season results are locked — new races cannot be created.")
+    # A race number may only be used once per series (unique index also
+    # enforces this — a raw DuplicateKeyError would surface as an opaque 500).
+    dup = await db.races.find_one({"series_id": data.series_id,
+                                   "race_number": data.race_number}, {"_id": 1})
+    if dup:
+        raise HTTPException(status_code=400,
+                            detail=f"Race {data.race_number} already exists in this series — use the next race number.")
     year = series["year"]
     boats = await _class_active_boats(data.class_id, year)
     results = [{
@@ -3613,6 +3659,24 @@ async def delete_race(race_id: str, request: Request,
     result = await db.races.delete_one(_version_filter(race_id, expected))
     if result.deleted_count == 0:
         _raise_stale(expected)
+    # If the race belonged to a mini-series group, remove its number from
+    # the group's race_numbers list so the batch page and scoring engine
+    # don't reference a race that no longer exists.
+    series_id = race.get("series_id")
+    race_number = race.get("race_number")
+    if series_id and race_number is not None:
+        series = await db.series.find_one({"id": series_id}, {"_id": 0})
+        groups = list(series.get("mini_series_groups") or [])
+        changed = False
+        for g in groups:
+            nums = g.get("race_numbers") or []
+            if race_number in nums:
+                g["race_numbers"] = [n for n in nums if n != race_number]
+                changed = True
+        if changed:
+            await db.series.update_one(
+                {"id": series_id},
+                {"$set": {"mini_series_groups": groups, "version": (series.get("version") or 0) + 1}})
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_DELETED",
                      description=f"Deleted race {race.get('race_number')} ({race.get('date')})",
