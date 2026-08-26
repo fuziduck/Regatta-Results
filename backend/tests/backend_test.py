@@ -1050,7 +1050,19 @@ class TestMiniSeriesEndpoint:
             assert sorted(x["race_number"] for x in races) == [1, 2, 4]
             child = next(x for x in races if x["race_number"] == 2)
 
-            # Merge back — the extra race disappears, race 4 returns to 3.
+            # Seed a leftover EMPTY mini-series group (debris from an earlier
+            # split/merge) — the revert must sweep that away too so no phantom
+            # mini-series config survives in the admin console.
+            series_docs = requests.get(f"{API}/series?class_id={cls['id']}&year={YEAR}",
+                                       headers=h(club_admin_token)).json()
+            ss = next(x for x in series_docs if x["id"] == sid)
+            ss.setdefault("mini_series_groups", []).append(
+                {"name": "Ghost", "race_numbers": [], "discards": 0, "scoring": "combined"})
+            r = requests.put(f"{API}/series/{sid}", json=ss, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+
+            # Merge back — the extra race disappears, race 4 returns to 3,
+            # and the empty leftover group is dropped with mini_series off.
             r = requests.post(f"{API}/series/{sid}/mini/{gi}/merge", headers=h(club_officer_token))
             assert r.status_code == 200, r.text
             s = r.json()["series"]

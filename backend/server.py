@@ -3315,8 +3315,13 @@ async def merge_mini_series(series_id: str, group_index: int,
             {"id": slot["id"]},
             {"$unset": {"mini_group_id": "", "mini_group_label": ""}, "$inc": {"version": 1}})
 
-    # Remove the group; drop mini_series entirely when no groups remain.
+    # Remove the group, then drop any other leftover groups that hold no
+    # races (debris from earlier splits/merges). A revert must leave the
+    # series fully clean — a phantom empty mini series must not keep showing
+    # in the admin console's Series editor or the standings payloads.
     del groups[group_index]
+    groups = [g for g in groups
+              if {int(n) for n in (g.get("race_numbers") or []) if int(n) >= 1}]
     sched = list(series.get("schedule") or [])
     if sched and base <= len(sched):
         del sched[base:base + shift]
