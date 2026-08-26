@@ -98,6 +98,7 @@ export const api = {
   updateSeries: (id, d, v) => client.put(`/series/${id}`, withVer(d, v)).then((r) => r.data),
   deleteSeries: (id, v) => client.delete(`/series/${id}`, { params: verQuery(v) }).then((r) => r.data),
   generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
+  splitMiniSeries: (id, d, v) => client.post(`/series/${id}/mini-split`, withVer(d, v)).then((r) => r.data),
   scheduledRaces: (date) => client.get("/scheduled-races", { params: date ? { date } : {} }).then((r) => r.data),
   lockSeries: (id, reason, v) => client.post(`/series/${id}/lock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   unlockSeries: (id, reason, v) => client.post(`/series/${id}/unlock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),

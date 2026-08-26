@@ -9,6 +9,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Anchor, CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
+import BoatSearchBox from "@/components/BoatSearchBox";
 import { SITE_NAME, SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
@@ -134,6 +135,7 @@ export default function Clubs() {
                     : `Every club that raced in ${year} — pick a club to see its full season.`}
               </p>
               <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4" />
+              <BoatSearchBox />
             </div>
             {sideAdverts.length > 0 && (
               <div className="flex flex-col gap-3 shrink-0" data-testid="hero-adverts">

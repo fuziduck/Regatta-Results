@@ -41,7 +41,7 @@ const PODIUM_CELL = {
   1: "bg-amber-400/70 dark:bg-amber-400/40", // gold
   2: "bg-slate-300 dark:bg-slate-400/50", // silver
   3: "bg-orange-400/70 dark:bg-orange-400/40", // bronze
-};export function SeriesStandingsTable({ data }) {
+};export function SeriesStandingsTable({ data, onOpenMini }) {
   const tableRef = useRef(null);
   useRankPinning(tableRef, [data]);
   if (!data || !data.standings?.length) {
@@ -68,6 +68,7 @@ const PODIUM_CELL = {
       mini_name: r ? r.mini_name : null,
       combined: r ? !!r.combined : false,
       mini_races: r ? r.mini_races : null,
+      mini_index: r ? r.mini_index : null,
     };
   });
   const fmtScore = (s) => {
@@ -88,7 +89,14 @@ const PODIUM_CELL = {
             <TableHead className="text-white">Club</TableHead>
             {cols.map((r, i) => (
               <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
-                <div>{r.mini_name || `R${r.race_number}`}</div>
+                {r.combined && onOpenMini ? (
+                  <button onClick={() => onOpenMini(r.mini_index)} data-testid={`open-mini-${r.mini_index || i}`}
+                    className="underline decoration-dotted underline-offset-4 hover:text-safety transition-colors" title={`View the ${r.mini_races || ""} races that make up this combined result`}>
+                    {r.mini_name || `R${r.race_number}`}
+                  </button>
+                ) : (
+                  <div>{r.mini_name || `R${r.race_number}`}</div>
+                )}
                 {r.combined
                   ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">combined{r.mini_races ? ` · ${r.mini_races} races` : ""}</div>
                   : (r.date

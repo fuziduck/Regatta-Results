@@ -782,12 +782,12 @@ function SeriesTab({ classes, clubId }) {
                             <Select value={miniGroupScoring(g)} onValueChange={(v) => patchMiniGroup(gi, { scoring: v })}>
                               <SelectTrigger className="h-8" data-testid={`mini-scoring-${gi}`}><SelectValue /></SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="additional">Count as additional races</SelectItem>
+                                <SelectItem value="additional">Count as extra races in the main series</SelectItem>
                                 <SelectItem value="combined">Combine into one daily result</SelectItem>
                               </SelectContent>
                             </Select>
                             {miniGroupScoring(g) === "combined" && (
-                              <p className="text-[11px] text-muted-foreground">The mini races are combined into ONE main-series result: the group's discards apply first, then the average of the counting races becomes each sailor's score for the day.</p>
+                              <p className="text-[11px] text-muted-foreground">The mini races combine into ONE main-series result: the group's discards apply first, then the average of the counting races becomes each sailor's score for the day. The series table shows a single combined column.</p>
                             )}
                           </div>
                           <div>

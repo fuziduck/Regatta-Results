@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import ConsoleNav from "@/components/ConsoleNav";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote } from "@/lib/helpers";
+import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, Plus, ChevronLeft, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers } from "lucide-react";
+import { Anchor, Plus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -151,7 +152,7 @@ function NewRaceDialog({ onCreated, clubId }) {
   );
 }
 
-function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
+function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [] }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
@@ -199,6 +200,38 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
       })
       .catch(() => {});
   }, [race]); // eslint-disable-line
+
+  // Mini-series feature: when the race belongs to a mini series, the console
+  // stacks one scoring section per mini-series group (e.g. "Early" and
+  // "Late" championships) down the page, each with that group's live standings
+  // so the officer can cross-check/publish both on a single scroll.
+  const miniGroups = (series && series.mini_series && Array.isArray(series.mini_series_groups))
+    ? series.mini_series_groups.filter((g) => (g.race_numbers || []).length > 0)
+    : [];
+  const [miniStandings, setMiniStandings] = useState({});
+  // Depends on the stable `series`/`clubId` props — never on the derived
+  // miniGroups array (a fresh array each render would refetch on every paint).
+  useEffect(() => {
+    const groups = (series && series.mini_series && Array.isArray(series.mini_series_groups))
+      ? series.mini_series_groups.filter((g) => (g.race_numbers || []).length > 0)
+      : [];
+    if (!groups.length) { setMiniStandings({}); return; }
+    let cancelled = false;
+    groups.forEach((g, idx) => {
+      api.seriesStandings(series.id, clubId, idx + 1)
+        .then((d) => { if (!cancelled) setMiniStandings((prev) => ({ ...prev, [idx]: d })); })
+        .catch(() => { if (!cancelled) setMiniStandings((prev) => ({ ...prev, [idx]: undefined })); });
+    });
+    return () => { cancelled = true; };
+  }, [series, clubId]); // eslint-disable-line
+
+  // Short label for a group's race numbers, e.g. "R1–3" or "R5,R6".
+  const miniRangeLabel = (nums) => {
+    if (!nums || !nums.length) return "";
+    if (nums.length === 1) return `R${nums[0]}`;
+    const contig = nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
+    return contig ? `R${nums[0]}–${nums[nums.length - 1]}` : `R${nums.join(",")}`;
+  };
 
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
@@ -593,6 +626,50 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
             </table>
           </div>
         </section>
+
+        {/* Mini-series scoring: one section per mini group, so the officer
+            can see each mini championship's live standings down the page. */}
+        {miniGroups.length > 0 && (
+          <div className="space-y-6">
+            <div className="pt-2">
+              <div className="flex items-center justify-between gap-2 w-full">
+                <h3 className="font-heading uppercase tracking-tight flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-ocean" /> Mini-series scoring
+                </h3>
+                <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" data-testid="batch-entry-btn" onClick={() => {
+                  if (miniGroups.length > 0) enterBatch({ group: miniGroups[0], groupIndex: 0, seriesId: meta(race).series_id, series: series, className: meta(race).class_name });
+                }}>
+                  <ListChecks className="w-3.5 h-3.5" /> Batch entry
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">Each mini series scores as its own championship. Scroll down to review both groups' standings.</p>
+            </div>
+            {miniGroups.map((g, idx) => {
+              const data = miniStandings[idx];
+              return (
+                <section key={idx} data-testid={`mini-scoring-section-${idx + 1}`} className="rounded-xl border border-border bg-card p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-8 h-8 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading font-bold">{idx + 1}</span>
+                      <div>
+                        <h3 className="font-heading uppercase tracking-tight leading-none">{g.name || `Mini ${idx + 1}`}</h3>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {miniRangeLabel(g.race_numbers)}
+                          {g.discards > 0 ? ` · ${g.discards} discard${g.discards !== 1 ? "s" : ""}` : " · no discards"}
+                          {g.scoring === "combined" ? " · combined into one daily result" : ""}
+                        </div>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className={miniSeriesNote(g) ? "border-ocean/40 text-ocean capitalize" : ""}>
+                      {g.scoring === "combined" ? "Combined day" : "Separate races"}
+                    </Badge>
+                  </div>
+                  <SeriesStandingsTable data={data} />
+                </section>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Sticky action bar */}
@@ -629,6 +706,353 @@ function RaceConsole({ raceId, meta, onBack, rrsCodes, dayRaces = [] }) {
   );
 }
 
+function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, seriesMap, onClose }) {
+  const [races, setRaces] = useState([]);
+  const [boatsMap, setBoatsMap] = useState({});
+  const [expandMap, setExpandMap] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  const fetchRace = useCallback(async (raceId) => {
+    try { return await api.getRace(raceId); } catch { return null; }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const allRaces = await api.getRaces({ series_id: seriesId, club_id: clubId });
+      const groupRaces = [];
+      for (const r of allRaces) {
+        if ((group.race_numbers || []).includes(r.race_number)) {
+          const fresh = await fetchRace(r.id);
+          if (fresh && !cancelled) groupRaces.push(fresh);
+        }
+      }
+      if (cancelled) return;
+      groupRaces.sort((a, b) => a.race_number - b.race_number);
+      setRaces(groupRaces);
+      const classIds = [...new Set(groupRaces.map((r) => r.class_id))];
+      const bm = {};
+      for (const cid of classIds) {
+        try {
+          const bs = await api.getBoats({ class_id: cid });
+          bs.forEach((b) => (bm[b.id] = b));
+        } catch {}
+      }
+      if (!cancelled) { setBoatsMap(bm); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [group, seriesId, clubId, fetchRace]);
+
+  const mutate = useCallback(async (fn, silent) => {
+    try {
+      const r = await fn();
+      if (!silent) toast.success("Updated");
+      return r;
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("Changed by another user — reloading");
+      } else {
+        toast.error(e.response?.data?.detail || "Something went wrong");
+      }
+      return null;
+    }
+  }, []);
+
+  const refreshRace = useCallback(async (raceId, setFn) => {
+    const fresh = await fetchRace(raceId);
+    if (fresh) setFn ? setFn(fresh) : setRaces((prev) => prev.map((r) => r.id === raceId ? fresh : r));
+  }, [fetchRace]);
+
+  const toggleBoat = useCallback(async (race) => {
+    const racing = race.results.filter((r) => r.code !== "DNC").map((r) => r.boat_id);
+    return mutate(() => api.selectBoats(race.id, racing, race.version));
+  }, [mutate]);
+
+  const addBoatToRace = useCallback(async (race, boatId) => {
+    const racing = race.results.filter((r) => r.code !== "DNC").map((r) => r.boat_id);
+    if (racing.includes(boatId)) return;
+    racing.push(boatId);
+    const r = await mutate(() => api.selectBoats(race.id, racing, race.version), true);
+    if (r) await refreshRace(race.id);
+  }, [mutate, refreshRace]);
+
+  const removeBoatFromRace = useCallback(async (race, boatId) => {
+    const racing = race.results.filter((r) => r.code !== "DNC" && r.boat_id !== boatId).map((r) => r.boat_id);
+    const r = await mutate(() => api.selectBoats(race.id, racing, race.version), true);
+    if (r) await refreshRace(race.id);
+  }, [mutate, refreshRace]);
+
+  const finishBoat = useCallback(async (race, boatId) => {
+    const r = await mutate(() => api.recordFinish(race.id, boatId, new Date().toISOString(), race.version), true);
+    if (r) await refreshRace(race.id);
+  }, [mutate, refreshRace]);
+
+  const publish = useCallback(async (race) => {
+    const r = await mutate(() => api.setStatus(race.id, "published", race.version));
+    if (r) await refreshRace(race.id);
+  }, [mutate, refreshRace]);
+
+  const publishAll = useCallback(async () => {
+    let count = 0;
+    for (const race of races) {
+      if (race.status === "published") continue;
+      const r = await mutate(() => api.setStatus(race.id, "published", race.version), true);
+      if (r) count++;
+    }
+    if (count) toast.success(`Published ${count} race${count > 1 ? "s" : ""}`);
+    const allRaces = await api.getRaces({ series_id: seriesId, club_id: clubId });
+    const updated = [];
+    for (const r of allRaces) {
+      if ((group.race_numbers || []).includes(r.race_number)) {
+        const fresh = await fetchRace(r.id);
+        if (fresh) updated.push(fresh);
+      }
+    }
+    updated.sort((a, b) => a.race_number - b.race_number);
+    setRaces(updated);
+  }, [races, group, seriesId, clubId, mutate, fetchRace]);
+
+  const toggleExpand = (raceId) => setExpandMap((prev) => ({ ...prev, [raceId]: !prev[raceId] }));
+  const remaining = races.filter((r) => r.status !== "published");
+  const allPublished = remaining.length === 0;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p className="text-muted-foreground">Loading batch entry…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pb-20">
+      {/* Header */}
+      <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={onClose} data-testid="batch-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
+          <div className="flex-1">
+            <div className="font-heading text-lg uppercase tracking-tight leading-none">{group.name || `Mini ${groupIndex + 1}`}</div>
+            <div className="text-xs text-muted-foreground">
+              {(group.race_numbers || []).length} races{group.discards > 0 ? ` · ${group.discards} discard${group.discards !== 1 ? "s" : ""}` : ""}
+            </div>
+          </div>
+          {remaining.length > 0 && (
+            <Button className="bg-emerald-600 hover:bg-emerald-700 gap-1.5" data-testid="publish-all-btn" onClick={publishAll}>
+              <Send className="w-4 h-4" /> Publish all ({remaining.length})
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Race cards */}
+      <div className="max-w-5xl mx-auto px-4 pt-5 space-y-4">
+        {group.scoring === "combined" && (
+          <div className="rounded-xl border border-ocean/30 bg-ocean/5 p-3 text-sm text-ocean flex items-center gap-2" data-testid="combined-note">
+            <Layers className="w-4 h-4 shrink-0" />
+            <span>Combined mini series — these {races.length} races fold into <strong>one result</strong> in the series standings. Publish them all to confirm the combined score.</span>
+          </div>
+        )}
+        {allPublished && (
+          <div className="rounded-xl border border-emerald-300 bg-emerald-50 dark:bg-emerald-500/10 dark:border-emerald-500/40 p-4 text-sm text-emerald-700 dark:text-emerald-300 flex items-center gap-2" data-testid="all-published-banner">
+            <CheckCircle2 className="w-4 h-4 shrink-0" /> All {races.length} races in this group are published.
+          </div>
+        )}
+        {races.map((race) => {
+          const expanded = expandMap[race.id];
+          const allBoats = race.results || [];
+          const racing = allBoats.filter((r) => r.code !== "DNC");
+          const finished = racing.filter((r) => r.code === "FINISHED");
+          const toFinish = racing.filter((r) => r.code === "DNS");
+          const cls = classes[race.class_id] || {};
+          return (
+            <section key={race.id} className="rounded-xl border border-border bg-card overflow-hidden" data-testid={`batch-race-${race.race_number}`}>
+              {/* Race header */}
+              <div className="flex items-center gap-3 px-4 py-3">
+                <div className="w-9 h-9 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg shrink-0">R{race.race_number}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-sm leading-none">{race.start_time || "TBD"}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">{fmtDate(race.date)} · {cls.name || "Class"}</div>
+                </div>
+                <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
+                {race.status !== "published" && (
+                  <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 h-8 px-3 gap-1" data-testid={`publish-btn-${race.race_number}`} onClick={() => publish(race)}>
+                    <Send className="w-3.5 h-3.5" /> Publish
+                  </Button>
+                )}
+                {race.status === "published" && <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />}
+                <button onClick={() => toggleExpand(race.id)} className="p-1 rounded-lg hover:bg-muted transition-colors" data-testid={`expand-btn-${race.race_number}`}>
+                  {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {/* Expanded: boat selection + finish recording */}
+              {expanded && race.status !== "published" && (
+                <div className="px-4 pb-4 space-y-3 border-t border-border/50 pt-3">
+                  {/* Boat selection */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-semibold uppercase text-muted-foreground">Boats racing</span>
+                      <span className="text-xs text-muted-foreground">{racing.length} selected</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {allBoats.map((r) => {
+                        const b = boatsMap[r.boat_id] || {};
+                        const isRacing = r.code !== "DNC";
+                        return (
+                          <button key={r.boat_id}
+                            onClick={() => isRacing ? removeBoatFromRace(race, r.boat_id) : addBoatToRace(race, r.boat_id)}
+                            data-testid={`batch-boat-${race.race_number}-${b.sail_no || r.boat_id}`}
+                            className={`rounded-lg border px-2 py-1 text-xs font-semibold transition-all active:scale-95 ${isRacing ? "bg-ocean text-white border-ocean" : "bg-background border-border text-muted-foreground hover:border-ocean/40"}`}>
+                            {b.name || "?"} <span className="font-mono opacity-80">{b.sail_no || ""}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {/* Finish buttons */}
+                  {toFinish.length > 0 && (
+                    <div>
+                      <span className="text-xs font-semibold uppercase text-muted-foreground mb-1.5 block">Tap to finish</span>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {toFinish.map((r) => {
+                          const b = boatsMap[r.boat_id] || {};
+                          return (
+                            <button key={r.boat_id}
+                              onClick={() => finishBoat(race, r.boat_id)}
+                              data-testid={`batch-finish-${race.race_number}-${b.sail_no || r.boat_id}`}
+                              className="race-btn rounded-xl bg-safety text-white flex flex-col items-center justify-center text-center py-3 px-2 transition-transform active:scale-95 hover:bg-safety-dark">
+                              <span className="font-heading uppercase tracking-tight text-base leading-none">{b.name || "?"}</span>
+                              <span className="font-mono text-sm opacity-90 mt-0.5">{b.sail_no || ""}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {/* Results summary */}
+                  {finished.length > 0 && (
+                    <div className="rounded-lg bg-muted/30 divide-y">
+                      {finished.sort((a, b) => a.position - b.position).map((r) => {
+                        const b = boatsMap[r.boat_id] || {};
+                        return (
+                          <div key={r.boat_id} className="flex items-center gap-2 px-3 py-2">
+                            <span className="w-6 h-6 rounded bg-emerald-100 text-emerald-800 grid place-items-center font-heading text-xs shrink-0">{r.position}</span>
+                            <span className="flex-1 text-sm font-semibold truncate">{b.name || "?"} <span className="font-mono text-xs text-muted-foreground">{b.sail_no || ""}</span></span>
+                            <span className="text-xs font-mono text-muted-foreground">{fmtTime(r.finish_time)}</span>
+                            <Button size="icon" variant="ghost" className="h-6 w-6" onClick={async () => { await mutate(() => api.undoFinish(race.id, r.boat_id, race.version), true); await refreshRace(race.id); }} data-testid={`batch-undo-${race.race_number}-${b.sail_no || r.boat_id}`}>
+                              <Undo2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <Button variant="outline" size="sm" className="w-full text-ocean border-ocean/30 hover:bg-ocean hover:text-white" data-testid={`batch-full-console-${race.race_number}`}                    onClick={() => onClose(race.id)}>
+                    Open full race console
+                  </Button>
+                </div>
+              )}
+              {/* Expanded: published race shows results summary */}
+              {expanded && race.status === "published" && (
+                <div className="px-4 pb-4 border-t border-border/50 pt-3">
+                  {finished.length > 0 && (
+                    <div className="rounded-lg bg-emerald-50 dark:bg-emerald-500/10 divide-y">
+                      {finished.sort((a, b) => a.position - b.position).map((r) => {
+                        const b = boatsMap[r.boat_id] || {};
+                        return (
+                          <div key={r.boat_id} className="flex items-center gap-2 px-3 py-2">
+                            <span className="w-6 h-6 rounded bg-emerald-100 text-emerald-800 grid place-items-center font-heading text-xs shrink-0">{r.position}</span>
+                            <span className="flex-1 text-sm font-semibold truncate">{b.name || "?"} <span className="font-mono text-xs text-muted-foreground">{b.sail_no || ""}</span></span>
+                            <span className="text-xs font-mono text-muted-foreground">{fmtTime(r.finish_time)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {finished.length === 0 && <p className="text-sm text-muted-foreground">No results recorded.</p>}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function SplitMiniDialog({ target, onClose, onSplit }) {
+  const [count, setCount] = useState(2);
+  const [name, setName] = useState("");
+  const [scoring, setScoring] = useState("combined");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!target) return;
+    setBusy(true);
+    try {
+      const res = await api.splitMiniSeries(target.series_id, {
+        race_number: target.race_number,
+        count,
+        name: name.trim(),
+        scoring,
+      });
+      toast.success(`Split race ${target.race_number} into ${count} races — mini series created`);
+      onSplit(res);
+      onClose();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not split the race");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent data-testid="mini-split-dialog">
+        <DialogHeader><DialogTitle className="font-heading uppercase tracking-tight">Split into a mini series</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Run race {target?.race_number} as several races for this class today, scored together.
+        </p>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>How many races?</Label>
+            <Input type="number" min="2" max="9" value={count}
+              onChange={(e) => setCount(Math.max(2, Math.min(9, Number(e.target.value) || 2)))}
+              data-testid="mini-split-count" />
+          </div>
+          <div className="space-y-2">
+            <Label>Name (optional)</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)}
+              placeholder={target ? `${target.class_name} · R${target.race_number} mini` : "Mini series name"}
+              data-testid="mini-split-name" />
+          </div>
+          <div className="space-y-2">
+            <Label>Scoring</Label>
+            <Select value={scoring} onValueChange={setScoring}>
+              <SelectTrigger data-testid="mini-split-scoring"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="combined">Combine into one daily result</SelectItem>
+                <SelectItem value="additional">Count as extra races in the main series</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {scoring === "combined"
+                ? "The races fold into ONE result in the series standings — the table shows a single combined column."
+                : "Each race counts as its own race in the main series standings."}
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button onClick={submit} disabled={busy} data-testid="mini-split-confirm" className="bg-ocean hover:bg-ocean-dark">
+            Split into {count} races
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Officer() {
   const { role, clubId: authClubId, clubName: authClubName } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -653,6 +1077,12 @@ export default function Officer() {
   // Published races list: newest first by default (most recent race at the
   // top), switchable to oldest first.
   const [publishedOrder, setPublishedOrder] = useState("desc");
+  // Mini-series batch entry mode
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchGroup, setBatchGroup] = useState(null);
+  const [pendingBatchRace, setPendingBatchRace] = useState(null);
+  // Race-day split: the scheduled race the officer wants to expand into a mini series.
+  const [splitTarget, setSplitTarget] = useState(null);
 
   const loadRaces = useCallback(async () => {
     const params = clubId ? { club_id: clubId } : {};
@@ -677,6 +1107,15 @@ export default function Officer() {
 
   useEffect(() => { loadRaces(); loadScheduled(); api.rrsCodes().then(setRrsCodes); }, [loadRaces, loadScheduled]);
 
+  // After batch exit, if the officer wants to open a specific race, wait
+  // for races to load then select it.
+  useEffect(() => {
+    if (pendingBatchRace && races.length > 0) {
+      const r = races.find((x) => x.id === pendingBatchRace);
+      if (r) { setSelected(pendingBatchRace); setPendingBatchRace(null); }
+    }
+  }, [pendingBatchRace, races]);
+
   const startScheduled = async (item) => {
     if (item.race_id) { setSelected(item.race_id); return; }
     const race = await api.createRace({
@@ -690,6 +1129,7 @@ export default function Officer() {
 
   const meta = (r) => ({
     class_id: r.class_id,
+    series_id: r.series_id,
     class_name: classes[r.class_id]?.name || "Class",
     series_name: series[r.series_id]?.name || "Series",
   });
@@ -730,7 +1170,9 @@ export default function Officer() {
     return (
       <div className="min-h-screen bg-background">
         <TopBar clubName={clubName} onSwitchClub={switchClub} />
-        <RaceConsole raceId={selected} meta={meta(selectedRace || {})} rrsCodes={rrsCodes} dayRaces={dayRaces}
+        <RaceConsole raceId={selected} meta={meta(selectedRace || {})}
+          series={selectedRace ? series[selectedRace.series_id] : null} clubId={clubId}
+          rrsCodes={rrsCodes} dayRaces={dayRaces}
           onBack={() => { setSelected(null); loadRaces(); }} />
       </div>
     );
@@ -761,6 +1203,57 @@ export default function Officer() {
       {r.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
     </button>
   );
+
+  // ── Mini-series batch entry ───────────────────────────────────────
+  // Collect all mini-series groups from in-progress races so the officer
+  // can open a multi-race batch entry view.
+  const batchGroups = [];
+  const seenBatchKeys = new Set();
+  active.forEach((r) => {
+    const sr = series[r.series_id];
+    if (sr && sr.mini_series && Array.isArray(sr.mini_series_groups)) {
+      sr.mini_series_groups.forEach((g, idx) => {
+        const key = `${sr.id}:${idx}`;
+        if (!seenBatchKeys.has(key)) {
+          seenBatchKeys.add(key);
+          batchGroups.push({ group: g, groupIndex: idx, seriesId: sr.id, series: sr, className: classes[sr.class_id]?.name || "Class" });
+        }
+      });
+    }
+  });
+
+  const enterBatch = (g) => { setBatchGroup(g); setBatchMode(true); };
+  const exitBatch = (raceId) => { setBatchMode(false); setBatchGroup(null); if (raceId) setPendingBatchRace(raceId); loadRaces(); loadScheduled(); };
+  // After a successful race-day split, reload and drop straight into the batch
+  // scoring page for the newly-created mini series.
+  const handleSplitDone = (res) => {
+    const sr = res.series;
+    enterBatch({
+      group: res.group,
+      groupIndex: res.group_index,
+      seriesId: sr.id,
+      series: sr,
+      className: classes[sr.class_id]?.name || "Class",
+    });
+    loadRaces(); loadScheduled();
+  };
+
+  if (batchMode && batchGroup) {
+    return (
+      <div className="min-h-screen bg-background">
+        <TopBar clubName={clubName} onSwitchClub={switchClub} />
+        <MiniSeriesBatchEntry
+          group={batchGroup.group}
+          groupIndex={batchGroup.groupIndex}
+          seriesId={batchGroup.seriesId}
+          clubId={clubId}
+          classes={classes}
+          seriesMap={series}
+          onClose={exitBatch}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -795,20 +1288,27 @@ export default function Officer() {
             return (
               <div className="space-y-2" data-testid="scheduled-list">
                 {dayItems.map((item) => (
-                  <button key={`${item.series_id}-${item.race_number}`} data-testid={`scheduled-${item.class_name}-${item.race_number}`}
-                    onClick={() => startScheduled(item)}
-                    className="w-full text-left rounded-lg border border-border bg-card p-3 flex items-center gap-3 hover:border-ocean transition-colors active:scale-[0.99]">
-                    <div className="w-10 h-10 rounded-lg bg-safety/15 grid place-items-center text-safety font-heading">R{item.race_number}</div>
-                    <div className="flex-1">
-                      <div className="font-semibold leading-none">{item.class_name} · {item.series_name}</div>
-                      <div className="text-xs text-muted-foreground mt-1">Start {item.start_time}</div>
-                      <MiniNote item={item} />
-                    </div>
-                    <Badge className={item.status === "scheduled" ? "bg-ocean/10 text-ocean" : STATUS_BADGE[item.status]}>
-                      {item.status === "scheduled" ? "Score now" : item.status}
-                    </Badge>
-                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                  </button>
+                  <div key={`${item.series_id}-${item.race_number}`} data-testid={`scheduled-${item.class_name}-${item.race_number}`}
+                    className="w-full rounded-lg border border-border bg-card flex items-stretch hover:border-ocean transition-colors">
+                    <button onClick={() => startScheduled(item)}
+                      className="flex-1 text-left p-3 flex items-center gap-3 active:scale-[0.99]">
+                      <div className="w-10 h-10 rounded-lg bg-safety/15 grid place-items-center text-safety font-heading">R{item.race_number}</div>
+                      <div className="flex-1">
+                        <div className="font-semibold leading-none">{item.class_name} · {item.series_name}</div>
+                        <div className="text-xs text-muted-foreground mt-1">Start {item.start_time}</div>
+                        <MiniNote item={item} />
+                      </div>
+                      <Badge className={item.status === "scheduled" ? "bg-ocean/10 text-ocean" : STATUS_BADGE[item.status]}>
+                        {item.status === "scheduled" ? "Score now" : item.status}
+                      </Badge>
+                    </button>
+                    <Button variant="ghost" size="sm" className="self-center shrink-0 mr-1 gap-1 text-ocean border-ocean/30 hover:bg-ocean hover:text-white"
+                      data-testid={`split-${item.class_name}-${item.race_number}`}
+                      title="Split this race into a mini series (run it as several races today)"
+                      onClick={() => setSplitTarget(item)}>
+                      <Layers className="w-3.5 h-3.5" /> Split
+                    </Button>
+                  </div>
                 ))}
               </div>
             );
@@ -853,6 +1353,7 @@ export default function Officer() {
           </>
         )}
       </main>
+      <SplitMiniDialog target={splitTarget} onClose={() => setSplitTarget(null)} onSplit={handleSplitDone} />
     </div>
   );
 }

@@ -15,6 +15,7 @@ import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SITE_NAME, SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
 import { Anchor, LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
+import BoatSearchBox from "@/components/BoatSearchBox";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -180,7 +181,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
 
   return (
     <div className="pt-5">
-      {groups.length > 1 && (
+      {groups.length > 0 && (
         <div className="flex items-center gap-2 mb-4" data-testid="mini-series-tabs">
           <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Split</span>
           <Tabs value={activeMini ? String(activeMini) : "overall"} onValueChange={(v) => setActiveMini(v === "overall" ? null : Number(v))}>
@@ -208,7 +209,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
           <Download className="w-4 h-4" /> PDF
         </Button>
       </div>
-      <SeriesStandingsTable data={miniData} />
+      <SeriesStandingsTable data={miniData} onOpenMini={setActiveMini} />
       <PublishedRaces seriesId={active.id} classId={classId} clubId={clubId} scoringMode={active.scoring_mode || "one_design"} />
     </div>
   );
@@ -383,6 +384,8 @@ export default function Landing() {
           </p>
           <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4"
             labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
+
+          <BoatSearchBox />
 
           {classes.length > 0 && (
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">

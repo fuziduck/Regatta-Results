@@ -854,6 +854,18 @@ class MiniSeriesGroup(BaseModel):
     scoring: Literal["additional", "combined"] = "additional"
 
 
+class MiniSplitInput(BaseModel):
+    """Race-day split: turn one planned race into a mini series of `count`
+    races for this class, scored either as ONE combined daily result or as
+    `count` separate races in the main series (see MiniSeriesGroup.scoring)."""
+    race_number: int = Field(..., ge=1, description="The race slot being split (1-based)")
+    count: int = Field(..., ge=2, le=9, description="How many races the mini series contains")
+    name: str = ""
+    scoring: Literal["additional", "combined"] = "combined"
+    # Optimistic concurrency: version the series doc this split is based on.
+    expected_version: Optional[int] = None
+
+
 class SeriesInput(BaseModel):
     name: str
     class_id: str
@@ -2926,6 +2938,129 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict =
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
+@api_router.post("/series/{series_id}/mini-split")
+async def split_into_mini_series(series_id: str, data: MiniSplitInput,
+                                 user: dict = Depends(require_officer)):
+    """Race-day split: turn one planned race into a mini series of `count`
+    races for this class.
+
+    The slot race keeps its number (it becomes the first sub-race); the extra
+    sub-races take the following numbers, and any later planned races shift
+    their numbers (and schedule dates) by count-1 to make room — mirroring how
+    the admin's auto-split numbers groups. Only unpublished races are shifted;
+    if a later race is already published the split is rejected.
+
+    scoring: "combined" folds the sub-races into ONE main-series daily result;
+    "additional" counts each sub-race as its own main-series race.
+    """
+    series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(series_id,
+                                    detail="Season results are locked — the schedule cannot be changed. Use the administrator correction process to amend the season.")
+    cls = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0})
+    base = data.race_number
+    count = data.count
+
+    # The split slot must be a real (planned or already-created) race of the series.
+    existing_races = await db.races.find({"series_id": series_id}, {"_id": 0}).to_list(1000)
+    by_number = {r.get("race_number"): r for r in existing_races}
+    max_number = max(list(by_number) + [0])
+    horizon = max(series.get("planned_races", 0), len(series.get("schedule") or []), max_number)
+    if base > horizon:
+        raise HTTPException(status_code=400,
+                            detail=f"Race {base} is not a planned race of this series (1–{horizon})")
+    base_race = by_number.get(base)
+    if base_race and base_race.get("status") == "published":
+        raise HTTPException(status_code=400,
+                            detail="A published race cannot be split into a mini series")
+
+    # A race may only belong to one mini series. Splitting also shifts every
+    # later race, so any existing group covering a later race would break.
+    groups = series.get("mini_series_groups") or []
+    for g in groups:
+        nums = g.get("race_numbers") or []
+        if base in nums:
+            raise HTTPException(status_code=400,
+                                detail=f"Race {base} already belongs to a mini series — remove it from “{g.get('name')}” first")
+        if any(n >= base for n in nums):
+            raise HTTPException(status_code=400,
+                                detail=f"Splitting race {base} would renumber a later race in “{g.get('name')}”. Remove that mini series first (admin) or split an earlier slot.")
+
+    # Shift later planned races up by count-1 (descending to avoid collisions).
+    # Published races cannot be moved — that would rewrite published history.
+    shift = count - 1
+    to_shift = sorted((r for r in existing_races if r.get("race_number", 0) >= base + 1),
+                      key=lambda r: r["race_number"], reverse=True)
+    for r in to_shift:
+        if r.get("status") == "published":
+            raise HTTPException(status_code=400,
+                                detail=f"Race {r['race_number']} is already published — split an earlier slot so later races don't need renumbering.")
+        new_num = r["race_number"] + shift
+        await db.races.update_one({"id": r["id"]},
+                                  {"$set": {"race_number": new_num}, "$inc": {"version": 1}})
+
+    # Insert the extra sub-race slots into the schedule (same date as the slot
+    # race), so future scheduled-races display stays aligned with numbering.
+    sched = list(series.get("schedule") or [])
+    base_date = base_race.get("date") if base_race else None
+    if not base_date and sched and base <= len(sched):
+        base_date = sched[base - 1]
+    if not base_date:
+        raise HTTPException(status_code=400,
+                            detail="This series has no scheduled date for the race — set the schedule first (admin)")
+    if sched:
+        insert_at = base  # 0-indexed position of the slot race + 1
+        sched[insert_at:insert_at] = [base_date] * shift
+
+    # The sub-races: the slot race (created if needed) plus count-1 new races.
+    # Only the slot race can be reused — any other pre-existing race at a
+    # sub-race number was just shifted out of the way, so those slots are new.
+    year = series["year"]
+    boats = await _class_active_boats(series.get("class_id"), year)
+    race_numbers = list(range(base, base + count))
+    new_races = []
+    for rn in race_numbers:
+        r = by_number.get(rn) if rn == base else None
+        if r is None:
+            results = [{"boat_id": b["id"], "code": "DNC", "finish_time": None,
+                        "position": None, "penalty_points": 0} for b in boats]
+            doc = {
+                "id": new_id(), "date": base_date, "class_id": series["class_id"],
+                "series_id": series_id, "year": year, "race_number": rn,
+                "start_time": (base_race or {}).get("start_time") or cls.get("default_start_time", "10:30"),
+                "start_tz_offset_minutes": None, "actual_start": None, "course": "",
+                "special_rules": "", "life_jackets": False, "status": "setup",
+                "entries_count": len(results), "results": results,
+                "created_at": now_iso(), "version": 1,
+            }
+            await db.races.insert_one(doc)
+            doc.pop("_id", None)
+            new_races.append(doc)
+        else:
+            new_races.append(r)
+    new_races.sort(key=lambda r: r.get("race_number", 0))
+
+    # Register the mini series group (one atomic write, versioned).
+    group = {"name": (data.name or "").strip() or f"Mini R{base}",
+             "race_numbers": race_numbers, "discards": 0,
+             "scoring": data.scoring}
+    update = {"$set": {"mini_series": True, "mini_series_groups": groups + [group]},
+              "$inc": {"version": 1}}
+    if sched:
+        update["$set"]["schedule"] = sched
+        update["$inc"]["planned_races"] = shift
+    result = await db.series.update_one(_version_filter(series_id, _expected_version(data)), update)
+    if result.modified_count == 0:
+        _raise_stale(_expected_version(data))
+    fresh = await db.series.find_one({"id": series_id}, {"_id": 0})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="MINI_SPLIT_CREATED",
+                     description=f"Split race {base} into {count} races as mini series “{group['name']}” ({group['scoring']})",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"series": fresh, "group": group,
+            "group_index": len(fresh.get("mini_series_groups") or []) - 1,
+            "races": new_races}
+
+
 @api_router.delete("/series/{series_id}")
 async def delete_series(series_id: str, request: Request,
                         user: dict = Depends(require_admin)):
@@ -4206,6 +4341,10 @@ def _fold_combined_mini_groups(series, agg, race_meta):
                 break
     if not group_of_index:
         return agg, race_meta
+    # 1-based index of each combined group in the series' normalized group list,
+    # so the standings table can link a combined column to its constituent races.
+    combined_index = {tuple(g["race_numbers"]): i + 1
+                      for i, g in enumerate(groups) if g["scoring"] == "combined"}
     new_meta = []
     new_agg = {bid: [] for bid in agg}
     consumed = set()
@@ -4226,6 +4365,7 @@ def _fold_combined_mini_groups(series, agg, race_meta):
             "date": race_meta[idxs[0]].get("date"),
             "mini_name": g["name"],
             "mini_races": len(idxs),
+            "mini_index": combined_index.get(nums),
             "combined": True,
         })
         for bid, entries in agg.items():

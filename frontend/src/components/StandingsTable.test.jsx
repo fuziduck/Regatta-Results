@@ -85,3 +85,42 @@ describe("boat-name wrapping in the standings table", () => {
     expect(linkFor("2").getAttribute("href")).toBe("/boat/b2"); // link intact
   });
 });
+
+describe("combined mini-series drill-down link", () => {
+  const combinedData = () => ({
+    race_count: 1,
+    discards: 0,
+    planned_races: 3,
+    schedule: [],
+    mini_series: { enabled: true, groups: [{ name: "Day", race_numbers: [1, 2], discards: 0, scoring: "combined" }] },
+    races: [{ race_number: null, date: "2026-05-02", mini_name: "Day", mini_races: 2, mini_index: 1, combined: true }],
+    standings: [
+      { rank: 1, boat_id: "b1", boat_name: "Bluebell", sail_no: "1", helm: "H", home_club: "C", net: 1, total: 1, scores: [{ points: 1, code: "MINI", discarded: false }] },
+    ],
+  });
+
+  it("renders the combined column header as a drill-down link when onOpenMini is given", () => {
+    const cb = jest.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <SeriesStandingsTable data={combinedData()} onOpenMini={cb} />
+        </MemoryRouter>
+      );
+    });
+    const link = container.querySelector('[data-testid="open-mini-1"]');
+    expect(link).not.toBeNull();
+    expect(link.textContent).toContain("Day");
+    act(() => link.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(cb).toHaveBeenCalledWith(1);
+  });
+
+  it("renders a plain header without onOpenMini (no link)", () => {
+    renderTable(combinedData());
+    expect(container.querySelector("[data-testid^='open-mini-']")).toBeNull();
+    expect(container.querySelector("thead").textContent).toContain("combined · 2 races");
+  });
+});
