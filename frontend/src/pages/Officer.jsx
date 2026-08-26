@@ -304,7 +304,7 @@ function RaceNoticeSection({ value, onChange, onSave, busy = false, saveLabel = 
   );
 }
 
-function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch, raceDayNotices = true }) {
+export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch, raceDayNotices = true }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
@@ -644,17 +644,27 @@ function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces 
               </Select>
             </div>
           </div>
-          <p className="text-sm text-muted-foreground mb-3">Big tap = finish time captured now. {toFinish.length} still racing.</p>
+          <p className="text-sm text-muted-foreground mb-3">Big tap = finish time captured now — or score a non-finish outcome (DNF, DSQ, OCS…) from the menu. {toFinish.length} still racing.</p>
           <div className={`grid gap-2 sm:gap-3 ${crowded ? "grid-cols-3 sm:grid-cols-4 lg:grid-cols-5" : "grid-cols-2 sm:grid-cols-3"}`} data-testid="finish-grid">
             {!boatsReady && <div className="col-span-full text-sm text-muted-foreground py-4">Loading boats…</div>}
             {boatsReady && toFinish.map((r) => {
               const b = boats[r.boat_id] || {};
               return (
-                <button key={r.boat_id} data-testid={`finish-btn-${b.sail_no}`} onClick={() => finish(r.boat_id)}
-                  className={`race-btn rounded-2xl bg-safety text-white flex flex-col items-center justify-center text-center px-1 transition-transform active:scale-95 hover:bg-safety-dark ${crowded ? "h-16 sm:h-20" : "h-28"}`}>
-                  <span className={`font-heading uppercase tracking-tight leading-none ${crowded ? "text-sm sm:text-base" : "text-2xl"}`}>{b.name}</span>
-                  <span className={`font-mono opacity-90 mt-0.5 ${crowded ? "text-sm sm:text-base" : "text-2xl mt-1"}`}>{b.sail_no}</span>
-                </button>
+                <div key={r.boat_id} className={`rounded-2xl bg-safety text-white flex flex-col overflow-hidden ${crowded ? "" : "shadow-sm"}`}>
+                  <button data-testid={`finish-btn-${b.sail_no}`} onClick={() => finish(r.boat_id)}
+                    className={`race-btn flex-1 flex flex-col items-center justify-center text-center px-1 transition-transform active:scale-95 hover:bg-safety-dark ${crowded ? "h-16 sm:h-20" : "h-28"}`}>
+                    <span className={`font-heading uppercase tracking-tight leading-none ${crowded ? "text-sm sm:text-base" : "text-2xl"}`}>{b.name}</span>
+                    <span className={`font-mono opacity-90 mt-0.5 ${crowded ? "text-sm sm:text-base" : "text-2xl mt-1"}`}>{b.sail_no}</span>
+                  </button>
+                  <div className={`bg-black/15 px-2 py-1.5 ${crowded ? "" : ""}`}>
+                    <Select value={r.code === "DNS" ? "" : r.code} onValueChange={(v) => v && changeCode(r.boat_id, v)}>
+                      <SelectTrigger className="h-7 w-full bg-white/10 text-white border-white/25 data-[placeholder]:text-white/70 text-xs" data-testid={`finish-code-${b.sail_no}`}>
+                        <SelectValue placeholder="Code…" />
+                      </SelectTrigger>
+                      <SelectContent>{BATCH_OUTCOME_CODES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                </div>
               );
             })}
             {boatsReady && toFinish.length === 0 && <div className="col-span-full text-sm text-muted-foreground py-4">All racing boats have finished, or none selected yet.</div>}
@@ -1062,6 +1072,26 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     if (r) await loadGroup();
   }, [mutate, loadGroup]);
 
+  // Collapse the whole mini series back into ONE normal race (the inverse of
+  // the on-the-day split). The extra child races are deleted by the backend;
+  // after success the batch page is no longer meaningful, so leave it and
+  // land on the surviving slot race's console.
+  const [merging, setMerging] = useState(false);
+  const revertToSingle = useCallback(async () => {
+    const extra = races.length - 1;
+    if (!window.confirm(`Revert this mini series back to a single race? The ${extra} extra race${extra > 1 ? "s" : ""} will be deleted. This cannot be undone.`)) return;
+    setMerging(true);
+    try {
+      const res = await api.mergeMiniGroup(seriesId, groupIndex);
+      toast.success(`Mini series reverted — now a single race (R${res.race?.race_number || group.race_numbers?.[0]})`);
+      onClose(res.race?.id);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not revert the mini series");
+    } finally {
+      setMerging(false);
+    }
+  }, [races.length, seriesId, groupIndex, onClose, group]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const publishAll = useCallback(async () => {
     let count = 0;
     for (const race of races) {
@@ -1216,6 +1246,11 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
           {remaining.length > 0 && (
             <Button className="bg-emerald-600 hover:bg-emerald-700 gap-1.5" data-testid="publish-all-btn" onClick={publishAll}>
               <Send className="w-4 h-4" /> Publish all ({remaining.length})
+            </Button>
+          )}
+          {races.length > 1 && (
+            <Button variant="outline" size="sm" className="gap-1.5 border-amber-500/60 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10" data-testid="revert-mini-btn" onClick={revertToSingle} disabled={merging}>
+              <Undo2 className="w-4 h-4" /> {merging ? "Reverting…" : "Revert to single race"}
             </Button>
           )}
         </div>

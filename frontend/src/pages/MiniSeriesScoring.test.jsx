@@ -22,6 +22,7 @@ jest.mock("@/lib/api", () => {
     updateMiniGroupSettings: jest.fn(),
     deleteRace: jest.fn(),
     adjustResult: jest.fn(),
+    mergeMiniGroup: jest.fn(),
   };
   return { api };
 });
@@ -98,6 +99,7 @@ beforeEach(() => {
   mockApi.updateNotifications.mockResolvedValue({});
   mockApi.deleteRace.mockResolvedValue({ ok: true });
   mockApi.adjustResult.mockResolvedValue({});
+  mockApi.mergeMiniGroup.mockResolvedValue({ series: { id: "s1" }, race: { id: "r1", race_number: 1 } });
 });
 
 afterEach(async () => {
@@ -355,6 +357,24 @@ describe("Mini series scoring page", () => {
     // Both boats have outcomes → no boat is still racing, so the finish grid
     // (and its outcome selects) is gone.
     expect(container.querySelector('[data-testid="batch-code-2-1"]')).toBeNull();
+  });
+
+  it("reverts the mini series back to a single race after confirmation", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const onClose = jest.fn();
+    renderPage({ onClose });
+    await act(async () => {});
+    // The header offers the revert action for a multi-race group.
+    const btn = container.querySelector('[data-testid="revert-mini-btn"]');
+    expect(btn).not.toBeNull();
+    act(() => btn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockApi.mergeMiniGroup).toHaveBeenCalledWith("s1", 0);
+    // The batch view is no longer meaningful — leave it, landing on the
+    // surviving slot race so the officer can score it as a normal race.
+    expect(onClose).toHaveBeenCalledWith("r1");
+    confirmSpy.mockRestore();
   });
 
   it("adjusts a finished boat's position from the card without leaving the page", async () => {

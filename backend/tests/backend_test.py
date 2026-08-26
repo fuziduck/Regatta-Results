@@ -1007,6 +1007,89 @@ class TestMiniSeriesEndpoint:
                 requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
 
 
+    def test_mini_series_merge_reverts_to_single_race(self, club_officer_token, club_admin_token):
+        """A split mini series can be reverted back into ONE normal race:
+        the child races are deleted, later races are renumbered back down,
+        the group config is removed and the slot race loses its stamp."""
+        cls = None
+        try:
+            r = requests.post(f"{API}/classes", json={"name": "Merge Class", "default_start_time": "10:30"},
+                              headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            cls = r.json()
+            r = requests.post(f"{API}/boats", json={
+                "name": "Merge Boat", "sail_no": "M1", "class_id": cls["id"],
+                "helm": "T", "year": YEAR, "active": True},
+                headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boat_id = r.json()["id"]
+            r = requests.post(f"{API}/series", json={
+                "name": "Merge Series", "class_id": cls["id"], "year": YEAR,
+                "discards": 0, "included_in_overall": False, "order": 11,
+                "planned_races": 3,
+                "schedule": ["2026-09-12", "2026-09-19", "2026-09-26"]},
+                headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            sid = r.json()["id"]
+            # Create the later planned race (race 3) so the split shifts it.
+            r = requests.post(f"{API}/races", json={
+                "class_id": cls["id"], "series_id": sid, "date": "2026-09-26",
+                "race_number": 3, "start_time": "10:30",
+                "start_tz_offset_minutes": 0}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            later_race_id = r.json()["id"]
+            # Split race 1 into two: race 3 shifts up to race 4.
+            r = requests.post(f"{API}/series/{sid}/mini-split",
+                              json={"race_number": 1, "count": 2, "name": "Merge Me",
+                                    "scoring": "combined"},
+                              headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            gi = r.json()["group_index"]
+            assert r.json()["series"]["planned_races"] == 4
+            races = requests.get(f"{API}/races?series_id={sid}", headers=h(club_officer_token)).json()
+            assert sorted(x["race_number"] for x in races) == [1, 2, 4]
+            child = next(x for x in races if x["race_number"] == 2)
+
+            # Merge back — the extra race disappears, race 4 returns to 3.
+            r = requests.post(f"{API}/series/{sid}/mini/{gi}/merge", headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            s = r.json()["series"]
+            assert s["mini_series_groups"] == []
+            assert s["mini_series"] is False
+            assert s["planned_races"] == 3
+            assert s["schedule"] == ["2026-09-12", "2026-09-19", "2026-09-26"]
+            races = requests.get(f"{API}/races?series_id={sid}", headers=h(club_officer_token)).json()
+            assert sorted(x["race_number"] for x in races) == [1, 3]
+            # The child race is gone; the slot race is a plain race again.
+            assert all(x["id"] != child["id"] for x in races)
+            slot = next(x for x in races if x["race_number"] == 1)
+            assert "mini_group_label" not in slot
+            assert later_race_id in [x["id"] for x in races]
+
+            # Merge is rejected once a child race holds recorded results.
+            r = requests.post(f"{API}/series/{sid}/mini-split",
+                              json={"race_number": 1, "count": 2, "name": "Merge Me 2",
+                                    "scoring": "combined"},
+                              headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            gi = r.json()["group_index"]
+            child_id = r.json()["races"][1]["id"]
+            r = requests.post(f"{API}/races/{child_id}/select-boats",
+                              json={"boat_ids": [boat_id]},
+                              headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            r = requests.post(f"{API}/series/{sid}/mini/{gi}/merge", headers=h(club_officer_token))
+            assert r.status_code == 400
+            assert "recorded results" in r.json()["detail"]
+            # Unknown group index.
+            r = requests.post(f"{API}/series/{sid}/mini/99/merge", headers=h(club_officer_token))
+            assert r.status_code == 404
+        finally:
+            if cls:
+                requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+                requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+
 # ---------- Duty points (OOD average over the series, DNC included) ----------
 class TestDutyPoints:
     def test_ood_scores_average_of_own_sailed_races(self, club_officer_token, club_admin_token):

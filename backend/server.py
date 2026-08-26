@@ -3230,6 +3230,114 @@ async def update_mini_group_settings(
     return {"series": fresh, "group": groups[group_index], "group_index": group_index}
 
 
+@api_router.post("/series/{series_id}/mini/{group_index}/merge")
+async def merge_mini_series(series_id: str, group_index: int,
+                            user: dict = Depends(require_officer)):
+    """Revert a mini series back into ONE normal race — the inverse of the
+    race-day split.
+
+    The slot race keeps its number (it becomes the normal race again); the
+    extra child races are deleted, later races are renumbered back down by
+    count-1, and the schedule / planned_races shrink accordingly. This is
+    only allowed while nothing has been scored or published: every race in
+    the group must be setup with all-DNC entries, no later race may be
+    published (they get renumbered), and no other mini series may cover
+    races after this group (its stored numbers would break).
+    """
+    series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(
+        series_id,
+        detail="Season results are locked — the schedule cannot be changed. Use the administrator correction process to amend the season.")
+    groups = list(series.get("mini_series_groups") or [])
+    if group_index < 0 or group_index >= len(groups):
+        raise HTTPException(status_code=404, detail="Mini series not found")
+    group = dict(groups[group_index])
+    nums = sorted({int(n) for n in (group.get("race_numbers") or []) if int(n) >= 1})
+    if len(nums) < 2:
+        raise HTTPException(status_code=400,
+                            detail="This mini series only has one race left — nothing to merge back")
+    base = nums[0]
+    end = nums[-1]
+    shift = end - base  # number of child races to remove
+
+    races = await db.races.find({"series_id": series_id}, {"_id": 0}).to_list(1000)
+    by_number = {r.get("race_number"): r for r in races}
+
+    # Safety: no race in the group may be published or hold a recorded
+    # result (sign-on or finish) — merging would throw that away.
+    for n in nums:
+        r = by_number.get(n)
+        if not r:
+            continue
+        label = r.get("mini_group_label") or f"Race {n}"
+        if r.get("status") == "published":
+            raise HTTPException(status_code=400,
+                                detail=f"{label} is published — recall it before reverting the mini series")
+        for entry in r.get("results") or []:
+            if (entry.get("code") or "DNC") != "DNC" or (entry.get("penalty_points") or 0) != 0:
+                raise HTTPException(status_code=400,
+                                    detail=f"{label} has recorded results — clear them before reverting the mini series")
+
+    # Later races get renumbered down by `shift`, so none may be published
+    # (that would rewrite published history).
+    for r in races:
+        if r.get("race_number", 0) > end and r.get("status") == "published":
+            raise HTTPException(status_code=400,
+                                detail=f"Race {r['race_number']} is published — it would need renumbering to revert this mini series")
+
+    # No other group may cover this group or sit after it — its stored race
+    # numbers would break when the later races shift down.
+    for gi, g in enumerate(groups):
+        if gi == group_index:
+            continue
+        if any(int(n) >= base for n in (g.get("race_numbers") or []) if int(n) >= 1):
+            raise HTTPException(status_code=400,
+                                detail=f"Remove mini series “{g.get('name')}” first — it covers races at or after race {base}")
+
+    # Delete the child races; the slot race survives and becomes the normal race.
+    for n in nums[1:]:
+        r = by_number.get(n)
+        if r:
+            await db.races.delete_one({"id": r["id"]})
+
+    # Shift later races back down (ascending avoids collisions).
+    later = sorted((r for r in races if r.get("race_number", 0) > end),
+                   key=lambda r: r["race_number"])
+    for r in later:
+        await db.races.update_one({"id": r["id"]},
+                                  {"$set": {"race_number": r["race_number"] - shift},
+                                   "$inc": {"version": 1}})
+
+    # Clear the parent/child stamp on the surviving slot race.
+    slot = by_number.get(base)
+    if slot:
+        await db.races.update_one(
+            {"id": slot["id"]},
+            {"$unset": {"mini_group_id": "", "mini_group_label": ""}, "$inc": {"version": 1}})
+
+    # Remove the group; drop mini_series entirely when no groups remain.
+    del groups[group_index]
+    sched = list(series.get("schedule") or [])
+    if sched and base <= len(sched):
+        del sched[base:base + shift]
+    set_fields = {
+        "mini_series_groups": groups,
+        "schedule": sched,
+        "planned_races": max(1, (series.get("planned_races") or len(sched)) - shift),
+        "version": (series.get("version") or 0) + 1,
+    }
+    if not groups:
+        set_fields["mini_series"] = False
+    await db.series.update_one({"id": series_id}, {"$set": set_fields})
+
+    fresh = await db.series.find_one({"id": series_id}, {"_id": 0})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="MINI_SERIES_MERGED",
+                     description=f"Reverted mini series “{group.get('name')}” back to a single race (R{base})",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"series": fresh, "race": slot}
+
+
 @api_router.delete("/series/{series_id}")
 async def delete_series(series_id: str, request: Request,
                         user: dict = Depends(require_admin)):
