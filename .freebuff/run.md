@@ -138,6 +138,15 @@ email. Enrollment lives under **Webmaster console → Security**: scan the QR
 code, verify one code to enable, and set the fallback email. Disabling 2FA
 requires the current passcode plus a valid verification code.
 
+**Forgot the webmaster passcode?** Use the "Forgot your passcode?" link on
+the login page (shown for the webmaster too). The forgot-password page is a
+single unified form — club officials pick their club and enter their club
+email; the webmaster just enters the backup email stored on the account (the
+backend resolves the webmaster regardless of the selected club, and the
+reset link is emailed to that backup address — the same one used for 2FA
+fallback codes). The backup email survives 2FA being disabled, so the reset
+path never depends on 2FA being on.
+
 Secrets at rest (all on the webmaster user doc in Mongo, never exposed by
 `GET /admin/users` or backups):
 

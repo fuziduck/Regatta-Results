@@ -1523,9 +1523,13 @@ async def tfa_disable(data: TfaDisableInput, request: Request,
             raise HTTPException(status_code=401, detail="Invalid verification code")
     elif not _verify_totp(doc, data.code):
         raise HTTPException(status_code=401, detail="Invalid verification code")
+    # Keep the backup email after disabling 2FA: it is the account's recovery
+    # contact (passcode-reset links as well as emailed sign-in codes), so it
+    # must survive turning 2FA off. Only the TOTP material and any in-flight
+    # emailed OTP are cleared.
     await db.users.update_one({"id": user["user_id"]},
                               {"$unset": {"totp_secret_enc": "", "totp_enabled": "",
-                                           "totp_enrolled_at": "", "email": "",
+                                           "totp_enrolled_at": "",
                                            "email_otp_hash": "", "email_otp_expires": ""}})
     await _log_audit(request, user, "AUTH_2FA_DISABLED",
                      description="Two-factor authentication disabled for webmaster")
@@ -1699,7 +1703,12 @@ async def forgot_password(data: ForgotInput, request: Request):
     user = None
     if data.club_id:
         user = await db.users.find_one({"club_id": data.club_id, "username": email}, {"_id": 0})
-    else:
+    if not user:
+        # The webmaster account has no club and a fixed username, so the club
+        # lookup can never match it — its reset link goes to the backup email
+        # stored on the account (the same address used for 2FA fallback codes).
+        user = await db.users.find_one({"role": "webmaster", "email": email}, {"_id": 0})
+    if not user and not data.club_id:
         # No club chosen: unambiguous only when exactly one club exists.
         clubs = await db.clubs.find({}, {"_id": 0}).to_list(100)
         if len(clubs) == 1:

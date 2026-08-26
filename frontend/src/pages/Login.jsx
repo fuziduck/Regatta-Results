@@ -6,9 +6,8 @@ import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Anchor, ShieldCheck, Radio, ArrowLeft, Globe, ChevronDown, Mail, Smartphone } from "lucide-react";
+import { Anchor, ShieldCheck, ArrowLeft, Globe, ChevronDown, Mail, Smartphone } from "lucide-react";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 export default function Login() {
@@ -17,7 +16,6 @@ export default function Login() {
   const [searchParams] = useSearchParams();
   const [clubs, setClubs] = useState([]);
   const [clubId, setClubId] = useState("");
-  const [role, setRole] = useState("officer");
   const [username, setUsername] = useState("");
   const [passcode, setPasscode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -67,12 +65,15 @@ export default function Login() {
 
   const selectedClub = clubs.find((c) => c.id === clubId);
 
-  const isWebmaster = role === "webmaster";
+  // One form for everyone: typing the webmaster username switches the club
+  // picker off and routes the sign-in to the webmaster account. `role` sent to
+  // the server is only a routing hint — the account's own role is authoritative.
+  const isWebmaster = username.trim().toLowerCase() === "webmaster";
   const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const r = await login(role, username.trim(), passcode, isWebmaster ? null : clubId);
+      const r = await login(isWebmaster ? "webmaster" : "officer", username.trim(), passcode, isWebmaster ? null : clubId);
       // 2FA enrolled on the webmaster: the passcode verified but there is no
       // session yet — move to the second-factor step.
       if (r.requires_2fa) {
@@ -82,7 +83,7 @@ export default function Login() {
         setOtpSent(false);
         return;
       }
-      if (isWebmaster) {
+      if (r.role === "webmaster") {
         toast.success("Signed in as Webmaster");
         navigate("/webmaster");
       } else {
@@ -150,7 +151,7 @@ export default function Login() {
             </div>
             <div>
               <h1 className="text-2xl uppercase tracking-tight leading-none text-foreground">Club Login</h1>
-              <p className="text-sm text-muted-foreground">{selectedClub ? selectedClub.name : "Officials access"}</p>
+              <p className="text-sm text-muted-foreground">{isWebmaster ? "Webmaster access" : (selectedClub ? selectedClub.name : "Officials access")}</p>
             </div>
           </div>
 
@@ -201,17 +202,6 @@ export default function Login() {
               Webmaster access covers <strong>all clubs</strong> — no club needed here.
             </div>
           )}
-
-          <Tabs value={role} onValueChange={setRole} className="mt-6">
-            <TabsList className="grid grid-cols-3 w-full h-auto">
-              <TabsTrigger value="officer" data-testid="role-officer-tab" className="py-2.5 gap-1 px-1"><Radio className="w-4 h-4 hidden sm:block" /><span className="text-xs sm:text-sm">Race Officer</span></TabsTrigger>
-              <TabsTrigger value="admin" data-testid="role-admin-tab" className="py-2.5 gap-1 px-1"><ShieldCheck className="w-4 h-4 hidden sm:block" /><span className="text-xs sm:text-sm">Race Admin</span></TabsTrigger>
-              <TabsTrigger value="webmaster" data-testid="role-webmaster-tab" className="py-2.5 gap-1 px-1"><Globe className="w-4 h-4 hidden sm:block" /><span className="text-xs sm:text-sm">Webmaster</span></TabsTrigger>
-            </TabsList>
-            <TabsContent value="officer" className="mt-2 text-sm text-muted-foreground">Run race day, record finishes and publish results.</TabsContent>
-            <TabsContent value="admin" className="mt-2 text-sm text-muted-foreground">Manage boats, classes, series and historic results.</TabsContent>
-            <TabsContent value="webmaster" className="mt-2 text-sm text-muted-foreground">Manage clubs and access every club's officer & admin consoles.</TabsContent>
-          </Tabs>
 
           {otpStep ? (
             <form onSubmit={submitOtp} className="mt-4 space-y-4">
@@ -293,13 +283,11 @@ export default function Login() {
             <Button type="submit" data-testid="login-submit-btn" disabled={loading || !passcode} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
               {loading ? "Signing in…" : "Sign In"}
             </Button>
-            {!isWebmaster && (
-              <div className="text-center">
-                <Link to="/forgot-password" data-testid="forgot-passcode-link" className="text-sm text-ocean hover:underline font-semibold">
-                  Forgot your passcode?
-                </Link>
-              </div>
-            )}
+            <div className="text-center">
+              <Link to="/forgot-password" data-testid="forgot-passcode-link" className="text-sm text-ocean hover:underline font-semibold">
+                Forgot your passcode?
+              </Link>
+            </div>
           </form>
           )}
         </div>

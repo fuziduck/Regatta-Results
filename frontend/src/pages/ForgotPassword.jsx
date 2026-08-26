@@ -30,6 +30,9 @@ export default function ForgotPassword() {
     if (!email.trim()) return toast.error("Enter your email address");
     setLoading(true);
     try {
+      // One form for everyone: club officials use their club email, the
+      // webmaster's reset goes to the backup email stored on the account
+      // (the backend resolves it regardless of the selected club).
       await api.forgotPassword(clubId || null, email.trim());
       // Always the same message — the endpoint never reveals whether the
       // account exists.
@@ -119,6 +122,9 @@ export default function ForgotPassword() {
                   autoFocus
                   className="h-12 text-base"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Club officials: your club email. Webmaster: the backup email stored on your account.
+                </p>
               </div>
               <Button type="submit" disabled={loading || !email.trim()} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark">
                 {loading ? "Sending…" : "Send reset link"}

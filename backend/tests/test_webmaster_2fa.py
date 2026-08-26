@@ -328,6 +328,63 @@ class TestLoginFlow:
 
 
 # ---------------------------------------------------------------------------
+# Webmaster passcode reset (via the stored backup email)
+# ---------------------------------------------------------------------------
+class TestForgotPassword:
+    def _forgot(self, email, club_id="c1"):
+        return asyncio.run(server.forgot_password(
+            types.SimpleNamespace(club_id=club_id, email=email),
+            FakeRequest(ip="10.0.0.1")))
+
+    def test_reset_link_sent_to_backup_email(self):
+        asyncio.run(_enable_2fa(server.db))  # stores email wm2fa@test.club
+        r = self._forgot("wm2fa@test.club")
+        assert r.get("dev_reset_token")
+        assert server.db.users.docs[0].get("reset_token_hash")
+        assert "PASSWORD_RESET_REQUESTED" in _audit_actions(server.db)
+
+    def test_reset_completes_with_token(self):
+        asyncio.run(_enable_2fa(server.db))
+        token = self._forgot("wm2fa@test.club")["dev_reset_token"]
+        resp = asyncio.run(server.reset_password(
+            types.SimpleNamespace(token=token, new_passcode="Fresh99!"),
+            FakeRequest(ip="10.0.0.1")))
+        assert resp == {"ok": True}
+        doc = server.db.users.docs[0]
+        assert server.verify_passcode("Fresh99!", doc["passcode_hash"])
+        assert "reset_token_hash" not in doc  # single use
+        assert "PASSWORD_RESET_COMPLETED" in _audit_actions(server.db)
+
+    def test_backup_email_survives_2fa_disable(self):
+        # Disabling 2FA keeps the backup email, so the reset path still works
+        # when 2FA is off (recovery must not depend on 2FA being on).
+        secret = asyncio.run(_enable_2fa(server.db))
+        asyncio.run(server.tfa_disable(types.SimpleNamespace(
+            current_passcode=WEBMASTER_PASSCODE,
+            code=pyotp.TOTP(secret).now(), method="totp"),
+            make_session_request(),
+            {"user_id": USER_ID, "username": "webmaster",
+             "role": "webmaster", "club_id": None}))
+        doc = server.db.users.docs[0]
+        assert doc.get("email") == "wm2fa@test.club"  # kept
+        assert not doc.get("totp_enabled")
+        r = self._forgot("wm2fa@test.club")
+        assert r.get("dev_reset_token")
+
+    def test_unknown_email_gets_no_token(self):
+        r = self._forgot("nobody@test.club")
+        assert r == {"ok": True}  # generic answer, nothing leaked
+        assert not r.get("dev_reset_token")
+        assert not server.db.users.docs[0].get("reset_token_hash")
+
+    def test_no_backup_email_gets_no_token(self):
+        # webmaster without a stored backup email cannot request a reset
+        r = self._forgot("webmaster@test.club")
+        assert r == {"ok": True}
+        assert not r.get("dev_reset_token")
+
+
+# ---------------------------------------------------------------------------
 # Hygiene — 2FA material never leaves the server
 # ---------------------------------------------------------------------------
 class TestHygiene:

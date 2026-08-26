@@ -1,6 +1,7 @@
-// Two-step webmaster login: when the server answers { requires_2fa } the
-// passcode form must swap to a second-factor step (authenticator code, or an
-// emailed fallback code), and completing it signs the user in.
+// Login page: no role tabs — typing the webmaster username switches the form
+// to the webmaster sign-in (club picker hidden). Two-step webmaster login:
+// when the server answers { requires_2fa } the passcode form swaps to a
+// second-factor step (authenticator code, or an emailed fallback code).
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -71,8 +72,9 @@ beforeEach(() => {
   mockApi.sendEmailCode.mockResolvedValue({ ok: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (root) {
+    await act(async () => {});
     act(() => root.unmount());
     root = null;
   }
@@ -92,37 +94,65 @@ const setNativeValue = (el, value) => {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 };
 
+const typeUsername = (value) => {
+  act(() => setNativeValue(container.querySelector('[data-testid="username-input"]'), value));
+};
+
 const submitPasscode = async () => {
   await act(async () => {
     container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   });
 };
 
+describe("tab-free login", () => {
+  it("has no role tabs and shows the club picker by default", async () => {
+    renderLogin();
+    expect(container.querySelector('[data-testid="role-officer-tab"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-admin-tab"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-webmaster-tab"]')).toBeNull();
+    expect(container.querySelector('[data-testid="club-select"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="forgot-passcode-link"]')).not.toBeNull();
+  });
+
+  it("typing the webmaster username hides the club picker and switches the form", async () => {
+    renderLogin();
+    typeUsername("webmaster");
+    expect(container.querySelector('[data-testid="club-select"]')).toBeNull();
+    expect(container.querySelector("#username")).not.toBeNull();
+    expect(container.textContent).toContain("no club needed here");
+  });
+});
+
 describe("two-step webmaster login", () => {
   it("shows the second-factor step when the passcode answers requires_2fa", async () => {
     mockAuth.login.mockResolvedValue({ requires_2fa: true, methods: ["totp", "email"] });
     renderLogin();
+    typeUsername("webmaster");
     act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "master2026"));
     await submitPasscode();
-    expect(mockAuth.login).toHaveBeenCalledTimes(1);
+    expect(mockAuth.login).toHaveBeenCalledWith("webmaster", "webmaster", "master2026", null);
     expect(container.querySelector('[data-testid="otp-input"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="email-code-link"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="pin-input"]')).toBeNull();
   });
 
   it("stays on the passcode form when 2FA is not required", async () => {
+    mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "club", name: "Club" }]);
     mockAuth.login.mockResolvedValue({ role: "officer", club_id: "c1", club_name: "Club" });
     renderLogin();
+    await act(async () => {}); // flush the clubs fetch so clubId is set
+    typeUsername("officer@club.org");
     act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "test1234!"));
     await submitPasscode();
+    expect(mockAuth.login).toHaveBeenCalledWith("officer", "officer@club.org", "test1234!", "c1");
     expect(mockNavigate).toHaveBeenCalledWith("/officer");
     expect(container.querySelector('[data-testid="otp-input"]')).toBeNull();
   });
 
   it("sends an emailed fallback code from the second-factor step", async () => {
     mockAuth.login.mockResolvedValue({ requires_2fa: true, methods: ["totp", "email"] });
-    mockApi.sendEmailCode.mockResolvedValue({ ok: true });
     renderLogin();
+    typeUsername("webmaster");
     act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "master2026"));
     await submitPasscode();
     await act(async () => {
@@ -136,6 +166,7 @@ describe("two-step webmaster login", () => {
     mockAuth.login.mockResolvedValue({ requires_2fa: true, methods: ["totp", "email"] });
     mockAuth.login2fa.mockResolvedValue({ role: "webmaster", club_id: null, club_name: null });
     renderLogin();
+    typeUsername("webmaster");
     act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "master2026"));
     await submitPasscode();
     const otpEl = container.querySelector('[data-testid="otp-input"]');

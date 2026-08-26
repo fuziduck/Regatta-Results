@@ -167,24 +167,22 @@ export default function WebmasterSecurity() {
           )}
         </div>
 
-        {enabled && (
-          <div className="border-t border-border pt-4 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-sm">
-                <Mail className="w-4 h-4 text-muted-foreground" />
-                <span className="font-semibold">Fallback email</span>
-                <span className="text-muted-foreground">{status.email || "Not set — recovery via authenticator app only"}</span>
-              </div>
-              <Button size="sm" variant="outline" data-testid="edit-fallback-email-btn"
-                onClick={() => { setEmailOpen(true); setEmailValue(""); setEmailPasscode(""); }}>
-                {status.has_email ? "Change" : "Set"}
-              </Button>
+        <div className="border-t border-border pt-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Mail className="w-4 h-4 text-muted-foreground" />
+              <span className="font-semibold">Recovery email</span>
+              <span className="text-muted-foreground">{status.email || (enabled ? "Not set — recovery via authenticator app only" : "Not set — no emailed reset links or 2FA codes")}</span>
             </div>
-            <p className="text-xs text-muted-foreground">
-              If you lose your authenticator app, a sign-in code can be emailed to this address. Keep it up to date.
-            </p>
+            <Button size="sm" variant="outline" data-testid="edit-fallback-email-btn"
+              onClick={() => { setEmailOpen(true); setEmailValue(""); setEmailPasscode(""); }}>
+              {status.has_email ? "Change" : "Set"}
+            </Button>
           </div>
-        )}
+          <p className="text-xs text-muted-foreground">
+            This backup email receives 2FA sign-in codes and the passcode-reset link if you ever forget your passcode. Keep it up to date.
+          </p>
+        </div>
       </div>
 
       {/* Enable dialog */}
