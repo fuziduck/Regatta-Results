@@ -24,6 +24,7 @@ import jwt
 import re
 import base64
 import bcrypt
+import pyotp
 import ipaddress
 from cryptography.fernet import Fernet
 from datetime import datetime, timezone, timedelta
@@ -99,6 +100,18 @@ PASSWORD_POLICY_HINT = ("Passcode must be at least 6 characters and contain "
 # in depth); Secure is applied only in production (development uses plain
 # HTTP on localhost).
 SESSION_COOKIE = "scr_token"
+# Two-step webmaster login: after the passcode verifies, a short-lived
+# pending cookie carries the in-progress login until the second factor
+# (TOTP code or emailed one-time code) completes. It is never a usable
+# session by itself, expires in minutes, and is cleared on success/logout.
+PENDING2FA_COOKIE = "scr_pending2fa"
+PENDING2FA_MINUTES = 5
+# Email OTP (fallback second factor): 6-digit code, single-use, 10-minute
+# expiry, SHA-256 hashed at rest, throttled per address and per IP so an
+# attacker cannot flood a victim's inbox or brute-force the code.
+EMAIL_OTP_MINUTES = 10
+EMAIL_OTP_LIMIT = int(os.environ.get("EMAIL_OTP_LIMIT", "5"))
+EMAIL_OTP_WINDOW_SECONDS = 600
 # Password reset by email (SMTP via the stdlib). SMTP can be configured at
 # runtime from the webmaster console (stored encrypted in the database); the
 # environment variables below are the fallback/bootstrap and the source of
@@ -194,6 +207,10 @@ def create_token(role: str, club_id: str, user_id: Optional[str] = None,
 # the registry bounded by the number of logouts in one token lifetime.
 _revoked_jtis = {}
 
+# In-memory holder for the TOTP secret between /auth/2fa/setup and
+# /auth/2fa/enable (never persisted; cleared on enable or server restart).
+_pending_setup_secrets = {}
+
 
 def _prune_revoked_jtis():
     now = time.time()
@@ -215,6 +232,159 @@ def _session_cookie_kwargs() -> dict:
         "max_age": JWT_EXPIRE_HOURS * 3600,
         "path": "/",
     }
+
+
+def _pending_2fa_cookie_kwargs() -> dict:
+    """Attributes for the short-lived pending-2FA cookie (same host/security
+    attributes as the session cookie, but a far shorter lifetime)."""
+    return {
+        "key": PENDING2FA_COOKIE,
+        "httponly": True,
+        "secure": APP_ENV == "production",
+        "samesite": "lax",
+        "max_age": PENDING2FA_MINUTES * 60,
+        "path": "/",
+    }
+
+
+def create_pending_2fa_token(user_id: str) -> str:
+    """Short-lived JWT proving a webmaster login has passed step one (the
+    passcode) and is awaiting a second factor. Never usable as a session:
+    type=pending_2fa, expires in PENDING2FA_MINUTES, and the only endpoint
+    that accepts it is the login-2fa verification."""
+    now = datetime.now(timezone.utc)
+    return jwt.encode({
+        "type": "pending_2fa",
+        "sub": user_id,
+        "user_id": user_id,
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(minutes=PENDING2FA_MINUTES),
+        "jti": secrets.token_urlsafe(16),
+    }, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _pending_2fa_user_id(request: Request) -> Optional[str]:
+    """The user_id carried by a valid, unexpired pending-2FA cookie, or None."""
+    token = request.cookies.get(PENDING2FA_COOKIE)
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+            issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
+            options={"require": ["exp", "iat", "iss", "aud", "sub"]},
+        )
+    except jwt.PyJWTError:
+        return None
+    if payload.get("type") != "pending_2fa":
+        return None
+    return payload.get("user_id") or payload.get("sub")
+
+
+def _pending_2fa_cookie_clear_kwargs() -> dict:
+    return {"key": PENDING2FA_COOKIE, "path": "/"}
+
+
+def _totp_secret(user: dict) -> Optional[str]:
+    """Decrypted TOTP secret for a user, or None when 2FA is not enrolled or
+    the secret cannot be decrypted (e.g. JWT_SECRET changed)."""
+    if not user.get("totp_enabled"):
+        return None
+    enc = user.get("totp_secret_enc")
+    if not enc:
+        return None
+    return _decrypt_secret(enc)
+
+
+def _verify_totp(user: dict, code: str) -> bool:
+    """Verify a 6-digit TOTP code against the user's enrolled secret with a
+    ±1-step window (allows for clock drift / a code generated just before the
+    step boundary)."""
+    secret = _totp_secret(user)
+    if not secret:
+        return False
+    try:
+        return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
+    except Exception:
+        return False
+
+
+def _email_otp_limited(email: str, ip: str) -> bool:
+    """True when too many OTP emails were recently sent to this address or
+    from this IP (bounds inbox-flooding and brute-force windows)."""
+    now = time.time()
+    limited = False
+    for key in (f"otp-email:{email}", f"otp-ip:{ip}"):
+        dq = _login_attempts[key]
+        while dq and dq[0] < now - EMAIL_OTP_WINDOW_SECONDS:
+            dq.popleft()
+        if len(dq) >= EMAIL_OTP_LIMIT:
+            limited = True
+        dq.append(now)
+    return limited
+
+
+async def _send_email_otp(user: dict, ip: str) -> Optional[str]:
+    """Email a 6-digit one-time code to the user's fallback address. Stores a
+    SHA-256 hash + expiry on the user (single use, EMAIL_OTP_MINUTES). Returns
+    the plaintext code ONLY in development when SMTP is not configured, so the
+    flow is exercisable end-to-end without a mail server (mirrors the
+    password-reset dev convenience). Returns None when sending fails and no
+    dev fallback applies."""
+    email = (user.get("email") or "").strip().lower()
+    if not email:
+        return None
+    code = f"{secrets.randbelow(1000000):06d}"
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "email_otp_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+        "email_otp_expires": (datetime.now(timezone.utc)
+                              + timedelta(minutes=EMAIL_OTP_MINUTES)).isoformat(),
+    }})
+    cfg = await _get_email_settings()
+    sent = False
+    if cfg.get("smtp_host"):
+        msg = EmailMessage()
+        msg["Subject"] = "SailScore — webmaster sign-in code"
+        msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+        msg["To"] = email
+        msg.set_content(
+            f"Your SailScore webmaster sign-in code is: {code}\n\n"
+            f"It expires in {EMAIL_OTP_MINUTES} minutes and can be used once. "
+            "If you did not try to sign in, ignore this email."
+        )
+        try:
+            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
+                s.starttls()
+                if cfg.get("smtp_user"):
+                    s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+                s.send_message(msg)
+            sent = True
+        except Exception as exc:
+            logger.error("2FA EMAIL SEND FAILED to=%s error=%s", email, exc)
+    if not sent and APP_ENV != "production":
+        return code  # dev convenience: no SMTP — hand the code back
+    return None
+
+
+async def _verify_email_otp(user: dict, code: str) -> bool:
+    """Verify a single-use email OTP and consume it (hashed comparison, so
+    the stored code is never reversible). A wrong code leaves it in place so
+    a mistyped entry can be retried until the expiry."""
+    stored = user.get("email_otp_hash") or ""
+    if not stored:
+        return False
+    try:
+        expires = datetime.fromisoformat(user.get("email_otp_expires", ""))
+    except (TypeError, ValueError):
+        expires = datetime.min.replace(tzinfo=timezone.utc)
+    candidate = hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+    if secrets.compare_digest(candidate, stored) and expires > datetime.now(timezone.utc):
+        await db.users.update_one({"id": user["id"]},
+                                  {"$unset": {"email_otp_hash": "", "email_otp_expires": ""}})
+        return True
+    return False
 
 
 def _token_from_request(request: Request) -> Optional[str]:
@@ -531,6 +701,37 @@ class LoginInput(BaseModel):
     username: Optional[str] = None
     passcode: Optional[str] = None
     club_id: Optional[str] = None
+
+
+class Login2faInput(BaseModel):
+    """Second factor for a two-step webmaster login. `method` is either
+    "totp" (authenticator app) or "email" (emailed one-time code); the code
+    is always a 6-digit string."""
+    code: str
+    method: str = "totp"
+
+
+class TfaEnableInput(BaseModel):
+    """Confirm 2FA enrollment: verify one TOTP code against the secret from
+    setup, and (optionally) set the fallback email for emailed codes."""
+    code: str
+    email: Optional[str] = None
+
+
+class TfaDisableInput(BaseModel):
+    """Turn 2FA off. Requires the current passcode AND a valid second-factor
+    code (TOTP or email), so a stolen session alone cannot disable it."""
+    current_passcode: str
+    code: str
+    method: str = "totp"
+
+
+class TfaEmailInput(BaseModel):
+    """Set (or clear) the fallback email used for emailed sign-in codes.
+    Requires the current passcode so a stolen session cannot redirect the
+    recovery path."""
+    current_passcode: str
+    email: Optional[str] = None
 
 
 class UserInput(BaseModel):
@@ -1055,6 +1256,20 @@ async def login(data: LoginInput, request: Request):
                 await _log_audit(request, actor, "AUTH_LOGIN_FAILED",
                                  description=f"Failed login for {wm.get('username')}", success=False)
             raise
+        # Two-step login when 2FA is enrolled: the passcode only wins the
+        # right to attempt the second factor. A short-lived pending cookie is
+        # set (never a usable session) and the client is told to continue at
+        # /auth/login/2fa.
+        if u.get("totp_enabled"):
+            await _log_audit(request, {"user_id": u["id"], "username": u.get("username"),
+                                      "role": "webmaster", "club_id": None},
+                             "AUTH_2FA_REQUIRED",
+                             description="Webmaster passcode verified — second factor required")
+            logger.info("LOGIN 2FA REQUIRED user=%s role=webmaster ip=%s", u.get("username"), ip)
+            response = JSONResponse({"requires_2fa": True, "methods": ["totp", "email"]})
+            response.set_cookie(value=create_pending_2fa_token(u["id"]),
+                                **_pending_2fa_cookie_kwargs())
+            return response
         token = create_token("webmaster", None, u["id"], u.get("username"), u.get("token_version"))
         await _log_audit(request, {"user_id": u["id"], "username": u.get("username"),
                                   "role": "webmaster", "club_id": None},
@@ -1130,7 +1345,218 @@ async def logout(request: Request):
             pass  # nothing to revoke server-side; the cookie is still cleared
     response = JSONResponse({"ok": True})
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(PENDING2FA_COOKIE, path="/")
     return response
+
+
+@api_router.post("/auth/login/2fa")
+async def login_2fa(data: Login2faInput, request: Request):
+    """Complete a two-step webmaster login with the second factor. Requires
+    the short-lived pending cookie from a successful passcode step; verifies
+    a TOTP code or an emailed one-time code, then issues the real session.
+    Failures count toward the same per-account lockout and per-IP throttle as
+    login, so the second factor cannot be brute-forced."""
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts — please try again shortly")
+    user_id = _pending_2fa_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401,
+                            detail="Login session expired or missing — sign in again")
+    wm = await db.users.find_one({"id": user_id, "role": "webmaster"}, {"_id": 0})
+    if not wm or not wm.get("totp_enabled"):
+        raise HTTPException(status_code=401,
+                            detail="Login session expired or missing — sign in again")
+    actor = {"user_id": wm["id"], "username": wm.get("username"),
+             "role": "webmaster", "club_id": None}
+    method = (data.method or "totp").strip().lower()
+    ok = False
+    if method == "totp":
+        ok = _verify_totp(wm, data.code)
+    elif method == "email":
+        ok = await _verify_email_otp(wm, data.code)
+    if not ok:
+        await _record_failed_login(wm, ip)
+        await _log_audit(request, actor, "AUTH_LOGIN_2FA_FAILED",
+                         description=f"Wrong second-factor code ({method}) for {wm.get('username')}",
+                         success=False)
+        logger.warning("LOGIN 2FA FAIL user=%s method=%s ip=%s", wm.get("username"), method, ip)
+        raise HTTPException(status_code=401, detail="Invalid verification code")
+    await db.users.update_one({"id": wm["id"]},
+                              {"$set": {"failed_attempts": 0, "last_login": now_iso()},
+                               "$unset": {"locked_until": "", "lockout_level": "",
+                                           "last_failed_login": "",
+                                           "email_otp_hash": "", "email_otp_expires": ""}})
+    token = create_token("webmaster", None, wm["id"], wm.get("username"), wm.get("token_version"))
+    await _log_audit(request, actor, "AUTH_LOGIN_SUCCESS",
+                     description="Webmaster signed in (second factor verified)")
+    logger.info("LOGIN OK user=%s role=webmaster 2fa=%s ip=%s", wm.get("username"), method, ip)
+    response = JSONResponse({"role": "webmaster", "club_id": None, "club_name": None,
+                             "username": wm.get("username"), "name": wm.get("name")})
+    response.set_cookie(value=token, **_session_cookie_kwargs())
+    response.delete_cookie(PENDING2FA_COOKIE, path="/")
+    return response
+
+
+@api_router.post("/auth/2fa/send-email-code")
+async def send_email_2fa_code(request: Request):
+    """Email the fallback one-time code for a two-step webmaster login. Call
+    it either mid-login (pending-2FA cookie present) or while signed in as
+    webmaster (e.g. disabling 2FA with an emailed code). Throttled per
+    address and per IP; in development without SMTP the code is returned in
+    the response so the flow works end-to-end."""
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts — please try again shortly")
+    user_id = _pending_2fa_user_id(request)
+    if user_id:
+        wm = await db.users.find_one({"id": user_id, "role": "webmaster"}, {"_id": 0})
+        actor = {"user_id": wm["id"], "username": wm.get("username"),
+                 "role": "webmaster", "club_id": None} if wm else None
+    else:
+        user = await get_current_user(request)
+        if not user or user.get("role") != "webmaster":
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        wm = await db.users.find_one({"id": user["user_id"]}, {"_id": 0})
+        actor = user
+    if not wm:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    email = (wm.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400,
+                            detail="No fallback email is set — use the authenticator app code instead")
+    if _email_otp_limited(email, ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many codes sent — please try again shortly")
+    dev_code = await _send_email_otp(wm, ip)
+    await _log_audit(request, actor, "AUTH_2FA_EMAIL_SENT",
+                     description=f"Fallback sign-in code emailed to {email}")
+    logger.info("2FA EMAIL SENT user=%s ip=%s", wm.get("username"), ip)
+    body = {"ok": True}
+    if dev_code is not None:
+        body["dev_code"] = dev_code
+    return body
+
+
+@api_router.get("/auth/2fa/status")
+async def tfa_status(request: Request, user: dict = Depends(require_webmaster)):
+    """Current 2FA state for the webmaster console: whether it is enabled and
+    the masked fallback email (never the full address)."""
+    doc = await db.users.find_one({"id": user["user_id"]}, {"_id": 0})
+    email = (doc or {}).get("email") or ""
+    masked = ""
+    if email and "@" in email:
+        local, _, domain = email.partition("@")
+        masked = f"{local[:1]}•••••@{domain}" if local else email
+    return {"enabled": bool((doc or {}).get("totp_enabled")),
+            "email": masked,
+            "has_email": bool(email),
+            "methods": ["totp", "email"] if email else ["totp"]}
+
+
+@api_router.post("/auth/2fa/setup")
+async def tfa_setup(request: Request, user: dict = Depends(require_webmaster)):
+    """Start enrolling TOTP: returns a fresh secret and its otpauth://
+    provisioning URI for the authenticator app. Nothing is persisted until
+    /auth/2fa/enable verifies a code against this secret."""
+    secret = pyotp.random_base32()
+    _pending_setup_secrets[user["user_id"]] = secret
+    uri = pyotp.TOTP(secret).provisioning_uri(
+        name=user.get("username") or "webmaster", issuer_name="SailScore")
+    await _log_audit(request, user, "AUTH_2FA_SETUP",
+                     description="Webmaster started 2FA enrollment")
+    return {"secret": secret, "otpauth_uri": uri}
+
+
+@api_router.post("/auth/2fa/enable")
+async def tfa_enable(data: TfaEnableInput, request: Request,
+                     user: dict = Depends(require_webmaster)):
+    """Complete enrollment: the code must match the most recent setup secret
+    (stored only on this in-memory session holder keyed by user id — a stale
+    or guessed code cannot enable 2FA). Also records the fallback email."""
+    doc = await db.users.find_one({"id": user["user_id"]}, {"_id": 0})
+    secret = _pending_setup_secrets.get(user["user_id"])
+    if not secret:
+        raise HTTPException(status_code=400, detail="Start 2FA setup first")
+    if not pyotp.TOTP(secret).verify(data.code.strip(), valid_window=1):
+        await _log_audit(request, user, "AUTH_2FA_ENABLE_FAILED",
+                         description="2FA enrollment rejected: wrong verification code",
+                         success=False)
+        raise HTTPException(status_code=400, detail="Verification code is incorrect")
+    email = (data.email or "").strip().lower() if data.email else None
+    _pending_setup_secrets.pop(user["user_id"], None)
+    update = {"totp_enabled": True,
+              "totp_secret_enc": _encrypt_secret(secret),
+              "totp_enrolled_at": now_iso()}
+    if email:
+        update["email"] = email
+    await db.users.update_one({"id": user["user_id"]}, {"$set": update})
+    await _log_audit(request, user, "AUTH_2FA_ENABLED",
+                     description=f"Two-factor authentication enabled for webmaster"
+                                 + (f" (fallback {email})" if email else ""))
+    logger.info("2FA ENABLED user=%s ip=%s", user.get("username"), _client_ip(request))
+    return {"enabled": True}
+
+
+@api_router.post("/auth/2fa/disable")
+async def tfa_disable(data: TfaDisableInput, request: Request,
+                      user: dict = Depends(require_webmaster)):
+    """Turn 2FA off. Requires the current passcode AND a valid second-factor
+    code (TOTP, or an emailed code via method="email"), so a stolen session
+    alone cannot disable the protection. Wrong passcode counts toward the
+    normal account lockout."""
+    doc = await db.users.find_one({"id": user["user_id"]}, {"_id": 0})
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts — please try again shortly")
+    if not verify_passcode(data.current_passcode.strip(), doc.get("passcode_hash", "")):
+        await _record_failed_login(doc, ip)
+        await _log_audit(request, user, "AUTH_2FA_DISABLE_FAILED",
+                         description="2FA disable rejected: wrong passcode", success=False)
+        raise HTTPException(status_code=401, detail="Current passcode is incorrect")
+    method = (data.method or "totp").strip().lower()
+    if method == "email":
+        if not await _verify_email_otp(doc, data.code):
+            raise HTTPException(status_code=401, detail="Invalid verification code")
+    elif not _verify_totp(doc, data.code):
+        raise HTTPException(status_code=401, detail="Invalid verification code")
+    await db.users.update_one({"id": user["user_id"]},
+                              {"$unset": {"totp_secret_enc": "", "totp_enabled": "",
+                                           "totp_enrolled_at": "", "email": "",
+                                           "email_otp_hash": "", "email_otp_expires": ""}})
+    await _log_audit(request, user, "AUTH_2FA_DISABLED",
+                     description="Two-factor authentication disabled for webmaster")
+    logger.info("2FA DISABLED user=%s ip=%s", user.get("username"), ip)
+    return {"enabled": False}
+
+
+@api_router.post("/auth/2fa/email")
+async def tfa_set_email(data: TfaEmailInput, request: Request,
+                        user: dict = Depends(require_webmaster)):
+    """Set (or clear, with an empty email) the fallback email used for emailed
+    sign-in codes. Requires the current passcode so a stolen session cannot
+    silently redirect the recovery path."""
+    doc = await db.users.find_one({"id": user["user_id"]}, {"_id": 0})
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts — please try again shortly")
+    if not verify_passcode(data.current_passcode.strip(), doc.get("passcode_hash", "")):
+        await _record_failed_login(doc, ip)
+        await _log_audit(request, user, "AUTH_2FA_EMAIL_CHANGE_FAILED",
+                         description="Fallback email change rejected: wrong passcode",
+                         success=False)
+        raise HTTPException(status_code=401, detail="Current passcode is incorrect")
+    email = (data.email or "").strip().lower() if data.email else ""
+    update = {"email": email}
+    await db.users.update_one({"id": user["user_id"]}, {"$set": update})
+    await _log_audit(request, user, "AUTH_2FA_EMAIL_CHANGED",
+                     description=f"Fallback email updated" + (f" to {email}" if email else " (cleared)"))
+    logger.info("2FA EMAIL CHANGED user=%s ip=%s", user.get("username"), ip)
+    return {"ok": True}
 
 
 class ChangePasscodeInput(BaseModel):
@@ -1434,7 +1860,9 @@ def _user_public(u: dict) -> dict:
     session revocation, or the failed-attempt/lockout state."""
     secret_keys = ("passcode_hash", "password_hash", "reset_token_hash",
                    "reset_token_expires", "token_version", "failed_attempts",
-                   "last_failed_login", "locked_until", "lockout_level")
+                   "last_failed_login", "locked_until", "lockout_level",
+                   "totp_secret_enc", "totp_enabled", "email",
+                   "email_otp_hash", "email_otp_expires")
     return {k: v for k, v in u.items() if k not in secret_keys}
 
 
@@ -2913,7 +3341,9 @@ async def read_audit(request: Request, user: dict = Depends(require_admin),
 # secrets, revocation counters, lockout state).
 BACKUP_SECRET_KEYS = ("passcode_hash", "password_hash", "reset_token_hash",
                       "reset_token_expires", "token_version", "failed_attempts",
-                      "last_failed_login", "locked_until", "lockout_level")
+                      "last_failed_login", "locked_until", "lockout_level",
+                      "totp_secret_enc", "totp_enabled", "email",
+                      "email_otp_hash", "email_otp_expires")
 
 
 def _strip_backup_secrets(doc: dict) -> dict:

@@ -8,12 +8,13 @@ import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
 import AuditLog from "@/components/AuditLog";
+import WebmasterSecurity from "@/components/WebmasterSecurity";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload } from "lucide-react";
+import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D" };
 
@@ -316,6 +317,15 @@ export default function Webmaster() {
             >
               <Archive className="w-4 h-4" /> Backups
             </button>
+            <button
+              data-testid="nav-security"
+              onClick={() => setSection("security")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "security" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <Lock className="w-4 h-4" /> Security
+            </button>
           </nav>
         </aside>
         <main className="flex-1 min-w-0">
@@ -379,6 +389,7 @@ export default function Webmaster() {
           </div>
         )}
         {section === "backup" && <BackupSection clubs={clubs} />}
+        {section === "security" && <WebmasterSecurity />}
         </main>
       </div>
 

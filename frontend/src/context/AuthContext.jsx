@@ -36,6 +36,16 @@ export function AuthProvider({ children }) {
 
   const login = async (r, username_, passcode, club_id) => {
     const data = await api.login(r, username_, passcode, club_id);
+    // Two-step webmaster login: { requires_2fa } means only the passcode has
+    // verified — no session yet. The caller must complete login2fa() with the
+    // second-factor code before updateSession() applies.
+    if (data.requires_2fa) return data;
+    updateSession(data);
+    return data;
+  };
+
+  const login2fa = async (method, code) => {
+    const data = await api.login2fa(method, code);
     updateSession(data);
     return data;
   };
@@ -50,7 +60,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ role, clubId, clubName, username, userName, login, logout, updateSession }}>
+    <AuthContext.Provider value={{ role, clubId, clubName, username, userName, login, login2fa, logout, updateSession }}>
       {children}
     </AuthContext.Provider>
   );

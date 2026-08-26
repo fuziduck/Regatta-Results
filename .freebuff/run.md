@@ -118,10 +118,58 @@ launchctl submit -l com.codebuff.pv30eb -- /bin/sh -c \
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/
 ```
 
+**Important**: `serve_preview.py` has hardcoded `ROOT = Path("/tmp/preview-build-30eb")`
+and `PORT = 3100`. It does NOT accept `--root` or `--port` CLI flags. You
+MUST copy the build to `/tmp/preview-build-30eb` for it to work. If you
+need a different port or path, edit the constants at the top of the script
+before copying it to `/tmp`.
+
 `serve_preview.py` serves the SPA with a fallback to `index.html` for deep
 links and proxies `/api/*` to `http://127.0.0.1:8000`. The webmaster account
 (username `webmaster`) is bootstrapped once from the `WEBMASTER_PASSCODE` env
 (see `.env`); the legacy `WEBMASTER_PIN` / shared-PIN login no longer exists.
+
+### Webmaster two-factor authentication (TOTP + emailed fallback)
+
+The webmaster login is two-step: after the passcode verifies, the server
+answers `{requires_2fa}` and the webmaster must enter a 6-digit code from
+their authenticator app (TOTP), or an emailed code sent to the fallback
+email. Enrollment lives under **Webmaster console → Security**: scan the QR
+code, verify one code to enable, and set the fallback email. Disabling 2FA
+requires the current passcode plus a valid verification code.
+
+Secrets at rest (all on the webmaster user doc in Mongo, never exposed by
+`GET /admin/users` or backups):
+
+- `totp_secret_enc` — TOTP secret, Fernet-encrypted with `JWT_SECRET`
+- `totp_enabled`, `totp_enrolled_at`
+- `email` — fallback email address (also used for emailed sign-in codes)
+- `email_otp_hash` / `email_otp_expires` — one-time emailed code
+
+**Emergency recovery (lost passcode, lost authenticator, or `JWT_SECRET`
+changed so the TOTP secret no longer decrypts):** disable 2FA directly in
+Mongo, then sign in with just the passcode and re-enroll:
+
+```bash
+docker compose -f docker-compose.dev.yml exec mongodb mongosh \
+  --quiet sailscore --eval 'db.users.updateOne(
+    {username: "webmaster"},
+    {$unset: {totp_secret_enc: "", totp_enabled: "", totp_enrolled_at: "",
+              email: "", email_otp_hash: "", email_otp_expires: ""}})'
+```
+
+If the passcode itself is lost, bootstrap a new one by re-running the
+webmaster seed with a fresh `WEBMASTER_PASSCODE` (the seeder upserts the
+webmaster account).
+
+### Security model notes (backups & restores)
+
+- Backups (`GET /admin/backup`) and restores require the webmaster session;
+  2FA is enforced at login, not per-request, so a live webmaster session can
+  still back up or restore without re-authenticating. Revoke a stolen
+  session by rotating `JWT_SECRET` or deleting the session in Mongo.
+- Backup export already strips secrets (passcode hashes, TOTP secret, emails)
+  via `BACKUP_SECRET_KEYS`, so a downloaded backup cannot leak credentials.
 
 Gotcha (2026-08-22): running a bare `npm run build` **without**
 `REACT_APP_BACKEND_URL` bakes `undefined/api` into the bundle — every page

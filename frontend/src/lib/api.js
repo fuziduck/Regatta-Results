@@ -26,6 +26,17 @@ export const STALE_VERSION_MSG = "This result has been changed by another user. 
 export const api = {
   login: (role, username, passcode, club_id) =>
     client.post("/auth/login", { role, username, passcode, club_id }).then((r) => r.data),
+  // Two-step webmaster login: the passcode step answers { requires_2fa: true };
+  // the code from an authenticator app (or emailed fallback) completes the login.
+  login2fa: (method, code) => client.post("/auth/login/2fa", { method, code }).then((r) => r.data),
+  sendEmailCode: () => client.post("/auth/2fa/send-email-code").then((r) => r.data),
+  get2faStatus: () => client.get("/auth/2fa/status").then((r) => r.data),
+  setup2fa: () => client.post("/auth/2fa/setup").then((r) => r.data),
+  enable2fa: (code, email) => client.post("/auth/2fa/enable", { code, email }).then((r) => r.data),
+  disable2fa: (current_passcode, code, method) =>
+    client.post("/auth/2fa/disable", { current_passcode, code, method }).then((r) => r.data),
+  update2faEmail: (current_passcode, email) =>
+    client.post("/auth/2fa/email", { current_passcode, email }).then((r) => r.data),
   logout: () => client.post("/auth/logout").then((r) => r.data),
   changePasscode: (current_passcode, new_passcode) =>
     client.post("/auth/change-passcode", { current_passcode, new_passcode }).then((r) => r.data),

@@ -8,10 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Anchor, ShieldCheck, Radio, ArrowLeft, Globe, ChevronDown } from "lucide-react";
+import { Anchor, ShieldCheck, Radio, ArrowLeft, Globe, ChevronDown, Mail, Smartphone } from "lucide-react";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, login2fa } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [clubs, setClubs] = useState([]);
@@ -21,6 +22,12 @@ export default function Login() {
   const [passcode, setPasscode] = useState("");
   const [loading, setLoading] = useState(false);
   const [clubOpen, setClubOpen] = useState(false);
+  // Two-step webmaster login: after the passcode verifies, the server asks for
+  // a second factor (authenticator app code, or an emailed code as fallback).
+  const [otpStep, setOtpStep] = useState(false);
+  const [otpMethod, setOtpMethod] = useState("totp"); // "totp" | "email"
+  const [otpCode, setOtpCode] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -66,6 +73,15 @@ export default function Login() {
     setLoading(true);
     try {
       const r = await login(role, username.trim(), passcode, isWebmaster ? null : clubId);
+      // 2FA enrolled on the webmaster: the passcode verified but there is no
+      // session yet — move to the second-factor step.
+      if (r.requires_2fa) {
+        setOtpStep(true);
+        setOtpCode("");
+        setOtpMethod("totp");
+        setOtpSent(false);
+        return;
+      }
       if (isWebmaster) {
         toast.success("Signed in as Webmaster");
         navigate("/webmaster");
@@ -75,6 +91,38 @@ export default function Login() {
       }
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitOtp = async (e) => {
+    e.preventDefault();
+    if (otpCode.length < 6) return;
+    setLoading(true);
+    try {
+      const r = await login2fa(otpMethod, otpCode.trim());
+      toast.success("Signed in as Webmaster");
+      navigate("/webmaster");
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Invalid verification code");
+      setOtpCode("");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendEmailCode = async () => {
+    setLoading(true);
+    try {
+      const r = await api.sendEmailCode();
+      setOtpMethod("email");
+      setOtpSent(true);
+      setOtpCode("");
+      if (r.dev_code) toast.info(`Dev code: ${r.dev_code}`);
+      else toast.success("A sign-in code has been emailed to you");
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Could not send the code — use your authenticator app instead");
     } finally {
       setLoading(false);
     }
@@ -165,6 +213,55 @@ export default function Login() {
             <TabsContent value="webmaster" className="mt-2 text-sm text-muted-foreground">Manage clubs and access every club's officer & admin consoles.</TabsContent>
           </Tabs>
 
+          {otpStep ? (
+            <form onSubmit={submitOtp} className="mt-4 space-y-4">
+              <div className="rounded-lg border border-ocean/30 bg-ocean/5 px-4 py-3 text-sm text-foreground">
+                <div className="flex items-center gap-2 font-semibold">
+                  <ShieldCheck className="w-4 h-4 text-ocean" />
+                  {otpMethod === "email" ? "Enter the emailed code" : "Enter your authenticator app code"}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {otpMethod === "email"
+                    ? (otpSent ? "A 6-digit sign-in code was sent to your fallback email." : "Sending a code to your fallback email…")
+                    : "Open your authenticator app and enter the 6-digit code for SailScore."}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="otp">Verification code</Label>
+                <InputOTP
+                  id="otp"
+                  maxLength={6}
+                  value={otpCode}
+                  onChange={(v) => setOtpCode(v)}
+                  data-testid="otp-input"
+                  autoFocus
+                >
+                  <InputOTPGroup>
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <InputOTPSlot key={i} index={i} />
+                    ))}
+                  </InputOTPGroup>
+                </InputOTP>
+              </div>
+              <Button type="submit" data-testid="login2fa-submit-btn" disabled={loading || otpCode.length < 6} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
+                {loading ? "Verifying…" : "Verify & sign in"}
+              </Button>
+              {otpMethod === "totp" ? (
+                <button type="button" onClick={sendEmailCode} disabled={loading} data-testid="email-code-link" className="w-full text-sm text-ocean hover:underline font-semibold flex items-center justify-center gap-1.5">
+                  <Mail className="w-4 h-4" /> Email me a code instead
+                </button>
+              ) : (
+                <button type="button" onClick={() => { setOtpMethod("totp"); setOtpCode(""); }} data-testid="use-app-link" className="w-full text-sm text-ocean hover:underline font-semibold flex items-center justify-center gap-1.5">
+                  <Smartphone className="w-4 h-4" /> Use my authenticator app instead
+                </button>
+              )}
+              <div className="text-center">
+                <button type="button" onClick={() => { setOtpStep(false); setOtpCode(""); }} data-testid="otp-back-btn" className="text-sm text-muted-foreground hover:text-foreground underline-offset-2 hover:underline font-semibold">
+                  Back to passcode
+                </button>
+              </div>
+            </form>
+          ) : (
           <form onSubmit={submit} className="mt-4 space-y-4">
             <div className="space-y-2">
               <Label htmlFor="username">{isWebmaster ? "Username" : "Email address"}</Label>
@@ -204,6 +301,7 @@ export default function Login() {
               </div>
             )}
           </form>
+          )}
         </div>
         <p className="mt-6 text-center text-sm text-white/80">SailScore — Connecting sailing, one club at a time.</p>
       </div>
