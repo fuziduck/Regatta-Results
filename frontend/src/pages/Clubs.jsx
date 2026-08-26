@@ -118,39 +118,40 @@ export default function Clubs() {
           alt="racing" className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
         <div className="relative max-w-6xl mx-auto px-4 py-6 md:py-8">
-          <Badge className={`mb-3 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
-            {year} Season
-          </Badge>
-          <h1 className="text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
-            Club racing results & standings
-          </h1>
-          <p className="text-white/80 mt-3 max-w-xl leading-relaxed">
-            {year === CURRENT_YEAR
-              ? "Pick your club to follow every fleet across the season — results, series championships and race-day notices."
-              : future
-                ? `See what's already set up for ${year} — pick a club to view its upcoming season.`
-                : `Every club that raced in ${year} — pick a club to see its full season.`}
-          </p>
-          <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4" />
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <Badge className={`mb-3 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
+                {year} Season
+              </Badge>
+              <h1 className="text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
+                Club racing results & standings
+              </h1>
+              <p className="text-white/80 mt-3 max-w-xl leading-relaxed">
+                {year === CURRENT_YEAR
+                  ? "Pick your club to follow every fleet across the season — results, series championships and race-day notices."
+                  : future
+                    ? `See what's already set up for ${year} — pick a club to view its upcoming season.`
+                    : `Every club that raced in ${year} — pick a club to see its full season.`}
+              </p>
+              <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4" />
+            </div>
+            {sideAdverts.length > 0 && (
+              <div className="flex flex-col gap-3 shrink-0" data-testid="hero-adverts">
+                {sideAdverts.map((a) => (
+                  <div key={a.id} className="w-40 md:w-44">
+                    <AdvertCard advert={a} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
       <main className="max-w-6xl mx-auto px-4 py-10">
-        <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
-          <div>
-            <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">{year === CURRENT_YEAR ? "Clubs on the system" : future ? `Clubs racing in ${year}` : `Clubs that raced in ${year}`}</h2>
-            <p className="text-muted-foreground text-sm">Tap a club to see its classes and latest results.</p>
-          </div>
-          {/* Sponsor adverts sit beside the section heading, on the right. */}
-          {sideAdverts.length > 0 && (
-            <div className="flex flex-wrap gap-4" data-testid="section-adverts">
-              {sideAdverts.map((a) => (
-                <div key={a.id} className="w-48 md:w-56">
-                  <AdvertCard advert={a} />
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="mb-6">
+          <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">{year === CURRENT_YEAR ? "Clubs on the system" : future ? `Clubs racing in ${year}` : `Clubs that raced in ${year}`}</h2>
+          <p className="text-muted-foreground text-sm">Tap a club to see its classes and latest results.</p>
         </div>
 
         {loading ? (
@@ -169,13 +170,13 @@ export default function Clubs() {
             </div>
           )
         ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch" data-testid="club-grid">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 [grid-auto-rows:masonry]" data-testid="club-grid">
             {directory.map((cell) => (
               <Link
                 key={cell.id}
                 to={`/club/${cell.slug}${year === CURRENT_YEAR ? "" : `?year=${year}`}`}
                 data-testid={`club-card-${cell.slug}`}
-                className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all"
+                className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all break-inside-avoid mb-5"
               >
                 <div className="flex items-center gap-4">
                   <ClubIcon club={cell} />

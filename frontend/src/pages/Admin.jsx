@@ -533,7 +533,12 @@ function SeriesTab({ classes, clubId }) {
       else await api.createSeries(payload);
     } catch (e) {
       if (e.response?.status === 409) {
-        toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
+        const detail = e.response?.data?.detail || "";
+        if (/locked|archived/i.test(detail)) {
+          toast.error("This season is locked — scoring rules cannot be changed. Unlock it first, or use the administrator correction process.");
+        } else {
+          toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
+        }
         load();
         return;
       }
@@ -553,7 +558,11 @@ function SeriesTab({ classes, clubId }) {
   const quickSet = async (s, patch) => {
     try { await api.updateSeries(s.id, { ...s, ...patch }, s.version); }
     catch (e) {
-      if (e.response?.status === 409) toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
+      if (e.response?.status === 409) {
+        const detail = e.response?.data?.detail || "";
+        if (/locked|archived/i.test(detail)) toast.error("This season is locked — unlock it before editing.");
+        else toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
+      }
       else toast.error(e.response?.data?.detail || "Could not update series");
     }
     load();
@@ -860,7 +869,7 @@ function SeriesTab({ classes, clubId }) {
                   : <Badge variant="outline" className="text-muted-foreground">Open</Badge>}
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
                   <>
