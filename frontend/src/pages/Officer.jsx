@@ -863,6 +863,14 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     if (r) await refreshRace(race.id);
   }, [mutate, refreshRace]);
 
+  // Recall a published mini-series race back to setup — the same correction
+  // the single-race console offers, so a mis-published race can be fixed
+  // without leaving the batch page.
+  const recall = useCallback(async (race) => {
+    const r = await mutate(() => api.setStatus(race.id, "setup", race.version));
+    if (r) await refreshRace(race.id);
+  }, [mutate, refreshRace]);
+
   const publishAll = useCallback(async () => {
     let count = 0;
     for (const race of races) {
@@ -1091,7 +1099,12 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
                     <Send className="w-3.5 h-3.5" /> Publish
                   </Button>
                 )}
-                {race.status === "published" && <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />}
+                {race.status === "published" && (
+                  <Button size="sm" variant="outline" className="h-8 px-3 gap-1 border-amber-500 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-500/10" data-testid={`recall-btn-${race.race_number}`}
+                    onClick={() => { if (window.confirm(`Recall ${race.mini_group_label || `race ${race.race_number}`} and roll it back to setup? It will be removed from the public results.`)) recall(race); }}>
+                    <RotateCcw className="w-3.5 h-3.5" /> Recall
+                  </Button>
+                )}
                 <button onClick={() => toggleExpand(race.id)} className="p-1 rounded-lg hover:bg-muted transition-colors" data-testid={`expand-btn-${race.race_number}`}>
                   {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 </button>

@@ -160,6 +160,23 @@ describe("Mini series scoring page", () => {
     expect(container.querySelector('[data-testid="batch-race-2"]').textContent).toContain("Boats racing");
   });
 
+  it("recalls a published race back to setup (like the main-series console)", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    await act(async () => {});
+    // Race 1 is published — the recall button sits in its card header.
+    const recallBtn = container.querySelector('[data-testid="recall-btn-1"]');
+    expect(recallBtn).not.toBeNull();
+    expect(recallBtn.textContent).toContain("Recall");
+    act(() => recallBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockApi.setStatus).toHaveBeenCalledWith("r1", "setup", 2);
+    // The card refreshes to the recalled race afterwards.
+    expect(mockApi.getRace).toHaveBeenCalledWith("r1");
+    confirmSpy.mockRestore();
+  });
+
   it("shows a Scored badge once every racing boat has finished", async () => {
     // Race 2 has both boats finished but is not yet published → "Scored".
     mockApi.getRace.mockImplementation(async (id) => {
