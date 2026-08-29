@@ -136,9 +136,9 @@ export default function NoticeWizard({ onDone }) {
         .then((c) => { setCtx(c); if (c.class_id) setClasses([{ id: c.class_id, name: c.class_name }]); })
         .catch(() => {});
     }
-    api.nextNoticeNumber(typeKey, effectiveClubId).then((r) => setNoticeNumber(r.next)).catch(() => {});
+    api.nextNoticeNumber(typeKey, effectiveClubId, publicationArea).then((r) => setNoticeNumber(r.next)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clubId, role, selectedClubId, typeKey]);
+  }, [clubId, role, selectedClubId, typeKey, publicationArea]);
 
   // Load link options once per type.
   useEffect(() => {

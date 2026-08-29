@@ -40,12 +40,30 @@ function useNoticeDocument() {
 }
 
 function downloadDataUrl(dataUrl, filename) {
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = filename || "notice.pdf";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  if (!dataUrl) return false;
+  // Mobile Safari/Chrome often ignore `download` for data URLs. Opening the
+  // blob in a same-tab document gives the native PDF viewer a real document
+  // URL, where users can use Share/Save to Files/Download.
+  try {
+    const [header, encoded] = dataUrl.split(",", 2);
+    const mime = (header.match(/data:([^;]+)/) || [])[1] || "application/pdf";
+    const bytes = Uint8Array.from(atob(encoded || ""), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename || "notice.pdf";
+    anchor.rel = "noopener";
+    anchor.target = "_blank";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return true;
+  } catch {
+    // Last-resort fallback: mobile browsers can still display the document.
+    window.open(dataUrl, "_blank", "noopener,noreferrer");
+    return true;
+  }
 }
 
 function UploadedDocument({ notice }) {
@@ -65,7 +83,11 @@ function UploadedDocument({ notice }) {
 
   const view = async () => {
     const f = await getDoc();
-    if (f) setOpen(true);
+    if (!f?.file_data_url) {
+      setError("The official document is unavailable.");
+      return;
+    }
+    setOpen(true);
   };
   const openTab = async () => {
     const f = await getDoc();
@@ -73,7 +95,11 @@ function UploadedDocument({ notice }) {
   };
   const download = async () => {
     const f = await getDoc();
-    if (f) downloadDataUrl(f.file_data_url, f.original_filename);
+    if (!f?.file_data_url) {
+      setError("The official document is unavailable.");
+      return;
+    }
+    downloadDataUrl(f.file_data_url, f.original_filename);
   };
 
   return (
@@ -95,10 +121,14 @@ function UploadedDocument({ notice }) {
         </p>
       )}
       {error && <p className="mt-1.5 text-xs text-red-600">{error}</p>}
-      {open && full && (
+      {open && full?.file_data_url && (
         <div className="mt-3 rounded-xl border border-border overflow-hidden bg-muted/30">
-          <iframe src={full.file_data_url} title="PDF preview" className="w-full h-[70vh] border-0"
-            data-testid={`pdf-embed-${notice.id}`} />
+          {full.file_type === "application/pdf" ? (
+            <iframe src={full.file_data_url} title="PDF preview" className="w-full h-[70vh] border-0"
+              data-testid={`pdf-embed-${notice.id}`} onError={() => setError("The PDF could not be displayed in this browser.")} />
+          ) : (
+            <img src={full.file_data_url} alt={full.original_filename || "Official notice"} className="w-full max-h-[70vh] object-contain" data-testid={`image-embed-${notice.id}`} />
+          )}
         </div>
       )}
     </div>

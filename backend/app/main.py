@@ -3688,7 +3688,9 @@ async def set_race_status(race_id: str, status: str, request: Request,
     # -> recalculate series -> update standings). The standings are computed on
     # read, so they always reflect the latest published races; publishing
     # attaches the validation report so the committee can see warnings/errors.
+    notification_summary = None
     if status == "published" and updated:
+        notification_summary = await _notify_published_results(updated)
         series = {}
         if updated.get("series_id"):
             series = await db.series.find_one({"id": updated["series_id"]}, {"_id": 0}) or {}
@@ -3700,6 +3702,8 @@ async def set_race_status(race_id: str, status: str, request: Request,
                            race_id, len(errors), len(warnings))
         updated = dict(updated)
         updated["validation"] = {"errors": errors, "warnings": warnings}
+    if notification_summary is not None:
+        updated["notification_delivery"] = notification_summary
     return updated
 
 
@@ -5876,6 +5880,22 @@ def _subscription_public(sub: dict) -> dict:
             "created_at": sub.get("created_at")}
 
 
+@api_router.get("/admin/subscriptions")
+async def list_subscriptions_for_admin(request: Request, club_id: Optional[str] = None,
+                                       user: dict = Depends(require_admin)):
+    """Club-scoped subscription overview. Email addresses are decrypted only
+    for authorised webmaster/admin staff and never exposed publicly."""
+    scope = club_id if user.get("role") == "webmaster" and club_id else user.get("club_id")
+    if not scope:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    _ensure_club(user, scope)
+    rows = await db.subscriptions.find({"club_id": scope, "active": True}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [{"id": row.get("id"), "email": _decrypt_secret(row.get("email_enc", "")) or "Unavailable",
+             "subscription_type": row.get("subscription_type"), "target_id": row.get("target_id"),
+             "target_name": row.get("target_name"), "verified_at": row.get("verified_at"),
+             "created_at": row.get("created_at")} for row in rows]
+
+
 @api_router.get("/subscriptions/manage")
 async def manage_results_subscriptions(token: str):
     token_hash = _subscription_token_hash(token)
@@ -5938,6 +5958,91 @@ async def delete_results_subscription(subscription_id: str, token: str, request:
 # ---------------------------------------------------------------------------
 # Results notification rendering and delivery
 # ---------------------------------------------------------------------------
+
+async def _send_published_results_email(email: str, race: dict, series: dict,
+                                        cls: dict, target: dict) -> bool:
+    """Send the published-results message for one active subscription.
+
+    Delivery is deliberately best-effort: a bad subscriber address or a
+    temporary SMTP failure must never make publishing race results fail.
+    """
+    cfg = await _get_email_settings()
+    if not cfg.get("smtp_host"):
+        logger.warning("RESULTS SUBSCRIPTION NOT SENT: SMTP is not configured")
+        return False
+    club = await db.clubs.find_one({"id": cls.get("club_id")}, {"_id": 0, "name": 1}) or {}
+    race_no = race.get("race_number", "")
+    title = f"{club.get('name', 'SailScore')} — {series.get('name', 'Race results')} — Race {race_no}"
+    rows = race.get("results") or []
+    lines = []
+    for row in sorted(rows, key=lambda item: (item.get("position") is None, item.get("position") or 9999))[:100]:
+        boat = await db.boats.find_one({"id": row.get("boat_id")}, {"_id": 0, "name": 1, "sail_no": 1})
+        name = (boat or {}).get("name") or row.get("boat_name") or "Boat"
+        sail = (boat or {}).get("sail_no") or row.get("sail_no") or ""
+        result = row.get("position") or row.get("code") or "—"
+        lines.append(f"{result}. {name} {sail}".rstrip())
+    result_text = "\\n".join(lines) or "Results were published without classified boats."
+    manage_token = target.get("manage_token")
+    links = _subscription_links(manage_token or "") if manage_token else {}
+    msg = EmailMessage()
+    msg["Subject"] = title
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = email
+    msg.set_content(
+        f"{title}\\n\\nClass: {cls.get('name', '—')}\\n\\n{result_text}\\n\\n"
+        f"View the latest results at {_public_web_base()}.\\n"
+        f"Manage subscriptions: {links.get('manage', _public_web_base())}\\n"
+    )
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as smtp:
+            smtp.starttls()
+            if cfg.get("smtp_user"):
+                smtp.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            smtp.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("RESULTS EMAIL FAILED subscription=%s error=%s", target.get("id"), exc)
+        return False
+
+
+async def _notify_published_results(race: dict) -> dict:
+    """Deliver each newly published race once to matching active subscribers."""
+    series = await db.series.find_one({"id": race.get("series_id")}, {"_id": 0}) or {}
+    cls = await db.classes.find_one({"id": race.get("class_id") or series.get("class_id")}, {"_id": 0}) or {}
+    boat_ids = [row.get("boat_id") for row in race.get("results") or [] if row.get("boat_id")]
+    target_ids = [value for value in (race.get("series_id"), cls.get("id")) if value]
+    query = {"active": True, "verified": True, "$or": [
+        {"subscription_type": "series", "target_id": {"$in": target_ids}},
+        {"subscription_type": "class", "target_id": cls.get("id")},
+        {"subscription_type": "boat", "target_id": {"$in": boat_ids}},
+    ]}
+    subscribers = await db.subscriptions.find(query, {"_id": 0}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    event_id = race.get("publication_event_id") or f"race:{race.get('id')}:{race.get('published_at')}"
+    sent = 0
+    skipped = 0
+    for sub in subscribers:
+        delivery_key = f"{event_id}:{sub['id']}"
+        try:
+            await db.subscription_deliveries.insert_one({
+                "id": new_id(), "delivery_key": delivery_key, "subscription_id": sub["id"],
+                "race_id": race.get("id"), "event_id": event_id, "created_at": now_iso(),
+            })
+        except DuplicateKeyError:
+            skipped += 1
+            continue
+        email = _decrypt_secret(sub.get("email_enc", ""))
+        if not email:
+            logger.warning("RESULTS EMAIL SKIPPED: subscription has no readable email id=%s", sub["id"])
+            continue
+        sub = dict(sub)
+        sub["manage_token"] = _decrypt_secret(sub.get("manage_token_enc", ""))
+        if await _send_published_results_email(email, race, series, cls, sub):
+            await db.subscription_deliveries.update_one({"delivery_key": delivery_key}, {"$set": {"sent_at": now_iso(), "status": "sent"}})
+            sent += 1
+        else:
+            await db.subscription_deliveries.update_one({"delivery_key": delivery_key}, {"$set": {"status": "failed"}})
+    return {"matched": len(subscribers), "sent": sent, "skipped": skipped}
+
 
 # ---------------------------------------------------------------------------
 # Official Notice Board (ONB)
@@ -6294,11 +6399,17 @@ def _notice_body(tdef: dict, fields: dict) -> List[dict]:
     return rows
 
 
-async def _next_notice_number(club_id: str, type_key: str) -> int:
-    """Next notice number for a club + type (notice numbers are per type, so
-    'Notice to Competitors No. 4' and 'Amendment No. 4' can co-exist)."""
+async def _next_notice_number(club_id: str, publication_area: str = "Club Notices") -> int:
+    """Return the next number within a club-wide ONB area.
+
+    Notice numbering belongs to the board area, not the notice type: a new
+    uploaded or generated document in the same area continues that area's
+    sequence. Legacy records without an area remain in Club Notices.
+    """
+    area = publication_area or "Club Notices"
     agg = await db.notices.find_one(
-        {"club_id": club_id, "notice_type": type_key},
+        {"club_id": club_id,
+         "$or": [{"publication_area": area}, {"publication_area": {"$exists": False}, "heading": area}]},
         sort=[("notice_number", -1)], projection={"notice_number": 1})
     return int((agg or {}).get("notice_number") or 0) + 1
 
@@ -6631,6 +6742,7 @@ async def notice_context(request: Request, race_id: Optional[str] = None,
 @api_router.get("/notices/next-number")
 async def next_notice_number(request: Request, notice_type: str,
                              club_id: Optional[str] = None,
+                             publication_area: str = "Club Notices",
                              user: dict = Depends(require_officer)):
     """The next free notice number for a club + type — pre-filled in the wizard
     so officers never have to track numbering themselves."""
@@ -6639,7 +6751,7 @@ async def next_notice_number(request: Request, notice_type: str,
     if not scope:
         raise HTTPException(status_code=400, detail="club_id is required")
     _ensure_club(user, scope)
-    return {"next": await _next_notice_number(scope, notice_type)}
+    return {"next": await _next_notice_number(scope, publication_area)}
 
 
 @api_router.post("/notices")
@@ -6670,7 +6782,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
         "heading": data.publication_area, "publication_area": data.publication_area, "title": title,
-        "notice_number": data.notice_number or await _next_notice_number(club_id, tdef["key"]),
+        "notice_number": data.notice_number or await _next_notice_number(club_id, data.publication_area),
         "content_type": "generated", "creation_method": "generated",
         "status": "draft", "version": 1, "root_id": notice_id,
         "supersedes_id": None, "superseded_by": None,
@@ -6751,7 +6863,7 @@ async def upload_notice(request: Request,
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
         "heading": publication_area or "Club Notices", "publication_area": publication_area or "Club Notices", "title": title,
-        "notice_number": notice_number or await _next_notice_number(club_id, tdef["key"]),
+        "notice_number": notice_number or await _next_notice_number(club_id, publication_area),
         "content_type": "uploaded", "creation_method": "uploaded",
         "status": "draft", "version": 1, "root_id": notice_id,
         "supersedes_id": None, "superseded_by": None,
@@ -7393,6 +7505,8 @@ async def _ensure_db_constraints():
         db.audit_logs: [([("id", 1)], {"unique": True})],
         db.subscriptions: [([("id", 1)], {"unique": True}),
                            ([("email_hash", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {})],
+        db.subscription_deliveries: [([("id", 1)], {"unique": True}),
+                                      ([ ("delivery_key", 1) ], {"unique": True})],
     }
     for coll, indexes in plans.items():
         for keys, kwargs in indexes:

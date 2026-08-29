@@ -7,6 +7,7 @@ import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
 import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
+import SubscriptionOverview from "@/components/SubscriptionOverview";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { Button } from "@/components/ui/button";
@@ -376,7 +377,7 @@ export default function Webmaster() {
         </>
         )}
         {section === "adverts" && <AdvertsManager />}
-        {section === "email" && <EmailSettingsManager />}
+        {section === "email" && <div className="space-y-6"><EmailSettingsManager /><SubscriptionOverview /></div>}
         {section === "audit" && (
           <div>
             <div className="mb-6">

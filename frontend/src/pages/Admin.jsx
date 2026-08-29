@@ -10,6 +10,7 @@ import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
+import SubscriptionOverview from "@/components/SubscriptionOverview";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1479,7 +1480,7 @@ export default function Admin() {
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
-          <TabsContent value="notices" className="pt-6"><NoticeManagementTab clubId={clubId} /></TabsContent>
+          <TabsContent value="notices" className="pt-6"><div className="space-y-6"><NoticeManagementTab clubId={clubId} /><SubscriptionOverview clubId={clubId} /></div></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
           {isWebmaster && <TabsContent value="activity" className="pt-6"><AuditLog webmaster /></TabsContent>}
