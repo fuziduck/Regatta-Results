@@ -5,8 +5,7 @@ import { CURRENT_YEAR, MAX_YEAR, fmtDateShort } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import ClubBadge from "@/components/ClubBadge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
-import ThemeToggle from "@/components/ThemeToggle";
-import ShareInstall from "@/components/ShareInstall";
+import HeaderMenu from "@/components/HeaderMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CalendarDays, ChevronRight, LogIn, Sailboat, Search, Trophy } from "lucide-react";
@@ -123,12 +122,13 @@ export default function Clubs() {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center">
-            <Logo className="h-11 w-auto" />
-          </Link>
+          <div className="flex items-center gap-3">
+            <HeaderMenu title="SailScore — club racing results & standings" />
+            <Link to="/" className="flex items-center">
+              <Logo className="h-11 w-auto" />
+            </Link>
+          </div>
           <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <ShareInstall title="SailScore — club racing results & standings" />
             <Link to="/boats">
               <Button variant="ghost" size="sm" data-testid="boats-link" className="gap-1.5 text-muted-foreground hover:text-ocean">
                 <Search className="w-4 h-4" /> Boats

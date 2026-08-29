@@ -10,8 +10,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
-import ThemeToggle from "@/components/ThemeToggle";
-import ShareInstall from "@/components/ShareInstall";
+import HeaderMenu from "@/components/HeaderMenu";
 import CopyLinkButton from "@/components/CopyLinkButton";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
@@ -375,12 +374,11 @@ export default function Landing() {
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
+            <HeaderMenu title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} />
             <Link to="/"><Logo className="h-11 w-auto" /></Link>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
           </div>
           <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <ShareInstall title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} />
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs

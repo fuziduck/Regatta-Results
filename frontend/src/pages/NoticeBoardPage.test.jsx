@@ -12,7 +12,7 @@ jest.mock("@/lib/api", () => {
   const api = { getClubs: jest.fn(), getNoticeBoards: jest.fn(), getNoticeSections: jest.fn() };
   return { api, formatApiError: (d) => d || "error" };
 });
-jest.mock("@/components/ThemeToggle", () => () => <button type="button" data-testid="theme-toggle" />);
+jest.mock("@/components/HeaderMenu", () => () => <button type="button" data-testid="header-menu-btn" />);
 jest.mock("@/components/NoticeBoard", () => () => <div data-testid="notice-board" />);
 
 import NoticeBoardPage from "./NoticeBoardPage";
