@@ -9,7 +9,6 @@ import { Anchor, ArrowLeft, LogIn, Sailboat, Search, Trophy, Medal, Lock, Archiv
 import Logo from "@/components/Logo";
 import { CURRENT_YEAR } from "@/lib/helpers";
 import { SITE_TAGLINE } from "@/lib/siteConfig";
-import ResultsSubscription from "@/components/ResultsSubscription";
 
 export default function Boat() {
   const { fleetId } = useParams();
@@ -90,7 +89,6 @@ export default function Boat() {
             <div>
               <h1 className="text-3xl sm:text-4xl uppercase tracking-tighter text-white leading-[0.95]">{profile.name}</h1>
               <p className="font-mono text-white/80 mt-1.5">Sail No. {profile.sail_no}</p>
-              <div className="mt-3"><ResultsSubscription subscriptionType="boat" targetId={profile.records?.[0]?.boat_id || fleetId} targetName={`${profile.name} (Sail No. ${profile.sail_no})`} /></div>
             </div>
             <div className="flex flex-wrap gap-2 max-w-lg justify-end">
               {profile.records.map((r) => (

@@ -17,8 +17,6 @@ import { seriesNavModel } from "@/lib/seriesNav";
 import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
-import NoticeBoard from "@/components/NoticeBoard";
-import ResultsSubscription from "@/components/ResultsSubscription";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -361,6 +359,9 @@ export default function Landing() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            {club.official_notice_board !== false && <Link to={`/club/${club.slug}/notice-board`}>
+              <Button variant="outline" size="sm" className="gap-1.5 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid="notice-board-link">Official Notice Board</Button>
+            </Link>}
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs
@@ -399,7 +400,6 @@ export default function Landing() {
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
-                {activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass} targetName={(classes.find((c) => c.id === activeClass) || {}).name || "this class"} />}
               </div>
               <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
@@ -419,7 +419,6 @@ export default function Landing() {
             <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
-                {activeSeries !== "overall" && activeSeries && <ResultsSubscription subscriptionType="series" targetId={activeSeries} targetName={(series.find((s) => s.id === activeSeries) || {}).name || "this series"} />}
               </div>
               <Tabs value={activeSeries} onValueChange={setActiveSeries}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
@@ -493,11 +492,6 @@ export default function Landing() {
             </div>
           </div>
         )}
-
-        {/* Official Notice Board — published notices grouped under their
-            automatic headings (spec 43). Renders whatever public notices
-            exist for this club; absent entirely when there are none. */}
-        <NoticeBoard clubId={clubId} />
 
         <div>
           <div className="min-w-0">

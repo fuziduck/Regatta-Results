@@ -9,6 +9,7 @@ import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
+import NoticeBoard from "@/components/NoticeBoard";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -102,6 +103,7 @@ function ClubIconField({ clubId }) {
 // may change any club's.
 function ClubNoticeToggle({ clubId }) {
   const [enabled, setEnabled] = useState(true);
+  const [onbEnabled, setOnbEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
@@ -109,6 +111,7 @@ function ClubNoticeToggle({ clubId }) {
     api.getClubs().then((cs) => {
       const c = (cs || []).find((x) => x.id === clubId);
       setEnabled(c ? c.race_day_notices !== false : true);
+      setOnbEnabled(c ? c.official_notice_board !== false : true);
     }).catch(() => {});
   }, [clubId]);
   useEffect(() => { load(); }, [load]);
@@ -118,7 +121,12 @@ function ClubNoticeToggle({ clubId }) {
     setBusy(true);
     setEnabled(v);
     try {
-      await api.updateClubSettings(clubId, { race_day_notices: v });
+      const current = await api.getClubs();
+      const club = (current || []).find((x) => x.id === clubId);
+      await api.updateClubSettings(clubId, {
+        race_day_notices: club?.race_day_notices !== false,
+        official_notice_board: onbEnabled,
+      });
       toast.success(v ? "Race-day notices enabled" : "Race-day notices disabled");
     } catch (e) {
       setEnabled(prev);
@@ -128,7 +136,34 @@ function ClubNoticeToggle({ clubId }) {
     }
   };
 
+  const toggleOnb = async (v) => {
+    const previous = onbEnabled;
+    setOnbEnabled(v);
+    setBusy(true);
+    try {
+      await api.updateClubSettings(clubId, {
+        race_day_notices: enabled,
+        official_notice_board: v,
+      });
+      toast.success(v ? "Official Notice Board enabled" : "Official Notice Board disabled");
+    } catch (e) {
+      setOnbEnabled(previous);
+      toast.error(e.response?.data?.detail || "Could not update this setting");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
+    <>
+    <div className="rounded-2xl border border-border bg-card p-5 mb-4 flex flex-wrap items-center gap-4" data-testid="official-notice-board-toggle-card">
+      <div className="w-12 h-12 rounded-lg bg-ocean/10 grid place-items-center text-ocean"><FileText className="w-6 h-6" /></div>
+      <div className="min-w-0 flex-1">
+        <div className="font-heading text-lg uppercase tracking-tight">Official Notice Board</div>
+        <p className="text-xs text-muted-foreground mt-0.5">Show the club’s separate Official Notice Board to competitors.</p>
+      </div>
+      <div className="flex items-center gap-2.5"><span className="text-xs text-muted-foreground hidden sm:inline">{onbEnabled ? "Enabled" : "Disabled"}</span><Switch checked={onbEnabled} disabled={busy} onCheckedChange={toggleOnb} data-testid="official-notice-board-enabled" /></div>
+    </div>
     <div className="rounded-2xl border border-border bg-card p-5 mb-6 flex flex-wrap items-center gap-4" data-testid="race-notice-toggle-card">
       <div className="w-12 h-12 rounded-lg bg-ocean/10 grid place-items-center text-ocean"><Flag className="w-6 h-6" /></div>
       <div className="min-w-0 flex-1">
@@ -145,6 +180,7 @@ function ClubNoticeToggle({ clubId }) {
         <Switch checked={enabled} disabled={busy} onCheckedChange={toggle} data-testid="race-notice-enabled" />
       </div>
     </div>
+    </>
   );
 }
 
@@ -1062,6 +1098,41 @@ function SeriesTab({ classes, clubId }) {
 }
 
 /* ---------------- Historic Results ---------------- */
+function NoticeManagementTab({ clubId }) {
+  const [notices, setNotices] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    if (!clubId) return;
+    api.getNotices({ club_id: clubId }).then(setNotices).catch(() => setNotices([]));
+  }, [clubId]);
+  useEffect(() => { load(); }, [load]);
+  const remove = async (notice) => {
+    if (!window.confirm(`Remove “${notice.title}” from the Official Notice Board? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await api.deleteNotice(notice.id, notice.version);
+      toast.success("Notice removed from the Official Notice Board");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not remove notice");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="space-y-3" data-testid="notice-management">
+      <div><h2 className="text-2xl uppercase tracking-tighter">Official Notice Board</h2><p className="text-sm text-muted-foreground">Remove draft or published notices from this club’s public ONB. Removal is recorded in the audit trail.</p></div>
+      {!notices.length && <p className="text-sm text-muted-foreground rounded-xl border border-dashed p-6 text-center">No notices are currently listed.</p>}
+      {notices.map((notice) => (
+        <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
+          <div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div>
+          <Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" disabled={busy} onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function HistoricTab({ classes, rrsCodes, clubId }) {
   const [classId, setClassId] = useState("");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
@@ -1353,6 +1424,7 @@ export default function Admin() {
               <TabsTrigger value="classes" data-testid="tab-classes" className="gap-1.5 py-1.5"><Layers className="w-4 h-4" /> Classes</TabsTrigger>
               <TabsTrigger value="boats" data-testid="tab-boats" className="gap-1.5 py-1.5"><Sailboat className="w-4 h-4" /> Boats</TabsTrigger>
               <TabsTrigger value="series" data-testid="tab-series" className="gap-1.5 py-1.5"><Trophy className="w-4 h-4" /> Series</TabsTrigger>
+              <TabsTrigger value="notices" data-testid="tab-notices" className="gap-1.5 py-1.5"><FileText className="w-4 h-4" /> Notice Board</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="historic" data-testid="tab-historic" className="gap-1.5 py-1.5"><Archive className="w-4 h-4" /> Historic Results</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
@@ -1369,6 +1441,7 @@ export default function Admin() {
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
+          <TabsContent value="notices" className="pt-6"><NoticeManagementTab clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
           {isWebmaster && <TabsContent value="activity" className="pt-6"><AuditLog webmaster /></TabsContent>}

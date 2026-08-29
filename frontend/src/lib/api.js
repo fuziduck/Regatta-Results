@@ -160,6 +160,10 @@ export const api = {
   // rows, the heavy documents/PDFs are fetched per notice on demand.
   // ------------------------------------------------------------------
   noticeMeta: () => client.get("/notices/meta").then((r) => r.data),
+  getNoticeBoards: (params = {}) => client.get("/notice-boards", { params }).then((r) => r.data),
+  getNoticeSections: (boardId) => client.get(`/notice-boards/${boardId}/sections`).then((r) => r.data),
+  createNoticeBoard: (d) => client.post("/notice-boards", d).then((r) => r.data),
+  createNoticeSection: (boardId, d) => client.post(`/notice-boards/${boardId}/sections`, { ...d, board_id: boardId }).then((r) => r.data),
   getNotices: (params = {}) => client.get("/notices", { params }).then((r) => r.data),
   getNotice: (id) => client.get(`/notices/${id}`).then((r) => r.data),
   noticeContext: (params) => client.get("/notices/context", { params }).then((r) => r.data),
@@ -195,17 +199,6 @@ export const api = {
   newNoticeVersion: (id) => client.post(`/notices/${id}/new-version`).then((r) => r.data),
   deleteNotice: (id, v) => client.delete(`/notices/${id}`, { params: verQuery(v) }).then((r) => r.data),
 
-  // Account-free results subscriptions. Public target ids are always the
-  // underlying class, series, or boat record id; the backend verifies and
-  // scopes them to their owning club.
-  subscribeResults: (email, subscription_type, target_id) =>
-    client.post("/subscriptions", { email, subscription_type, target_id }).then((r) => r.data),
-  verifyResultsSubscription: (token) => client.get("/subscriptions/verify", { params: { token } }).then((r) => r.data),
-  getSubscriptionManagement: (token) => client.get("/subscriptions/manage", { params: { token } }).then((r) => r.data),
-  unsubscribeResults: (token) => client.post("/subscriptions/unsubscribe", { token }).then((r) => r.data),
-  unsubscribeResultsLink: (token) => client.get("/subscriptions/unsubscribe", { params: { token } }).then((r) => r.data),
-  unsubscribeAllResults: (token) => client.post("/subscriptions/unsubscribe-all", { token }).then((r) => r.data),
-  removeResultSubscription: (id, token) => client.delete(`/subscriptions/${id}`, { params: { token } }).then((r) => r.data),
 };
 
 export default client;

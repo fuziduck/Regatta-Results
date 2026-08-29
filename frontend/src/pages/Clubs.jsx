@@ -8,7 +8,7 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
+import { CalendarDays, LogIn, Sailboat, Search, Trophy, FileText } from "lucide-react";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import Logo from "@/components/Logo";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
@@ -171,8 +171,8 @@ export default function Clubs() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 [grid-auto-rows:masonry]" data-testid="club-grid">
             {directory.map((cell) => (
+              <div key={cell.id} className="contents">
               <Link
-                key={cell.id}
                 to={`/club/${cell.slug}${year === CURRENT_YEAR ? "" : `?year=${year}`}`}
                 data-testid={`club-card-${cell.slug}`}
                 className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all break-inside-avoid mb-5"
@@ -185,6 +185,7 @@ export default function Clubs() {
                   </div>
                 </div>
 
+                {cell.official_notice_board !== false && <div className="mt-4"><span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ocean"><FileText className="w-3.5 h-3.5" /> Official Notice Board</span></div>}
                 <div className="mt-5 space-y-4">
                   {cell.classes.length === 0 && <p className="text-xs text-muted-foreground">No classes set up yet.</p>}
                   {cell.classes.map((c) => (
@@ -219,6 +220,8 @@ export default function Clubs() {
                   ))}
                 </div>
               </Link>
+              {cell.official_notice_board !== false && <Link to={`/club/${cell.slug}/notice-board`} className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-ocean hover:underline" onClick={(e) => e.stopPropagation()}><FileText className="w-3.5 h-3.5" /> Open Notice Board</Link>}
+              </div>
             ))}
           </div>
         )}

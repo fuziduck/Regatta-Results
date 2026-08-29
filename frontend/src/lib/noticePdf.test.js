@@ -81,11 +81,19 @@ describe("buildNoticePdf", () => {
     expect(texts).toContain("The wind shifted 40 degrees.");
   });
 
-  test("puts the issuing authority in the signature block", () => {
+  test("renders the race officer name once and directly after its heading", () => {
     buildNoticePdf({ notice, adverts: [] });
     const texts = mockDoc.text.mock.calls.map((c) => c[0]);
-    expect(texts.flat(Infinity)).toContain("J Smith, Race Officer");
-    expect(texts).toContain("RACE OFFICER / RACE COMMITTEE");
+    const flat = texts.flat(Infinity).map((t) => String(t));
+    const labelMatches = flat.filter((t) => t.includes("RACE OFFICER / RACE COMMITTEE")
+      || t.includes("Race Officer / Race Committee"));
+    expect(labelMatches.length).toBe(1);
+    const nameMatches = flat.filter((t) => t === "J Smith, Race Officer");
+    expect(nameMatches.length).toBe(1);
+    const labelIdx = flat.findIndex((t) => t.includes("RACE OFFICER / RACE COMMITTEE")
+      || t.includes("Race Officer / Race Committee"));
+    const valueIdx = flat.indexOf("J Smith, Race Officer");
+    expect(valueIdx).toBeGreaterThan(labelIdx);
   });
 
   test("writes the Sailscore document identifier + version into the footer", () => {

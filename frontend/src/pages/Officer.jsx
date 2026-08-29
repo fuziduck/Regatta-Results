@@ -1090,14 +1090,12 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     if (r) await loadGroup();
   }, [mutate, loadGroup]);
 
-  // Collapse the whole mini series back into ONE normal race (the inverse of
-  // the on-the-day split). The extra child races are deleted by the backend;
-  // after success the batch page is no longer meaningful, so leave it and
-  // land on the surviving slot race's console.
+  // Restore the original single race. The backend also restores every later
+  // race number and scheduled date position, so the series timeline is intact.
   const [merging, setMerging] = useState(false);
   const revertToSingle = useCallback(async () => {
     const extra = races.length - 1;
-    if (!window.confirm(`Revert this mini series back to a single race? The ${extra} extra race${extra > 1 ? "s" : ""} will be deleted. This cannot be undone.`)) return;
+    if (!window.confirm(`Restore the original single race? This will delete ${extra} mini race${extra === 1 ? "" : "s"} and restore all future race numbers and dates. This cannot be undone.`)) return;
     setMerging(true);
     try {
       const res = await api.mergeMiniGroup(seriesId, groupIndex);
@@ -1266,9 +1264,8 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
               <Send className="w-4 h-4" /> Publish all ({remaining.length})
             </Button>
           )}
-          {races.length > 1 && (
-            <Button variant="outline" size="sm" className="gap-1.5 border-amber-500/60 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10" data-testid="revert-mini-btn" onClick={revertToSingle} disabled={merging}>
-              <Undo2 className="w-4 h-4" /> {merging ? "Reverting…" : "Revert to single race"}
+          {races.length > 1 && (              <Button variant="outline" size="sm" className="gap-1.5 border-amber-500/60 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10" data-testid="revert-mini-btn" onClick={revertToSingle} disabled={merging}>
+              <Undo2 className="w-4 h-4" /> {merging ? "Restoring…" : "Restore original race"}
             </Button>
           )}
         </div>

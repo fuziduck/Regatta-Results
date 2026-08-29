@@ -136,9 +136,6 @@ export function buildNoticePdf({ notice, clubName, icon, adverts }) {
   if (notice.published_at && !displayedRowLabels.has("published")) facts.push(["Published", fmtWhen(notice.published_at)]);
   if (notice.effective_at && !displayedRowLabels.has("effective")) facts.push(["Effective", fmtWhen(notice.effective_at)]);
   if (notice.race_date && !displayedRowLabels.has("date")) facts.push(["Race date", notice.race_date]);
-  const issuedBy = rows.find((r) => /issued by|race officer/i.test(r.label));
-  const issuedByAlreadyRendered = issuedBy && rows.some((r) => r === issuedBy);
-  if (issuedBy) facts.push([issuedBy.label, issuedBy.value]);
   if (facts.length) {
     ensure(facts.length * 14 + 14);
     doc.setFontSize(9.5);
@@ -189,21 +186,8 @@ export function buildNoticePdf({ notice, clubName, icon, adverts }) {
     y += 14;
   }
 
-  // Issuing signature block.
-  if (issuedBy && !issuedByAlreadyRendered && notice.content_type === "generated") {
-    ensure(56);
-    y += 16;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.setTextColor(...INK);
-    doc.text(issuedBy.value, MARGIN, y);
-    y += 13;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8.5);
-    doc.setTextColor(...MUTED);
-    doc.text("Issuing authority", MARGIN, y);
-    y += 12;
-  }
+  // The Race Officer / Race Committee block is rendered once, in the notice
+  // body above (label, with the name directly below the heading).
 
   // Footer on the final page too, then done.
   drawNoticeFooter(doc, notice, sponsors);

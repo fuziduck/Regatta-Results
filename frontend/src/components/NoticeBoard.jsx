@@ -193,7 +193,7 @@ function NoticeCard({ notice, open, onToggle }) {
   );
 }
 
-export default function NoticeBoard({ clubId }) {
+export default function NoticeBoard({ clubId, embedded = false, sectionId = null }) {
   const [notices, setNotices] = useState(null);
   const [openId, setOpenId] = useState(() => {
     const h = window.location.hash || "";
@@ -202,8 +202,8 @@ export default function NoticeBoard({ clubId }) {
 
   useEffect(() => {
     if (!clubId) return;
-    api.getNotices({ club_id: clubId }).then(setNotices).catch(() => setNotices([]));
-  }, [clubId]);
+    api.getNotices({ club_id: clubId, ...(sectionId ? { section_id: sectionId } : {}) }).then(setNotices).catch(() => setNotices([]));
+  }, [clubId, sectionId]);
 
   // Deep link (#notice-<id>): the linked notice opens expanded.
   useEffect(() => {
@@ -228,7 +228,7 @@ export default function NoticeBoard({ clubId }) {
   });
 
   return (
-    <section className="mb-10" data-testid="official-notice-board">
+    <section className={embedded ? "" : "min-h-screen bg-background py-10"} data-testid="official-notice-board">
       <div className="flex items-center gap-2 mb-4">
         <h2 className="font-heading uppercase tracking-tight text-xl">Official Notice Board</h2>
         <span className="text-xs text-muted-foreground">· notices, amendments, protests and results as published</span>
