@@ -92,7 +92,7 @@ function BackupSection({ clubs }) {
       <div className="mb-6">
         <h1 className="text-3xl uppercase tracking-tighter mb-1">Backups</h1>
         <p className="text-muted-foreground text-sm">
-          Download or restore a zip of JSON exports. Backups never contain passcodes, hashes or reset tokens.
+          Download or restore a zip of JSON exports. When the server's BACKUP_PASSPHRASE is set, backups are AES-encrypted and carry users' passcode hashes — so a restore brings everyone's sign-in passcodes across with no manual resets. Reset tokens and lockout state are never exported.
         </p>
       </div>
       <div className="rounded-2xl border border-border bg-card p-5 space-y-4 max-w-2xl">
@@ -190,7 +190,7 @@ function BackupSection({ clubs }) {
               </p>
             )}
             <p className="text-xs text-muted-foreground">
-              Security fields (passcodes, reset tokens) are never imported. Users will need their existing passcodes to sign in.
+              Encrypted backups (created with BACKUP_PASSPHRASE set) restore each user's passcode hash, so existing sign-in passcodes keep working. Reset tokens and lockout state are never imported.
             </p>
           </div>
           <DialogFooter>

@@ -29,6 +29,9 @@ import bcrypt
 import pyotp
 import ipaddress
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from datetime import datetime, timezone, timedelta
 
 from app.racing.export import normalize_series_export, result_export_lines
@@ -3887,9 +3890,43 @@ BACKUP_SECRET_KEYS = ("passcode_hash", "password_hash", "reset_token_hash",
                       "email_otp_hash", "email_otp_expires")
 
 
-def _strip_backup_secrets(doc: dict) -> dict:
-    """Remove credential/security fields from a document before export."""
-    return {k: v for k, v in doc.items() if k not in BACKUP_SECRET_KEYS and k != "_id"}
+# Passphrase used to encrypt backups. When set, backups are AES-encrypted and
+# MAY carry the salted bcrypt passcode hashes, so a restore brings users' sign-in
+# passcodes across with no manual resets. A leaked archive is unreadable without
+# this key. When unset, backups stay plaintext and credentials are stripped as
+# before (restored users then need passcode resets).
+BACKUP_PASSPHRASE = os.environ.get("BACKUP_PASSPHRASE") or None
+BACKUP_PBKDF2_ITERATIONS = 200_000
+
+
+def _derive_backup_key(passphrase: str, salt: bytes) -> bytes:
+    """PBKDF2-SHA256 key derivation for the backup encryption passphrase."""
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
+                     salt=salt, iterations=BACKUP_PBKDF2_ITERATIONS)
+    return kdf.derive(passphrase.encode("utf-8"))
+
+
+def _aes_encrypt(key: bytes, plaintext: bytes) -> bytes:
+    """AES-256-GCM: 12-byte random nonce followed by ciphertext."""
+    nonce = secrets.token_bytes(12)
+    return nonce + AESGCM(key).encrypt(nonce, plaintext, None)
+
+
+def _aes_decrypt(key: bytes, blob: bytes) -> bytes:
+    """Inverse of _aes_encrypt; raises on tampering or wrong key."""
+    nonce, ct = blob[:12], blob[12:]
+    return AESGCM(key).decrypt(nonce, ct, None)
+
+
+def _strip_backup_secrets(doc: dict, keep_passcode_hash: bool = False) -> dict:
+    """Remove credential/security fields from a document before export. With
+    keep_passcode_hash (encrypted backups only) the salted bcrypt passcode
+    hash is retained so a restore carries users' sign-in passcodes; the hash
+    is never included in a plaintext backup."""
+    keys = set(BACKUP_SECRET_KEYS)
+    if keep_passcode_hash:
+        keys.discard("passcode_hash")
+    return {k: v for k, v in doc.items() if k not in keys and k != "_id"}
 
 
 async def _build_backup(request: Request, user: dict, scope_club_id: Optional[str]):
@@ -3908,6 +3945,7 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     if scope_club_id:
         classes_in = await db.classes.find({"club_id": scope_club_id}, {"_id": 0, "id": 1}).to_list(5000)
         class_ids = [c["id"] for c in classes_in]
+    encrypted = bool(BACKUP_PASSPHRASE)
     clubs = await db.clubs.find({"id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     users = await db.users.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     classes = await db.classes.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
@@ -3927,16 +3965,23 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
             row.update({"race_id": r["id"], "date": r.get("date"),
                         "class_id": r.get("class_id"), "series_id": r.get("series_id")})
             results.append(row)
+    meta = {"app": "SailScore", "exported_at": now.isoformat(),
+            "scope": "all-clubs" if not scope_club_id else "club",
+            "club_id": scope_club_id,
+            "generated_by": user.get("username"),
+            "generated_by_role": user.get("role")}
+    key = None
+    if encrypted:
+        salt = secrets.token_bytes(16)
+        key = _derive_backup_key(BACKUP_PASSPHRASE, salt)
+        meta["encrypted"] = True
+        meta["kdf"] = {"salt": salt.hex(), "iterations": BACKUP_PBKDF2_ITERATIONS}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, payload in (
-            ("metadata.json", {"app": "SailScore", "exported_at": now.isoformat(),
-                               "scope": "all-clubs" if not scope_club_id else "club",
-                               "club_id": scope_club_id,
-                               "generated_by": user.get("username"),
-                               "generated_by_role": user.get("role")}),
+            ("metadata.json", meta),
             ("clubs.json", clubs),
-            ("users.json", [_strip_backup_secrets(u) for u in users]),
+            ("users.json", [_strip_backup_secrets(u, keep_passcode_hash=encrypted) for u in users]),
             ("classes.json", classes),
             ("boats.json", boats),
             ("series.json", series),
@@ -3945,7 +3990,10 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
             ("adverts.json", adverts),
             ("audit_logs.json", audit_logs),
         ):
-            zf.writestr(name, json.dumps(payload, indent=2, default=str))
+            blob = json.dumps(payload, indent=2, default=str).encode("utf-8")
+            if encrypted and name != "metadata.json":
+                blob = _aes_encrypt(key, blob)
+            zf.writestr(name, blob)
     data = buf.getvalue()
     slug, club_name = "", ""
     if scope_club_id:
@@ -4019,23 +4067,64 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
         raise HTTPException(status_code=400,
                             detail="Backup file too large (50 MB max)")
 
-    # Parse the zip and validate it looks like a valid backup.
+    # Parse the zip and validate it looks like a valid backup. Backups are
+    # normally flat (the JSON exports sit at the archive root), but a zip made
+    # by re-compressing an extracted folder nests them one level deep — accept
+    # either layout, and ignore macOS __MACOSX metadata entries entirely.
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400,
                             detail="File is not a valid ZIP archive")
     names = set(zf.namelist())
+    prefix = ""
     if "metadata.json" not in names:
-        raise HTTPException(status_code=400,
-                            detail="Invalid backup: missing metadata.json")
+        top_dirs = sorted({n.split("/", 1)[0] + "/" for n in names
+                           if "/" in n and not n.startswith("__MACOSX")})
+        if len(top_dirs) == 1 and (top_dirs[0] + "metadata.json") in names:
+            prefix = top_dirs[0]
+        else:
+            raise HTTPException(status_code=400,
+                                detail="Invalid backup: missing metadata.json")
+    zp = lambda name: prefix + name
 
-    meta = json.loads(zf.read("metadata.json"))
+    meta = json.loads(zf.read(zp("metadata.json")))
     scope = meta.get("scope")
     scope_club_id = meta.get("club_id")
     if scope not in ("all-clubs", "club"):
         raise HTTPException(status_code=400,
                             detail=f"Unrecognised backup scope: {scope}")
+
+    # Encrypted backups (created when BACKUP_PASSPHRASE was set) carry the
+    # per-entry AES payloads plus the KDF salt in metadata.json. Decrypt with
+    # the server's BACKUP_PASSPHRASE — the same value must be set here as on
+    # the server that exported the backup.
+    encrypted = bool(meta.get("encrypted"))
+    key = None
+    if encrypted:
+        kdf = meta.get("kdf") or {}
+        try:
+            salt = bytes.fromhex(kdf.get("salt", ""))
+        except (TypeError, ValueError):
+            salt = b""
+        if not salt or not BACKUP_PASSPHRASE:
+            raise HTTPException(status_code=400,
+                                detail="This backup is encrypted — set BACKUP_PASSPHRASE to the same value that was used when the backup was created.")
+        key = _derive_backup_key(BACKUP_PASSPHRASE, salt)
+        # Fail fast on a mismatched key rather than a long list of per-file errors.
+        probe = zp("clubs.json")
+        if probe in names:
+            try:
+                _aes_decrypt(key, zf.read(probe))
+            except Exception:
+                raise HTTPException(status_code=400,
+                                    detail="Could not decrypt this backup — BACKUP_PASSPHRASE does not match the one used to create it.")
+
+    def read_json(name):
+        blob = zf.read(name)
+        if encrypted:
+            blob = _aes_decrypt(key, blob)
+        return json.loads(blob)
 
     # For a club-scoped backup, verify the club exists.
     if scope == "club":
@@ -4051,12 +4140,12 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
     errors = []
 
     for coll_name in BACKUP_COLLECTIONS:
-        fname = f"{coll_name}.json"
+        fname = zp(f"{coll_name}.json")
         if fname not in names:
             errors.append(f"{coll_name}: not in backup (skipped)")
             continue
         try:
-            docs = json.loads(zf.read(fname))
+            docs = read_json(fname)
         except Exception as exc:
             errors.append(f"{coll_name}: failed to parse — {exc}")
             continue
@@ -4080,10 +4169,12 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
                     await db.clubs.insert_one(docs[0])
             elif coll_name == "users":
                 # Replace only users belonging to this club (keep the
-                # webmaster and users of other clubs intact).
+                # webmaster and users of other clubs intact). Passcode hashes
+                # are only present in (and kept from) encrypted backups, so a
+                # restore carries sign-in passcodes without manual resets.
                 await db.users.delete_many({"club_id": scope_club_id})
                 if docs:
-                    cleaned = [_strip_backup_secrets(u) for u in docs]
+                    cleaned = [_strip_backup_secrets(u, keep_passcode_hash=encrypted) for u in docs]
                     await db.users.insert_many(cleaned, ordered=False)
             elif coll_name == "adverts":
                 # Adverts are global — only restore if this is a full backup.
@@ -4100,7 +4191,7 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
                     # Classes were already replaced above, so use the
                     # backup's class list to identify which boats to remove.
                     backup_class_ids = {c["id"] for c in
-                                         json.loads(zf.read("classes.json"))}
+                                         read_json(zp("classes.json"))}
                     await db.boats.delete_many(
                         {"class_id": {"$in": list(backup_class_ids)}})
                 elif coll_name in ("classes", "series", "races"):
