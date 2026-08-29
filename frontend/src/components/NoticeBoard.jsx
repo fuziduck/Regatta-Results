@@ -26,6 +26,25 @@ const HEADING_ORDER = [
   "General Notices",
 ];
 
+// Canonical notice types and the heading each files under (mirrors the backend
+// catalogue). Notice numbers are sequential PER TYPE, so the board groups by
+// type first and only then orders by number — shared headings (e.g. Race
+// Postponement + Race Cancellation under "Race Notices") each stay in their
+// own numbered sequence.
+const TYPE_META = [
+  { key: "notice_to_competitors", heading: "Notices to Competitors" },
+  { key: "si_amendment", heading: "Sailing Instructions / Amendments" },
+  { key: "race_postponement", heading: "Race Notices" },
+  { key: "race_cancellation", heading: "Race Notices" },
+  { key: "hearing_schedule", heading: "Protests & Hearings" },
+  { key: "hearing_decision", heading: "Protests & Hearings" },
+  { key: "results_notice", heading: "Results" },
+  { key: "safety_notice", heading: "Safety" },
+  { key: "general_club_notice", heading: "General Notices" },
+];
+const TYPE_HEADING = Object.fromEntries(TYPE_META.map((t) => [t.key, t.heading]));
+const TYPE_ORDER = TYPE_META.map((t) => t.key);
+
 // Fetch the full notice (with the stored PDF / uploaded document payloads)
 // on demand — list responses stay light.
 function useNoticeDocument() {
@@ -209,20 +228,31 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
   if (!clubId || !notices) return null;
   if (!notices.length) return null;
 
-  const groups = new Map();
-  notices.forEach((n) => {
-    const key = n.heading || "General Notices";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(n);
-  });
-  const ordered = [...groups.keys()].sort((a, b) => {
-    const ia = HEADING_ORDER.indexOf(a); const ib = HEADING_ORDER.indexOf(b);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
-  });
-  // Within each heading the notices are ordered by notice number, smallest
-  // first (a number is stable across revisions, unlike publication time).
+  // Within its type, a notice is ordered by its issued number, smallest first
+  // (a number is stable across revisions, unlike publication time).
   const byNoticeNumber = (a, b) => Number(a.notice_number ?? Infinity) - Number(b.notice_number ?? Infinity)
     || ((a.published_at || "").localeCompare(b.published_at || ""));
+
+  // Group by notice TYPE first — a number is only comparable within its own
+  // type, so shared headings (e.g. Race Postponement + Race Cancellation both
+  // under "Race Notices") each keep their own numbered sequence.
+  const groups = new Map(); // typeKey -> { label, items }
+  notices.forEach((n) => {
+    const key = n.notice_type || n.notice_type_label || "notice";
+    if (!groups.has(key)) groups.set(key, { label: n.notice_type_label || n.notice_type || "Notice", items: [] });
+    groups.get(key).items.push(n);
+  });
+  // Type groups are ordered by their canonical heading slot, then by the
+  // canonical type order within a shared heading, then alphabetically.
+  const rank = (key) => {
+    const headingIndex = HEADING_ORDER.indexOf(TYPE_HEADING[key] || "");
+    const typeIndex = TYPE_ORDER.indexOf(key);
+    return { h: headingIndex < 0 ? 99 : headingIndex, t: typeIndex < 0 ? 99 : typeIndex };
+  };
+  const ordered = [...groups.keys()].sort((a, b) => {
+    const ra = rank(a); const rb = rank(b);
+    return (ra.h - rb.h) || (ra.t - rb.t) || groups.get(a).label.localeCompare(groups.get(b).label);
+  });
 
   return (
     <section className={embedded ? "" : "min-h-screen bg-background py-10"} data-testid="official-notice-board">
@@ -230,19 +260,26 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
         <h2 className="font-heading uppercase tracking-tight text-xl">Official Notice Board</h2>
         <span className="text-xs text-muted-foreground">· notices, amendments, protests and results as published</span>
       </div>
-      <div className="space-y-6">
-        {ordered.map((heading) => (
-          <div key={heading} id={`notice-heading-anchor-${heading.replace(/\W+/g, "-").toLowerCase()}`}>
-            <h3 className="text-xs font-bold uppercase tracking-[0.18em] text-ocean border-b border-ocean/20 pb-1.5 mb-3">
-              {heading}
-            </h3>
-            <Accordion type="single" collapsible value={openId} onValueChange={(v) => setOpenId(v || null)}>
-              {(groups.get(heading) || []).slice().sort(byNoticeNumber).map((n) => (
-                <NoticeCard key={n.id} notice={n} open={openId === n.id} />
-              ))}
-            </Accordion>
-          </div>
-        ))}
+      <div className="columns-1 md:columns-2 xl:columns-3 gap-x-8">
+        {ordered.map((key) => {
+          const group = groups.get(key);
+          // Each type stays whole inside one column (never split across a
+          // break), and the cards just cascade down the column with the text
+          // wrapped so it always fits the box.
+          return (
+            <div key={key} id={`notice-heading-anchor-${group.label.replace(/\W+/g, "-").toLowerCase()}`}
+              className="mb-8 break-inside-avoid">
+              <h3 className="text-xs font-bold uppercase tracking-[0.18em] text-ocean border-b border-ocean/20 pb-1.5 mb-3">
+                {group.label}
+              </h3>
+              <Accordion type="single" collapsible value={openId} onValueChange={(v) => setOpenId(v || null)}>
+                {group.items.slice().sort(byNoticeNumber).map((n) => (
+                  <NoticeCard key={n.id} notice={n} open={openId === n.id} />
+                ))}
+              </Accordion>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
