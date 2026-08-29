@@ -213,6 +213,33 @@ it("filters down to one area and honours a ?area= deep link", async () => {
   expect(areas).toEqual(["Area A"]);
 });
 
+it("never shows the previous club's notices when the club prop changes", async () => {
+  // Club c1 has a notice; then the board is re-rendered for a different club
+  // (a non-empty list for c1 must not linger while c2's data loads). The c1
+  // fetch completes; the c2 fetch is left PENDING so the board is in the
+  // "fetching" state — it must render nothing, never c1's notices.
+  mockApi.getNoticeAreas.mockResolvedValue([{ key: "club", title: "Club Notices" }]);
+  mockApi.getNotices
+    .mockReturnValueOnce(Promise.resolve([mk("c1n", "general_club_notice", "General Club Notice", 1, "Club Notices")]))
+    .mockReturnValueOnce(new Promise(() => {})); // club c2 fetch never resolves
+
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const Holder = ({ clubId }) => <NoticeBoard clubId={clubId} embedded />;
+  const render = async (clubId) => { await act(async () => { root.render(<Holder clubId={clubId} />); }); };
+
+  await render("c1");
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  expect(container.querySelector('[data-testid="card-heading"]')).not.toBeNull();
+
+  // Switch clubs: the board must not show c1's notice while c2 is loading.
+  await render("c2");
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  expect(container.querySelector('[data-testid="card-heading"]')).toBeNull();
+  expect(container.textContent).not.toContain("General Club Notice 1");
+});
+
 it("falls back to built-in area order and Club Notices when areas are unavailable", async () => {
   // The areas fetch fails: the two built-in areas come first, then the rest
   // alphabetically, and a notice without a stored heading lands in Club

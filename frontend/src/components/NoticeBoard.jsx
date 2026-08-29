@@ -245,6 +245,11 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
 
   useEffect(() => {
     if (!clubId) return;
+    // Clear any previous club's board immediately: the component can be reused
+    // across /club/:slug routes without remounting, so without this the old
+    // club's notices would render until this fetch resolves. Never show the
+    // wrong club's notices, even transiently.
+    setNotices(null); setAreas(null); setActiveArea(null);
     api.getNotices({ club_id: clubId, ...(sectionId ? { section_id: sectionId } : {}) }).then(setNotices).catch(() => setNotices([]));
     api.getNoticeAreas(clubId).then((list) => setAreas(list.map((a) => a.title))).catch(() => setAreas(null));
   }, [clubId, sectionId]);

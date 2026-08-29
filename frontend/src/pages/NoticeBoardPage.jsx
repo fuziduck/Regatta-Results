@@ -49,14 +49,14 @@ export default function NoticeBoardPage() {
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value="club-onb"><NoticeBoard clubId={club.id} embedded /></TabsContent>
+            <TabsContent value="club-onb"><NoticeBoard key={club.id} clubId={club.id} embedded /></TabsContent>
             {sections.filter((s) => s.series_id).map((section) => (
               <TabsContent key={section.id} value={section.id} data-testid={`series-onb-content-${section.id}`}>
-                <NoticeBoard clubId={club.id} embedded sectionId={section.id} />
+                <NoticeBoard key={`${club.id}:${section.id}`} clubId={club.id} embedded sectionId={section.id} />
               </TabsContent>
             ))}
           </Tabs>
-        ) : <NoticeBoard clubId={club.id} embedded />}
+        ) : <NoticeBoard key={club.id} clubId={club.id} embedded />}
       </main>
     </div>
   );
