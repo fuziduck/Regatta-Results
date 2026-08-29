@@ -174,6 +174,7 @@ export const api = {
   getNotices: (params = {}) => client.get("/notices", { params }).then((r) => r.data),
   getNotice: (id) => client.get(`/notices/${id}`).then((r) => r.data),
   getNoticeAreas: (clubId) => client.get("/notice-areas", { params: { club_id: clubId } }).then((r) => r.data),
+  addNoticeArea: (clubId, title) => client.post(`/clubs/${clubId}/notice-areas`, { title }).then((r) => r.data),
   noticeContext: (params) => client.get("/notices/context", { params }).then((r) => r.data),
   nextNoticeNumber: (notice_type, club_id) =>
     client.get("/notices/next-number", { params: { notice_type, ...(club_id ? { club_id } : {}) } }).then((r) => r.data),

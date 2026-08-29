@@ -6463,6 +6463,34 @@ async def create_notice_section(board_id: str, data: NoticeSectionInput, request
     return doc
 
 
+class NoticeAreaInput(BaseModel):
+    title: str = Field(..., min_length=1, max_length=100)
+
+
+@api_router.post("/clubs/{club_id}/notice-areas")
+async def add_notice_area(club_id: str, data: NoticeAreaInput, request: Request,
+                          user: dict = Depends(require_officer)):
+    _ensure_club(user, club_id)
+    title = data.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Area name is required")
+    reserved = {"club notices", "open event notices"}
+    if title.lower() in reserved:
+        raise HTTPException(status_code=409, detail="That notice area already exists")
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "notice_areas": 1})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
+    areas = list(club.get("notice_areas") or [])
+    if any(existing.strip().lower() == title.lower() for existing in areas):
+        raise HTTPException(status_code=409, detail="That notice area already exists")
+    areas.append(title)
+    await db.clubs.update_one({"id": club_id}, {"$set": {"notice_areas": areas}})
+    await _log_audit(request=request, user=user, action="NOTICE_AREA_CREATED",
+                     description=f"Created ONB notice area '{title}'", resource_type="club",
+                     resource_id=club_id, club_id=club_id)
+    return {"key": "custom:" + re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-"), "title": title}
+
+
 @api_router.get("/notice-areas")
 async def list_notice_areas(request: Request, club_id: Optional[str] = None):
     scope = await _resolve_club_id(request, club_id)
@@ -7363,6 +7391,8 @@ async def _ensure_db_constraints():
                    ([("club_id", 1), ("username", 1)],
                     {"unique": True, "partialFilterExpression": {"club_id": {"$exists": True}}})],
         db.audit_logs: [([("id", 1)], {"unique": True})],
+        db.subscriptions: [([("id", 1)], {"unique": True}),
+                           ([("email_hash", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {})],
     }
     for coll, indexes in plans.items():
         for keys, kwargs in indexes:

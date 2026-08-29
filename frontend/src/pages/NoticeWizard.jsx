@@ -73,6 +73,8 @@ export default function NoticeWizard({ onDone }) {
   const [method, setMethod] = useState("generated"); // 'generated' | 'uploaded'
   const [publicationArea, setPublicationArea] = useState("Club Notices");
   const [publicationAreas, setPublicationAreas] = useState([{ key: "Club Notices", title: "Club Notices" }, { key: "Open Event Notices", title: "Open Event Notices" }]);
+  const [newAreaName, setNewAreaName] = useState("");
+  const [addingArea, setAddingArea] = useState(false);
   const [fields, setFields] = useState({});
   const [uploadFile, setUploadFile] = useState(null);
   const [noticeNumber, setNoticeNumber] = useState(1);
@@ -485,6 +487,23 @@ export default function NoticeWizard({ onDone }) {
                   <span><span className="block font-semibold">{area.title}</span><span className="block text-xs text-muted-foreground">Notices posted in this ONB area</span></span>
                 </label>)}
               </RadioGroup>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Input value={newAreaName} onChange={(e) => setNewAreaName(e.target.value)} placeholder="Example: Sailing Instructions" data-testid="new-notice-area-input" />
+                <Button type="button" variant="outline" disabled={addingArea || !newAreaName.trim()} data-testid="add-notice-area-btn" onClick={async () => {
+                  const targetClubId = ctx?.club_id || selectedClubId || clubId;
+                  if (!targetClubId) return toast.error("Select a club first.");
+                  setAddingArea(true);
+                  try {
+                    const area = await api.addNoticeArea(targetClubId, newAreaName.trim());
+                    setPublicationAreas((prev) => [...prev, { key: area.title, title: area.title }]);
+                    setPublicationArea(area.title);
+                    setNewAreaName("");
+                    toast.success("Notice area created");
+                  } catch (e) {
+                    toast.error(e?.response?.data?.detail || e?.message || "Could not create notice area");
+                  } finally { setAddingArea(false); }
+                }}><Plus className="w-4 h-4" /> {addingArea ? "Creating…" : "New notice area"}</Button>
+              </div>
             </div>
             {ctx && (
               <div className="mt-2 mb-5 inline-flex flex-wrap items-center gap-2 rounded-lg border border-ocean/20 bg-ocean/5 px-3 py-2 text-xs text-ocean" data-testid="prefilled-context">
