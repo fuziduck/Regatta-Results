@@ -1677,6 +1677,11 @@ export default function Officer() {
   const [pendingBatchRace, setPendingBatchRace] = useState(null);
   // Race-day split: the scheduled race the officer wants to expand into a mini series.
   const [splitTarget, setSplitTarget] = useState(null);
+  // Series fleet editor: which of the class's boats form part of a series
+  // (drives the DNC scoring engine). Race officers and club admins both use
+  // it — removing a boat stops it being scored (and stops it scoring DNC).
+  const [fleetSeries, setFleetSeries] = useState(null);
+  const [fleetOpen, setFleetOpen] = useState(false);
 
   const enterBatch = (g) => { setBatchGroup(g); setBatchMode(true); };
 
@@ -2003,6 +2008,52 @@ export default function Officer() {
           </>
         )}
 
+        {/* Series fleets: which boats are scored in each series. Race officers
+            can remove a boat here so it stops scoring (and stops scoring DNC
+            when absent) — exactly what the club admin can do in the Admin
+            console. Only the current season's series are listed. */}
+        <section className="mt-10" data-testid="series-fleet-section">
+          <div className="mb-3">
+            <h2 className="text-lg md:text-lg uppercase tracking-tight flex items-center gap-2">
+              <Users className="w-5 h-5 text-ocean" /> Series fleets
+            </h2>
+            <p className="text-muted-foreground text-sm">
+              Choose exactly which boats form part of each series. A boat you remove is no longer scored — it won't score
+              DNC when it misses a race (e.g. a boat that has signed onto a different series).
+            </p>
+          </div>
+          {(() => {
+            const seriesList = Object.values(series).filter((s) => s && s.id)
+              .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+            if (!seriesList.length) {
+              return <p className="text-sm text-muted-foreground">No series yet this season.</p>;
+            }
+            return (
+              <div className="space-y-2">
+                {seriesList.map((s) => {
+                  const n = (s.member_boat_ids || []).length;
+                  return (
+                  <div key={s.id} data-testid={`fleet-row-${s.name}`}
+                    className="rounded-xl border border-border bg-card px-4 py-3 flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold leading-none">{s.name}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {classes[s.class_id]?.name || "Class"} · {n > 0 ? `${n} boat${n === 1 ? "" : "s"} scored` : "fleet auto-detected"}
+                      </div>
+                    </div>
+                    <Button variant="outline" size="sm" className="gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white"
+                      data-testid={`series-fleet-${s.name}`}
+                      onClick={() => { setFleetSeries(s); setFleetOpen(true); }}>
+                      <Users className="w-4 h-4" /> Manage boats
+                    </Button>
+                  </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </section>
+
         {/* Club staff manage 2FA from the main console; the webmaster has a
             dedicated Security section in the webmaster console. */}
         {role !== "webmaster" && (
@@ -2020,6 +2071,7 @@ export default function Officer() {
         )}
       </main>
       <SplitMiniDialog target={splitTarget} onClose={() => setSplitTarget(null)} onSplit={handleSplitDone} />
+      <SeriesBoatsDialog series={fleetSeries} open={fleetOpen} onOpenChange={setFleetOpen} clubId={clubId} onSaved={() => { loadRaces(); }} />
     </div>
   );
 }
