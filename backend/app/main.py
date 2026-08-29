@@ -5899,6 +5899,22 @@ async def list_subscriptions_for_admin(request: Request, club_id: Optional[str] 
              "created_at": row.get("created_at")} for row in rows]
 
 
+@api_router.delete("/admin/subscriptions/{subscription_id}")
+async def delete_admin_subscription(subscription_id: str, request: Request,
+                                    club_id: Optional[str] = None,
+                                    user: dict = Depends(require_admin)):
+    sub = await db.subscriptions.find_one({"id": subscription_id, "active": True}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    scope = club_id if user.get("role") == "webmaster" and club_id else user.get("club_id")
+    _ensure_club(user, scope)
+    if sub.get("club_id") != scope:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    await db.subscriptions.delete_one({"id": subscription_id})
+    await _log_audit(request=request, user=user, action="RESULTS_SUBSCRIPTION_DELETED_BY_ADMIN", description="Deleted a results email subscription", resource_type="subscription", resource_id=subscription_id, club_id=scope)
+    return {"ok": True}
+
+
 @api_router.get("/subscriptions/manage")
 async def manage_results_subscriptions(token: str):
     token_hash = _subscription_token_hash(token)

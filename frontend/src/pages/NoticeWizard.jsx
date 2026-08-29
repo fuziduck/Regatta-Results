@@ -655,7 +655,7 @@ export default function NoticeWizard({ onDone }) {
                       <div className="flex items-center justify-between bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
                         <span>Formal PDF preview</span>
                         <Button variant="ghost" size="sm" className="gap-1.5" asChild>
-                          <a href={previewUrl} target="_blank" rel="noopener noreferrer"><Download className="w-3.5 h-3.5" /> Open PDF</a>
+                          <a href={previewUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="w-3.5 h-3.5" /> View PDF</a>
                         </Button>
                       </div>
                       <iframe title="Notice PDF preview" src={previewUrl} className="w-full h-[50vh]" data-testid="notice-pdf-preview" />
@@ -675,7 +675,7 @@ export default function NoticeWizard({ onDone }) {
                         <Button variant="outline" size="sm" className="gap-1.5" asChild>
                           <a href={uploadPreviewUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="w-3.5 h-3.5" /> Open</a>
                         </Button>
-                        <Button variant="outline" size="sm" className="gap-1.5" asChild><a href={uploadPreviewUrl} download={uploadFile.name}><Download className="w-3.5 h-3.5" /> Download</a></Button>
+
                       </div>
                     </div>
                   ) : (

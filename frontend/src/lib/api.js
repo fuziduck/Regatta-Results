@@ -157,6 +157,7 @@ export const api = {
   verifyResultsSubscription: (token) => client.get("/subscriptions/verify", { params: { token } }).then((r) => r.data),
   getSubscriptionManagement: (token) => client.get("/subscriptions/manage", { params: { token } }).then((r) => r.data),
   getAdminSubscriptions: (clubId) => client.get("/admin/subscriptions", { params: clubId ? { club_id: clubId } : {} }).then((r) => r.data),
+  deleteAdminSubscription: (id, clubId) => client.delete(`/admin/subscriptions/${id}`, { params: clubId ? { club_id: clubId } : {} }).then((r) => r.data),
   unsubscribeResults: (token) => client.post("/subscriptions/unsubscribe", { token }).then((r) => r.data),
   unsubscribeResultsLink: (token) => client.get("/subscriptions/unsubscribe", { params: { token } }).then((r) => r.data),
   unsubscribeAllResults: (token) => client.post("/subscriptions/unsubscribe-all", { token }).then((r) => r.data),

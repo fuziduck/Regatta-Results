@@ -310,6 +310,13 @@ export default function Webmaster() {
               <ScrollText className="w-4 h-4" /> Audit log
             </button>
             <button
+              data-testid="nav-subscriptions"
+              onClick={() => setSection("subscriptions")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${section === "subscriptions" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"}`}
+            >
+              <Mail className="w-4 h-4" /> Results subscriptions
+            </button>
+            <button
               data-testid="nav-backup"
               onClick={() => setSection("backup")}
               className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
@@ -377,7 +384,8 @@ export default function Webmaster() {
         </>
         )}
         {section === "adverts" && <AdvertsManager />}
-        {section === "email" && <div className="space-y-6"><EmailSettingsManager /><SubscriptionOverview /></div>}
+        {section === "email" && <EmailSettingsManager />}
+        {section === "subscriptions" && <SubscriptionOverview />}
         {section === "audit" && (
           <div>
             <div className="mb-6">

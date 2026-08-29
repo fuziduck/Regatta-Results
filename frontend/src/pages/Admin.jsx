@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -1162,12 +1163,16 @@ function NoticeManagementTab({ clubId }) {
         <div className="flex gap-2"><Input value={areaName} onChange={(e) => setAreaName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addArea(); }} placeholder="e.g. Regatta Notices" data-testid="new-notice-area-input" /><Button type="button" onClick={addArea} data-testid="add-notice-area-btn"><Plus className="w-4 h-4" /> Add area</Button></div>
       </div>
       {!notices.length && <p className="text-sm text-muted-foreground rounded-xl border border-dashed p-6 text-center">No notices are currently listed.</p>}
-      {notices.map((notice) => (
-        <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
-          <div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div>
-          <Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" disabled={busy} onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button>
-        </div>
-      ))}
+      {notices.length > 0 && (() => {
+        const grouped = notices.reduce((map, notice) => { const key = notice.heading || notice.publication_area || "Club Notices"; (map[key] ||= []).push(notice); return map; }, {});
+        const ordered = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+        return <Accordion type="multiple" defaultValue={ordered} data-testid="notice-area-management-groups">
+          {ordered.map((area) => <AccordionItem key={area} value={area} className="rounded-xl border border-border bg-card px-4 mb-3">
+            <AccordionTrigger className="font-heading uppercase tracking-tight hover:no-underline" data-testid={`notice-area-group-${area}`}>{area} <span className="ml-2 text-xs font-normal text-muted-foreground">({grouped[area].length})</span></AccordionTrigger>
+            <AccordionContent><div className="space-y-2">{grouped[area].map((notice) => <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"><div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div><Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" disabled={busy} onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button></div>)}</div></AccordionContent>
+          </AccordionItem>)}
+        </Accordion>;
+      })()}
     </section>
   );
 }
@@ -1468,6 +1473,7 @@ export default function Admin() {
               <TabsTrigger value="historic" data-testid="tab-historic" className="gap-1.5 py-1.5"><Archive className="w-4 h-4" /> Historic Results</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="users" data-testid="tab-users" className="gap-1.5 py-1.5"><Users className="w-4 h-4" /> Logins</TabsTrigger>
+              <TabsTrigger value="subscriptions" data-testid="tab-subscriptions" className="gap-1.5 py-1.5"><Mail className="w-4 h-4" /> Subscriptions</TabsTrigger>
               {isWebmaster && <TabsTrigger value="activity" data-testid="tab-activity" className="gap-1.5 py-1.5"><ScrollText className="w-4 h-4" /> Activity</TabsTrigger>}
               {!isWebmaster && (
                 <>
@@ -1480,7 +1486,8 @@ export default function Admin() {
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
-          <TabsContent value="notices" className="pt-6"><div className="space-y-6"><NoticeManagementTab clubId={clubId} /><SubscriptionOverview clubId={clubId} /></div></TabsContent>
+          <TabsContent value="notices" className="pt-6"><NoticeManagementTab clubId={clubId} /></TabsContent>
+          <TabsContent value="subscriptions" className="pt-6"><SubscriptionOverview clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
           {isWebmaster && <TabsContent value="activity" className="pt-6"><AuditLog webmaster /></TabsContent>}
