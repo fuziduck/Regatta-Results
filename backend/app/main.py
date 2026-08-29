@@ -1711,7 +1711,7 @@ class TestEmailInput(BaseModel):
 
 class ResultsSubscriptionInput(BaseModel):
     email: EmailStr
-    subscription_type: Literal["class", "series", "boat"]
+    subscription_type: Literal["class", "series", "boat", "notice"]
     target_id: str
 
 
@@ -5744,7 +5744,7 @@ async def scheduled_races(request: Request, date: Optional[str] = None, club_id:
 
 class ResultsSubscriptionInput(BaseModel):
     email: EmailStr
-    subscription_type: Literal["class", "series", "boat"]
+    subscription_type: Literal["class", "series", "boat", "notice"]
     target_id: str
 
 
@@ -5801,6 +5801,15 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
                 "series_id": target["id"], "series_name": target.get("name"),
                 "class_id": target.get("class_id"), "class_name": cls.get("name"),
                 "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
+    if subscription_type == "notice":
+        # A notice subscription is per-club: every new ONB document published
+        # by that club is emailed to the subscriber (with its PDF attached).
+        target = await db.clubs.find_one({"id": target_id}, {"_id": 0, "id": 1, "name": 1, "slug": 1})
+        if not target:
+            raise HTTPException(status_code=404, detail="Club not found")
+        return {"club_id": target["id"],
+                "target_name": f"{target.get('name', 'Club')} Official Notice Board",
+                "club_name": target.get("name"), "club_slug": target.get("slug")}
     if subscription_type == "boat":
         target = await db.boats.find_one({"id": target_id}, {"_id": 0})
         if not target:
@@ -6578,6 +6587,7 @@ def _notice_summary(doc: dict) -> dict:
         "series_id", "race_id", "class_id", "club_name",
         "original_filename", "file_type", "file_size", "file_hash",
         "created_by_id",
+        "notification_delivery",
     )} | {
         # attachments without their data URLs
         "attachments": [
@@ -7270,6 +7280,119 @@ def _decode_pdf_data_url(s: Optional[str]) -> Optional[bytes]:
     return raw
 
 
+def _notice_pdf_bytes(notice: dict) -> Optional[bytes]:
+    """The official PDF bytes of a notice, for email delivery: a generated
+    notice carries pdf_data_url; an uploaded PDF document carries
+    file_data_url. Uploaded documents of other types have no PDF here (the
+    email then falls back to a text/HTML message with a link)."""
+    for url in (notice.get("pdf_data_url"), notice.get("file_data_url")):
+        if not url or not isinstance(url, str):
+            continue
+        m = re.match(r"^data:[^;]+;base64,([A-Za-z0-9+/=\s]+)$", url)
+        if not m:
+            continue
+        try:
+            raw = base64.b64decode(m.group(1))
+        except Exception:
+            continue
+        if raw.startswith(b"%PDF-") and len(raw) <= NOTICE_PDF_MAX:
+            return raw
+    return None
+
+
+async def _send_published_notice_email(email: str, notice: dict, pdf: Optional[bytes],
+                                       target: dict) -> bool:
+    """Deliver one newly published notice to one active subscriber, attaching
+    the official PDF when the notice has one. Best-effort like the results
+    delivery: a bad address or SMTP failure must never break publishing."""
+    cfg = await _get_email_settings()
+    if not cfg.get("smtp_host"):
+        logger.warning("ONB SUBSCRIPTION NOT SENT: SMTP is not configured")
+        return False
+    club = await db.clubs.find_one({"id": notice.get("club_id")}, {"_id": 0, "name": 1}) or {}
+    title = f"{club.get('name', 'SailScore')} — New {notice.get('notice_type_label') or 'notice'}: {notice.get('title') or 'Official Notice'}"
+    link = f"{_public_web_base()}{notice.get('public_path') or ''}"
+    manage_token = target.get("manage_token")
+    links = _subscription_links(manage_token or "") if manage_token else {}
+    published = notice.get("publication_datetime") or notice.get("published_at") or ""
+    text = (
+        f"{title}\n\n"
+        + (f"Notice number: {notice.get('notice_number')}\n" if notice.get("notice_number") else "")
+        + (f"Published: {published}\n" if published else "")
+        + f"\nView the notice: {link}\n"
+        + f"Manage subscriptions: {links.get('manage', _public_web_base())}\n"
+    )
+    html = (
+        f"<html><body style='font-family:Arial,sans-serif;color:#172033'>"
+        f"<h2>{html_lib.escape(title)}</h2>"
+        + (f"<p><strong>Notice number:</strong> {html_lib.escape(str(notice.get('notice_number')))}</p>" if notice.get("notice_number") else "")
+        + (f"<p><strong>Published:</strong> {html_lib.escape(str(published))}</p>" if published else "")
+        + (f"<p>The official document is attached to this email.</p>" if pdf else f"<p>View the notice on the Official Notice Board.</p>")
+        + f"<p><a href='{html_lib.escape(link, quote=True)}' style='background:#0a369d;color:white;padding:12px 18px;text-decoration:none;border-radius:6px'>View Notice</a></p>"
+        + f"<p><a href='{html_lib.escape(_public_web_base(), quote=True)}'>SailScore</a> · <a href='{html_lib.escape(links.get('manage', _public_web_base()), quote=True)}'>Manage subscriptions</a></p>"
+        + "</body></html>"
+    )
+    msg = EmailMessage()
+    msg["Subject"] = title
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = email
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+    if pdf:
+        msg.add_attachment(pdf, maintype="application", subtype="pdf",
+                           filename=f"{notice.get('notice_number') or notice.get('id')}.pdf")
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as smtp:
+            smtp.starttls()
+            if cfg.get("smtp_user"):
+                smtp.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            smtp.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("ONB EMAIL FAILED subscription=%s error=%s", target.get("id"), exc)
+        return False
+
+
+async def _notify_published_notice(notice: dict) -> dict:
+    """Email each newly published ONB document once to the club's active
+    notice subscribers, attaching the official PDF. Uses the same
+    subscription_deliveries dedup ledger as the results delivery, so one
+    publication (and one version of it) reaches each subscriber exactly once."""
+    club_id = notice.get("club_id")
+    if not club_id:
+        return {"matched": 0, "sent": 0, "skipped": 0}
+    subscribers = await db.subscriptions.find({
+        "active": True, "verified": True,
+        "subscription_type": "notice", "target_id": club_id,
+    }, {"_id": 0}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    event_id = f"notice:{notice.get('id')}:{notice.get('version') or 1}"
+    pdf = _notice_pdf_bytes(notice)
+    sent = 0
+    skipped = 0
+    for sub in subscribers:
+        delivery_key = f"{event_id}:{sub['id']}"
+        try:
+            await db.subscription_deliveries.insert_one({
+                "id": new_id(), "delivery_key": delivery_key, "subscription_id": sub["id"],
+                "notice_id": notice.get("id"), "event_id": event_id, "created_at": now_iso(),
+            })
+        except DuplicateKeyError:
+            skipped += 1
+            continue
+        email = _decrypt_secret(sub.get("email_enc", ""))
+        if not email:
+            logger.warning("ONB EMAIL SKIPPED: subscription has no readable email id=%s", sub["id"])
+            continue
+        sub = dict(sub)
+        sub["manage_token"] = _decrypt_secret(sub.get("manage_token_enc", ""))
+        if await _send_published_notice_email(email, notice, pdf, sub):
+            await db.subscription_deliveries.update_one({"delivery_key": delivery_key}, {"$set": {"sent_at": now_iso(), "status": "sent"}})
+            sent += 1
+        else:
+            await db.subscription_deliveries.update_one({"delivery_key": delivery_key}, {"$set": {"status": "failed"}})
+    return {"matched": len(subscribers), "sent": sent, "skipped": skipped}
+
+
 @api_router.post("/notices/{notice_id}/publish")
 async def publish_notice(notice_id: str, data: NoticePublishInput,
                          user: dict = Depends(require_officer)):
@@ -7319,7 +7442,14 @@ async def publish_notice(notice_id: str, data: NoticePublishInput,
                      description=f"Published {notice.get('notice_type_label')} '{notice.get('title')}'"
                                  + (f" (supersedes {sup_id})" if sup_id else ""),
                      resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
-    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+    updated = await db.notices.find_one({"id": notice_id}, {"_id": 0})
+    if updated and updated.get("status") == "published":
+        # Issue the official document to every club ONB subscriber (best-effort
+        # delivery: publishing must never depend on SMTP being reachable).
+        delivery = await _notify_published_notice(updated)
+        updated = dict(updated)
+        updated["notification_delivery"] = delivery
+    return _notice_summary(updated)
 
 
 @api_router.post("/notices/{notice_id}/withdraw")

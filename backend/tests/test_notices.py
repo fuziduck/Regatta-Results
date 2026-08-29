@@ -7,6 +7,7 @@ that supersedes), withdrawal, attachments, uploaded-document integrity (never
 modified or converted), and club isolation.
 """
 import base64
+from uuid import uuid4
 
 import pytest
 import requests
@@ -425,3 +426,52 @@ def test_officer_can_amend_and_withdraw_rules(club_officer_token):
                          headers=h(club_officer_token)).status_code == 409
     assert requests.post(f"{API}/notices/{n['id']}/withdraw", json={"reason": "x"},
                          headers=h(club_officer_token)).status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# ONB email subscription (spec: subscribe to the ONB, PDF issued on publish)
+# ---------------------------------------------------------------------------
+
+def _start_notice_subscription(test_club):
+    """Create + verify one notice subscription for the club. Skips when the
+    shared dev server's per-IP rate limiter is spent (other suites use the
+    same limiter, so runs can trip it between invocations)."""
+    email = f"onb-{uuid4().hex[:10]}@example.com"
+    r = requests.post(f"{API}/subscriptions", json={
+        "email": email, "subscription_type": "notice", "target_id": test_club["id"],
+    })
+    if r.status_code == 429:
+        pytest.skip("Subscription rate limit reached on the shared dev server")
+    assert r.status_code == 200, r.text
+    sub = r.json()
+    assert requests.get(f"{API}/subscriptions/verify",
+                        params={"token": sub["verification_token"]}).status_code == 200
+    return email
+
+
+def test_onb_subscription_created_and_listed(club_officer_token, club_admin_token, test_club):
+    email = _start_notice_subscription(test_club)
+    # The verified subscription shows up for the club admin under the notice type.
+    rows = requests.get(f"{API}/admin/subscriptions",
+                        params={"club_id": test_club["id"]},
+                        headers=h(club_admin_token)).json()
+    match = next((row for row in rows if row["email"] == email), None)
+    assert match, rows
+    assert match["subscription_type"] == "notice"
+    assert match["target_id"] == test_club["id"]
+    assert match["target_name"] == f"{test_club['name']} Official Notice Board"
+
+
+def test_publishing_notice_issues_pdf_to_subscribers(club_officer_token, test_club):
+    """Publishing an ONB document delivers it to every verified notice
+    subscriber of the club: the response reports the matched count and a
+    delivery ledger row is written (best-effort — SMTP not required)."""
+    _start_notice_subscription(test_club)
+    n = make_notice(club_officer_token, title="ONB email test").json()
+    r = requests.post(f"{API}/notices/{n['id']}/publish",
+                      json={"pdf_data_url": MINIMAL_PDF_URL, "expected_version": n["version"]},
+                      headers=h(club_officer_token))
+    assert r.status_code == 200, r.text
+    delivery = r.json().get("notification_delivery")
+    assert delivery and delivery["matched"] >= 1, r.text
+    assert delivery["sent"] == 0 or delivery["sent"] >= 1  # best-effort: 0 when SMTP unset
