@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import ShareInstall from "@/components/ShareInstall";
+import CopyLinkButton from "@/components/CopyLinkButton";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
@@ -134,6 +135,18 @@ function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" 
 function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData, adverts }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
+  // Shareable permalink for the results currently shown. The class/series
+  // tabs keep their choice in component state only, so the canonical deep
+  // link is rebuilt here from the current selection (the Landing page reads
+  // these ?class=/?series=/?year= params on load).
+  const shareUrl = (() => {
+    const params = new URLSearchParams();
+    params.set("class", classId);
+    if (activeSeries && activeSeries !== "overall") params.set("series", activeSeries);
+    if (year !== CURRENT_YEAR) params.set("year", String(year));
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  })();
+
   if (year !== CURRENT_YEAR && !hasData) {
     return (
       <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center" data-testid="no-results-year">
@@ -154,12 +167,15 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
       <div className="pt-5">
         <div className="flex items-center justify-between gap-3 mb-3">
           <h3 className="text-xl uppercase tracking-tight flex items-center gap-2"><Sailboat className="w-5 h-5 text-ocean" /> Overall Championship</h3>
-          <Button variant="outline" size="sm" data-testid="export-overall-pdf"
-            className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
-            disabled={!overall?.standings?.length}
-            onClick={() => exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon, adverts })}>
-            <Download className="w-4 h-4" /> PDF
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            <CopyLinkButton url={shareUrl} />
+            <Button variant="outline" size="sm" data-testid="export-overall-pdf"
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
+              disabled={!overall?.standings?.length}
+              onClick={() => exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon, adverts })}>
+              <Download className="w-4 h-4" /> PDF
+            </Button>
+          </div>
         </div>
         <OverallStandingsTable data={overall} />
       </div>
@@ -201,12 +217,15 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
       )}
       <div className="flex items-center justify-between gap-3 mb-3">
         <h3 className="text-xl uppercase tracking-tight">{active.name} Series{miniLabel}</h3>
-        <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
-          className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
-          disabled={!miniData?.standings?.length}
-          onClick={() => exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon, adverts })}>
-          <Download className="w-4 h-4" /> PDF
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <CopyLinkButton url={shareUrl} />
+          <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
+            className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
+            disabled={!miniData?.standings?.length}
+            onClick={() => exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon, adverts })}>
+            <Download className="w-4 h-4" /> PDF
+          </Button>
+        </div>
       </div>
       <SeriesStandingsTable data={miniData} onOpenMini={setActiveMini} />
       <PublishedRaces seriesId={active.id} classId={classId} clubId={clubId} scoringMode={active.scoring_mode || "one_design"} />
