@@ -1138,6 +1138,17 @@ function NoticeManagementTab({ clubId }) {
       toast.error(e.response?.data?.detail || "Could not save notice area");
     }
   };
+  const edit = async (notice) => {
+    const title = window.prompt("Correct notice title", notice.title || "");
+    if (title === null) return;
+    try {
+      await api.updateNotice(notice.id, { title }, notice.version);
+      toast.success("Notice corrected and versioned");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not edit notice");
+    }
+  };
   const remove = async (notice) => {
     if (!window.confirm(`Remove “${notice.title}” from the Official Notice Board? This cannot be undone.`)) return;
     setBusy(true);
@@ -1169,7 +1180,7 @@ function NoticeManagementTab({ clubId }) {
         return <Accordion type="multiple" defaultValue={ordered} data-testid="notice-area-management-groups">
           {ordered.map((area) => <AccordionItem key={area} value={area} className="rounded-xl border border-border bg-card px-4 mb-3">
             <AccordionTrigger className="font-heading uppercase tracking-tight hover:no-underline" data-testid={`notice-area-group-${area}`}>{area} <span className="ml-2 text-xs font-normal text-muted-foreground">({grouped[area].length})</span></AccordionTrigger>
-            <AccordionContent><div className="space-y-2">{grouped[area].map((notice) => <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"><div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div><Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" disabled={busy} onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button></div>)}</div></AccordionContent>
+            <AccordionContent><div className="space-y-2">{grouped[area].map((notice) => <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"><div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div><Button size="sm" variant="outline" className="gap-1.5" disabled={busy} onClick={() => edit(notice)} data-testid={`edit-notice-${notice.id}`}><Pencil className="w-4 h-4" /> Edit</Button><Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" disabled={busy} onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button></div>)}</div></AccordionContent>
           </AccordionItem>)}
         </Accordion>;
       })()}
@@ -1407,7 +1418,9 @@ export default function Admin() {
     api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
   }, []);
 
-  const clubId = isWebmaster ? clubParam : authClubId;
+  // Club staff already have a scoped club in their session. Webmasters must
+  // choose a club before the console can load club-scoped data.
+  const clubId = isWebmaster ? (clubParam || null) : authClubId;
   const clubName = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.name || null)
     : (authClubName || null);
