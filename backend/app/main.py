@@ -133,6 +133,10 @@ PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "")
 RESET_TOKEN_MINUTES = int(os.environ.get("RESET_TOKEN_MINUTES", "30"))
 RESET_EMAIL_LIMIT = int(os.environ.get("RESET_EMAIL_LIMIT", "5"))
 RESET_EMAIL_WINDOW_SECONDS = 600
+SUBSCRIPTION_MAX_EMAIL_ROWS = 100
+SUBSCRIPTION_VERIFY_MINUTES = int(os.environ.get("SUBSCRIPTION_VERIFY_MINUTES", "60"))
+SUBSCRIPTION_RATE_LIMIT = int(os.environ.get("SUBSCRIPTION_RATE_LIMIT", "5"))
+SUBSCRIPTION_RATE_WINDOW_SECONDS = 600
 
 
 WEAK_JWT_SECRETS = {"change-me-to-a-long-random-string", "changeme", "secret",
@@ -795,8 +799,9 @@ class ClubSettingsInput(BaseModel):
     # Whether this club publishes the formal Official Notice Board. This is
     # independent from race-day notices: a club may use one without the other.
     official_notice_board: bool = True
-    # Custom ONB areas created by the club's Race Admin/Race Officer.
     notice_areas: List[str] = []
+    # Custom ONB areas created by the club's Race Admin/Race Officer.
+    notice_areas: List[str] = Field(default_factory=list)
 
 
 class MiniGroupSettingsInput(BaseModel):
@@ -1687,6 +1692,16 @@ class EmailSettingsInput(BaseModel):
 
 class TestEmailInput(BaseModel):
     to_email: EmailStr
+
+
+class ResultsSubscriptionInput(BaseModel):
+    email: EmailStr
+    subscription_type: Literal["class", "series", "boat"]
+    target_id: str
+
+
+class SubscriptionTokenInput(BaseModel):
+    token: str
 
 
 # ---------------------------------------------------------------------------
@@ -5641,6 +5656,289 @@ async def scheduled_races(request: Request, date: Optional[str] = None, club_id:
     return out
 
 
+# Account-free results subscriptions
+# ---------------------------------------------------------------------------
+# Subscribers are deliberately not users. A subscription is scoped to the
+# target's owning club, and access is granted only by a random emailed token.
+# Token plaintext is never persisted; only SHA-256 digests are stored.
+
+class ResultsSubscriptionInput(BaseModel):
+    email: EmailStr
+    subscription_type: Literal["class", "series", "boat"]
+    target_id: str
+
+
+class SubscriptionTokenInput(BaseModel):
+    token: str
+
+
+def _subscription_token_hash(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _public_web_base() -> str:
+    return (PUBLIC_APP_BASE_URL or APP_BASE_URL or "http://localhost:3000").rstrip("/")
+
+
+def _public_api_base() -> str:
+    return (PUBLIC_API_BASE_URL or "").rstrip("/") or f"{_public_web_base()}/api"
+
+
+def _subscription_rate_limited(email: str, ip: str) -> bool:
+    now = time.time()
+    limited = False
+    for key in (f"subscription-email:{email}", f"subscription-ip:{ip}"):
+        dq = _login_attempts[key]
+        while dq and dq[0] < now - SUBSCRIPTION_RATE_WINDOW_SECONDS:
+            dq.popleft()
+        if len(dq) >= SUBSCRIPTION_RATE_LIMIT:
+            limited = True
+        dq.append(now)
+    return limited
+
+
+async def _subscription_target(subscription_type: str, target_id: str) -> dict:
+    """Resolve a public target and return its immutable club scope + display
+    metadata. A boat subscription uses the boat record id, never its name or
+    sail number, so renaming a boat cannot break it."""
+    if subscription_type == "class":
+        target = await db.classes.find_one({"id": target_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Class not found")
+        club = await db.clubs.find_one({"id": target.get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
+        return {"club_id": target["club_id"], "target_name": target.get("name"),
+                "class_id": target["id"], "class_name": target.get("name"),
+                "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
+    if subscription_type == "series":
+        target = await db.series.find_one({"id": target_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Series not found")
+        cls = await db.classes.find_one({"id": target.get("class_id")}, {"_id": 0, "name": 1, "club_id": 1})
+        club = await db.clubs.find_one({"id": (cls or {}).get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
+        if not cls or not cls.get("club_id"):
+            raise HTTPException(status_code=404, detail="Series not found")
+        return {"club_id": cls["club_id"], "target_name": target.get("name"),
+                "series_id": target["id"], "series_name": target.get("name"),
+                "class_id": target.get("class_id"), "class_name": cls.get("name"),
+                "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
+    if subscription_type == "boat":
+        target = await db.boats.find_one({"id": target_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Boat not found")
+        cls = await db.classes.find_one({"id": target.get("class_id")}, {"_id": 0, "name": 1, "club_id": 1})
+        club = await db.clubs.find_one({"id": (cls or {}).get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
+        if not cls or not cls.get("club_id"):
+            raise HTTPException(status_code=404, detail="Boat not found")
+        return {"club_id": cls["club_id"], "target_name": target.get("name"),
+                "boat_id": target["id"], "boat_name": target.get("name"),
+                "sail_no": target.get("sail_no"), "class_id": target.get("class_id"),
+                "class_name": cls.get("name"), "club_name": (club or {}).get("name"),
+                "club_slug": (club or {}).get("slug")}
+    raise HTTPException(status_code=400, detail="Invalid subscription type")
+
+
+def _subscription_links(manage_token: str, verify_token: Optional[str] = None,
+                        unsubscribe_token: Optional[str] = None) -> dict:
+    manage = f"{_public_web_base()}/subscriptions/manage?token={manage_token}"
+    verify = None
+    if verify_token:
+        verify = f"{_public_web_base()}/subscriptions/verify?token={verify_token}"
+    unsubscribe = f"{_public_api_base()}/subscriptions/unsubscribe?token={unsubscribe_token}" if unsubscribe_token else None
+    return {"manage": manage, "verify": verify, "unsubscribe": unsubscribe}
+
+
+async def _send_subscription_verification(email: str, links: dict, target: dict) -> bool:
+    cfg = await _get_email_settings()
+    if not cfg.get("smtp_host"):
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = f"SailScore — confirm your {target.get('target_name', 'results')} subscription"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = email
+    msg.set_content(
+        "You asked to receive published SailScore results by email.\n\n"
+        f"Subscription: {target.get('target_name', 'results')}\n\n"
+        f"Confirm Subscription: {links['verify']}\n\n"
+        "This link expires in 60 minutes. If you did not request this, ignore this email."
+    )
+    msg.add_alternative(
+        f"<p>You asked to receive published SailScore results by email.</p>"
+        f"<p><strong>Subscription:</strong> {html_lib.escape(str(target.get('target_name', 'results')))}</p>"
+        f"<p><a href=\"{html_lib.escape(links['verify'], quote=True)}\" style=\"background:#0a369d;color:white;padding:12px 18px;text-decoration:none;border-radius:6px\">Confirm Subscription</a></p>"
+        "<p>This link expires in 60 minutes. If you did not request this, ignore this email.</p>",
+        subtype="html")
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
+            s.starttls()
+            if cfg.get("smtp_user"):
+                s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            s.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("SUBSCRIPTION VERIFICATION EMAIL FAILED to=%s error=%s", email, exc)
+        return False
+
+
+@api_router.post("/subscriptions")
+async def create_results_subscription(data: ResultsSubscriptionInput, request: Request):
+    """Start or repeat an account-free subscription. The response is generic
+    so an address cannot be used to enumerate existing subscriptions. In local
+    development without SMTP, the verification token is returned solely to
+    make the flow testable; production never returns it."""
+    email = str(data.email).strip().lower()
+    ip = _client_ip(request)
+    if _subscription_rate_limited(email, ip):
+        raise HTTPException(status_code=429, detail="Too many requests — please try again shortly")
+    target = await _subscription_target(data.subscription_type, data.target_id)
+    existing = await db.subscriptions.find_one({
+        "email_hash": _subscription_token_hash(email), "subscription_type": data.subscription_type,
+        "target_id": data.target_id, "active": True, "unsubscribed_at": None,
+    }, {"_id": 0})
+    if existing:
+        return {"ok": True, "message": "If this subscription is not already active, check your email to confirm it."}
+    unsubscribe_token = secrets.token_urlsafe(32)
+    verify_token = secrets.token_urlsafe(32)
+    existing_email = await db.subscriptions.find_one({"email_hash": _subscription_token_hash(email)}, {"_id": 0, "manage_token_enc": 1})
+    manage_token = (_decrypt_secret(existing_email.get("manage_token_enc", ""))
+                    if existing_email and existing_email.get("manage_token_enc") else None) or secrets.token_urlsafe(32)
+    doc = {
+        "id": new_id(), "email_hash": _subscription_token_hash(email),
+        "email_enc": _encrypt_secret(email),
+        "subscription_type": data.subscription_type, "target_id": data.target_id,
+        "club_id": target["club_id"], "verification_token_hash": _subscription_token_hash(verify_token),
+        "manage_token_hash": _subscription_token_hash(manage_token),
+        "manage_token_enc": _encrypt_secret(manage_token),
+        "unsubscribe_token_hash": _subscription_token_hash(unsubscribe_token),
+        "unsubscribe_token_enc": _encrypt_secret(unsubscribe_token),
+        "verification_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=SUBSCRIPTION_VERIFY_MINUTES)).isoformat(),
+        "verified": False, "verified_at": None, "active": False,
+        "created_at": now_iso(), "unsubscribed_at": None,
+        "target_name": target.get("target_name"),
+    }
+    pending = await db.subscriptions.find_one({
+        "email_hash": doc["email_hash"], "subscription_type": doc["subscription_type"],
+        "target_id": doc["target_id"], "active": False,
+        "verified": False, "unsubscribed_at": None,
+    })
+    if pending:
+        # A repeated click before confirmation rotates the one-time verify token
+        # on the same pending record without erasing an active/unsubscribed
+        # history row.
+        doc["id"] = pending["id"]
+    await db.subscriptions.update_one(
+        {"id": doc["id"]} if pending else {"email_hash": doc["email_hash"], "subscription_type": doc["subscription_type"], "target_id": doc["target_id"], "active": False, "verified": False, "unsubscribed_at": None},
+        {"$set": doc}, upsert=True)
+    links = _subscription_links(manage_token, verify_token, unsubscribe_token)
+    sent = await _send_subscription_verification(email, links, target)
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_REQUESTED",
+                     description=f"Results subscription requested for {data.subscription_type} target {data.target_id}",
+                     resource_type="subscription", resource_id=doc["id"], club_id=target["club_id"])
+    response = {"ok": True, "message": "Check your email — we sent a confirmation link. Click Confirm Subscription to activate it."}
+    if not sent and APP_ENV != "production":
+        response["verification_token"] = verify_token
+        response["manage_token"] = manage_token
+        response["message"] = "SMTP is not configured in development. Use the returned verification token to confirm this subscription."
+    return response
+
+
+async def _activate_subscription(token: str) -> dict:
+    sub = await db.subscriptions.find_one({"verification_token_hash": _subscription_token_hash(token), "active": False}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="This confirmation link is invalid or has already been used")
+    try:
+        expires = datetime.fromisoformat(sub.get("verification_expires_at", ""))
+    except (TypeError, ValueError):
+        expires = datetime.min.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="This confirmation link has expired")
+    verified_at = now_iso()
+    result = await db.subscriptions.update_one({"id": sub["id"], "active": False}, {"$set": {
+        "verified": True, "verified_at": verified_at, "active": True,
+        "verification_token_hash": None, "verification_expires_at": None,
+    }})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="This confirmation link has already been used")
+    return await db.subscriptions.find_one({"id": sub["id"]}, {"_id": 0})
+
+
+@api_router.get("/subscriptions/verify")
+async def verify_results_subscription(token: str):
+    sub = await _activate_subscription(token)
+    await _log_audit(request=None, user=None, action="RESULTS_SUBSCRIPTION_VERIFIED",
+                     description=f"Verified {sub.get('subscription_type')} subscription", resource_type="subscription", resource_id=sub["id"], club_id=sub.get("club_id"))
+    return HTMLResponse("<main style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:24px;text-align:center'><h1>Subscription confirmed ✓</h1><p>You'll now receive published results by email.</p><a href='" + html_lib.escape(_public_web_base()) + "'>Return to SailScore</a></main>")
+
+
+def _subscription_public(sub: dict) -> dict:
+    return {"id": sub["id"], "subscription_type": sub.get("subscription_type"),
+            "target_id": sub.get("target_id"), "target_name": sub.get("target_name"),
+            "club_id": sub.get("club_id"), "verified_at": sub.get("verified_at"),
+            "created_at": sub.get("created_at")}
+
+
+@api_router.get("/subscriptions/manage")
+async def manage_results_subscriptions(token: str):
+    token_hash = _subscription_token_hash(token)
+    subs = await db.subscriptions.find({"manage_token_hash": token_hash, "active": True}, {"_id": 0}).sort("created_at", -1).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    return {"subscriptions": [_subscription_public(s) for s in subs], "token_valid": bool(subs)}
+
+
+async def _unsubscribe_one_by_token(token: str, request: Request):
+    token_hash = _subscription_token_hash(token)
+    sub = await db.subscriptions.find_one({"unsubscribe_token_hash": token_hash, "active": True}, {"_id": 0})
+    # Backward-compatible handling for rows created during the first draft of
+    # this feature: their manage token was also the one-click token.
+    if not sub:
+        sub = await db.subscriptions.find_one({"manage_token_hash": token_hash, "active": True}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription link not found or already unsubscribed")
+    result = await db.subscriptions.update_one({"id": sub["id"], "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
+    if result.modified_count:
+        await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED", description="Removed one results subscription", resource_type="subscription", resource_id=sub["id"], club_id=sub.get("club_id"))
+    return sub
+
+
+@api_router.get("/subscriptions/unsubscribe")
+async def unsubscribe_results_link(token: str, request: Request):
+    """One-click browser unsubscribe from the specific subscription represented
+    by the secure manage token in an email."""
+    sub = await _unsubscribe_one_by_token(token, request)
+    return HTMLResponse("<main style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:24px;text-align:center'><h1>You have been unsubscribed from these results emails.</h1><p>Other subscriptions for this email address remain active.</p><a href='" + html_lib.escape(_public_web_base() + "/subscriptions/manage?token=" + token, quote=True) + "'>Manage my subscriptions</a></main>")
+
+
+@api_router.post("/subscriptions/unsubscribe")
+async def unsubscribe_results(data: SubscriptionTokenInput, request: Request):
+    await _unsubscribe_one_by_token(data.token, request)
+    return {"ok": True, "message": "You have been unsubscribed from these results emails."}
+
+
+@api_router.post("/subscriptions/unsubscribe-all")
+async def unsubscribe_all_results(data: SubscriptionTokenInput, request: Request):
+    token_hash = _subscription_token_hash(data.token)
+    subs = await db.subscriptions.find({"manage_token_hash": token_hash, "active": True}, {"_id": 0, "id": 1, "club_id": 1}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    if not subs:
+        raise HTTPException(status_code=404, detail="Subscription link not found or already unsubscribed")
+    ids = [s["id"] for s in subs]
+    await db.subscriptions.update_many({"id": {"$in": ids}, "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED_ALL", description="Removed all results subscriptions", resource_type="subscription", resource_id=ids[0], club_id=subs[0].get("club_id"))
+    return {"ok": True, "message": "You have been unsubscribed from all Sailscore results emails."}
+
+
+@api_router.delete("/subscriptions/{subscription_id}")
+async def delete_results_subscription(subscription_id: str, token: str, request: Request):
+    token_hash = _subscription_token_hash(token)
+    sub = await db.subscriptions.find_one({"id": subscription_id, "manage_token_hash": token_hash, "active": True}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    await db.subscriptions.update_one({"id": subscription_id, "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_REMOVED", description="Removed one results subscription", resource_type="subscription", resource_id=subscription_id, club_id=sub.get("club_id"))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Results notification rendering and delivery
+# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # Official Notice Board (ONB)
 # ---------------------------------------------------------------------------
@@ -6200,6 +6498,7 @@ async def notices_meta(user: dict = Depends(require_officer)):
 async def list_notices(request: Request, club_id: Optional[str] = None,
                        status: Optional[str] = None, notice_type: Optional[str] = None,
                        race_id: Optional[str] = None, root_id: Optional[str] = None,
+                       publication_area: Optional[str] = None,
                        limit: int = 200):
     """Public ONB: only published (and withdrawn, marked as such) notices for a
     club, the latest version of each notice — superseded versions are never
@@ -6225,6 +6524,8 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
         q["board_id"] = request.query_params.get("board_id")
     if notice_type:
         q["notice_type"] = notice_type
+    if publication_area:
+        q["publication_area"] = publication_area
     if race_id:
         q["race_id"] = race_id
     if root_id and staff_view:

@@ -153,6 +153,13 @@ export const api = {
   getEmailSettings: () => client.get("/admin/email-settings").then((r) => r.data),
   updateEmailSettings: (d) => client.put("/admin/email-settings", d).then((r) => r.data),
   testEmail: (to_email) => client.post("/admin/email-settings/test", { to_email }).then((r) => r.data),
+  subscribeResults: (email, subscription_type, target_id) => client.post("/subscriptions", { email, subscription_type, target_id }).then((r) => r.data),
+  verifyResultsSubscription: (token) => client.get("/subscriptions/verify", { params: { token } }).then((r) => r.data),
+  getSubscriptionManagement: (token) => client.get("/subscriptions/manage", { params: { token } }).then((r) => r.data),
+  unsubscribeResults: (token) => client.post("/subscriptions/unsubscribe", { token }).then((r) => r.data),
+  unsubscribeResultsLink: (token) => client.get("/subscriptions/unsubscribe", { params: { token } }).then((r) => r.data),
+  unsubscribeAllResults: (token) => client.post("/subscriptions/unsubscribe-all", { token }).then((r) => r.data),
+  removeResultSubscription: (id, token) => client.delete(`/subscriptions/${id}`, { params: { token } }).then((r) => r.data),
 
   // ------------------------------------------------------------------
   // Official Notice Board. Both publication methods (Sailscore-generated
