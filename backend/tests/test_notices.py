@@ -487,3 +487,21 @@ def test_publishing_notice_issues_pdf_to_subscribers(club_officer_token, test_cl
     delivery = r.json().get("notification_delivery")
     assert delivery and delivery["matched"] >= 1, r.text
     assert delivery["sent"] == 0 or delivery["sent"] >= 1  # best-effort: 0 when SMTP unset
+
+
+def test_public_onb_orders_by_notice_number(club_officer_token):
+    """The public ONB lists notices by notice number (smallest first), NOT by
+    the order they were issued/published — publication order can shift when a
+    notice is revised, but the number it was issued with is stable."""
+    n1 = make_notice(club_officer_token, title="Order No. 1", notice_number=1).json()
+    n3 = make_notice(club_officer_token, title="Order No. 3", notice_number=3).json()
+    n2 = make_notice(club_officer_token, title="Order No. 2", notice_number=2).json()
+    # Publish them out of numerical order (3, 1, 2) to prove the sort.
+    for n in (n3, n1, n2):
+        assert requests.post(f"{API}/notices/{n['id']}/publish",
+                             json={}, headers=h(club_officer_token)).status_code == 200
+    rows = requests.get(f"{API}/notices",
+                        params={"club_id": n1["club_id"]}).json()
+    mine = [r for r in rows if r["id"] in {n1["id"], n2["id"], n3["id"]}]
+    assert [r["notice_number"] for r in mine] == [1, 2, 3]
+    assert [r["id"] for r in mine] == [n1["id"], n2["id"], n3["id"]]

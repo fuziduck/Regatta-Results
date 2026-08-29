@@ -219,6 +219,10 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
     const ia = HEADING_ORDER.indexOf(a); const ib = HEADING_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
   });
+  // Within each heading the notices are ordered by notice number, smallest
+  // first (a number is stable across revisions, unlike publication time).
+  const byNoticeNumber = (a, b) => Number(a.notice_number ?? Infinity) - Number(b.notice_number ?? Infinity)
+    || ((a.published_at || "").localeCompare(b.published_at || ""));
 
   return (
     <section className={embedded ? "" : "min-h-screen bg-background py-10"} data-testid="official-notice-board">
@@ -233,7 +237,7 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
               {heading}
             </h3>
             <Accordion type="single" collapsible value={openId} onValueChange={(v) => setOpenId(v || null)}>
-              {(groups.get(heading) || []).map((n) => (
+              {(groups.get(heading) || []).slice().sort(byNoticeNumber).map((n) => (
                 <NoticeCard key={n.id} notice={n} open={openId === n.id} />
               ))}
             </Accordion>

@@ -6827,7 +6827,11 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
         if root not in latest or int(d.get("version") or 1) > int(latest[root].get("version") or 1):
             latest[root] = d
     out = [d for d in latest.values() if d["status"] in ("published", "withdrawn")]
-    out.sort(key=lambda d: (d.get("published_at") or d.get("created_at") or ""))
+    # The ONB is ordered by notice number (smallest first), NOT by issue or
+    # publication time — publication order can change when a notice is revised,
+    # but the number it was issued with is stable across versions.
+    out.sort(key=lambda d: (d.get("notice_number") is None, d.get("notice_number") or 0,
+                            d.get("published_at") or d.get("created_at") or "", d.get("id") or ""))
     return [_notice_summary(d) for d in out]
 
 
