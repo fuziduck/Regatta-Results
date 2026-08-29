@@ -58,6 +58,10 @@ let container;
 let root;
 
 beforeEach(() => {
+  if (typeof URL.createObjectURL !== "function") {
+    URL.createObjectURL = jest.fn(() => "blob:placeholder");
+    URL.revokeObjectURL = jest.fn();
+  }
   mockApi.noticeMeta.mockResolvedValue({
     types: [
       {
@@ -139,5 +143,38 @@ describe("NoticeWizard — publication/effective date-time defaults", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(input.value).toBe("2026-09-01T09:30");
+  });
+});
+
+describe("NoticeWizard — uploaded flow", () => {
+  it("skips the broken PDF preview step and goes straight to publish confirmation", async () => {
+    mockApi.uploadNotice.mockResolvedValue({ id: "n1", version: 1 });
+    await reachDetailsStep();
+    // Choose the official PDF so the draft can be created on leaving Details.
+    const file = new File(["%PDF-1.4 test"], "notice.pdf", { type: "application/pdf" });
+    act(() => {
+      const input = document.getElementById("upload-new-notice-file");
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // Create the draft and move to Attachments.
+    await act(async () => {
+      container.querySelector('[data-testid="details-next"]').click();
+    });
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="step-attachments"]')).not.toBeNull();
+    // Continuing from Attachments must skip Preview and land on Publish confirm.
+    await act(async () => {
+      container.querySelector('[data-testid="attachments-next"]').click();
+    });
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="step-preview"]')).toBeNull();
+    expect(container.querySelector('[data-testid="step-publish"]')).not.toBeNull();
+    // Back from Publish returns to Attachments (also skipping Preview).
+    await act(async () => {
+      container.querySelector('[data-testid="step-publish"] button').click();
+    });
+    expect(container.querySelector('[data-testid="step-attachments"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="step-preview"]')).toBeNull();
   });
 });

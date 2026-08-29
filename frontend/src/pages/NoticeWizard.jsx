@@ -194,9 +194,12 @@ export default function NoticeWizard({ onDone }) {
         return;
       }
     }
-    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+    // Uploaded notices skip the Preview step: its browser PDF preview from an
+    // object URL does not render (and the document is already shown on the
+    // details step), so jump straight to the publish confirmation.
+    setStep((s) => Math.min(s === 3 && method === "uploaded" ? 5 : s + 1, STEPS.length - 1));
   };
-  const goBack = () => setStep((s) => Math.max(s - 1, 0));
+  const goBack = () => setStep((s) => Math.max(s === 5 && method === "uploaded" ? 3 : s - 1, 0));
 
   // ---- Step 1: type selection -------------------------------------------------
   const typeCards = (meta?.types || []).map((t) => ({
@@ -637,8 +640,9 @@ export default function NoticeWizard({ onDone }) {
           </section>
         )}
 
-        {/* STEP 5 — Preview */}
-        {step === 4 && (
+        {/* STEP 5 — Preview (generated notices only; uploaded submissions skip
+            this step because the PDF preview does not load from the blob) */}
+        {step === 4 && method !== "uploaded" && (
           <section data-testid="step-preview">
             <h2 className="text-lg uppercase tracking-tight mb-1">Preview</h2>
             <p className="text-muted-foreground text-sm mb-5">This is exactly what competitors will see on the Official Notice Board.</p>
