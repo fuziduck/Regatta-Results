@@ -69,7 +69,7 @@ export default function Login() {
   // One form for everyone: typing the webmaster username switches the club
   // picker off and routes the sign-in to the webmaster account. `role` sent to
   // the server is only a routing hint — the account's own role is authoritative.
-  const isWebmaster = username.trim().toLowerCase() === "webmaster";
+  const isWebmaster = username.trim().toLowerCase() === "webmaster" || username.trim().toLowerCase() === "webmaster@sailscore.co.uk";
   const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
