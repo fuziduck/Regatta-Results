@@ -410,7 +410,17 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
   const startRef = startRefMs(race);
-  const racing = race.results.filter((r) => r.code !== "DNC");
+  const elapsed = startRef ? now - startRef : null;
+  // The race clock: before the start it counts down (negative, "To start");
+  // once the start has passed it counts up (positive, "Elapsed").
+  // When the series has an explicit membership list (officer/admin managed
+  // via "Series boats"), only member boats belong to it. Boats not signed on
+  // for the series are hidden from the race-day boat list and can't be
+  // selected or scored here — they're excluded from the series standings too.
+  const memberSet = (series && Array.isArray(series.member_boat_ids) && series.member_boat_ids.length)
+    ? new Set(series.member_boat_ids) : null;
+  const visibleResults = memberSet ? race.results.filter((r) => memberSet.has(r.boat_id)) : race.results;
+  const racing = visibleResults.filter((r) => r.code !== "DNC");
   const orderBoatIds = (list) => {
     if (boatOrder === "alpha") {
       return [...list].sort((a, b) => (boats[a.boat_id]?.name || "").localeCompare(boats[b.boat_id]?.name || "", undefined, { numeric: true, sensitivity: "base" }));
@@ -427,7 +437,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     return [...list].sort((a, b) => idx(a.boat_id) - idx(b.boat_id));
   };
   const toFinish = orderBoatIds(racing.filter((r) => r.code === "DNS"));
-  const finished = race.results.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
+  const finished = visibleResults.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
   // Big fleets (say a dozen or more boats still racing) get a compact layout:
   // more columns and smaller name/sail text so every boat is visible on one
   // screen instead of overflowing a huge wall of buttons.
@@ -462,7 +472,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   };
   // Championship regattas: one tap puts every boat on the race as racing.
   const selectAll = () => {
-    const all = race.results.map((r) => r.boat_id);
+    const all = visibleResults.map((r) => r.boat_id);
     return runMutation(() => api.selectBoats(raceId, all, version), `${all.length} boats selected as racing`);
   };
   const clearAll = () =>
@@ -591,9 +601,8 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
               </div>
               <div className="w-px h-10 bg-white/20" />
               <div className="text-center">
-                <div className="text-[10px] uppercase tracking-widest text-white/60">{race.actual_start ? "Race time" : "To start"}</div>
+                <div className="text-[10px] uppercase tracking-widest text-white/60">{elapsed == null ? "To start" : elapsed >= 0 ? "Elapsed" : "To start"}</div>
                 {(() => {
-                  const elapsed = startRef ? now - startRef : null;
                   if (elapsed == null) {
                     return <div className="font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none text-white/40 mt-1">--:--</div>;
                   }
@@ -640,7 +649,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
           <p className="text-sm text-muted-foreground mb-3">Tap to include. Unselected boats score <strong>DNC</strong>.</p>
           <div className="flex flex-wrap gap-2" data-testid="boat-select-list">
             {!boatsReady && <p className="text-sm text-muted-foreground">Loading boats…</p>}
-            {boatsReady && orderBoatIds(race.results).map((r) => {
+            {boatsReady && orderBoatIds(visibleResults).map((r) => {
               const b = boats[r.boat_id] || {};
               const isRacing = r.code !== "DNC";
               return (
@@ -1807,7 +1816,14 @@ export default function Officer() {
   const dayUnpublished = dayCreated.filter((i) => i.status !== "published");
 
   const active = races.filter((r) => r.status !== "published");
-  const done = races.filter((r) => r.status === "published");
+  // Published results whose series is locked (or archived) are frozen — they're
+  // served from the season snapshot and can't be recalled or amended here — so
+  // keep them out of the Officer page's Published section.
+  const done = races.filter((r) => {
+    if (r.status !== "published") return false;
+    const ls = series[r.series_id]?.lock_status;
+    return ls !== "locked" && ls !== "archived";
+  });
   const sortedDone = [...done].sort((a, b) => {
     const ka = `${a.date || ""}|${String(a.race_number || 0).padStart(4, "0")}`;
     const kb = `${b.date || ""}|${String(b.race_number || 0).padStart(4, "0")}`;
