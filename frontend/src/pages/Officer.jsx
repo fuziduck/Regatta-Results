@@ -1899,7 +1899,7 @@ export default function Officer() {
           </div>
           <div className="flex flex-col sm:flex-row gap-2">
             <Button className="gap-2 bg-ocean hover:bg-ocean-dark" data-testid="new-notice-btn"
-              onClick={() => navigate(`/notice/new${selected ? `?race=${selected}` : ""}`)}>
+              onClick={() => navigate(`/notice/new?club=${clubId}${selected ? `&race=${selected}` : ""}`)}>
               <FileText className="w-4 h-4" /> New Notice
             </Button>
             <NewRaceDialog onCreated={(r) => { loadRaces(); setSelected(r.id); }} onSplitDone={handleSplitDone} clubId={clubId} />

@@ -74,6 +74,10 @@ export default function NoticeWizard({ onDone }) {
   const { role, clubId, clubName } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  // When the webmaster opens the wizard from a specific club's console
+  // (Officer/Admin via ?club=), the target club is already fixed — no club
+  // picker, and notices go straight to that club.
+  const clubParam = searchParams.get("club");
 
   // Step state
   const [step, setStep] = useState(0);
@@ -112,7 +116,7 @@ export default function NoticeWizard({ onDone }) {
   const [races, setRaces] = useState([]);
   const [series, setSeries] = useState([]);
   const [clubs, setClubs] = useState([]);
-  const [selectedClubId, setSelectedClubId] = useState(clubId || "");
+  const [selectedClubId, setSelectedClubId] = useState(clubId || clubParam || "");
   useEffect(() => { if (clubId && !selectedClubId) setSelectedClubId(clubId); }, [clubId, selectedClubId]);
   const [classes, setClasses] = useState([]);
   const [linkOptionsLoading, setLinkOptionsLoading] = useState(false);
@@ -129,9 +133,10 @@ export default function NoticeWizard({ onDone }) {
     if (role === "webmaster") api.getClubs().then((cs) => {
       setClubs(cs || []);
       // The webmaster has no club of their own — default to the first club
-      // so posting to the ONB never fails for a missing club id. The choice
-      // stays editable on the details step.
-      if (!selectedClubId && (cs || []).length) setSelectedClubId(cs[0].id);
+      // (unless the console already fixed one via ?club=) so posting to the
+      // ONB never fails for a missing club id. The choice stays editable on
+      // the details step when no club was pre-chosen.
+      if (!selectedClubId && !clubParam && (cs || []).length) setSelectedClubId(cs[0].id);
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
@@ -554,7 +559,12 @@ export default function NoticeWizard({ onDone }) {
         {step === 2 && (
           <section data-testid="step-details">
             <h2 className="text-lg uppercase tracking-tight mb-1">Notice details — {activeType?.label}</h2>
-            {role === "webmaster" && (
+            {role === "webmaster" && (clubParam ? (
+              // Entered from a specific club's console: the club is fixed.
+              <div className="mt-3 mb-4 rounded-lg border border-ocean/20 bg-ocean/5 px-3 py-2 text-xs text-ocean" data-testid="fixed-club-note">
+                Posting to <span className="font-semibold">{clubs.find((c) => c.id === clubParam)?.name || "this club"}</span> — opened from its console.
+              </div>
+            ) : (
               <div className="space-y-1.5 mt-3 mb-4">
                 <Label>Club</Label>
                 <Select value={selectedClubId || undefined} onValueChange={(v) => { setSelectedClubId(v); setClasses([]); setSeries([]); setRaces([]); setFields((p) => ({ ...p, series_id: "", race_id: "", class_id: "" })); }}>
@@ -562,7 +572,7 @@ export default function NoticeWizard({ onDone }) {
                   <SelectContent>{clubs.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
-            )}
+            ))}
             <div className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 space-y-2" data-testid="publication-area-selector">
               <Label className="font-heading uppercase text-sm">Where should this notice appear?</Label>
               <p className="text-xs text-muted-foreground">Choose the club-wide board or the open event notices section.</p>

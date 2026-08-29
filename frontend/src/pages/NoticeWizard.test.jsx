@@ -4,9 +4,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
+let mockSearchParams = new URLSearchParams();
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
-  useSearchParams: () => [new URLSearchParams()],
+  useSearchParams: () => [mockSearchParams],
 }));
 // The webmaster variant (role: webmaster, no club) needs to flip the auth
 // holder per test, so useAuth reads it at call time (same pattern as Login.test).
@@ -68,6 +69,7 @@ let container;
 let root;
 
 beforeEach(() => {
+  mockSearchParams = new URLSearchParams();
   if (typeof URL.createObjectURL !== "function") {
     URL.createObjectURL = jest.fn(() => "blob:placeholder");
     URL.revokeObjectURL = jest.fn();
@@ -278,5 +280,34 @@ describe("NoticeWizard — webmaster club selection", () => {
     });
     await act(async () => {});
     expect(mockApi.createNotice).toHaveBeenCalledWith(expect.objectContaining({ club_id: "c1" }));
+  });
+
+  it("uses the club fixed by the console (?club=) and hides the picker", async () => {
+    mockAuth.role = "webmaster";
+    mockAuth.clubId = null;
+    mockSearchParams = new URLSearchParams("club=c2");
+    mockApi.getClubs.mockResolvedValue([
+      { id: "c1", name: "Medway Yacht Club" },
+      { id: "c2", name: "Bough Beech Sailing Club" },
+    ]);
+    mockApi.createNotice.mockResolvedValue({ id: "n1", version: 1 });
+    renderWizard();
+    await act(async () => {});
+    await act(async () => {
+      container.querySelector('[data-testid="type-notice_to_competitors"]').click();
+      container.querySelector('[data-testid="type-next"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="method-next"]').click();
+    });
+    await act(async () => {});
+    // No club picker — the console already fixed the target club.
+    expect(container.querySelector('[data-testid="field-club"]')).toBeNull();
+    expect(container.querySelector('[data-testid="fixed-club-note"]').textContent).toContain("Bough Beech Sailing Club");
+    await act(async () => {
+      container.querySelector('[data-testid="details-next"]').click();
+    });
+    await act(async () => {});
+    expect(mockApi.createNotice).toHaveBeenCalledWith(expect.objectContaining({ club_id: "c2" }));
   });
 });

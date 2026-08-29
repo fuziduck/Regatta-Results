@@ -1176,7 +1176,7 @@ function NoticeManagementTab({ clubId }) {
     <section className="space-y-3" data-testid="notice-management">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-2xl uppercase tracking-tighter">Official Notice Board</h2><p className="text-sm text-muted-foreground">Create, view and remove notices from this club’s public ONB.</p></div>
-        <Button className="gap-1.5" onClick={() => navigate('/notice/new')} data-testid="create-notice-btn"><FileText className="w-4 h-4" /> New Notice</Button>
+        <Button className="gap-1.5" onClick={() => navigate(`/notice/new?club=${clubId}`)} data-testid="create-notice-btn"><FileText className="w-4 h-4" /> New Notice</Button>
       </div>
       <div className="rounded-xl border border-border bg-card p-4 space-y-3" data-testid="notice-area-manager">
         <div><h3 className="font-heading uppercase">Notice areas</h3><p className="text-xs text-muted-foreground">Create additional areas for this club’s ONB. Race Admins and Race Officers can choose them when posting.</p></div>
