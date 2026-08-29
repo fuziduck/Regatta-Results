@@ -7076,9 +7076,8 @@ async def update_notice(notice_id: str, data: NoticeUpdateInput,
         # the original remains available in history and is never overwritten.
         if notice.get("status") not in ("published", "withdrawn"):
             raise HTTPException(status_code=409, detail="This notice cannot be edited in its current state")
-        created = await create_notice_version(notice_id, request=None, user=user)
-        notice_id = created["id"]
-        notice = await db.notices.find_one({"id": notice_id}, {"_id": 0})
+        notice = await _spawn_notice_version(notice, user)
+        notice_id = notice["id"]
     expected = _expected_version(data)
     tdef = NOTICE_TYPES_BY_KEY[notice["notice_type"]]
     updates = {"modified_at": now_iso(), "modified_by": user.get("username")}
@@ -7482,20 +7481,16 @@ async def withdraw_notice(notice_id: str, data: NoticeWithdrawInput,
     return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
 
 
-@api_router.post("/notices/{notice_id}/new-version")
-async def new_notice_version(notice_id: str, user: dict = Depends(require_officer)):
-    """Amend a published notice: create the next version as a DRAFT that
-    supersedes this one (spec 49). The current published version remains live
-    and untouched until the new version is published. Uploaded documents are
-    NOT copied — the corrected document is explicitly attached to the new
-    version (PUT /notices/{id}/file), so an official document is never
-    silently replaced."""
-    notice = await _notice_of_club(notice_id, user)
-    if notice.get("status") != "published":
-        raise HTTPException(status_code=409,
-                            detail="Only published notices can be amended — edit the draft or withdraw it instead")
+async def _spawn_notice_version(notice: dict, user: dict) -> dict:
+    """Create the next version of a notice as a DRAFT that supersedes the given
+    one (spec 49): corrections are made on the new version while the original
+    stays live and unrewritten. The uploaded document is deliberately NOT
+    carried over — the corrected official document is attached to the new
+    version. Used by both the explicit amend endpoint and the admin title-edit
+    flow. Returns the full new draft document."""
     club = await db.clubs.find_one({"id": notice["club_id"]}, {"_id": 0, "slug": 1})
     new_id_v = new_id()
+    root_id = notice.get("root_id") or notice["id"]
     doc = {
         "id": new_id_v, "club_id": notice["club_id"],
         "notice_type": notice["notice_type"], "notice_type_label": notice["notice_type_label"],
@@ -7503,8 +7498,8 @@ async def new_notice_version(notice_id: str, user: dict = Depends(require_office
         "notice_number": notice["notice_number"],
         "content_type": notice["content_type"], "creation_method": notice["creation_method"],
         "status": "draft", "version": int(notice.get("version") or 1),
-        "root_id": notice.get("root_id") or notice_id,
-        "supersedes_id": notice_id, "superseded_by": None,
+        "root_id": root_id,
+        "supersedes_id": notice["id"], "superseded_by": None,
         "fields": dict(notice.get("fields") or {}),
         "body": list(notice.get("body") or []),
         "published_at": None, "published_by": None,
@@ -7534,7 +7529,22 @@ async def new_notice_version(notice_id: str, user: dict = Depends(require_office
     await _log_audit(request=None, user=user, action="NOTICE_NEW_VERSION",
                      description=f"Started amendment (v{doc['version']}) of '{notice.get('title')}'",
                      resource_type="notice", resource_id=new_id_v, club_id=notice.get("club_id"))
-    return _notice_summary(doc)
+    return doc
+
+
+@api_router.post("/notices/{notice_id}/new-version")
+async def new_notice_version(notice_id: str, user: dict = Depends(require_officer)):
+    """Amend a published notice: create the next version as a DRAFT that
+    supersedes this one (spec 49). The current published version remains live
+    and untouched until the new version is published. Uploaded documents are
+    NOT copied — the corrected document is explicitly attached to the new
+    version (PUT /notices/{id}/file), so an official document is never
+    silently replaced."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "published":
+        raise HTTPException(status_code=409,
+                            detail="Only published notices can be amended — edit the draft or withdraw it instead")
+    return _notice_summary(await _spawn_notice_version(notice, user))
 
 
 @api_router.delete("/notices/{notice_id}")

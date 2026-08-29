@@ -238,11 +238,23 @@ def test_edit_then_publish_generated(club_officer_token, test_club):
     assert detail["pdf_data_url"] == MINIMAL_PDF_URL
     pub_list = requests.get(f"{API}/notices", params={"club_id": test_club["id"]}).json()
     assert any(x["id"] == n["id"] for x in pub_list)
-    # A published notice cannot be edited or deleted — only amended/withdrawn.
-    assert requests.put(f"{API}/notices/{n['id']}", json={"title": "nope"},
-                        headers=h(club_officer_token)).status_code == 409
+    # Corrrecting a published notice is done through a NEW version: the PUT
+    # spawns a DRAFT that supersedes it with the corrected title, while the
+    # published original is left untouched. Deleting a published notice is
+    # always refused.
+    corr = requests.put(f"{API}/notices/{n['id']}", json={"title": "Corrected title",
+                                                          "expected_version": pub["version"]},
+                        headers=h(club_officer_token))
+    assert corr.status_code == 200, corr.text
+    assert corr.json()["status"] == "draft"
+    assert corr.json()["title"] == "Corrected title"
+    assert corr.json()["supersedes_id"] == n["id"]
+    original = requests.get(f"{API}/notices/{n['id']}").json()
+    assert original["status"] == "published" and original["title"] == "Edited title"
+    # Removing a notice stays a separate audited action (allowed even for
+    # published ones), not an edit of the live document.
     assert requests.delete(f"{API}/notices/{n['id']}",
-                           headers=h(club_officer_token)).status_code == 409
+                           headers=h(club_officer_token)).status_code == 200
 
 
 def test_publish_rejects_fake_pdf(club_officer_token):
