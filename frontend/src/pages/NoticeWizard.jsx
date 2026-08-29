@@ -84,6 +84,8 @@ export default function NoticeWizard({ onDone }) {
   const [noticeId, setNoticeId] = useState(null);
   const [draftVersion, setDraftVersion] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
+  const uploadPreviewUrl = useMemo(() => uploadFile ? URL.createObjectURL(uploadFile) : null, [uploadFile]);
+  useEffect(() => () => { if (uploadPreviewUrl) URL.revokeObjectURL(uploadPreviewUrl); }, [uploadPreviewUrl]);
 
   const [meta, setMeta] = useState(null);
   const [ctx, setCtx] = useState(null);
@@ -362,6 +364,10 @@ export default function NoticeWizard({ onDone }) {
 
   // ---- Discard / cancel -------------------------------------------------------
   const discard = async () => {
+    if (uploadPreviewUrl) URL.revokeObjectURL(uploadPreviewUrl);
+    setUploadFile(null);
+    setAttachments([]);
+    setFields({});
     if (noticeId) {
       try {
         await api.deleteNotice(noticeId);
@@ -656,14 +662,16 @@ export default function NoticeWizard({ onDone }) {
                 <div className="mt-4" data-testid="uploaded-preview">
                   {uploadFile ? (
                     <div className="rounded-lg border border-border overflow-hidden">
-                      <object data={URL.createObjectURL(uploadFile)} type={uploadFile.type} className="w-full h-[50vh]" data-testid="uploaded-file-preview">
-                        <p className="p-4 text-sm text-muted-foreground text-center">Preview unavailable — use Open / Download after publishing.</p>
-                      </object>
+                      {uploadFile.type === "application/pdf" ? (
+                        <iframe src={uploadPreviewUrl} title="Uploaded notice PDF preview" className="w-full h-[50vh] border-0" data-testid="uploaded-file-preview" />
+                      ) : (
+                        <img src={uploadPreviewUrl} alt={uploadFile.name} className="w-full max-h-[50vh] object-contain" data-testid="uploaded-file-preview" />
+                      )}
                       <div className="flex flex-wrap gap-2 px-3 py-2 bg-muted/50">
                         <Button variant="outline" size="sm" className="gap-1.5" asChild>
-                          <a href={URL.createObjectURL(uploadFile)} target="_blank" rel="noopener noreferrer"><ExternalLink className="w-3.5 h-3.5" /> Open</a>
+                          <a href={uploadPreviewUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="w-3.5 h-3.5" /> Open</a>
                         </Button>
-                        <Button variant="outline" size="sm" className="gap-1.5"><Download className="w-3.5 h-3.5" /> Download</Button>
+                        <Button variant="outline" size="sm" className="gap-1.5" asChild><a href={uploadPreviewUrl} download={uploadFile.name}><Download className="w-3.5 h-3.5" /> Download</a></Button>
                       </div>
                     </div>
                   ) : (

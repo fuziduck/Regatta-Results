@@ -89,10 +89,6 @@ function UploadedDocument({ notice }) {
     }
     setOpen(true);
   };
-  const openTab = async () => {
-    const f = await getDoc();
-    if (f) window.open(f.file_data_url, "_blank", "noopener");
-  };
   const download = async () => {
     const f = await getDoc();
     if (!f?.file_data_url) {
