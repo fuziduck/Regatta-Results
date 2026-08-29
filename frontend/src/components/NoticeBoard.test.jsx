@@ -6,6 +6,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
+let mockSearchParams;
+jest.mock("react-router-dom", () => ({
+  useSearchParams: () => [mockSearchParams || new URLSearchParams(), jest.fn()],
+}));
 jest.mock("@/lib/api", () => {
   const api = { getNotices: jest.fn(), getNotice: jest.fn(), getNoticeAreas: jest.fn() };
   return { api, formatApiError: (d) => d || "error" };
@@ -13,6 +17,22 @@ jest.mock("@/lib/api", () => {
 jest.mock("@/components/ui/accordion", () => {
   const Pass = ({ children }) => <div>{children}</div>;
   return { Accordion: Pass, AccordionItem: Pass, AccordionTrigger: Pass, AccordionContent: Pass };
+});
+// Radix Tabs does not activate triggers through synthetic jsdom events, so
+// mock the trio faithfully: clicking a trigger calls the parent onValueChange
+// with its value (the same contract the real component implements).
+jest.mock("@/components/ui/tabs", () => {
+  const React = require("react");
+  const Ctx = React.createContext(null);
+  const Tabs = ({ value, onValueChange, children }) => (
+    <Ctx.Provider value={{ value, onValueChange }}><div data-value={value}>{children}</div></Ctx.Provider>
+  );
+  const TabsList = ({ children }) => <div>{children}</div>;
+  const TabsTrigger = ({ value, children, ...props }) => {
+    const ctx = React.useContext(Ctx);
+    return <button type="button" {...props} onClick={() => ctx.onValueChange(value)}>{children}</button>;
+  };
+  return { Tabs, TabsList, TabsTrigger };
 });
 jest.mock("@/components/NoticeBody", () => ({
   NoticeBodyView: () => null,
@@ -121,6 +141,76 @@ it("renders a link notice with a Visit website button", async () => {
   expect(link.getAttribute("href")).toBe("https://example.com/sailing-results");
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toContain("noopener");
+});
+
+it("shows area filter tabs only when there are more than three areas", async () => {
+  // Three areas: no filter bar.
+  mockApi.getNoticeAreas.mockResolvedValue([
+    { key: "club", title: "Club Notices" },
+    { key: "open_event", title: "Open Event Notices" },
+    { key: "custom:si", title: "Sailing Instructions" },
+  ]);
+  mockApi.getNotices.mockResolvedValue([
+    mk("a1", "general_club_notice", "General Club Notice", 1, "Club Notices"),
+    mk("b1", "notice_to_competitors", "Notice to Competitors", 1, "Open Event Notices"),
+    mk("c1", "si_amendment", "Change to Sailing Instructions", 1, "Sailing Instructions"),
+  ]);
+  await renderBoard();
+  expect(container.querySelector('[data-testid="area-filter-tabs"]')).toBeNull();
+
+  // Four areas: the filter bar appears with an "All areas" tab and one per area.
+  mockApi.getNoticeAreas.mockResolvedValue([
+    { key: "club", title: "Club Notices" },
+    { key: "open_event", title: "Open Event Notices" },
+    { key: "custom:si", title: "Sailing Instructions" },
+    { key: "custom:safety", title: "Safety" },
+  ]);
+  mockApi.getNotices.mockResolvedValue([
+    mk("a1", "general_club_notice", "General Club Notice", 1, "Club Notices"),
+    mk("b1", "notice_to_competitors", "Notice to Competitors", 1, "Open Event Notices"),
+    mk("c1", "si_amendment", "Change to Sailing Instructions", 1, "Sailing Instructions"),
+    mk("d1", "safety_notice", "Safety Notice", 1, "Safety"),
+  ]);
+  await renderBoard();
+  const tabs = [...container.querySelectorAll('[data-testid^="area-tab-"]')].map((t) => t.textContent.trim());
+  expect(tabs).toEqual(["All areas", "Club Notices", "Open Event Notices", "Sailing Instructions", "Safety"]);
+});
+
+it("filters down to one area and honours a ?area= deep link", async () => {
+  const mkN = (id, label, num, area) => mk(id, "general_club_notice", label, num, area);
+  mockApi.getNoticeAreas.mockResolvedValue([
+    { key: "club", title: "Club Notices" },
+    { key: "open_event", title: "Open Event Notices" },
+    { key: "custom:a", title: "Area A" },
+    { key: "custom:b", title: "Area B" },
+  ]);
+  mockApi.getNotices.mockResolvedValue([
+    mkN("n1", "General Club Notice", 1, "Club Notices"),
+    mkN("n2", "Open Event Notice", 1, "Open Event Notices"),
+    mkN("n3", "Area A Notice", 1, "Area A"),
+    mkN("n4", "Area B Notice", 1, "Area B"),
+  ]);
+  // Deep link: ?area=area-b preselects Area B on load.
+  mockSearchParams = new URLSearchParams("?area=area-b");
+  await renderBoard();
+
+  // Only Area B's notices are shown.
+  let areas = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
+  expect(areas).toEqual(["Area B"]);
+
+  // Clicking the "All areas" tab restores every area.
+  await act(async () => {
+    container.querySelector('[data-testid="area-tab-all"]').click();
+  });
+  areas = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
+  expect(areas).toEqual(["Club Notices", "Open Event Notices", "Area A", "Area B"]);
+
+  // Clicking one area filters down again.
+  await act(async () => {
+    container.querySelector('[data-testid="area-tab-area-a"]').click();
+  });
+  areas = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
+  expect(areas).toEqual(["Area A"]);
 });
 
 it("falls back to built-in area order and Club Notices when areas are unavailable", async () => {

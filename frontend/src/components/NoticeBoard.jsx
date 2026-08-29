@@ -9,12 +9,17 @@
 // the club issued it (spec 48). Superseded versions never appear in the list;
 // withdrawn ones stay, clearly marked.
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { NoticeBodyView, NoticeFacts, noticeHeadingLine, noticeContextLine } from "@/components/NoticeBody";
 import { Download, ExternalLink, FileText, FlagTriangleRight, ScrollText } from "lucide-react";
+
+// URL-friendly slug for a notice area (used by the ?area= deep link).
+const areaSlug = (area) => area.replace(/\W+/g, "-").toLowerCase();
 
 // The two built-in ONB areas always exist (backend /notice-areas); custom club
 // areas sort alphabetically after them. When the club's configured area list
@@ -224,9 +229,13 @@ function NoticeCard({ notice, open, onToggle }) {
 }
 
 export default function NoticeBoard({ clubId, embedded = false, sectionId = null }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [notices, setNotices] = useState(null);
   // The club's configured ONB areas in display order (null when unavailable).
   const [areas, setAreas] = useState(null);
+  // The area the board is filtered down to (null = all areas). Mirrors the
+  // class/series filter idea from the results page.
+  const [activeArea, setActiveArea] = useState(null);
   const [openId, setOpenId] = useState(() => {
     const h = window.location.hash || "";
     return h.startsWith("#notice-") ? h.slice(8) : null;
@@ -281,8 +290,32 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
     }
   }, [openId, notices]);
 
+  // ?area=<slug> deep link: when the board's areas are known, honour a
+  // requested area filter (e.g. from a shared link) unless the visitor has
+  // already picked one.
+  useEffect(() => {
+    if (!notices || !notices.length || activeArea) return;
+    const wanted = searchParams.get("area");
+    if (!wanted) return;
+    const match = areaOrder.find((a) => areaSlug(a) === wanted);
+    if (match) setActiveArea(match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, notices]);
+
   if (!clubId || !notices) return null;
   if (!notices.length) return null;
+
+  // Selecting an area filters the board down to that area's full notices; the
+  // choice is kept in the URL so the filtered view can be shared like a
+  // results link. With a single area (or few) the filter bar is unnecessary.
+  const selectArea = (area) => {
+    setActiveArea(area);
+    const p = new URLSearchParams(searchParams);
+    if (area) p.set("area", areaSlug(area));
+    else p.delete("area");
+    setSearchParams(p, { replace: true });
+  };
+  const visibleAreas = activeArea && areaOrder.includes(activeArea) ? [activeArea] : areaOrder;
 
   return (
     <section className={embedded ? "" : "min-h-screen bg-background py-10"} data-testid="official-notice-board">
@@ -290,8 +323,27 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
         <h2 className="font-heading uppercase tracking-tight text-xl">Official Notice Board</h2>
         <span className="text-xs text-muted-foreground">· notices, amendments, protests and results as published</span>
       </div>
+      {areaOrder.length > 3 && (
+        <div className="mb-6" data-testid="area-filter-tabs">
+          <Tabs value={activeArea ? areaSlug(activeArea) : "all"}
+            onValueChange={(v) => selectArea(v === "all" ? null : areaOrder.find((a) => areaSlug(a) === v))}>
+            <TabsList className="h-auto flex-wrap gap-2 w-fit">
+              <TabsTrigger value="all" data-testid="area-tab-all"
+                className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
+                All areas
+              </TabsTrigger>
+              {areaOrder.map((a) => (
+                <TabsTrigger key={a} value={areaSlug(a)} data-testid={`area-tab-${areaSlug(a)}`}
+                  className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
+                  {a}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+      )}
       <div className="columns-1 md:columns-2 xl:columns-3 gap-x-8">
-        {areaOrder.map((area) => {
+        {visibleAreas.map((area) => {
           const typeGroups = groups.get(area);
           // Each area stays whole inside one column (never split across a
           // break), splitting into its notice types below.
