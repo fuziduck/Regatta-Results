@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock } from "lucide-react";
+import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock, Eye, EyeOff, Copy } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D" };
 
@@ -54,7 +54,9 @@ function BackupSection({ clubs }) {
   const [restoring, setRestoring] = useState(false);
   const [dlPassphrase, setDlPassphrase] = useState("");
   const [dlConfirm, setDlConfirm] = useState("");
+  const [showDl, setShowDl] = useState(false);
   const [restorePassphrase, setRestorePassphrase] = useState("");
+  const [showRestore, setShowRestore] = useState(false);
   const fileInputAllRef = useRef(null);
   const fileInputClubRef = useRef(null);
 
@@ -69,7 +71,19 @@ function BackupSection({ clubs }) {
     const phrase = Array.from(bytes, (b) => chars[b % chars.length]).join("");
     setDlPassphrase(phrase);
     setDlConfirm(phrase);
-    toast.info("Passphrase generated — keep it safe; you'll need it to restore this backup");
+    setShowDl(true); // reveal it so it can be copied safely
+    toast.info("Passphrase generated — copy it somewhere safe; you'll need it to restore this backup");
+  };
+
+  const copyPassphrase = async () => {
+    const p = downloadPhrase();
+    if (!p) return;
+    try {
+      await navigator.clipboard.writeText(p);
+      toast.success("Passphrase copied to clipboard — store it securely");
+    } catch {
+      toast.error("Could not copy automatically — select and copy it manually");
+    }
   };
 
   const downloadPhrase = () => dlPassphrase.trim();
@@ -171,39 +185,48 @@ function BackupSection({ clubs }) {
               <Upload className="w-4 h-4" /> Restore all
             </Button>
           </div>
-        </div>
-        <div className="rounded-xl border border-dashed border-border p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm font-semibold">Encrypt this backup (optional)</div>
-            <Button variant="outline" size="sm" data-testid="backup-gen-passphrase" onClick={generatePassphrase}>
-              <Lock className="w-4 h-4" /> Generate passphrase
-            </Button>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Passphrase</Label>
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={dlPassphrase}
-                onChange={(e) => setDlPassphrase(e.target.value)}
-                placeholder="Leave empty for a plaintext backup"
-                data-testid="backup-passphrase-input"
-              />
+        </div>          <div className="rounded-xl border border-dashed border-border p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold">Encrypt this backup (optional)</div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" data-testid="backup-reveal-passphrase" onClick={() => setShowDl((s) => !s)}>
+                  {showDl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />} {showDl ? "Hide" : "Show"}
+                </Button>
+                <Button variant="outline" size="sm" data-testid="backup-copy-passphrase" onClick={copyPassphrase} disabled={!dlPassphrase.trim()}>
+                  <Copy className="w-4 h-4" /> Copy
+                </Button>
+                <Button variant="outline" size="sm" data-testid="backup-gen-passphrase" onClick={generatePassphrase}>
+                  <Lock className="w-4 h-4" /> Generate
+                </Button>
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label>Confirm passphrase</Label>
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={dlConfirm}
-                onChange={(e) => setDlConfirm(e.target.value)}
-                placeholder="Re-enter the passphrase"
-                data-testid="backup-passphrase-confirm"
-              />
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Passphrase</Label>
+                <Input
+                  type={showDl ? "text" : "password"}
+                  autoComplete="new-password"
+                  value={dlPassphrase}
+                  onChange={(e) => setDlPassphrase(e.target.value)}
+                  placeholder="Leave empty for a plaintext backup"
+                  data-testid="backup-passphrase-input"
+                  className="font-mono"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Confirm passphrase</Label>
+                <Input
+                  type={showDl ? "text" : "password"}
+                  autoComplete="new-password"
+                  value={dlConfirm}
+                  onChange={(e) => setDlConfirm(e.target.value)}
+                  placeholder="Re-enter the passphrase"
+                  data-testid="backup-passphrase-confirm"
+                  className="font-mono"
+                />
+              </div>
             </div>
           </div>
-        </div>
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5 flex-1 min-w-52">
             <Label>Club</Label>
@@ -268,14 +291,25 @@ function BackupSection({ clubs }) {
               </p>
             )}
             <div className="space-y-1.5 pt-1">
-              <Label>Backup passphrase (if the backup was encrypted)</Label>
+              <div className="flex items-center justify-between">
+                <Label>Backup passphrase (if the backup was encrypted)</Label>
+                <button
+                  type="button"
+                  onClick={() => setShowRestore((s) => !s)}
+                  className="text-xs text-ocean hover:underline font-semibold inline-flex items-center gap-1"
+                  data-testid="restore-reveal-passphrase"
+                >
+                  {showRestore ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />} {showRestore ? "Hide" : "Show"}
+                </button>
+              </div>
               <Input
-                type="password"
+                type={showRestore ? "text" : "password"}
                 autoComplete="off"
                 value={restorePassphrase}
                 onChange={(e) => setRestorePassphrase(e.target.value)}
                 placeholder="Enter the passphrase used when this backup was created"
                 data-testid="restore-passphrase-input"
+                className="font-mono"
               />
               <p className="text-xs text-muted-foreground">
                 Encrypted backups restore each user's passcode hash, so existing sign-in passcodes keep working (plaintext backups strip them). Reset tokens and lockout state are never imported.
