@@ -99,6 +99,10 @@ export const api = {
   getSeries: (params = {}) => client.get("/series", { params }).then((r) => r.data),
   createSeries: (d) => client.post("/series", d).then((r) => r.data),
   updateSeries: (id, d, v) => client.put(`/series/${id}`, withVer(d, v)).then((r) => r.data),
+  // Set which of the class's boats form part of this series (race officer or
+  // club admin). Only member boats are scored: absent members DNC, boats not
+  // listed are excluded from the series standings entirely.
+  updateSeriesBoats: (id, boat_ids, v) => client.put(`/series/${id}/boats`, withVer({ boat_ids }, v)).then((r) => r.data),
   deleteSeries: (id, v) => client.delete(`/series/${id}`, { params: verQuery(v) }).then((r) => r.data),
   generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
   splitMiniSeries: (id, d, v) => client.post(`/series/${id}/mini-split`, withVer(d, v)).then((r) => r.data),

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
+import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel } from "@/lib/helpers";
@@ -17,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText } from "lucide-react";
+import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText, Users } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -304,7 +305,7 @@ function RaceNoticeSection({ value, onChange, onSave, busy = false, saveLabel = 
   );
 }
 
-export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch, raceDayNotices = true }) {
+export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onEnterBatch, raceDayNotices = true, onSeriesBoatsSaved }) {
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
@@ -324,6 +325,9 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // When the race cannot be fetched (deleted/renumbered elsewhere), show a
   // clear error with a way back instead of hanging on "Loading race…" forever.
   const [loadError, setLoadError] = useState(null);
+  // Series membership editor: which of the class's boats form part of this
+  // series (drives the DNC scoring engine).
+  const [boatsOpen, setBoatsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -559,6 +563,14 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
           </div>
           <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
           {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300" data-testid="abandoned-badge">Abandoned</Badge>}
+          {series && (
+            <>
+              <Button variant="outline" size="sm" className="gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" data-testid="series-boats-btn" onClick={() => setBoatsOpen(true)}>
+                <Users className="w-4 h-4" /> Series boats
+              </Button>
+              <SeriesBoatsDialog series={series} open={boatsOpen} onOpenChange={setBoatsOpen} clubId={clubId} onSaved={onSeriesBoatsSaved} />
+            </>
+          )}
         </div>
       </div>
 
@@ -1779,6 +1791,7 @@ export default function Officer() {
           rrsCodes={rrsCodes} dayRaces={dayRaces}
           onEnterBatch={enterBatch}
           raceDayNotices={raceDayNotices}
+          onSeriesBoatsSaved={loadRaces}
           onBack={() => { setSelected(null); loadRaces(); }} />
       </div>
     );

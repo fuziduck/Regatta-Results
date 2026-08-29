@@ -4,6 +4,7 @@ dedicated test club (see conftest.py) so the suite never depends on or
 mutates a real club's data."""
 
 import base64
+import pytest
 import requests
 from datetime import datetime, timezone
 
@@ -461,6 +462,102 @@ class TestAdminCRUD:
         assert r.json()["discards"] == 2
         r = requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
         assert r.status_code == 200
+
+
+class TestSeriesBoatsMembership:
+    """Race officers and club admins can set which boats form part of a
+    series (PUT /series/{id}/boats); the DNC scoring engine then scores
+    exactly those boats — absent members DNC, non-members are excluded even
+    if they raced."""
+
+    def _setup(self, club_admin_token):
+        r = requests.post(f"{API}/classes", json={"name": "Fleet Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Fleet Series", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": True, "order": 1}, headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        series = r.json()
+        boats = []
+        for i, (name, sail) in enumerate([("One", "F1"), ("Two", "F2"), ("Three", "F3")]):
+            r = requests.post(f"{API}/boats", json={
+                "name": name, "sail_no": sail, "class_id": cls["id"],
+                "helm": f"H{i}", "year": YEAR, "active": True}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json()["id"])
+        return cls, series, boats
+
+    def _teardown(self, cls, series, boats, club_admin_token, club_officer_token):
+        for race in requests.get(f"{API}/races", params={"series_id": series["id"]},
+                                 headers=h(club_officer_token)).json():
+            requests.delete(f"{API}/races/{race['id']}", headers=h(club_officer_token))
+        requests.delete(f"{API}/series/{series['id']}", headers=h(club_admin_token))
+        for bid in boats:
+            requests.delete(f"{API}/boats/{bid}", headers=h(club_admin_token))
+        requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+    def test_officer_sets_membership_and_dnc_scoring_follows(self, club_officer_token, club_admin_token):
+        cls, series, boats = self._setup(club_admin_token)
+        try:
+            # Officer restricts the series to boats 1 and 2.
+            r = requests.put(f"{API}/series/{series['id']}/boats",
+                             json={"boat_ids": boats[:2]}, headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+            assert r.json()["member_boat_ids"] == boats[:2]
+
+            # Race: member 1 finishes; non-member 3 sails; member 2 stays home.
+            rid = requests.post(f"{API}/races", json={
+                "date": f"{YEAR}-05-20", "class_id": cls["id"], "series_id": series["id"],
+                "race_number": 1}, headers=h(club_officer_token)).json()["id"]
+            requests.post(f"{API}/races/{rid}/select-boats",
+                          json={"boat_ids": [boats[0], boats[2]]}, headers=h(club_officer_token))
+            requests.post(f"{API}/races/{rid}/finish", json={"boat_id": boats[0]}, headers=h(club_officer_token))
+            requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+
+            st = requests.get(f"{API}/standings/series/{series['id']}").json()
+            by_id = {row["boat_id"]: row for row in st["standings"]}
+            assert set(by_id) == set(boats[:2])
+            assert by_id[boats[0]]["net"] == 1.0
+            assert by_id[boats[1]]["scores"][0]["code"] == "DNC"
+            assert by_id[boats[1]]["net"] == 4.0  # 3 class boats entered + 1
+            assert boats[2] not in by_id  # non-member excluded despite racing
+        finally:
+            self._teardown(cls, series, boats, club_admin_token, club_officer_token)
+
+    def test_admin_can_set_membership_and_clear_it(self, club_officer_token, club_admin_token):
+        cls, series, boats = self._setup(club_admin_token)
+        try:
+            r = requests.put(f"{API}/series/{series['id']}/boats",
+                             json={"boat_ids": boats[:1]}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            assert r.json()["member_boat_ids"] == boats[:1]
+            # Clearing the list returns to auto-detection (empty membership).
+            r = requests.put(f"{API}/series/{series['id']}/boats",
+                             json={"boat_ids": []}, headers=h(club_officer_token))
+            assert r.status_code == 200
+            assert r.json()["member_boat_ids"] == []
+            # The regular series edit must never clobber the membership list.
+            r = requests.put(f"{API}/series/{series['id']}/boats",
+                             json={"boat_ids": boats[:2]}, headers=h(club_admin_token))
+            assert r.status_code == 200
+            r = requests.put(f"{API}/series/{series['id']}", json={
+                "name": "Fleet Series", "class_id": cls["id"], "year": YEAR,
+                "discards": 0, "included_in_overall": True, "order": 1}, headers=h(club_admin_token))
+            assert r.status_code == 200
+            assert r.json()["member_boat_ids"] == boats[:2]
+        finally:
+            self._teardown(cls, series, boats, club_admin_token, club_officer_token)
+
+    def test_membership_rejects_unknown_boats(self, club_officer_token, club_admin_token):
+        cls, series, boats = self._setup(club_admin_token)
+        try:
+            r = requests.put(f"{API}/series/{series['id']}/boats",
+                             json={"boat_ids": ["does-not-exist"]}, headers=h(club_officer_token))
+            assert r.status_code == 400
+        finally:
+            self._teardown(cls, series, boats, club_admin_token, club_officer_token)
 
 
 # ---------- Full race flow (inside the test club) ----------
@@ -1162,4 +1259,77 @@ class TestDutyPoints:
             for rid in created:
                 requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
             requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+
+# ---------- Admin subscription overview (webmaster sees all clubs) ----------
+class TestAdminSubscriptionOverview:
+    """The webmaster can list subscriptions for one club (via club_id) or for
+    every club at once (no club_id) — each row carries its club_id so the UI
+    can group them. Club admins stay scoped to their own club."""
+
+    def _subscribe_and_verify(self, class_id):
+        import uuid
+        email = f"fan-{uuid.uuid4().hex[:8]}@example.com"
+        r = requests.post(f"{API}/subscriptions", json={
+            "email": email, "subscription_type": "class", "target_id": class_id})
+        if r.status_code == 429:
+            # The public subscription endpoint is rate limited per email/IP
+            # (5 per 10 minutes). Repeated test runs on one dev server can hit
+            # the shared IP budget — skip rather than fail on infrastructure.
+            pytest.skip("Subscription rate limit reached on the shared dev server")
+        assert r.status_code == 200, r.text
+        token = r.json().get("verification_token")
+        assert token, "dev/test environment must return the verification token (no SMTP configured)"
+        r = requests.get(f"{API}/subscriptions/verify", params={"token": token})
+        assert r.status_code == 200, r.text
+        return email
+
+    def test_webmaster_lists_every_club_without_club_id(self, test_club, club_admin_token, webmaster_token):
+        r = requests.post(f"{API}/classes", json={"name": "Fan Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        try:
+            email = self._subscribe_and_verify(cls["id"])
+
+            # Webmaster without club_id: every club's rows, each carrying club_id.
+            r = requests.get(f"{API}/admin/subscriptions", headers=h(webmaster_token))
+            assert r.status_code == 200, r.text
+            rows = r.json()
+            assert any(row["email"] == email and row["target_id"] == cls["id"]
+                       and row["club_id"] == test_club["id"] for row in rows)
+
+            # Webmaster scoped to this club sees the same row.
+            r = requests.get(f"{API}/admin/subscriptions", params={"club_id": test_club["id"]},
+                             headers=h(webmaster_token))
+            assert r.status_code == 200, r.text
+            assert any(row["email"] == email for row in r.json())
+
+            # A different club's scope never leaks this row.
+            others = [c for c in requests.get(f"{API}/clubs", headers=h(webmaster_token)).json()
+                      if c["id"] != test_club["id"]]
+            if others:
+                r = requests.get(f"{API}/admin/subscriptions", params={"club_id": others[0]["id"]},
+                                 headers=h(webmaster_token))
+                assert r.status_code == 200, r.text
+                assert all(row["club_id"] == others[0]["id"] for row in r.json())
+        finally:
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+    def test_club_admin_is_scoped_to_own_club(self, test_club, club_admin_token):
+        r = requests.post(f"{API}/classes", json={"name": "Fan Class 2", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        try:
+            email = self._subscribe_and_verify(cls["id"])
+            r = requests.get(f"{API}/admin/subscriptions", headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            rows = r.json()
+            assert any(row["email"] == email and row["club_id"] == test_club["id"]
+                       for row in rows)
+            # Without club_id a club admin is still scoped to their own club.
+            assert all(row["club_id"] == test_club["id"] for row in rows)
+        finally:
             requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))

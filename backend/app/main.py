@@ -940,8 +940,23 @@ class SeriesInput(BaseModel):
     # every season carries its own snapshot of the rules that applied to it.
     # See _normalize_scoring_config() for the canonical shape and defaults.
     scoring_config: Optional[dict] = None
+    # Explicit series membership: which of the class's boats form part of this
+    # series. When set, the DNC scoring engine scores exactly these boats —
+    # members absent from a race auto-score DNC, while boats not listed are
+    # excluded from the series standings entirely (e.g. a boat signed onto a
+    # different series). When absent/empty the engine falls back to the
+    # auto-detected fleet (boats that raced at least once). Managed via
+    # PUT /series/{id}/boats by race officers and admins; the edit form never
+    # touches it.
+    member_boat_ids: Optional[List[str]] = None
     # Optimistic concurrency control: version this edit was based on (see
     # BoatInput.expected_version).
+    expected_version: Optional[int] = None
+
+
+class SeriesBoatsInput(BaseModel):
+    """Set which boats form part of the series (race officer or admin)."""
+    boat_ids: List[str] = []
     expected_version: Optional[int] = None
 
 
@@ -2893,6 +2908,11 @@ async def delete_boat(boat_id: str, request: Request,
     result = await db.boats.delete_one(_version_filter(boat_id, expected))
     if result.deleted_count == 0:
         _raise_stale(expected)
+    # Drop the deleted boat from every series membership list it appears in
+    # (same class/year), so stale ids never linger in the scoring engine.
+    await db.series.update_many(
+        {"class_id": boat.get("class_id"), "year": boat.get("year")},
+        {"$pull": {"member_boat_ids": boat_id}})
     club_id = await _class_club_id(boat.get("class_id"))
     await _log_audit(request=None, user=user, action="BOAT_DELETED",
                      description=f"Deleted boat {boat.get('name')}",
@@ -2930,6 +2950,9 @@ async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     doc.pop("expected_version", None)
+    # Series membership is managed exclusively via PUT /series/{id}/boats;
+    # a fresh series starts with no explicit fleet (auto-detected).
+    doc.pop("member_boat_ids", None)
     if doc.get("schedule") is None:
         doc["schedule"] = []
     doc["id"] = new_id()
@@ -2965,6 +2988,9 @@ async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(
     expected = _expected_version(data)
     update = data.model_dump()
     update.pop("expected_version", None)
+    # Series membership is managed exclusively via PUT /series/{id}/boats —
+    # never clobber the stored fleet when the admin edits other series fields.
+    update.pop("member_boat_ids", None)
     if update.get("schedule") is None:
         update.pop("schedule", None)
     result = await db.series.update_one(_version_filter(series_id, expected),
@@ -2975,6 +3001,43 @@ async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(
     await _log_audit(request=None, user=user, action="SERIES_UPDATED",
                      description=f"Updated series {series.get('name')}",
                      resource_type="series", resource_id=series_id, club_id=cls.get("club_id"))
+    return await db.series.find_one({"id": series_id}, {"_id": 0})
+
+
+@api_router.put("/series/{series_id}/boats")
+async def update_series_boats(series_id: str, data: SeriesBoatsInput,
+                              user: dict = Depends(require_officer)):
+    """Set which boats form part of the series (race officer or club admin).
+
+    The DNC scoring engine scores exactly the listed boats: members absent
+    from a race auto-score DNC, while boats not listed are excluded from the
+    series standings even if they appeared in a race (e.g. a boat signed onto
+    a different series). Passing an empty list clears the explicit fleet and
+    returns to auto-detection.
+    """
+    series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(
+        series_id, detail="Season results are locked — series membership cannot be changed. Use the administrator correction process to amend the season.")
+    expected = _expected_version(data)
+    ids = list(dict.fromkeys(data.boat_ids))
+    if ids:
+        cls_boats = await db.boats.find(
+            {"class_id": series["class_id"], "year": series["year"]},
+            {"_id": 0, "id": 1}).to_list(2000)
+        known = {b["id"] for b in cls_boats}
+        unknown = [bid for bid in ids if bid not in known]
+        if unknown:
+            raise HTTPException(status_code=400,
+                                detail="Unknown boats for this series' class: " + ", ".join(unknown))
+    result = await db.series.update_one(_version_filter(series_id, expected),
+                                        {"$set": {"member_boat_ids": ids},
+                                         "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="SERIES_BOATS_UPDATED",
+                     description=f"Set series {series.get('name')} fleet to {len(ids)} boat(s)",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
@@ -4766,17 +4829,29 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
         keep = {int(n) for n in race_numbers}
         races = [r for r in races if int(r.get("race_number") or 0) in keep]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
-    # Only boats that actually appear in at least one published race of this
-    # series are entered in it. Boats registered in the class that never raced
-    # the series must not clutter its standings (e.g. a one-off regatta whose
-    # fleet is a subset of the club's full class fleet). Boats absent from an
-    # individual race still auto-score DNC as usual; boats absent from the
-    # whole series simply do not belong to it. A series with no published
-    # races yet keeps its full fleet (all-zero rows) as before.
-    entered = {r.get("boat_id") for race in races
-               for r in (race.get("results") or []) if r.get("boat_id")}
-    if races and entered:
-        boats = [b for b in boats if b.get("id") in entered]
+    member_ids = series.get("member_boat_ids") or []
+    if member_ids:
+        # Explicit series membership (officer/admin managed): exactly these
+        # boats form part of the series. Members absent from an individual
+        # race auto-score DNC as usual; boats not listed are excluded from the
+        # standings entirely — even if they appeared in a race — because they
+        # belong to a different series (e.g. a club signing a boat onto one
+        # series but not this one).
+        member_set = set(member_ids)
+        boats = [b for b in boats if b.get("id") in member_set]
+    else:
+        # Only boats that actually appear in at least one published race of
+        # this series are entered in it. Boats registered in the class that
+        # never raced the series must not clutter its standings (e.g. a
+        # one-off regatta whose fleet is a subset of the club's full class
+        # fleet). Boats absent from an individual race still auto-score DNC as
+        # usual; boats absent from the whole series simply do not belong to
+        # it. A series with no published races yet keeps its full fleet
+        # (all-zero rows) as before.
+        entered = {r.get("boat_id") for race in races
+                   for r in (race.get("results") or []) if r.get("boat_id")}
+        if races and entered:
+            boats = [b for b in boats if b.get("id") in entered]
     boat_map = {b["id"]: b for b in boats}
     cfg = _series_scoring_config(series)
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
@@ -5887,16 +5962,26 @@ def _subscription_public(sub: dict) -> dict:
 @api_router.get("/admin/subscriptions")
 async def list_subscriptions_for_admin(request: Request, club_id: Optional[str] = None,
                                        user: dict = Depends(require_admin)):
-    """Club-scoped subscription overview. Email addresses are decrypted only
-    for authorised webmaster/admin staff and never exposed publicly."""
-    scope = club_id if user.get("role") == "webmaster" and club_id else user.get("club_id")
-    if not scope:
-        raise HTTPException(status_code=400, detail="club_id is required")
-    _ensure_club(user, scope)
-    rows = await db.subscriptions.find({"club_id": scope, "active": True}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    """Subscription overview for authorised staff. A club admin is scoped to
+    their own club; the webmaster may pass club_id to see one club or omit it
+    to see every club's active subscriptions at once (each row carries
+    club_id so the UI can group them). Email addresses are decrypted only for
+    authorised webmaster/admin staff and never exposed publicly."""
+    if user.get("role") == "webmaster":
+        q = {"active": True}
+        if club_id:
+            _ensure_club(user, club_id)
+            q["club_id"] = club_id
+    else:
+        scope = user.get("club_id")
+        if not scope:
+            raise HTTPException(status_code=400, detail="club_id is required")
+        q = {"club_id": scope, "active": True}
+    rows = await db.subscriptions.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return [{"id": row.get("id"), "email": _decrypt_secret(row.get("email_enc", "")) or "Unavailable",
              "subscription_type": row.get("subscription_type"), "target_id": row.get("target_id"),
-             "target_name": row.get("target_name"), "verified_at": row.get("verified_at"),
+             "target_name": row.get("target_name"), "club_id": row.get("club_id"),
+             "verified_at": row.get("verified_at"),
              "created_at": row.get("created_at")} for row in rows]
 
 

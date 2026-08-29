@@ -306,6 +306,57 @@ def _standings_filtered(series, boats, races):
     return asyncio.run(server.compute_series_standings(series))
 
 
+class TestSeriesMembership:
+    """Explicit series membership (officer/admin managed boat list) drives
+    which fleet the DNC engine scores. Members absent from a race auto-score
+    DNC; non-members are excluded from the standings entirely — even if they
+    appeared in a race (e.g. a boat signed onto a different series)."""
+
+    def _series(self, **extra):
+        s = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0}
+        s.update(extra)
+        return s
+
+    def test_members_only_scored_dnc_for_absent(self):
+        series = self._series(member_boat_ids=["b1", "b3"])
+        boats = [_boat(i) for i in range(1, 5)]  # b1..b4 in the class
+        races = [_race(1, [_fin("b1", 1), _fin("b2", 2)])]  # b2 races but is NOT a member
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert set(by_id) == {"b1", "b3"}
+        assert by_id["b1"]["net"] == 1.0
+        # Member b3 never sailed -> DNC = series entries + 1 (2 entered boats)
+        assert by_id["b3"]["scores"][0]["code"] == "DNC"
+        assert by_id["b3"]["net"] == 3.0
+        # Non-member b2 raced but must not appear in the series standings
+        assert "b2" not in by_id
+        assert "b4" not in by_id
+
+    def test_members_absent_from_whole_series_still_scored_dnc(self):
+        """A member who never sailed ANY race of the series still belongs to
+        it (all-DNC rows), unlike the auto-detected fleet which only admits
+        boats that raced at least once."""
+        series = self._series(member_boat_ids=["b1", "b2"])
+        boats = [_boat(i) for i in range(1, 4)]
+        races = [_race(1, [_fin("b1", 1)])]
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert set(by_id) == {"b1", "b2"}
+        assert by_id["b2"]["scores"][0]["code"] == "DNC"
+        assert by_id["b2"]["net"] == 2.0  # 1 entered boat + 1
+
+    def test_empty_membership_falls_back_to_auto_detected_fleet(self):
+        """Clearing the explicit list returns to auto-detection: only boats
+        that appear in a published race are entered."""
+        series = self._series(member_boat_ids=[])
+        boats = [_boat(i) for i in range(1, 4)]
+        races = [_race(1, [_fin("b1", 1), _fin("b2", 2)])]
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert set(by_id) == {"b1", "b2"}
+        assert "b3" not in by_id
+
+
 class TestAbandonedRaces:
     def test_abandoned_race_reduces_race_count_and_discards(self):
         """An abandoned race is not scored: the series has one fewer race and,

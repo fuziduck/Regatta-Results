@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
+import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ClubBadge from "@/components/ClubBadge";
 import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
@@ -564,6 +565,9 @@ function SeriesTab({ classes, clubId }) {
   const [lockBusy, setLockBusy] = useState(false);
   const [snapSeries, setSnapSeries] = useState(null); // series whose snapshot history is shown
   const [snapshots, setSnapshots] = useState([]);
+  // Series membership editor: which of the class's boats form part of this
+  // series (drives the DNC scoring engine).
+  const [boatsSeries, setBoatsSeries] = useState(null);
   // Canonical default scoring-rule configuration (RRS 2025-2028 Appendix A
   // Low Point): A5.2 default, no TLE, 20% SCP/ZFP capped at DNF, fixed
   // discards, duty = average of the boat's results across the series (DNC included).
@@ -1008,6 +1012,7 @@ function SeriesTab({ classes, clubId }) {
                   : <Badge variant="outline" className="text-muted-foreground">Open</Badge>}
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
+                <Button size="icon" variant="ghost" disabled={locked} title="Boats in this series" data-testid={`series-boats-${s.name}`} onClick={() => setBoatsSeries(s)}><Users className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
@@ -1100,6 +1105,11 @@ function SeriesTab({ classes, clubId }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Series membership: which of the class's boats form part of this
+          series (drives the DNC scoring engine). */}
+      <SeriesBoatsDialog series={boatsSeries} open={!!boatsSeries} clubId={clubId}
+        onOpenChange={(o) => { if (!o) setBoatsSeries(null); }} onSaved={load} />
     </div>
   );
 }
