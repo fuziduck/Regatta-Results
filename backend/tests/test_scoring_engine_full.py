@@ -343,7 +343,7 @@ class TestSeriesMembership:
         by_id = {r["boat_id"]: r for r in st["standings"]}
         assert set(by_id) == {"b1", "b2"}
         assert by_id["b2"]["scores"][0]["code"] == "DNC"
-        assert by_id["b2"]["net"] == 2.0  # 1 entered boat + 1
+        assert by_id["b2"]["net"] == 3.0  # series fleet = 2 members + 1
 
     def test_empty_membership_falls_back_to_auto_detected_fleet(self):
         """Clearing the explicit list returns to auto-detection: only boats

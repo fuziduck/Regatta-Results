@@ -4859,7 +4859,16 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
     entries_by_race = []
     for race in races:
         results = race.get("results", [])
-        series_entries = race.get("entries_count") or len(results)
+        if member_ids:
+            # Explicit membership defines the whole series fleet, so the DNC /
+            # non-finish (A5) scoring base is the CURRENT member count. Removing
+            # a boat from the series immediately re-bases DNC to members + 1
+            # for the boats that remain — instead of this race's stored
+            # entries_count, which was captured when the class was larger and
+            # still counts the boats that were removed.
+            series_entries = len(member_ids)
+        else:
+            series_entries = race.get("entries_count") or len(results)
         entries_by_race.append(series_entries)
         start_entries = _start_area_entries(results)
         finishers = len([r for r in results if r.get("code") == "FINISHED"])

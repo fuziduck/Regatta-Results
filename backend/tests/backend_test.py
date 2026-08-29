@@ -521,7 +521,9 @@ class TestSeriesBoatsMembership:
             assert set(by_id) == set(boats[:2])
             assert by_id[boats[0]]["net"] == 1.0
             assert by_id[boats[1]]["scores"][0]["code"] == "DNC"
-            assert by_id[boats[1]]["net"] == 4.0  # 3 class boats entered + 1
+            # DNC re-bases on the CURRENT series fleet (2 members), not the
+            # race's stored entries_count (3 class boats at creation).
+            assert by_id[boats[1]]["net"] == 3.0  # 2 member boats + 1
             assert boats[2] not in by_id  # non-member excluded despite racing
         finally:
             self._teardown(cls, series, boats, club_admin_token, club_officer_token)
