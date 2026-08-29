@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck } from "lucide-react";
+import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -1628,6 +1628,7 @@ export function SplitMiniDialog({ target, onClose, onSplit }) {
 
 export default function Officer() {
   const { role, clubId: authClubId, clubName: authClubName } = useAuth();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isWebmaster = role === "webmaster";
   const clubParam = searchParams.get("club");
@@ -1886,7 +1887,13 @@ export default function Officer() {
             <h1 className="text-3xl uppercase tracking-tighter">Race day</h1>
             <p className="text-muted-foreground text-sm">Set up races, record finishes and publish.</p>
           </div>
-          <NewRaceDialog onCreated={(r) => { loadRaces(); setSelected(r.id); }} onSplitDone={handleSplitDone} clubId={clubId} />
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button className="gap-2 bg-ocean hover:bg-ocean-dark" data-testid="new-notice-btn"
+              onClick={() => navigate(`/notice/new${selected ? `?race=${selected}` : ""}`)}>
+              <FileText className="w-4 h-4" /> New Notice
+            </Button>
+            <NewRaceDialog onCreated={(r) => { loadRaces(); setSelected(r.id); }} onSplitDone={handleSplitDone} clubId={clubId} />
+          </div>
         </div>
 
         <section className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 mb-8" data-testid="schedule-panel">

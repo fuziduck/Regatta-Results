@@ -17,6 +17,8 @@ import { seriesNavModel } from "@/lib/seriesNav";
 import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
+import NoticeBoard from "@/components/NoticeBoard";
+import ResultsSubscription from "@/components/ResultsSubscription";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -268,7 +270,7 @@ export default function Landing() {
     const onVis = () => { if (document.visibilityState === "visible") load(); };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
-  }, [clubId]);
+  }, [clubId, searchParams]);
 
   // Series + standings for the active class (drives the selector tabs in the
   // hero and the results content below).
@@ -393,9 +395,12 @@ export default function Landing() {
 
           <BoatSearchBox />
 
-          {classes.length > 0 && (
+            {classes.length > 0 && (
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
-              <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
+                {activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass} targetName={(classes.find((c) => c.id === activeClass) || {}).name || "this class"} />}
+              </div>
               <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
                   {classes.map((c) => (
@@ -412,7 +417,10 @@ export default function Landing() {
 
           {activeClass && series.length > 0 && (
             <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
-              <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
+                {activeSeries !== "overall" && activeSeries && <ResultsSubscription subscriptionType="series" targetId={activeSeries} targetName={(series.find((s) => s.id === activeSeries) || {}).name || "this series"} />}
+              </div>
               <Tabs value={activeSeries} onValueChange={setActiveSeries}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
                   {nav.showOverall && (
@@ -485,6 +493,11 @@ export default function Landing() {
             </div>
           </div>
         )}
+
+        {/* Official Notice Board — published notices grouped under their
+            automatic headings (spec 43). Renders whatever public notices
+            exist for this club; absent entirely when there are none. */}
+        <NoticeBoard clubId={clubId} />
 
         <div>
           <div className="min-w-0">

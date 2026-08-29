@@ -1,6 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
 from dotenv import load_dotenv
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, HTMLResponse
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,6 +9,8 @@ import os
 import io
 import json
 import logging
+import asyncio
+import html as html_lib
 import time
 import hashlib
 import secrets
@@ -124,9 +126,20 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 MAIL_FROM = os.environ.get("MAIL_FROM", "") or SMTP_USER
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "")
+PUBLIC_APP_BASE_URL = os.environ.get("PUBLIC_APP_BASE_URL", "")
+PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "")
 RESET_TOKEN_MINUTES = int(os.environ.get("RESET_TOKEN_MINUTES", "30"))
 RESET_EMAIL_LIMIT = int(os.environ.get("RESET_EMAIL_LIMIT", "5"))
 RESET_EMAIL_WINDOW_SECONDS = 600
+
+# Account-free results subscriptions. Tokens are only ever emailed in their
+# plaintext form; the database stores hashes so a database read cannot be
+# turned into subscription-management access. SMTP is shared with the existing
+# webmaster-configured email settings above.
+SUBSCRIPTION_VERIFY_MINUTES = int(os.environ.get("SUBSCRIPTION_VERIFY_MINUTES", "60"))
+SUBSCRIPTION_RATE_LIMIT = int(os.environ.get("SUBSCRIPTION_RATE_LIMIT", "5"))
+SUBSCRIPTION_RATE_WINDOW_SECONDS = 600
+SUBSCRIPTION_MAX_EMAIL_ROWS = int(os.environ.get("SUBSCRIPTION_MAX_EMAIL_ROWS", "500"))
 
 WEAK_JWT_SECRETS = {"change-me-to-a-long-random-string", "changeme", "secret",
                     "dev", "development", "jwt-secret", "insecure", "none"}
@@ -448,7 +461,8 @@ async def get_current_user(request: Request):
     if int(tv if tv is not None else -1) != int(user.get("token_version") or 0):
         return None  # token predates a passcode reset / role change / deactivation
     return {"role": user.get("role"), "club_id": user.get("club_id"),
-            "user_id": user["id"], "username": user.get("username")}
+            "user_id": user["id"], "username": user.get("username"),
+            "name": user.get("name")}
 
 
 async def require_admin(request: Request) -> dict:
@@ -3700,11 +3714,15 @@ async def set_race_status(race_id: str, status: str, request: Request,
         raise HTTPException(status_code=400, detail="Invalid status")
     race = await _race_of_club(race_id, user)
     await _ensure_series_not_locked(race.get("series_id"))
+    was_published = race.get("status") == "published"
+    publication_event_id = new_id() if status == "published" and not was_published else None
     expected = _expected_version_query(request)
+    status_update = {"status": status, "published_at": now_iso() if status == "published" else None}
+    if publication_event_id:
+        status_update["publication_event_id"] = publication_event_id
     result = await db.races.update_one(
         _version_filter(race_id, expected),
-        {"$set": {"status": status, "published_at": now_iso() if status == "published" else None},
-         "$inc": {"version": 1}})
+        {"$set": status_update, "$inc": {"version": 1}})
     if result.modified_count == 0:
         _raise_stale(expected)
     club_id = await _class_club_id(race.get("class_id"))
@@ -3734,6 +3752,12 @@ async def set_race_status(race_id: str, status: str, request: Request,
                            race_id, len(errors), len(warnings))
         updated = dict(updated)
         updated["validation"] = {"errors": errors, "warnings": warnings}
+    # Queue exactly one notification for each genuine transition into the
+    # published state. The queue insert is small and the SMTP/PDF work runs in
+    # a background task, so a slow or unavailable mail server never blocks the
+    # officer's publication response.
+    if status == "published" and not was_published and updated:
+        await _enqueue_results_notification(updated)
     return updated
 
 
@@ -3804,15 +3828,13 @@ AUDIT_LIMIT_MAX = 500
 
 
 @api_router.get("/audit")
-async def read_audit(request: Request, user: dict = Depends(require_admin),
+async def read_audit(request: Request, user: dict = Depends(require_webmaster),
                      club_id: Optional[str] = None, username: Optional[str] = None,
                      role: Optional[str] = None, action: Optional[str] = None,
                      from_date: Optional[str] = None, to_date: Optional[str] = None,
                      limit: int = 100, offset: int = 0):
-    """Audit events, newest first. Club admins see ONLY their own club's
-    events — the club scope is derived from the authenticated account and a
-    club_id param can never widen it. The webmaster sees everything and may
-    additionally filter by club, user, role, action and date range."""
+    """Audit events, newest first. This endpoint is exclusively Webmaster-only;
+    all filtering and retrieval remains behind the same backend role guard."""
     q = {}
     if user.get("role") == "webmaster":
         if club_id:
@@ -5691,6 +5713,1548 @@ async def scheduled_races(request: Request, date: Optional[str] = None, club_id:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Account-free results subscriptions
+# ---------------------------------------------------------------------------
+# Subscribers are deliberately not users. A subscription is scoped to the
+# target's owning club, and access is granted only by a random emailed token.
+# Token plaintext is never persisted; only SHA-256 digests are stored.
+
+class ResultsSubscriptionInput(BaseModel):
+    email: EmailStr
+    subscription_type: Literal["class", "series", "boat"]
+    target_id: str
+
+
+class SubscriptionTokenInput(BaseModel):
+    token: str
+
+
+def _subscription_token_hash(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _public_web_base() -> str:
+    return (PUBLIC_APP_BASE_URL or APP_BASE_URL or "http://localhost:3000").rstrip("/")
+
+
+def _public_api_base() -> str:
+    return (PUBLIC_API_BASE_URL or "").rstrip("/") or f"{_public_web_base()}/api"
+
+
+def _subscription_rate_limited(email: str, ip: str) -> bool:
+    now = time.time()
+    limited = False
+    for key in (f"subscription-email:{email}", f"subscription-ip:{ip}"):
+        dq = _login_attempts[key]
+        while dq and dq[0] < now - SUBSCRIPTION_RATE_WINDOW_SECONDS:
+            dq.popleft()
+        if len(dq) >= SUBSCRIPTION_RATE_LIMIT:
+            limited = True
+        dq.append(now)
+    return limited
+
+
+async def _subscription_target(subscription_type: str, target_id: str) -> dict:
+    """Resolve a public target and return its immutable club scope + display
+    metadata. A boat subscription uses the boat record id, never its name or
+    sail number, so renaming a boat cannot break it."""
+    if subscription_type == "class":
+        target = await db.classes.find_one({"id": target_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Class not found")
+        club = await db.clubs.find_one({"id": target.get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
+        return {"club_id": target["club_id"], "target_name": target.get("name"),
+                "class_id": target["id"], "class_name": target.get("name"),
+                "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
+    if subscription_type == "series":
+        target = await db.series.find_one({"id": target_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Series not found")
+        cls = await db.classes.find_one({"id": target.get("class_id")}, {"_id": 0, "name": 1, "club_id": 1})
+        club = await db.clubs.find_one({"id": (cls or {}).get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
+        if not cls or not cls.get("club_id"):
+            raise HTTPException(status_code=404, detail="Series not found")
+        return {"club_id": cls["club_id"], "target_name": target.get("name"),
+                "series_id": target["id"], "series_name": target.get("name"),
+                "class_id": target.get("class_id"), "class_name": cls.get("name"),
+                "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
+    if subscription_type == "boat":
+        target = await db.boats.find_one({"id": target_id}, {"_id": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Boat not found")
+        cls = await db.classes.find_one({"id": target.get("class_id")}, {"_id": 0, "name": 1, "club_id": 1})
+        club = await db.clubs.find_one({"id": (cls or {}).get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
+        if not cls or not cls.get("club_id"):
+            raise HTTPException(status_code=404, detail="Boat not found")
+        return {"club_id": cls["club_id"], "target_name": target.get("name"),
+                "boat_id": target["id"], "boat_name": target.get("name"),
+                "sail_no": target.get("sail_no"), "class_id": target.get("class_id"),
+                "class_name": cls.get("name"), "club_name": (club or {}).get("name"),
+                "club_slug": (club or {}).get("slug")}
+    raise HTTPException(status_code=400, detail="Invalid subscription type")
+
+
+def _subscription_links(manage_token: str, verify_token: Optional[str] = None,
+                        unsubscribe_token: Optional[str] = None) -> dict:
+    manage = f"{_public_web_base()}/subscriptions/manage?token={manage_token}"
+    verify = None
+    if verify_token:
+        verify = f"{_public_web_base()}/subscriptions/verify?token={verify_token}"
+    unsubscribe = f"{_public_api_base()}/subscriptions/unsubscribe?token={unsubscribe_token}" if unsubscribe_token else None
+    return {"manage": manage, "verify": verify, "unsubscribe": unsubscribe}
+
+
+async def _send_subscription_verification(email: str, links: dict, target: dict) -> bool:
+    cfg = await _get_email_settings()
+    if not cfg.get("smtp_host"):
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = f"SailScore — confirm your {target.get('target_name', 'results')} subscription"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = email
+    msg.set_content(
+        "You asked to receive published SailScore results by email.\n\n"
+        f"Subscription: {target.get('target_name', 'results')}\n\n"
+        f"Confirm Subscription: {links['verify']}\n\n"
+        "This link expires in 60 minutes. If you did not request this, ignore this email."
+    )
+    msg.add_alternative(
+        f"<p>You asked to receive published SailScore results by email.</p>"
+        f"<p><strong>Subscription:</strong> {html_lib.escape(str(target.get('target_name', 'results')))}</p>"
+        f"<p><a href=\"{html_lib.escape(links['verify'], quote=True)}\" style=\"background:#0a369d;color:white;padding:12px 18px;text-decoration:none;border-radius:6px\">Confirm Subscription</a></p>"
+        "<p>This link expires in 60 minutes. If you did not request this, ignore this email.</p>",
+        subtype="html")
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
+            s.starttls()
+            if cfg.get("smtp_user"):
+                s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            s.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("SUBSCRIPTION VERIFICATION EMAIL FAILED to=%s error=%s", email, exc)
+        return False
+
+
+@api_router.post("/subscriptions")
+async def create_results_subscription(data: ResultsSubscriptionInput, request: Request):
+    """Start or repeat an account-free subscription. The response is generic
+    so an address cannot be used to enumerate existing subscriptions. In local
+    development without SMTP, the verification token is returned solely to
+    make the flow testable; production never returns it."""
+    email = str(data.email).strip().lower()
+    ip = _client_ip(request)
+    if _subscription_rate_limited(email, ip):
+        raise HTTPException(status_code=429, detail="Too many requests — please try again shortly")
+    target = await _subscription_target(data.subscription_type, data.target_id)
+    existing = await db.subscriptions.find_one({
+        "email_hash": _subscription_token_hash(email), "subscription_type": data.subscription_type,
+        "target_id": data.target_id, "active": True, "unsubscribed_at": None,
+    }, {"_id": 0})
+    if existing:
+        return {"ok": True, "message": "If this subscription is not already active, check your email to confirm it."}
+    unsubscribe_token = secrets.token_urlsafe(32)
+    existing_email = await db.subscriptions.find_one({"email_hash": _subscription_token_hash(email)}, {"_id": 0, "manage_token_enc": 1})
+    manage_token = (_decrypt_secret(existing_email.get("manage_token_enc", ""))
+                    if existing_email and existing_email.get("manage_token_enc") else None) or secrets.token_urlsafe(32)
+    doc = {
+        "id": new_id(), "email_hash": _subscription_token_hash(email),
+        "email_enc": _encrypt_secret(email),
+        "subscription_type": data.subscription_type, "target_id": data.target_id,
+        "club_id": target["club_id"], "verification_token_hash": _subscription_token_hash(verify_token),
+        "manage_token_hash": _subscription_token_hash(manage_token),
+        "manage_token_enc": _encrypt_secret(manage_token),
+        "unsubscribe_token_hash": _subscription_token_hash(unsubscribe_token),
+        "unsubscribe_token_enc": _encrypt_secret(unsubscribe_token),
+        "verification_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=SUBSCRIPTION_VERIFY_MINUTES)).isoformat(),
+        "verified": False, "verified_at": None, "active": False,
+        "created_at": now_iso(), "unsubscribed_at": None,
+        "target_name": target.get("target_name"),
+    }
+    pending = await db.subscriptions.find_one({
+        "email_hash": doc["email_hash"], "subscription_type": doc["subscription_type"],
+        "target_id": doc["target_id"], "active": False,
+        "verified": False, "unsubscribed_at": None,
+    })
+    if pending:
+        # A repeated click before confirmation rotates the one-time verify token
+        # on the same pending record without erasing an active/unsubscribed
+        # history row.
+        doc["id"] = pending["id"]
+    await db.subscriptions.update_one(
+        {"id": doc["id"]} if pending else {"email_hash": doc["email_hash"], "subscription_type": doc["subscription_type"], "target_id": doc["target_id"], "active": False, "verified": False, "unsubscribed_at": None},
+        {"$set": doc}, upsert=True)
+    links = _subscription_links(manage_token, verify_token, unsubscribe_token)
+    sent = await _send_subscription_verification(email, links, target)
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_REQUESTED",
+                     description=f"Results subscription requested for {data.subscription_type} target {data.target_id}",
+                     resource_type="subscription", resource_id=doc["id"], club_id=target["club_id"])
+    response = {"ok": True, "message": "Check your email — we sent a confirmation link. Click Confirm Subscription to activate it."}
+    if not sent and APP_ENV != "production":
+        response["verification_token"] = verify_token
+        response["manage_token"] = manage_token
+        response["message"] = "SMTP is not configured in development. Use the returned verification token to confirm this subscription."
+    return response
+
+
+async def _activate_subscription(token: str) -> dict:
+    sub = await db.subscriptions.find_one({"verification_token_hash": _subscription_token_hash(token), "active": False}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="This confirmation link is invalid or has already been used")
+    try:
+        expires = datetime.fromisoformat(sub.get("verification_expires_at", ""))
+    except (TypeError, ValueError):
+        expires = datetime.min.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="This confirmation link has expired")
+    verified_at = now_iso()
+    result = await db.subscriptions.update_one({"id": sub["id"], "active": False}, {"$set": {
+        "verified": True, "verified_at": verified_at, "active": True,
+        "verification_token_hash": None, "verification_expires_at": None,
+    }})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="This confirmation link has already been used")
+    return await db.subscriptions.find_one({"id": sub["id"]}, {"_id": 0})
+
+
+@api_router.get("/subscriptions/verify")
+async def verify_results_subscription(token: str):
+    sub = await _activate_subscription(token)
+    await _log_audit(request=None, user=None, action="RESULTS_SUBSCRIPTION_VERIFIED",
+                     description=f"Verified {sub.get('subscription_type')} subscription", resource_type="subscription", resource_id=sub["id"], club_id=sub.get("club_id"))
+    return HTMLResponse("<main style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:24px;text-align:center'><h1>Subscription confirmed ✓</h1><p>You'll now receive published results by email.</p><a href='" + html_lib.escape(_public_web_base()) + "'>Return to SailScore</a></main>")
+
+
+def _subscription_public(sub: dict) -> dict:
+    return {"id": sub["id"], "subscription_type": sub.get("subscription_type"),
+            "target_id": sub.get("target_id"), "target_name": sub.get("target_name"),
+            "club_id": sub.get("club_id"), "verified_at": sub.get("verified_at"),
+            "created_at": sub.get("created_at")}
+
+
+@api_router.get("/subscriptions/manage")
+async def manage_results_subscriptions(token: str):
+    token_hash = _subscription_token_hash(token)
+    subs = await db.subscriptions.find({"manage_token_hash": token_hash, "active": True}, {"_id": 0}).sort("created_at", -1).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    return {"subscriptions": [_subscription_public(s) for s in subs], "token_valid": bool(subs)}
+
+
+async def _unsubscribe_one_by_token(token: str, request: Request):
+    token_hash = _subscription_token_hash(token)
+    sub = await db.subscriptions.find_one({"unsubscribe_token_hash": token_hash, "active": True}, {"_id": 0})
+    # Backward-compatible handling for rows created during the first draft of
+    # this feature: their manage token was also the one-click token.
+    if not sub:
+        sub = await db.subscriptions.find_one({"manage_token_hash": token_hash, "active": True}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription link not found or already unsubscribed")
+    result = await db.subscriptions.update_one({"id": sub["id"], "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
+    if result.modified_count:
+        await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED", description="Removed one results subscription", resource_type="subscription", resource_id=sub["id"], club_id=sub.get("club_id"))
+    return sub
+
+
+@api_router.get("/subscriptions/unsubscribe")
+async def unsubscribe_results_link(token: str, request: Request):
+    """One-click browser unsubscribe from the specific subscription represented
+    by the secure manage token in an email."""
+    sub = await _unsubscribe_one_by_token(token, request)
+    return HTMLResponse("<main style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:24px;text-align:center'><h1>You have been unsubscribed from these results emails.</h1><p>Other subscriptions for this email address remain active.</p><a href='" + html_lib.escape(_public_web_base() + "/subscriptions/manage?token=" + token, quote=True) + "'>Manage my subscriptions</a></main>")
+
+
+@api_router.post("/subscriptions/unsubscribe")
+async def unsubscribe_results(data: SubscriptionTokenInput, request: Request):
+    await _unsubscribe_one_by_token(data.token, request)
+    return {"ok": True, "message": "You have been unsubscribed from these results emails."}
+
+
+@api_router.post("/subscriptions/unsubscribe-all")
+async def unsubscribe_all_results(data: SubscriptionTokenInput, request: Request):
+    token_hash = _subscription_token_hash(data.token)
+    subs = await db.subscriptions.find({"manage_token_hash": token_hash, "active": True}, {"_id": 0, "id": 1, "club_id": 1}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    if not subs:
+        raise HTTPException(status_code=404, detail="Subscription link not found or already unsubscribed")
+    ids = [s["id"] for s in subs]
+    await db.subscriptions.update_many({"id": {"$in": ids}, "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED_ALL", description="Removed all results subscriptions", resource_type="subscription", resource_id=ids[0], club_id=subs[0].get("club_id"))
+    return {"ok": True, "message": "You have been unsubscribed from all Sailscore results emails."}
+
+
+@api_router.delete("/subscriptions/{subscription_id}")
+async def delete_results_subscription(subscription_id: str, token: str, request: Request):
+    token_hash = _subscription_token_hash(token)
+    sub = await db.subscriptions.find_one({"id": subscription_id, "manage_token_hash": token_hash, "active": True}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    await db.subscriptions.update_one({"id": subscription_id, "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_REMOVED", description="Removed one results subscription", resource_type="subscription", resource_id=subscription_id, club_id=sub.get("club_id"))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Results notification rendering and delivery
+# ---------------------------------------------------------------------------
+def _pdf_escape(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").replace("\n", " ")
+
+
+def _simple_results_pdf(title: str, lines: List[str]) -> bytes:
+    """Small standards-compliant PDF fallback built from the same published
+    race rows used in the email. The normal website export remains available;
+    this server-side copy makes delivery independent of a recipient's browser."""
+    content = ["BT", "/F1 10 Tf", "40 800 Td"]
+    for line in [title, "", *lines, "", "Scoring: published race result"]:
+        content.append(f"({_pdf_escape(line)}) Tj")
+        content.append("0 -14 Td")
+    content.append("ET")
+    stream = "\\n".join(content).encode("latin-1", "replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\\nstream\\n" + stream + b"\\nendstream",
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for i, obj in enumerate(objects, 1):
+        offsets.append(len(pdf)); pdf.extend(f"{i} 0 obj\n".encode()); pdf.extend(obj); pdf.extend(b"\nendobj\n")
+    xref = len(pdf); pdf.extend(f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode())
+    for off in offsets[1:]: pdf.extend(f"{off:010d} 00000 n \n".encode())
+    pdf.extend(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
+    return bytes(pdf)
+
+
+async def _notification_context(race: dict) -> dict:
+    cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
+    series = await db.series.find_one({"id": race.get("series_id")}, {"_id": 0}) or {}
+    club = await db.clubs.find_one({"id": cls.get("club_id")}, {"_id": 0}) or {}
+    boats = {b["id"]: b for b in await db.boats.find({"class_id": race.get("class_id"), "year": race.get("year")}, {"_id": 0}).to_list(2000)}
+    cfg = _series_scoring_config(series)
+    results = list(race.get("results") or [])
+    series_entries = race.get("entries_count") or len(results)
+    start_entries = _start_area_entries(results)
+    finishers = len([r for r in results if r.get("code") == "FINISHED"])
+    results.sort(key=lambda r: (0, r.get("position") or 9999) if r.get("code") == "FINISHED" else (1, r.get("code") or ""))
+    rows = []
+    for r in results:
+        boat = boats.get(r.get("boat_id"), {})
+        points = result_points(r, series_entries, start_entries, finishers=finishers, cfg=cfg)
+        rows.append({"boat_id": r.get("boat_id"), "position": r.get("position"), "sail_no": boat.get("sail_no", "—"), "boat": boat.get("name", "Unknown boat"), "helm": boat.get("helm", "—"), "code": r.get("code", "—"), "points": round(points, 1)})
+    title = f"New Results – {series.get('name', 'Results')} – Race {race.get('race_number')}"
+    return {"club": club.get("name", "SailScore club"), "series": series.get("name", "Results"), "class": cls.get("name", "Class"), "race": race.get("race_number"), "date": race.get("date", ""), "title": title, "rows": rows, "scoring_mode": series.get("scoring_mode") or cls.get("scoring_mode") or "one_design", "discards": series.get("discards", 0)}
+
+
+def _results_email_html(ctx: dict, links: dict) -> str:
+    body_rows = "".join(f"<tr><td style='padding:6px;text-align:right'>{html_lib.escape(str(r['position'] or '—'))}</td><td style='padding:6px'>{html_lib.escape(str(r['sail_no']))}</td><td style='padding:6px'>{html_lib.escape(str(r['boat']))}</td><td style='padding:6px'>{html_lib.escape(str(r['helm']))}</td><td style='padding:6px;text-align:right'>{html_lib.escape(str(r['points']))}</td><td style='padding:6px'>{html_lib.escape(str(r['code']))}</td></tr>" for r in ctx["rows"])
+    return f"""<!doctype html><html><body style='margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#1e293b'><main style='max-width:680px;margin:auto;background:white;padding:24px'><h1 style='color:#0a369d;font-size:22px'>Sailscore – New Results Published</h1><p><strong>{html_lib.escape(ctx['club'])}</strong></p><p><strong>{html_lib.escape(ctx['series'])}</strong><br>{html_lib.escape(ctx['class'])}<br>Race {ctx['race']} – {html_lib.escape(ctx['date'])}</p><table style='width:100%;border-collapse:collapse;font-size:14px'><thead><tr style='background:#0a369d;color:white'><th style='padding:7px'>Pos</th><th style='padding:7px'>Sail No.</th><th style='padding:7px;text-align:left'>Boat</th><th style='padding:7px;text-align:left'>Helm</th><th style='padding:7px'>Points</th><th style='padding:7px;text-align:left'>Code</th></tr></thead><tbody>{body_rows}</tbody></table><p style='margin-top:24px'><a href='{html_lib.escape(links['results'], quote=True)}' style='background:#0a369d;color:white;padding:11px 16px;text-decoration:none;border-radius:5px'>View Results Online</a> <a href='{html_lib.escape(links['pdf'], quote=True)}' style='color:#0a369d;padding:11px 8px'>Download Results PDF</a></p><hr><p style='font-size:12px;color:#64748b'>You are receiving this email because you subscribed to results for this class, series or boat.</p><p><a href='{html_lib.escape(links['unsubscribe'], quote=True)}'>Unsubscribe</a> · <a href='{html_lib.escape(links['manage'], quote=True)}'>Manage my subscriptions</a></p></main></body></html>"""
+
+
+async def _send_results_notification(email: str, ctx: dict, manage_token: str, unsubscribe_token: str, race: dict, pdf_bytes: bytes) -> bool:
+    cfg = await _get_email_settings()
+    if not cfg.get("smtp_host"):
+        return False
+    event_key = race.get("publication_event_id") or race.get("id")
+    results_link = f"{_public_web_base()}/club/{(await db.clubs.find_one({'id': (await db.classes.find_one({'id': race.get('class_id')}, {'club_id': 1}) or {}).get('club_id')}, {'slug': 1}) or {}).get('slug', '')}"
+    pdf_link = f"{_public_api_base()}/races/{race['id']}/results.pdf"
+    links = {"results": results_link, "pdf": pdf_link, "unsubscribe": _public_api_base() + "/subscriptions/unsubscribe?token=" + unsubscribe_token, "manage": _public_web_base() + "/subscriptions/manage?token=" + manage_token}
+    msg = EmailMessage()
+    msg["Subject"] = ctx["title"]
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = email
+    msg.set_content("Sailscore – New Results Published\n\n" + "\n".join(f"{r['position'] or '—'} | {r['sail_no']} | {r['boat']} | {r['helm']} | {r['points']} | {r['code']}" for r in ctx["rows"]) + f"\n\nView results online: {results_link}\nUnsubscribe: {links['unsubscribe']}\nManage my subscriptions: {links['manage']}")
+    msg.add_alternative(_results_email_html(ctx, links), subtype="html")
+    filename = re.sub(r"[^A-Za-z0-9]+", "-", f"{ctx['club']}-{ctx['series']}-Race-{ctx['race']}-{race.get('year', '')}").strip("-") + ".pdf"
+    msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
+            s.starttls()
+            if cfg.get("smtp_user"):
+                s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            s.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("RESULTS EMAIL FAILED to=%s event=%s error=%s", email, event_key, exc)
+        return False
+
+
+async def _process_results_notification_job(job_id: str):
+    job = await db.result_notification_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not job or job.get("status") == "sent":
+        return
+    race = await db.races.find_one({"id": job.get("race_id"), "status": "published"}, {"_id": 0})
+    if not race:
+        await db.result_notification_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "last_error": "Published race no longer available", "updated_at": now_iso()}})
+        return
+    ctx = await _notification_context(race)
+    boat_ids = [r.get("boat_id") for r in race.get("results") or []]
+    match = {"club_id": job["club_id"], "verified": True, "active": True, "unsubscribed_at": None, "$or": [
+        {"subscription_type": "class", "target_id": race.get("class_id")},
+        {"subscription_type": "series", "target_id": race.get("series_id")},
+        {"subscription_type": "boat", "target_id": {"$in": boat_ids}},
+    ]}
+    subs = await db.subscriptions.find(match, {"_id": 0}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    grouped = {}
+    for sub in subs:
+        grouped.setdefault(sub["email_hash"], {"sub": sub, "subs": []})["subs"].append(sub)
+    pdf_lines = [f"{r['position'] or '—'} | {r['sail_no']} | {r['boat']} | {r['helm']} | {r['points']} | {r['code']}" for r in ctx["rows"]]
+    pdf = _simple_results_pdf(f"{ctx['club']} — {ctx['series']} — {ctx['class']} — Race {ctx['race']} ({ctx['date']})", pdf_lines)
+    any_failure = False
+    for group in grouped.values():
+        sub = group["sub"]
+        # The manage token is shared by all subscriptions for one verified
+        # address, allowing one secure link to manage the complete set.
+        email = _decrypt_secret(sub.get("email_enc", "")) if sub.get("email_enc") else ""
+        manage_plain = _decrypt_secret(sub.get("manage_token_enc", "")) if sub.get("manage_token_enc") else ""
+        unsubscribe_plain = _decrypt_secret(sub.get("unsubscribe_token_enc", "")) if sub.get("unsubscribe_token_enc") else ""
+        if not email or not manage_plain or not unsubscribe_plain:
+            any_failure = True
+            continue
+        sent = await _send_results_notification(email, ctx, manage_plain, unsubscribe_plain, race, pdf)
+        delivery_key = f"{race.get('publication_event_id') or race['id']}:{sub['email_hash']}"
+        await db.result_notification_deliveries.update_one({"key": delivery_key}, {"$set": {"key": delivery_key, "job_id": job_id, "email_hash": sub["email_hash"], "sent": sent, "updated_at": now_iso(), "error": None if sent else "SMTP unavailable or delivery failed"}}, upsert=True)
+        if not sent: any_failure = True
+    await db.result_notification_jobs.update_one({"id": job_id}, {"$set": {"status": "failed" if any_failure else "sent", "matched": len(grouped), "updated_at": now_iso(), "last_error": "One or more deliveries failed" if any_failure else None}})
+
+
+async def _enqueue_results_notification(race: dict):
+    club_id = await _class_club_id(race.get("class_id"))
+    if not club_id:
+        return
+    event_id = race.get("publication_event_id") or race.get("id")
+    job = {"id": new_id(), "key": event_id, "race_id": race["id"], "club_id": club_id, "status": "pending", "created_at": now_iso(), "updated_at": now_iso(), "attempts": 0}
+    try:
+        await db.result_notification_jobs.insert_one(job)
+    except DuplicateKeyError:
+        return
+    asyncio.create_task(_process_results_notification_job(job["id"]))
+
+
+@api_router.get("/races/{race_id}/results.pdf")
+async def published_results_pdf(race_id: str):
+    """Public PDF endpoint used by notification emails. It only serves a
+    published race and builds the attachment from that same race snapshot."""
+    race = await db.races.find_one({"id": race_id, "status": "published"}, {"_id": 0})
+    if not race:
+        raise HTTPException(status_code=404, detail="Published results not found")
+    ctx = await _notification_context(race)
+    lines = [f"{r['position'] or '—'} | {r['sail_no']} | {r['boat']} | {r['helm']} | {r['points']} | {r['code']}" for r in ctx["rows"]]
+    filename = re.sub(r"[^A-Za-z0-9]+", "-", f"{ctx['club']}-{ctx['series']}-Race-{ctx['race']}-{race.get('year', '')}").strip("-") + ".pdf"
+    return Response(content=_simple_results_pdf(f"{ctx['club']} — {ctx['series']} — {ctx['class']} — Race {ctx['race']} ({ctx['date']})", lines), media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+# ---------------------------------------------------------------------------
+# Official Notice Board (ONB)
+# ---------------------------------------------------------------------------
+# One notice entity serves BOTH publication methods: notices drafted with
+# Sailscore structured fields ("generated") and existing documents uploaded
+# by the club ("uploaded"). Uploaded files are stored byte-for-byte as the
+# authoritative document — never OCR'd, rewritten or reformatted (spec 48) —
+# and carry the same metadata, versioning, audit trail and public presentation
+# as generated notices, so the public ONB never needs to care which method
+# produced a notice (spec 39).
+
+# Canonical notice types. `heading` is the ONB section the type files under
+# (spec 43 — the default structure is automatic). Each field spec drives the
+# dynamic creation form: only the relevant fields exist for the selected type
+# (spec 34), and `placeholder` is greyed-out sailing-specific guidance that is
+# never stored with the notice and never published (spec 35).
+def _nf(key, label, kind="text", placeholder="", required=False):
+    """One dynamic-form field spec. `kind` selects the input widget; the
+    series/race/class kinds are Sailscore selects whose value is an entity id
+    (auto-populated from existing data per spec 46, validated server-side)."""
+    return {"key": key, "label": label, "kind": kind,
+            "placeholder": placeholder, "required": bool(required)}
+
+
+NOTICE_TYPES = [
+    {
+        "key": "notice_to_competitors",
+        "label": "Notice to Competitors",
+        "heading": "Notices to Competitors",
+        "description": "General instructions or information for racing competitors.",
+        "fields": [
+            _nf("series_id", "Event / Series", "series"),
+            _nf("race_id", "Race", "race"),
+            _nf("class_id", "Class / Fleet", "class"),
+            _nf("date", "Date", "date"),
+            _nf("time", "Time", "time"),
+            _nf("subject", "Subject", "text", "Example: Change of race area for today's racing", True),
+            _nf("reason", "Reason for notice", "textarea",
+                "Example: The wind has shifted 40 degrees, so the race committee has moved the starting area east of Knot Point."),
+            _nf("instruction", "Change / instruction", "textarea",
+                "Example: Race 4 will start at 14:30 instead of 14:00. Boats must keep clear of the shipping channel until their warning signal.", True),
+            _nf("effective_from", "Effective from", "text",
+                "Example: Immediately, until further notice"),
+            _nf("additional_info", "Additional information", "textarea",
+                "Example: The committee vessel will fly flag L when the new race area is open."),
+            _nf("issued_by", "Race Officer / Race Committee", "text",
+                "Example: J Smith, Race Officer"),
+        ],
+    },
+    {
+        "key": "si_amendment",
+        "label": "Change to Sailing Instructions",
+        "heading": "Sailing Instructions / Amendments",
+        "description": "Amend an instruction in the published sailing instructions.",
+        "fields": [
+            _nf("series_id", "Event / Series", "series"),
+            _nf("race_id", "Race", "race"),
+            _nf("class_id", "Class / Fleet", "class"),
+            _nf("si_number", "SI number being changed", "text", "Example: SI 8.2", True),
+            _nf("instruction_number", "Existing instruction number", "text",
+                "Example: 8.2 as published on 1 May 2026"),
+            _nf("existing_wording", "Existing wording", "textarea",
+                "Example: The starting line will be between the staff boat flying an orange flag and the outer distance mark."),
+            _nf("new_wording", "New wording", "textarea",
+                "Example: SI 8.2 is amended to read: The starting line will be between the orange flag on the committee vessel and the port-end mark.", True),
+            _nf("reason", "Reason for change", "textarea",
+                "Example: To keep the start clear of the dredger working north of the moorings."),
+            _nf("effective_at", "Effective date/time", "text",
+                "Example: From 09:00 on Saturday 29 August"),
+            _nf("race_event_affected", "Race / event affected", "text",
+                "Example: Summer Series — all remaining races"),
+            _nf("issued_by", "Issued by", "text",
+                "Example: Race Committee, Medway Yacht Club"),
+        ],
+    },
+    {
+        "key": "race_postponement",
+        "label": "Race Postponement",
+        "heading": "Race Notices",
+        "description": "Postpone a race already scheduled or under way.",
+        "fields": [
+            _nf("race_id", "Race / event", "race", "", True),
+            _nf("series_id", "Event / Series", "series"),
+            _nf("class_id", "Class / Fleet", "class"),
+            _nf("original_start_time", "Original start time", "time", "Example: 14:00"),
+            _nf("new_start_time", "New start time", "time", "Example: 15:30"),
+            _nf("reason", "Reason for postponement", "textarea",
+                "Example: Strong winds are forecast for the scheduled start time.", True),
+            _nf("new_warning_signal", "New warning signal", "time", "Example: 15:00"),
+            _nf("new_starting_sequence", "New starting sequence", "text",
+                "Example: Warning signal 15:00, starts from 15:05 — one minute between fleets"),
+            _nf("additional_instructions", "Additional instructions", "textarea",
+                "Example: Flag AP over A means racing is abandoned for the day — listen on VHF channel 37."),
+            _nf("issued_by", "Race Officer / Race Committee", "text",
+                "Example: J Smith, Race Officer"),
+        ],
+    },
+    {
+        "key": "race_cancellation",
+        "label": "Race Cancellation",
+        "heading": "Race Notices",
+        "description": "Cancel a scheduled race entirely.",
+        "fields": [
+            _nf("race_id", "Race / event", "race", "", True),
+            _nf("series_id", "Event / Series", "series"),
+            _nf("class_id", "Class / Fleet", "class"),
+            _nf("scheduled_date", "Scheduled date", "date"),
+            _nf("scheduled_time", "Scheduled time", "time"),
+            _nf("reason", "Reason for cancellation", "textarea",
+                "Example: The waterway is closed to racing by the harbour authority for dredging.", True),
+            _nf("further_information", "Further information", "textarea",
+                "Example: A rescheduled date will be published on the Official Notice Board."),
+            _nf("issued_by", "Race Officer / Race Committee", "text",
+                "Example: J Smith, Race Officer"),
+        ],
+    },
+    {
+        "key": "hearing_schedule",
+        "label": "Hearing Schedule",
+        "heading": "Protests & Hearings",
+        "description": "Schedule a protest hearing and notify the parties.",
+        "fields": [
+            _nf("hearing_number", "Hearing / protest number", "text",
+                "Example: Protest No. 3 — 'Wild Rose' v 'Blue Peter'", True),
+            _nf("hearing_date", "Hearing date", "date"),
+            _nf("hearing_time", "Hearing time", "time", "Example: 18:30"),
+            _nf("location", "Location", "text", "Example: Clubhouse — committee room"),
+            _nf("parties", "Parties", "text",
+                "Example: Protestor: GBR 4502 Wild Rose. Protestee: GBR 112 Blue Peter."),
+            _nf("race_id", "Race", "race"),
+            _nf("additional_info", "Additional information", "textarea",
+                "Example: Parties may bring witnesses and a representative; inform the race office if unable to attend."),
+        ],
+    },
+    {
+        "key": "hearing_decision",
+        "label": "Hearing Decision",
+        "heading": "Protests & Hearings",
+        "description": "Publish the outcome of a protest hearing.",
+        "fields": [
+            _nf("hearing_number", "Hearing / protest number", "text",
+                "Example: Protest No. 3 — 'Wild Rose' v 'Blue Peter'", True),
+            _nf("decision_date", "Decision date", "date"),
+            _nf("parties", "Parties", "text",
+                "Example: Protestor: GBR 4502 Wild Rose. Protestee: GBR 112 Blue Peter."),
+            _nf("race_id", "Race", "race"),
+            _nf("facts_summary", "Summary of facts", "textarea",
+                "Example: Boat A tacked within two lengths of Boat B's bow; Boat B luffed and made contact."),
+            _nf("decision", "Decision", "textarea",
+                "Example: Protest upheld. GBR 112 is disqualified (DSQ) for breaking rule 16.1.", True),
+            _nf("additional_info", "Additional information", "textarea",
+                "Example: Redress requests arising from this incident must reach the race office by 18:00 tomorrow."),
+        ],
+    },
+    {
+        "key": "results_notice",
+        "label": "Results Notice",
+        "heading": "Results",
+        "description": "Publish or correct a results statement.",
+        "fields": [
+            _nf("race_id", "Race / event", "race"),
+            _nf("series_id", "Event / Series", "series"),
+            _nf("class_id", "Class / Fleet", "class"),
+            _nf("results_status", "Results status", "text",
+                "Example: Provisional results for Race 8 are now published", True),
+            _nf("date", "Date", "date"),
+            _nf("results_link", "Link / reference to results", "text",
+                "Example: Results page — Summer Series, Race 8"),
+            _nf("additional_info", "Additional information", "textarea",
+                "Example: Corrections must reach the race officer before 17:00 on 30 August."),
+        ],
+    },
+    {
+        "key": "safety_notice",
+        "label": "Safety Notice",
+        "heading": "Safety",
+        "description": "Warn of a hazard or issue a safety instruction.",
+        "fields": [
+            _nf("date", "Date", "date"),
+            _nf("time", "Time", "time"),
+            _nf("area", "Area / location", "text",
+                "Example: East of the moorings, between buoys 4 and 6"),
+            _nf("hazard", "Hazard", "textarea",
+                "Example: A partially submerged pontoon has broken from its mooring near the harbour entrance.", True),
+            _nf("instruction", "Safety instruction", "textarea",
+                "Example: Keep 50 m clear and pass at slow speed, monitoring VHF channel 16.", True),
+            _nf("effective_from", "Effective from", "text",
+                "Example: Until the pontoon is recovered"),
+            _nf("issued_by", "Issued by", "text",
+                "Example: Hon. Sailing Secretary"),
+        ],
+    },
+    {
+        "key": "general_club_notice",
+        "label": "General Club Notice",
+        "heading": "General Notices",
+        "description": "Any other club notice relevant to the Official Notice Board.",
+        "fields": [
+            _nf("date", "Date", "date"),
+            _nf("body", "Notice content", "textarea",
+                "Example: The clubhouse bar will be closed on Monday 31 August for maintenance. Sailing is unaffected.", True),
+            _nf("issued_by", "Issued by", "text",
+                "Example: Sailing Secretary"),
+        ],
+    },
+]
+
+NOTICE_TYPES_BY_KEY = {t["key"]: t for t in NOTICE_TYPES}
+# Canonical ONB heading order (public display groups notices by heading in
+# this order; headings not in the list sort last alphabetically).
+NOTICE_HEADING_ORDER = []
+for _t in NOTICE_TYPES:
+    if _t["heading"] not in NOTICE_HEADING_ORDER:
+        NOTICE_HEADING_ORDER.append(_t["heading"])
+
+# Upload limits. The document IS the notice content for uploads — it is never
+# modified (spec 48) — and everything is stored inline on the notice doc, so
+# the caps keep a notice comfortably inside MongoDB's 16 MB document limit
+# even after base64 encoding.
+NOTICE_DOC_MAX = 10 * 1024 * 1024          # uploaded main document (raw bytes)
+NOTICE_ATTACHMENT_MAX = 5 * 1024 * 1024    # per supporting attachment
+NOTICE_ATTACHMENTS_MAX = 4                 # attachments per notice
+NOTICE_PDF_MAX = 10 * 1024 * 1024          # Sailscore-generated PDF at publish
+# Total encoded budget for one notice document (main file + attachments + PDF).
+NOTICE_ENCODED_BUDGET = 14 * 1024 * 1024
+
+
+def _notice_type_or_400(key: str) -> dict:
+    tdef = NOTICE_TYPES_BY_KEY.get((key or "").strip())
+    if not tdef:
+        raise HTTPException(status_code=400, detail="Unknown notice type")
+    return tdef
+
+
+def _detect_notice_doc_type(data: bytes) -> Optional[str]:
+    """MIME type of an uploaded notice document from magic bytes only. PDFs
+    are the typical official document, but photos of signed notices (PNG/
+    JPEG/WebP) and course diagrams are legitimate too. Everything else —
+    Office files, HTML, executables — is rejected."""
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    return _detect_image_type(data)
+
+
+def _valid_notice_datetime(value: Optional[str], label: str) -> Optional[str]:
+    """Validate a datetime-local / ISO string for metadata fields. Returns the
+    normalised ISO string, or None when nothing was supplied."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(v).isoformat()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail=f"{label} must be a valid date and time")
+
+
+async def _validate_notice_links(club_id: str, race_id=None, series_id=None, class_id=None) -> dict:
+    """Validate Sailscore entity links (race / series / class) for a notice and
+    denormalise their display names onto the notice. Every link must belong to
+    the notice's club, and the links must be mutually consistent (a race must
+    belong to its series' class). Populates event/series/race/class names so
+    the public ONB renders without extra lookups (spec 39)."""
+    out = {"series_id": None, "series_name": None, "event_name": None,
+           "race_id": None, "race_number": None, "race_date": None,
+           "class_id": None, "class_name": None}
+
+    async def _class_name(cid):
+        cls = await db.classes.find_one({"id": cid}, {"_id": 0, "name": 1})
+        return cls.get("name") if cls else None
+
+    if class_id:
+        cls = await db.classes.find_one({"id": class_id}, {"_id": 0, "name": 1, "club_id": 1})
+        if not cls or cls.get("club_id") != club_id:
+            raise HTTPException(status_code=400, detail="Class not found in this club")
+        out["class_id"], out["class_name"] = class_id, cls.get("name")
+    if series_id:
+        s = await db.series.find_one({"id": series_id}, {"_id": 0})
+        s_club = await _class_club_id(s.get("class_id")) if s else None
+        if not s or s_club != club_id:
+            raise HTTPException(status_code=400, detail="Series not found in this club")
+        if out["class_id"] and s.get("class_id") != out["class_id"]:
+            raise HTTPException(status_code=400, detail="Series does not belong to the selected class")
+        out["series_id"] = s["id"]
+        out["series_name"] = s.get("name")
+        out["event_name"] = s.get("name")
+        if not out["class_id"]:
+            out["class_id"] = s.get("class_id")
+            out["class_name"] = await _class_name(s.get("class_id"))
+    if race_id:
+        r = await db.races.find_one({"id": race_id}, {"_id": 0})
+        if not r:
+            raise HTTPException(status_code=400, detail="Race not found in this club")
+        r_club = await _class_club_id(r.get("class_id"))
+        if r_club != club_id:
+            raise HTTPException(status_code=400, detail="Race not found in this club")
+        if out["series_id"] and r.get("series_id") != out["series_id"]:
+            raise HTTPException(status_code=400, detail="Race does not belong to the selected series")
+        out["race_id"] = r["id"]
+        out["race_number"] = r.get("race_number")
+        out["race_date"] = r.get("date")
+        if not out["series_id"]:
+            out["series_id"] = r.get("series_id")
+            sr = await db.series.find_one({"id": r.get("series_id")}, {"_id": 0, "name": 1})
+            out["series_name"] = out["event_name"] = (sr or {}).get("name")
+        if not out["class_id"]:
+            out["class_id"] = r.get("class_id")
+            out["class_name"] = await _class_name(r.get("class_id"))
+    return out
+
+
+def _clean_notice_fields(tdef: dict, fields: Optional[dict], *, partial=False) -> dict:
+    """Accept only catalogue-known keys for the selected type (spec 34: no
+    field leakage across types), coerce values to trimmed strings capped at
+    2000 chars, and drop empties. `partial` (edit) keeps previously stored
+    values for keys absent from the payload. Required-field enforcement is
+    catalogue-driven; link-kind keys (series/race/class ids) are handled by
+    _validate_notice_links, never stored here."""
+    allowed = {f["key"]: f for f in tdef["fields"]}
+    cleaned = {} if not partial else {
+        k: v for k, v in (fields or {}).items() if k in allowed
+    }
+    for key, val in (fields or {}).items():
+        fdef = allowed.get(key)
+        if not fdef:
+            raise HTTPException(status_code=400,
+                                detail=f"'{key}' is not a field of a {tdef['label']}")
+        if fdef["kind"] in ("series", "race", "class"):
+            continue  # validated as club links, not stored in fields
+        sval = str(val if val is not None else "").strip()[:2000]
+        if sval:
+            cleaned[key] = sval
+        else:
+            cleaned.pop(key, None)
+    if not partial:
+        missing = [f["label"] for f in tdef["fields"]
+                   if f["required"] and f["kind"] not in ("series", "race", "class")
+                   and not cleaned.get(f["key"])]
+        if missing:
+            raise HTTPException(status_code=400,
+                                detail="Missing required field(s): " + ", ".join(missing))
+    return cleaned
+
+
+def _notice_body(tdef: dict, fields: dict) -> List[dict]:
+    """The rendered label/value rows for the public HTML notice (spec 41),
+    computed server-side in catalogue order so the ONB needs no type
+    catalogue. Placeholders are never here: only stored values are."""
+    rows = []
+    for f in tdef["fields"]:
+        if f["kind"] in ("series", "race", "class"):
+            continue
+        v = (fields or {}).get(f["key"])
+        if v:
+            rows.append({"label": f["label"], "value": v})
+    return rows
+
+
+async def _next_notice_number(club_id: str, type_key: str) -> int:
+    """Next notice number for a club + type (notice numbers are per type, so
+    'Notice to Competitors No. 4' and 'Amendment No. 4' can co-exist)."""
+    agg = await db.notices.find_one(
+        {"club_id": club_id, "notice_type": type_key},
+        sort=[("notice_number", -1)], projection={"notice_number": 1})
+    return int((agg or {}).get("notice_number") or 0) + 1
+
+
+def _notice_history_entry(user: dict, action: str, note: str = "") -> dict:
+    return {"action": action, "at": now_iso(), "by": (user or {}).get("username"),
+            "by_id": (user or {}).get("user_id"), "note": note}
+
+
+def _encoded_notice_size(doc: dict) -> int:
+    """Approximate stored size of the notice (base64 payloads + fields) so an
+    upload that would blow MongoDB's document cap is rejected up front."""
+    total = len((doc.get("pdf_data_url") or ""))
+    total += len((doc.get("file_data_url") or ""))
+    for a in doc.get("attachments") or []:
+        total += len(a.get("data_url") or "")
+    return total
+
+
+def _notice_summary(doc: dict) -> dict:
+    """List-view shape: everything the ONB cards and the management list need,
+    WITHOUT the heavy base64 payloads (file/PDF/attachment contents). Those
+    are fetched per notice via GET /notices/{id} on demand."""
+    return {k: doc.get(k) for k in (
+        "id", "club_id", "notice_type", "notice_type_label", "heading",
+        "title", "notice_number", "content_type", "status", "version",
+        "root_id", "supersedes_id", "superseded_by", "published_at",
+        "published_by", "effective_at", "publication_datetime",
+        "created_at", "created_by", "modified_at", "modified_by",
+        "event_name", "series_name", "race_number", "race_date",
+        "class_name", "public_path", "has_file", "has_pdf",
+        "attachments", "withdrawn_at", "withdrawn_by", "withdrawal_reason",
+        # Render rows + structured fields (small): the public ONB renders the
+        # HTML notice straight from the list response (spec 41).
+        "fields", "body",
+        # Sailscore links + uploaded-document facts (hash/size never change on
+        # edits — the club can always demonstrate which document was issued).
+        "series_id", "race_id", "class_id", "club_name",
+        "original_filename", "file_type", "file_size", "file_hash",
+        "created_by_id",
+    )} | {
+        # attachments without their data URLs
+        "attachments": [
+            {k: a.get(k) for k in ("id", "name", "file_type", "file_size", "file_hash")}
+            for a in doc.get("attachments") or []
+        ],
+    }
+
+
+async def _notice_of_club(notice_id: str, user: dict) -> dict:
+    notice = await db.notices.find_one({"id": notice_id}, {"_id": 0})
+    if not notice:
+        raise HTTPException(status_code=404, detail="Notice not found")
+    _ensure_club(user, notice.get("club_id"))
+    return notice
+
+
+class NoticeCreateInput(BaseModel):
+    """A Sailscore-GENERATED notice: structured fields for the selected type.
+    Uploaded notices go through POST /notices/upload (multipart)."""
+    notice_type: str
+    title: str
+    fields: dict = {}
+    notice_number: Optional[int] = Field(None, ge=1, le=9999)
+    effective_datetime: Optional[str] = None
+    # Webmaster-only: create on behalf of a club. Staff are always pinned to
+    # their own club regardless of this value.
+    club_id: Optional[str] = None
+    expected_version: Optional[int] = None
+
+
+class NoticeUpdateInput(BaseModel):
+    """Edit a DRAFT notice. Published notices are immutable — amendments
+    create a new version (POST /notices/{id}/new-version, spec 49). Uploaded
+    documents are never editable here; a corrected document is attached to a
+    new version (PUT /notices/{id}/file)."""
+    title: Optional[str] = None
+    fields: Optional[dict] = None
+    notice_number: Optional[int] = Field(None, ge=1, le=9999)
+    effective_datetime: Optional[str] = None
+    expected_version: Optional[int] = None
+
+
+class NoticePublishInput(BaseModel):
+    """Publish a draft. Generated notices carry the client-rendered PDF
+    (data URL) built from the same structured fields; uploaded notices have
+    no pdf (their uploaded document is the formal version)."""
+    pdf_data_url: Optional[str] = None
+    expected_version: Optional[int] = None
+
+
+class NoticeWithdrawInput(BaseModel):
+    reason: str
+    expected_version: Optional[int] = None
+
+
+@api_router.get("/notices/meta")
+async def notices_meta(user: dict = Depends(require_officer)):
+    """The notice type catalogue for the creation wizard: labels, ONB headings
+    and the per-type dynamic field specs (with their greyed-out placeholder
+    guidance, which only ever lives here — never on stored notices)."""
+    return {
+        "types": NOTICE_TYPES,
+        "headings": NOTICE_HEADING_ORDER,
+        "limits": {
+            "document_max": NOTICE_DOC_MAX,
+            "attachment_max": NOTICE_ATTACHMENT_MAX,
+            "attachments_max": NOTICE_ATTACHMENTS_MAX,
+        },
+    }
+
+
+@api_router.get("/notices")
+async def list_notices(request: Request, club_id: Optional[str] = None,
+                       status: Optional[str] = None, notice_type: Optional[str] = None,
+                       race_id: Optional[str] = None, root_id: Optional[str] = None,
+                       limit: int = 200):
+    """Public ONB: only published (and withdrawn, marked as such) notices for a
+    club, the latest version of each notice — superseded versions are never
+    listed. Signed-in staff of the club (or the webmaster) additionally see
+    drafts and can filter by status / root, for the management views."""
+    user = await get_current_user(request)
+    scope = await _resolve_club_id(request, club_id)
+    if not scope:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    staff_view = bool(user) and (user.get("role") == "webmaster" or user.get("club_id") == scope)
+    limit = max(1, min(int(limit), 500))
+
+    q = {"club_id": scope}
+    if notice_type:
+        q["notice_type"] = notice_type
+    if race_id:
+        q["race_id"] = race_id
+    if root_id and staff_view:
+        q["root_id"] = root_id
+    if staff_view:
+        if status:
+            if status not in ("draft", "published", "superseded", "withdrawn", "all"):
+                raise HTTPException(status_code=400, detail="Unknown status filter")
+            if status != "all":
+                q["status"] = status
+    else:
+        q["status"] = {"$in": ["published", "withdrawn"]}
+
+    docs = await db.notices.find(q, {"_id": 0}) \
+        .sort("created_at", -1).to_list(limit)
+    if staff_view:
+        return [_notice_summary(d) for d in docs]
+    # Public: keep only the latest version of each notice (root) — an amended
+    # notice shows its current version, with superseded ones available by
+    # direct link for the audit trail only.
+    latest = {}
+    for d in docs:
+        root = d.get("root_id") or d["id"]
+        if root not in latest or int(d.get("version") or 1) > int(latest[root].get("version") or 1):
+            latest[root] = d
+    out = [d for d in latest.values() if d["status"] in ("published", "withdrawn")]
+    out.sort(key=lambda d: (d.get("published_at") or d.get("created_at") or ""), reverse=True)
+    return [_notice_summary(d) for d in out]
+
+
+@api_router.get("/notices/context")
+async def notice_context(request: Request, race_id: Optional[str] = None,
+                         series_id: Optional[str] = None,
+                         user: dict = Depends(require_officer)):
+    """Everything the wizard needs to pre-fill a notice from existing Sailscore
+    data (spec 46): club, event/series, race number/date/time and class for a
+    race (or series), plus the officer's name for the issuing-authority field."""
+    if not race_id and not series_id:
+        raise HTTPException(status_code=400, detail="race_id or series_id is required")
+    if race_id:
+        race = await db.races.find_one({"id": race_id}, {"_id": 0})
+        if not race:
+            raise HTTPException(status_code=404, detail="Race not found")
+        club_id = await _class_club_id(race.get("class_id"))
+        _ensure_club(user, club_id)
+        series = await db.series.find_one({"id": race.get("series_id")}, {"_id": 0, "name": 1})
+        cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0, "name": 1})
+        club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
+        return {
+            "club_id": club_id, "club_name": (club or {}).get("name"),
+            "class_id": race.get("class_id"), "class_name": (cls or {}).get("name"),
+            "series_id": race.get("series_id"), "series_name": (series or {}).get("name"),
+            "event_name": (series or {}).get("name"),
+            "race_id": race["id"], "race_number": race.get("race_number"),
+            "race_date": race.get("date"), "start_time": race.get("start_time"),
+            "officer_name": user.get("name") or user.get("username"),
+        }
+    series = await db.series.find_one({"id": series_id}, {"_id": 0})
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    club_id = await _class_club_id(series.get("class_id"))
+    _ensure_club(user, club_id)
+    cls = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0, "name": 1})
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
+    return {
+        "club_id": club_id, "club_name": (club or {}).get("name"),
+        "class_id": series.get("class_id"), "class_name": (cls or {}).get("name"),
+        "series_id": series["id"], "series_name": series.get("name"),
+        "event_name": series.get("name"),
+        "race_id": None, "race_number": None, "race_date": None, "start_time": None,
+        "officer_name": user.get("name") or user.get("username"),
+    }
+
+
+@api_router.get("/notices/next-number")
+async def next_notice_number(request: Request, notice_type: str,
+                             club_id: Optional[str] = None,
+                             user: dict = Depends(require_officer)):
+    """The next free notice number for a club + type — pre-filled in the wizard
+    so officers never have to track numbering themselves."""
+    _notice_type_or_400(notice_type)
+    scope = await _resolve_club_id(request, club_id)
+    if not scope:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    _ensure_club(user, scope)
+    return {"next": await _next_notice_number(scope, notice_type)}
+
+
+@api_router.post("/notices")
+async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_officer)):
+    """Create a DRAFT notice generated from Sailscore structured fields
+    (Option 1). Nothing is public until POST /notices/{id}/publish."""
+    tdef = _notice_type_or_400(data.notice_type)
+    club_id = data.club_id if (user.get("role") == "webmaster" and data.club_id) else user.get("club_id")
+    if not club_id:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    title = (data.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+    fields_in = data.fields or {}
+    links = await _validate_notice_links(
+        club_id,
+        fields_in.get("race_id"), fields_in.get("series_id"), fields_in.get("class_id"))
+    # Keep the link values out of the sanitised field dict (they are stored as
+    # denormalised columns) but tolerate their presence in the payload.
+    fields_in = {k: v for k, v in fields_in.items()
+                 if k not in ("series_id", "race_id", "class_id")}
+    fields = _clean_notice_fields(tdef, fields_in)
+    effective = _valid_notice_datetime(data.effective_datetime, "Effective date/time")
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
+
+    notice_id = new_id()
+    doc = {
+        "id": notice_id, "club_id": club_id,
+        "notice_type": tdef["key"], "notice_type_label": tdef["label"],
+        "heading": tdef["heading"], "title": title,
+        "notice_number": data.notice_number or await _next_notice_number(club_id, tdef["key"]),
+        "content_type": "generated", "creation_method": "generated",
+        "status": "draft", "version": 1, "root_id": notice_id,
+        "supersedes_id": None, "superseded_by": None,
+        "fields": fields, "body": _notice_body(tdef, fields),
+        "published_at": None, "published_by": None,
+        "effective_at": effective, "publication_datetime": None,
+        "created_at": now_iso(), "created_by": user.get("username"),
+        "created_by_id": user.get("user_id"),
+        "modified_at": None, "modified_by": None,
+        "withdrawn_at": None, "withdrawn_by": None, "withdrawal_reason": None,
+        "club_name": (club or {}).get("name"),
+        "public_path": f"/club/{(club or {}).get('slug')}#notice-{notice_id}",
+        "pdf_data_url": None, "has_pdf": False,
+        "file_data_url": None, "has_file": False,
+        "original_filename": None, "file_type": None, "file_size": None, "file_hash": None,
+        "attachments": [],
+        "history": [_notice_history_entry(user, "created", "Generated with Sailscore")],
+    }
+    doc.update(links)
+    for _ in range(5):
+        try:
+            await db.notices.insert_one(doc)
+            break
+        except DuplicateKeyError:
+            # (club, type, notice_number) is unique — someone published a
+            # number in between; take the next one.
+            doc["notice_number"] = int(doc["notice_number"]) + 1
+    else:
+        raise HTTPException(status_code=400,
+                            detail="Could not allocate a free notice number — try again")
+    doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="NOTICE_CREATED",
+                     description=f"Created draft {tdef['label']} '{title}'",
+                     resource_type="notice", resource_id=notice_id, club_id=club_id)
+    return _notice_summary(doc)
+
+
+@api_router.post("/notices/upload")
+async def upload_notice(request: Request,
+                        user: dict = Depends(require_officer),
+                        notice_type: str = Form(...),
+                        title: str = Form(...),
+                        notice_number: Optional[int] = Form(None),
+                        club_id_param: Optional[str] = Form(None),
+                        series_id: Optional[str] = Form(None),
+                        race_id: Optional[str] = Form(None),
+                        class_id: Optional[str] = Form(None),
+                        publication_datetime: Optional[str] = Form(None),
+                        effective_datetime: Optional[str] = Form(None),
+                        file: UploadFile = File(...)):
+    """Create a DRAFT notice whose content is an EXISTING document (Option 2).
+    The file is stored byte-for-byte and becomes the notice content — Sailscore
+    adds only the surrounding metadata and ONB presentation (specs 37/38/48)."""
+    tdef = _notice_type_or_400(notice_type)
+    # Staff are pinned to their own club; a webmaster uploading needs an
+    # explicit club (multipart bodies carry no JSON club_id field).
+    club_id = (club_id_param if user.get("role") == "webmaster" else None) or user.get("club_id")
+    if not club_id:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    title = (title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+    links = await _validate_notice_links(club_id, race_id, series_id, class_id)
+    publication = _valid_notice_datetime(publication_datetime, "Publication date/time")
+    effective = _valid_notice_datetime(effective_datetime, "Effective date/time")
+    data = await file.read()
+    if len(data) > NOTICE_DOC_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f"Document is too large — {NOTICE_DOC_MAX // (1024*1024)} MB max")
+    ctype = _detect_notice_doc_type(data)
+    if not ctype:
+        raise HTTPException(status_code=400,
+                            detail="The document must be a PDF, PNG, JPEG or WebP file")
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
+    notice_id = new_id()
+    doc = {
+        "id": notice_id, "club_id": club_id,
+        "notice_type": tdef["key"], "notice_type_label": tdef["label"],
+        "heading": tdef["heading"], "title": title,
+        "notice_number": notice_number or await _next_notice_number(club_id, tdef["key"]),
+        "content_type": "uploaded", "creation_method": "uploaded",
+        "status": "draft", "version": 1, "root_id": notice_id,
+        "supersedes_id": None, "superseded_by": None,
+        "fields": {}, "body": [],
+        "published_at": None, "published_by": None,
+        "effective_at": effective, "publication_datetime": publication,
+        "created_at": now_iso(), "created_by": user.get("username"),
+        "created_by_id": user.get("user_id"),
+        "modified_at": None, "modified_by": None,
+        "withdrawn_at": None, "withdrawn_by": None, "withdrawal_reason": None,
+        "club_name": (club or {}).get("name"),
+        "public_path": f"/club/{(club or {}).get('slug')}#notice-{notice_id}",
+        "pdf_data_url": None, "has_pdf": False,
+        "file_data_url": f"data:{ctype};base64,{base64.b64encode(data).decode()}",
+        "has_file": True,
+        "original_filename": file.filename or "document",
+        "file_type": ctype, "file_size": len(data),
+        "file_hash": hashlib.sha256(data).hexdigest(),
+        "attachments": [],
+        "history": [_notice_history_entry(
+            user, "created",
+            f"Uploaded document '{file.filename or 'document'}' ({len(data)} bytes)")],
+    }
+    doc.update(links)
+    if _encoded_notice_size(doc) > NOTICE_ENCODED_BUDGET:
+        raise HTTPException(status_code=400,
+                            detail="Document too large to store — 14 MB total budget per notice")
+    for _ in range(5):
+        try:
+            await db.notices.insert_one(doc)
+            break
+        except DuplicateKeyError:
+            doc["notice_number"] = int(doc["notice_number"]) + 1
+    else:
+        raise HTTPException(status_code=400,
+                            detail="Could not allocate a free notice number — try again")
+    doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="NOTICE_CREATED",
+                     description=f"Uploaded draft {tdef['label']} '{title}' ({ctype}, {len(data)} bytes)",
+                     resource_type="notice", resource_id=notice_id, club_id=club_id)
+    return _notice_summary(doc)
+
+
+@api_router.get("/notices/{notice_id}")
+async def get_notice(notice_id: str, request: Request):
+    """Full notice. Public callers only ever reach published / superseded /
+    withdrawn notices (drafts 404 — never revealed); staff of the owning club
+    (and the webmaster) can read any status. This is where the heavy payloads
+    (uploaded document, generated PDF, attachment contents) are served from."""
+    notice = await db.notices.find_one({"id": notice_id}, {"_id": 0})
+    if not notice:
+        raise HTTPException(status_code=404, detail="Notice not found")
+    user = await get_current_user(request)
+    staff = user and (user.get("role") == "webmaster" or user.get("club_id") == notice.get("club_id"))
+    if not staff and notice.get("status") not in ("published", "superseded", "withdrawn"):
+        raise HTTPException(status_code=404, detail="Notice not found")
+    return notice
+
+
+@api_router.put("/notices/{notice_id}")
+async def update_notice(notice_id: str, data: NoticeUpdateInput,
+                        user: dict = Depends(require_officer)):
+    """Edit a draft (spec 49: structured fields may be edited freely before
+    publication; after publication amendments create a NEW version). Uploaded
+    notices only take metadata here — their document is the content and is
+    never modified through this endpoint."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "draft":
+        raise HTTPException(status_code=409,
+                            detail="Only draft notices can be edited — create a new version to amend a published notice")
+    expected = _expected_version(data)
+    tdef = NOTICE_TYPES_BY_KEY[notice["notice_type"]]
+    updates = {"modified_at": now_iso(), "modified_by": user.get("username")}
+    history = None
+
+    if data.title is not None:
+        title = data.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title is required")
+        updates["title"] = title
+    if data.notice_number is not None:
+        updates["notice_number"] = data.notice_number
+    if data.effective_datetime is not None:
+        updates["effective_at"] = _valid_notice_datetime(data.effective_datetime, "Effective date/time")
+
+    if data.fields is not None:
+        if notice["content_type"] == "uploaded":
+            non_link = {k: v for k, v in data.fields.items()
+                        if k not in ("series_id", "race_id", "class_id")}
+            if non_link:
+                raise HTTPException(status_code=400,
+                                    detail="Uploaded notices keep the uploaded document as their content — metadata only")
+            links = await _validate_notice_links(
+                notice["club_id"], data.fields.get("race_id"),
+                data.fields.get("series_id"), data.fields.get("class_id"))
+            updates.update(links)
+            history = "metadata updated"
+        else:
+            links_in = {k: data.fields[k] for k in ("series_id", "race_id", "class_id")
+                        if k in data.fields}
+            links = await _validate_notice_links(
+                notice["club_id"], links_in.get("race_id"),
+                links_in.get("series_id"), links_in.get("class_id")) if links_in else None
+            fields_payload = {k: v for k, v in data.fields.items()
+                              if k not in ("series_id", "race_id", "class_id")}
+            fields = _clean_notice_fields(tdef, fields_payload, partial=True)
+            merged = dict(notice.get("fields") or {})
+            merged.update(fields)
+            updates["fields"] = merged
+            updates["body"] = _notice_body(tdef, merged)
+            if links:
+                updates.update(links)
+            history = "fields updated"
+
+    if history:
+        updates["history"] = (notice.get("history") or []) + [
+            _notice_history_entry(user, "modified", history)]
+
+    result = await db.notices.update_one(_version_filter(notice_id, expected),
+                                         {"$set": updates, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    await _log_audit(request=None, user=user, action="NOTICE_UPDATED",
+                     description=f"Updated draft notice '{notice.get('title')}'",
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+
+
+@api_router.put("/notices/{notice_id}/file")
+async def replace_notice_file(notice_id: str, user: dict = Depends(require_officer),
+                              file: UploadFile = File(...)):
+    """Attach (or, on a new version, replace) the document of an UPLOADED draft.
+    A published document is never touched here — corrected documents go onto a
+    new version (spec 49), and every replacement is hashed + recorded."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "draft":
+        raise HTTPException(status_code=409,
+                            detail="Only draft notices can receive a document — create a new version to replace a published document")
+    if notice.get("content_type") != "uploaded":
+        raise HTTPException(status_code=400,
+                            detail="Generated notices use the Sailscore-generated PDF, not an uploaded document")
+    data = await file.read()
+    if len(data) > NOTICE_DOC_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f"Document is too large — {NOTICE_DOC_MAX // (1024*1024)} MB max")
+    ctype = _detect_notice_doc_type(data)
+    if not ctype:
+        raise HTTPException(status_code=400,
+                            detail="The document must be a PDF, PNG, JPEG or WebP file")
+    replaced = notice.get("file_hash")
+    updates = {
+        "file_data_url": f"data:{ctype};base64,{base64.b64encode(data).decode()}",
+        "has_file": True,
+        "original_filename": file.filename or notice.get("original_filename") or "document",
+        "file_type": ctype, "file_size": len(data),
+        "file_hash": hashlib.sha256(data).hexdigest(),
+        "modified_at": now_iso(), "modified_by": user.get("username"),
+        "history": (notice.get("history") or []) + [_notice_history_entry(
+            user, "document_replaced",
+            f"Document '{file.filename or 'document'}' attached"
+            + (f" (replaces hash {replaced[:12]}…)" if replaced else ""))],
+    }
+    test_doc = dict(notice); test_doc.pop("file_data_url", None); test_doc.update(updates)
+    if _encoded_notice_size(test_doc) > NOTICE_ENCODED_BUDGET:
+        raise HTTPException(status_code=400,
+                            detail="Document too large to store — 14 MB total budget per notice")
+    result = await db.notices.update_one({"id": notice_id, "status": "draft"},
+                                         {"$set": updates, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Notice is no longer a draft")
+    await _log_audit(request=None, user=user, action="NOTICE_FILE_REPLACED",
+                     description=f"Document attached to draft '{notice.get('title')}' ({ctype}, {len(data)} bytes)",
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+
+
+@api_router.post("/notices/{notice_id}/attachments")
+async def add_notice_attachment(notice_id: str, user: dict = Depends(require_officer),
+                                name: Optional[str] = Form(None),
+                                file: UploadFile = File(...)):
+    """Optional supporting documents (step 4 of the wizard) — sailing
+    instructions PDFs, course diagrams, photos of the course board. Drafts
+    only; validated by magic bytes and counted against the notice's budget."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Attachments can only be added to draft notices")
+    existing = notice.get("attachments") or []
+    if len(existing) >= NOTICE_ATTACHMENTS_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f"At most {NOTICE_ATTACHMENTS_MAX} attachments per notice")
+    data = await file.read()
+    if len(data) > NOTICE_ATTACHMENT_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f"Attachment is too large — {NOTICE_ATTACHMENT_MAX // (1024*1024)} MB max")
+    ctype = _detect_notice_doc_type(data)
+    if not ctype:
+        raise HTTPException(status_code=400,
+                            detail="Attachments must be a PDF, PNG, JPEG or WebP file")
+    test_doc = dict(notice)
+    test_doc["attachments"] = existing + [{"data_url": f"data:{ctype};base64,{base64.b64encode(data).decode()}"}]
+    if _encoded_notice_size(test_doc) > NOTICE_ENCODED_BUDGET:
+        raise HTTPException(status_code=400,
+                            detail="Attachment too large to store — 14 MB total budget per notice")
+    att = {
+        "id": new_id(),
+        "name": (name or "").strip() or file.filename or "Attachment",
+        "file_type": ctype, "file_size": len(data),
+        "file_hash": hashlib.sha256(data).hexdigest(),
+        "data_url": f"data:{ctype};base64,{base64.b64encode(data).decode()}",
+    }
+    result = await db.notices.update_one({"id": notice_id, "status": "draft"},
+                                         {"$set": {"modified_at": now_iso(),
+                                                   "modified_by": user.get("username")},
+                                          "$inc": {"version": 1},
+                                          "$push": {"attachments": att}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Notice is no longer a draft")
+    await _log_audit(request=None, user=user, action="NOTICE_ATTACHMENT_ADDED",
+                     description=f"Attachment '{att['name']}' added to '{notice.get('title')}'",
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+
+
+@api_router.delete("/notices/{notice_id}/attachments/{attachment_id}")
+async def remove_notice_attachment(notice_id: str, attachment_id: str,
+                                   user: dict = Depends(require_officer)):
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Attachments can only be removed from draft notices")
+    att = next((a for a in notice.get("attachments") or [] if a.get("id") == attachment_id), None)
+    if not att:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    result = await db.notices.update_one({"id": notice_id, "status": "draft"},
+                                         {"$set": {"modified_at": now_iso(),
+                                                   "modified_by": user.get("username")},
+                                          "$inc": {"version": 1},
+                                          "$pull": {"attachments": {"id": attachment_id}}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Notice is no longer a draft")
+    await _log_audit(request=None, user=user, action="NOTICE_ATTACHMENT_REMOVED",
+                     description=f"Attachment '{att.get('name')}' removed from '{notice.get('title')}'",
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+
+
+def _decode_pdf_data_url(s: Optional[str]) -> Optional[bytes]:
+    """Validate a client-generated PDF data URL by magic bytes — the declared
+    type is never trusted, so an HTML/JS payload can never be stored as the
+    official generated PDF."""
+    if not s or not isinstance(s, str):
+        return None
+    m = re.match(r"^data:application/pdf;base64,([A-Za-z0-9+/=\s]+)$", s)
+    if not m:
+        return None
+    try:
+        raw = base64.b64decode(m.group(1))
+    except Exception:
+        return None
+    if not raw.startswith(b"%PDF-") or len(raw) > NOTICE_PDF_MAX:
+        return None
+    return raw
+
+
+@api_router.post("/notices/{notice_id}/publish")
+async def publish_notice(notice_id: str, data: NoticePublishInput,
+                         user: dict = Depends(require_officer)):
+    """Publish a draft to the Official Notice Board (spec 44: only after the
+    wizard's explicit preview step). Generated notices store the client-built
+    formal PDF alongside their HTML; if the notice supersedes an earlier
+    version, that version is marked superseded the moment this one goes live
+    (spec 49)."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "draft":
+        raise HTTPException(status_code=409,
+                            detail="Only draft notices can be published")
+    if notice.get("content_type") == "uploaded" and not notice.get("has_file"):
+        raise HTTPException(status_code=400,
+                            detail="Upload the notice document before publishing")
+    pdf_raw = _decode_pdf_data_url(data.pdf_data_url) if data.pdf_data_url else None
+    if data.pdf_data_url and pdf_raw is None:
+        raise HTTPException(status_code=400,
+                            detail="pdf_data_url must be a base64 data URL of a PDF (up to 10 MB)")
+    expected = _expected_version(data)
+    now = now_iso()
+    updates = {
+        "status": "published",
+        "published_at": notice.get("publication_datetime") or now,
+        "published_by": user.get("username"),
+        "history": (notice.get("history") or []) + [
+            _notice_history_entry(user, "published")],
+    }
+    if pdf_raw is not None:
+        updates["pdf_data_url"] = data.pdf_data_url
+        updates["has_pdf"] = True
+    result = await db.notices.update_one(_version_filter(notice_id, expected),
+                                         {"$set": updates, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    # Version control: the previous published version this notice amends is
+    # marked superseded (kept for the audit history, hidden from the public
+    # list — the ONB always shows the current version).
+    sup_id = notice.get("supersedes_id")
+    if sup_id:
+        await db.notices.update_one({"id": sup_id, "status": "published"}, {
+            "$set": {"status": "superseded", "superseded_by": notice_id,
+                     "history": _notice_history_entry(
+                         user, "superseded",
+                         f"Superseded by notice version {notice.get('version')} ({notice.get('title')})")}})
+    await _log_audit(request=None, user=user, action="NOTICE_PUBLISHED",
+                     description=f"Published {notice.get('notice_type_label')} '{notice.get('title')}'"
+                                 + (f" (supersedes {sup_id})" if sup_id else ""),
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+
+
+@api_router.post("/notices/{notice_id}/withdraw")
+async def withdraw_notice(notice_id: str, data: NoticeWithdrawInput,
+                          user: dict = Depends(require_officer)):
+    """Withdraw a published notice (stays on the ONB, clearly marked as
+    withdrawn, with the reason and who withdrew it — never silently removed)."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "published":
+        raise HTTPException(status_code=409,
+                            detail="Only published notices can be withdrawn")
+    reason = (data.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A withdrawal reason is required")
+    expected = _expected_version(data)
+    updates = {
+        "status": "withdrawn",
+        "withdrawn_at": now_iso(), "withdrawn_by": user.get("username"),
+        "withdrawal_reason": reason,
+        "history": (notice.get("history") or []) + [
+            _notice_history_entry(user, "withdrawn", reason)],
+    }
+    result = await db.notices.update_one(_version_filter(notice_id, expected),
+                                         {"$set": updates, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    await _log_audit(request=None, user=user, action="NOTICE_WITHDRAWN",
+                     description=f"Withdrew '{notice.get('title')}' — {reason}",
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return _notice_summary(await db.notices.find_one({"id": notice_id}, {"_id": 0}))
+
+
+@api_router.post("/notices/{notice_id}/new-version")
+async def new_notice_version(notice_id: str, user: dict = Depends(require_officer)):
+    """Amend a published notice: create the next version as a DRAFT that
+    supersedes this one (spec 49). The current published version remains live
+    and untouched until the new version is published. Uploaded documents are
+    NOT copied — the corrected document is explicitly attached to the new
+    version (PUT /notices/{id}/file), so an official document is never
+    silently replaced."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "published":
+        raise HTTPException(status_code=409,
+                            detail="Only published notices can be amended — edit the draft or withdraw it instead")
+    club = await db.clubs.find_one({"id": notice["club_id"]}, {"_id": 0, "slug": 1})
+    new_id_v = new_id()
+    doc = {
+        "id": new_id_v, "club_id": notice["club_id"],
+        "notice_type": notice["notice_type"], "notice_type_label": notice["notice_type_label"],
+        "heading": notice["heading"], "title": notice["title"],
+        "notice_number": notice["notice_number"],
+        "content_type": notice["content_type"], "creation_method": notice["creation_method"],
+        "status": "draft", "version": int(notice.get("version") or 1),
+        "root_id": notice.get("root_id") or notice_id,
+        "supersedes_id": notice_id, "superseded_by": None,
+        "fields": dict(notice.get("fields") or {}),
+        "body": list(notice.get("body") or []),
+        "published_at": None, "published_by": None,
+        "effective_at": notice.get("effective_at"),
+        "publication_datetime": None,
+        "created_at": now_iso(), "created_by": user.get("username"),
+        "created_by_id": user.get("user_id"),
+        "modified_at": None, "modified_by": None,
+        "withdrawn_at": None, "withdrawn_by": None, "withdrawal_reason": None,
+        "club_name": notice.get("club_name"),
+        "public_path": f"/club/{(club or {}).get('slug')}#notice-{new_id_v}",
+        "pdf_data_url": None, "has_pdf": False,
+        # The uploaded document is deliberately not carried over: the corrected
+        # official document must be uploaded for the new version.
+        "file_data_url": None, "has_file": False,
+        "original_filename": None, "file_type": None, "file_size": None, "file_hash": None,
+        "attachments": [],
+        "history": [_notice_history_entry(
+            user, "created",
+            f"New version of notice v{notice.get('version')} — amendment in progress")],
+    }
+    for key in ("series_id", "series_name", "event_name", "race_id", "race_number",
+                "race_date", "class_id", "class_name"):
+        doc[key] = notice.get(key)
+    await db.notices.insert_one(doc)
+    doc.pop("_id", None)
+    await _log_audit(request=None, user=user, action="NOTICE_NEW_VERSION",
+                     description=f"Started amendment (v{doc['version']}) of '{notice.get('title')}'",
+                     resource_type="notice", resource_id=new_id_v, club_id=notice.get("club_id"))
+    return _notice_summary(doc)
+
+
+@api_router.delete("/notices/{notice_id}")
+async def delete_notice(notice_id: str, request: Request,
+                        user: dict = Depends(require_officer)):
+    """Delete a DRAFT only. Published material is never deleted — it is
+    withdrawn (and stays in the audit history), so the club can always
+    demonstrate exactly which documents were published and when (spec 47)."""
+    notice = await _notice_of_club(notice_id, user)
+    if notice.get("status") != "draft":
+        raise HTTPException(status_code=409,
+                            detail="Only draft notices can be deleted — withdraw a published notice instead")
+    expected = _expected_version_query(request)
+    result = await db.notices.delete_one(_version_filter(notice_id, expected))
+    if result.deleted_count == 0:
+        _raise_stale(expected)
+    await _log_audit(request=request, user=user, action="NOTICE_DELETED",
+                     description=f"Deleted draft '{notice.get('title')}'",
+                     resource_type="notice", resource_id=notice_id, club_id=notice.get("club_id"))
+    return {"ok": True}
+
+
 @api_router.get("/")
 async def root():
     return {"message": "Sailing Club Racing API"}
@@ -5905,6 +7469,18 @@ async def _ensure_db_constraints():
                    ([("club_id", 1), ("username", 1)],
                     {"unique": True, "partialFilterExpression": {"club_id": {"$exists": True}}})],
         db.audit_logs: [([("id", 1)], {"unique": True})],
+        db.subscriptions: [
+            ([("id", 1)], {"unique": True}),
+            ([("email_hash", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {}),
+            ([("verification_token_hash", 1)], {"sparse": True}),
+            ([("manage_token_hash", 1)], {"sparse": True}),
+            ([("club_id", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {}),
+        ],
+        db.result_notification_jobs: [
+            ([("key", 1)], {"unique": True}),
+            ([("status", 1), ("updated_at", 1)], {}),
+        ],
+        db.result_notification_deliveries: [([("key", 1)], {"unique": True})],
     }
     for coll, indexes in plans.items():
         for keys, kwargs in indexes:
@@ -5939,6 +7515,29 @@ async def startup():
         await db.audit_logs.create_index([("username", 1), ("timestamp", -1)])
     except Exception as exc:
         logger.warning("AUDIT INDEX CREATION FAILED: %s", exc)
+    # Indexes for the Official Notice Board: club-scoped list reads, unique
+    # per-type notice numbering (the allocator retries on this), version
+    # chains (root_id) and race-scoped lookups from race consoles.
+    try:
+        # 2026-08 migration: numbering is a DISPLAY label, not a database
+        # constraint — versions of one notice share a number ("No. 5 amended"
+        # is still No. 5), so no unique index can express it. The allocator
+        # (max + 1) plus the per-notice audit trail is the source of truth;
+        # two simultaneous creations could in theory share a number, which is
+        # cosmetic and vanishingly rare for a single-club race office.
+        for legacy in ("club_id_1_notice_type_1_notice_number_1",
+                       "club_id_1_notice_type_1_notice_number_1_root_id_1"):
+            try:
+                await db.notices.drop_index(legacy)
+            except Exception:
+                pass
+        await db.notices.create_index([("club_id", 1), ("status", 1), ("created_at", -1)])
+        await db.notices.create_index(
+            [("club_id", 1), ("notice_type", 1), ("notice_number", 1)])
+        await db.notices.create_index([("root_id", 1)])
+        await db.notices.create_index([("race_id", 1)])
+    except Exception as exc:
+        logger.warning("NOTICE INDEX CREATION FAILED: %s", exc)
 
 
 @app.on_event("shutdown")

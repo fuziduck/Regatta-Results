@@ -1282,6 +1282,7 @@ export default function Admin() {
   const { role, clubId: authClubId, clubName: authClubName } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const isWebmaster = role === "webmaster";
+  const initialTab = isWebmaster ? (searchParams.get("tab") || "boats") : "boats";
   const clubParam = searchParams.get("club");
   const [clubs, setClubs] = useState([]);
 
@@ -1344,7 +1345,7 @@ export default function Admin() {
         <div className="mb-6" />
         {clubId && <ClubIconField clubId={clubId} />}
         {clubId && <ClubNoticeToggle clubId={clubId} />}
-        <Tabs defaultValue="boats">
+        <Tabs defaultValue={initialTab}>
           {/* The tab bar stays a single row: on narrow screens it scrolls
               horizontally instead of wrapping into a tall stack of tabs. */}
           <div className="overflow-x-auto -mb-1 pb-1" data-testid="admin-tabs-wrap">
@@ -1356,7 +1357,7 @@ export default function Admin() {
               <TabsTrigger value="historic" data-testid="tab-historic" className="gap-1.5 py-1.5"><Archive className="w-4 h-4" /> Historic Results</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="users" data-testid="tab-users" className="gap-1.5 py-1.5"><Users className="w-4 h-4" /> Logins</TabsTrigger>
-              <TabsTrigger value="activity" data-testid="tab-activity" className="gap-1.5 py-1.5"><ScrollText className="w-4 h-4" /> Activity</TabsTrigger>
+              {isWebmaster && <TabsTrigger value="activity" data-testid="tab-activity" className="gap-1.5 py-1.5"><ScrollText className="w-4 h-4" /> Activity</TabsTrigger>}
               {!isWebmaster && (
                 <>
                   <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
@@ -1370,7 +1371,7 @@ export default function Admin() {
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
-          <TabsContent value="activity" className="pt-6"><AuditLog clubId={clubId} webmaster={isWebmaster} /></TabsContent>
+          {isWebmaster && <TabsContent value="activity" className="pt-6"><AuditLog webmaster /></TabsContent>}
           {!isWebmaster && (
             <TabsContent value="security" className="pt-6" data-testid="tab-security-content">
               <div className="mb-4">

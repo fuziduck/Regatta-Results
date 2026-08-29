@@ -153,6 +153,59 @@ export const api = {
   getEmailSettings: () => client.get("/admin/email-settings").then((r) => r.data),
   updateEmailSettings: (d) => client.put("/admin/email-settings", d).then((r) => r.data),
   testEmail: (to_email) => client.post("/admin/email-settings/test", { to_email }).then((r) => r.data),
+
+  // ------------------------------------------------------------------
+  // Official Notice Board. Both publication methods (Sailscore-generated
+  // and uploaded) live on the same /notices entity; lists carry render
+  // rows, the heavy documents/PDFs are fetched per notice on demand.
+  // ------------------------------------------------------------------
+  noticeMeta: () => client.get("/notices/meta").then((r) => r.data),
+  getNotices: (params = {}) => client.get("/notices", { params }).then((r) => r.data),
+  getNotice: (id) => client.get(`/notices/${id}`).then((r) => r.data),
+  noticeContext: (params) => client.get("/notices/context", { params }).then((r) => r.data),
+  nextNoticeNumber: (notice_type, club_id) =>
+    client.get("/notices/next-number", { params: { notice_type, ...(club_id ? { club_id } : {}) } }).then((r) => r.data),
+  createNotice: (d) => client.post("/notices", d).then((r) => r.data),
+  uploadNotice: (meta, file) => {
+    const fd = new FormData();
+    Object.entries(meta || {}).forEach(([k, v]) => {
+      if (v != null && v !== "") fd.append(k, v);
+    });
+    fd.append("file", file);
+    return client.post("/notices/upload", fd).then((r) => r.data);
+  },
+  updateNotice: (id, d, v) => client.put(`/notices/${id}`, withVer(d, v)).then((r) => r.data),
+  replaceNoticeFile: (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return client.put(`/notices/${id}/file`, fd).then((r) => r.data);
+  },
+  addNoticeAttachment: (id, file, name) => {
+    const fd = new FormData();
+    if (name) fd.append("name", name);
+    fd.append("file", file);
+    return client.post(`/notices/${id}/attachments`, fd).then((r) => r.data);
+  },
+  removeNoticeAttachment: (id, attachment_id) =>
+    client.delete(`/notices/${id}/attachments/${attachment_id}`).then((r) => r.data),
+  publishNotice: (id, pdf_data_url, v) =>
+    client.post(`/notices/${id}/publish`, withVer({ ...(pdf_data_url ? { pdf_data_url } : {}) }, v)).then((r) => r.data),
+  withdrawNotice: (id, reason, v) =>
+    client.post(`/notices/${id}/withdraw`, withVer({ reason }, v)).then((r) => r.data),
+  newNoticeVersion: (id) => client.post(`/notices/${id}/new-version`).then((r) => r.data),
+  deleteNotice: (id, v) => client.delete(`/notices/${id}`, { params: verQuery(v) }).then((r) => r.data),
+
+  // Account-free results subscriptions. Public target ids are always the
+  // underlying class, series, or boat record id; the backend verifies and
+  // scopes them to their owning club.
+  subscribeResults: (email, subscription_type, target_id) =>
+    client.post("/subscriptions", { email, subscription_type, target_id }).then((r) => r.data),
+  verifyResultsSubscription: (token) => client.get("/subscriptions/verify", { params: { token } }).then((r) => r.data),
+  getSubscriptionManagement: (token) => client.get("/subscriptions/manage", { params: { token } }).then((r) => r.data),
+  unsubscribeResults: (token) => client.post("/subscriptions/unsubscribe", { token }).then((r) => r.data),
+  unsubscribeResultsLink: (token) => client.get("/subscriptions/unsubscribe", { params: { token } }).then((r) => r.data),
+  unsubscribeAllResults: (token) => client.post("/subscriptions/unsubscribe-all", { token }).then((r) => r.data),
+  removeResultSubscription: (id, token) => client.delete(`/subscriptions/${id}`, { params: { token } }).then((r) => r.data),
 };
 
 export default client;
