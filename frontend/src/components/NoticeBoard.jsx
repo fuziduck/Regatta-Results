@@ -48,12 +48,13 @@ const TYPE_ORDER = [
 ];
 
 // Fetch the full notice (with the stored PDF / uploaded document payloads)
-// on demand — list responses stay light.
-function useNoticeDocument() {
+// on demand — list responses stay light. The owning club is passed so the
+// document endpoint is always scoped to the club whose board this is.
+function useNoticeDocument(clubId) {
   const [docs, setDocs] = useState({});
   const load = async (id) => {
     if (docs[id]) return docs[id];
-    const full = await api.getNotice(id);
+    const full = await api.getNotice(id, clubId);
     setDocs((prev) => ({ ...prev, [id]: full }));
     return full;
   };
@@ -79,8 +80,8 @@ function openDocument(dataUrl) {
   }
 }
 
-function UploadedDocument({ notice }) {
-  const [docs, load] = useNoticeDocument();
+function UploadedDocument({ notice, clubId }) {
+  const [docs, load] = useNoticeDocument(clubId);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState(null);
   const full = docs[notice.id];
@@ -125,8 +126,8 @@ function UploadedDocument({ notice }) {
   );
 }
 
-function GeneratedNotice({ notice }) {
-  const [docs, load] = useNoticeDocument();
+function GeneratedNotice({ notice, clubId }) {
+  const [docs, load] = useNoticeDocument(clubId);
   const [error, setError] = useState(null);
   const view = async () => {
     try {
@@ -172,7 +173,7 @@ function LinkNotice({ notice }) {
   );
 }
 
-function NoticeCard({ notice, open, onToggle }) {
+function NoticeCard({ notice, open, onToggle, clubId }) {
   const ctx = noticeContextLine(notice);
   return (
     <AccordionItem value={notice.id} className={`border rounded-xl mb-3 px-4 bg-card ${notice.status === "withdrawn" ? "opacity-80" : ""}`}>
@@ -209,9 +210,9 @@ function NoticeCard({ notice, open, onToggle }) {
           </div>
         )}
         <NoticeFacts notice={notice} />
-        {notice.content_type === "uploaded" ? <UploadedDocument notice={notice} />
+        {notice.content_type === "uploaded" ? <UploadedDocument notice={notice} clubId={clubId} />
           : notice.content_type === "link" ? <LinkNotice notice={notice} />
-            : <GeneratedNotice notice={notice} />}
+            : <GeneratedNotice notice={notice} clubId={clubId} />}
         {(notice.attachments || []).length > 0 && (
           <div className="mt-4 pt-3 border-t border-border" data-testid={`attachments-${notice.id}`}>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Attachments</div>
@@ -369,7 +370,7 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
                     </h4>
                     <Accordion type="single" collapsible value={openId} onValueChange={(v) => setOpenId(v || null)}>
                       {group.items.slice().sort(byNoticeNumber).map((n) => (
-                        <NoticeCard key={n.id} notice={n} open={openId === n.id} />
+                        <NoticeCard key={n.id} notice={n} open={openId === n.id} clubId={clubId} />
                       ))}
                     </Accordion>
                   </div>

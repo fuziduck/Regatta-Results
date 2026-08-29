@@ -6804,7 +6804,9 @@ async def add_notice_area(club_id: str, data: NoticeAreaInput, request: Request,
     if title.lower() in reserved:
         raise HTTPException(status_code=409, detail="That notice area already exists")
     club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "notice_areas": 1})
-    if not club:
+    # NB: the projection can legitimately return an EMPTY dict (a club with no
+    # custom areas), which is falsy — so test for None, never `not club`.
+    if club is None:
         raise HTTPException(status_code=404, detail="Club not found")
     areas = list(club.get("notice_areas") or [])
     if any(existing.strip().lower() == title.lower() for existing in areas):
@@ -6823,7 +6825,9 @@ async def list_notice_areas(request: Request, club_id: Optional[str] = None):
     if not scope:
         raise HTTPException(status_code=400, detail="club_id is required")
     club = await db.clubs.find_one({"id": scope}, {"_id": 0, "notice_areas": 1})
-    if not club:
+    # NB: the projection returns an EMPTY dict for a club with no custom
+    # areas — falsy — so test for None, never `not club`.
+    if club is None:
         raise HTTPException(status_code=404, detail="Club not found")
     return [{"key": "club", "title": "Club Notices"},
             {"key": "open_event", "title": "Open Event Notices"}] + [
@@ -7139,17 +7143,24 @@ async def upload_notice(request: Request,
 
 
 @api_router.get("/notices/{notice_id}")
-async def get_notice(notice_id: str, request: Request):
-    """Full notice. Public callers only ever reach published / superseded /
-    withdrawn notices (drafts 404 — never revealed); staff of the owning club
-    (and the webmaster) can read any status. This is where the heavy payloads
-    (uploaded document, generated PDF, attachment contents) are served from."""
+async def get_notice(notice_id: str, request: Request, club_id: Optional[str] = None):
+    """Full notice. Club-scoped end to end — a notice (and its stored document
+    payloads) is only ever served in its OWNING club's context, so nothing can
+    transfer between clubs:
+    - anonymous readers must supply the owning club_id (as the board does)
+      and may only read published / superseded / withdrawn notices;
+    - officer/admin staff only ever reach their own club's notices (any
+      status); the webmaster may read any club.
+    Drafts are never revealed to anyone outside the owning club."""
     notice = await db.notices.find_one({"id": notice_id}, {"_id": 0})
     if not notice:
         raise HTTPException(status_code=404, detail="Notice not found")
     user = await get_current_user(request)
-    staff = user and (user.get("role") == "webmaster" or user.get("club_id") == notice.get("club_id"))
-    if not staff and notice.get("status") not in ("published", "superseded", "withdrawn"):
+    webmaster = bool(user) and user.get("role") == "webmaster"
+    own_staff = bool(user) and not webmaster and user.get("club_id") == notice.get("club_id")
+    public_own_club = (not user and club_id == notice.get("club_id")
+                       and notice.get("status") in ("published", "superseded", "withdrawn"))
+    if not (webmaster or own_staff or public_own_club):
         raise HTTPException(status_code=404, detail="Notice not found")
     if notice.get("content_type") == "uploaded" and notice.get("file_data_url"):
         raw = notice["file_data_url"]

@@ -222,6 +222,48 @@ def test_drafts_hidden_from_public(club_officer_token, test_club):
     assert all(n["club_id"] == test_club["id"] for n in scoped)
 
 
+def test_published_notices_isolated_between_clubs(club_officer_token, test_club):
+    """The ONB is club-specific: a published notice (and its stored document)
+    only ever appears on the owning club's board and is never served in any
+    other club's context — no transfer of announcements or documents between
+    clubs."""
+    r = make_notice(club_officer_token, title="Club A only notice")
+    nid = r.json()["id"]
+    r = requests.post(f"{API}/notices/{nid}/publish", json={"confirmation": "publish"},
+                      headers=h(club_officer_token))
+    assert r.status_code == 200, r.text
+    other_id = next(c["id"] for c in requests.get(f"{API}/clubs/directory").json()
+                    if c["id"] != test_club["id"])
+    # The owning club's public board shows it; every other club's does not.
+    own = requests.get(f"{API}/notices", params={"club_id": test_club["id"]}).json()
+    assert any(n["id"] == nid for n in own)
+    foreign = requests.get(f"{API}/notices", params={"club_id": other_id}).json()
+    assert all(n["id"] != nid for n in foreign)
+    # The full document is served only in the owning club's scope: a foreign
+    # club's scope (or no scope at all) answers 404.
+    assert requests.get(f"{API}/notices/{nid}",
+                        params={"club_id": test_club["id"]}).status_code == 200
+    assert requests.get(f"{API}/notices/{nid}",
+                        params={"club_id": other_id}).status_code == 404
+    assert requests.get(f"{API}/notices/{nid}").status_code == 404
+
+
+def test_notice_areas_for_club_without_custom_areas(club_officer_token, test_club):
+    """Regression: a club with no custom areas still resolves its built-in
+    notice areas (the projected club lookup returns an EMPTY dict — falsy — so
+    'not found' must be tested with `is None`), and can add its first custom
+    area through the same path."""
+    r = requests.get(f"{API}/notice-areas", params={"club_id": test_club["id"]})
+    assert r.status_code == 200, r.text
+    keys = {a["key"] for a in r.json()}
+    assert {"club", "open_event"} <= keys
+    title = f"Regatta HQ {uuid4().hex[:6]}"
+    r = requests.post(f"{API}/clubs/{test_club['id']}/notice-areas",
+                      json={"title": title}, headers=h(club_officer_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == title
+
+
 # ---------------------------------------------------------------------------
 # Reuse Sailscore data (spec 46)
 # ---------------------------------------------------------------------------
@@ -285,8 +327,10 @@ def test_edit_then_publish_generated(club_officer_token, test_club):
     pub = r.json()
     assert pub["status"] == "published" and pub["published_by"]
     assert pub["has_pdf"] is True
-    # Visible publicly, HTML body + PDF payloads both served on detail.
-    detail = requests.get(f"{API}/notices/{n['id']}").json()
+    # Visible publicly, HTML body + PDF payloads both served on detail (in the
+    # owning club's scope — the document never leaves the club's context).
+    detail = requests.get(f"{API}/notices/{n['id']}",
+                          params={"club_id": test_club["id"]}).json()
     assert detail["status"] == "published"
     assert detail["pdf_data_url"] == MINIMAL_PDF_URL
     pub_list = requests.get(f"{API}/notices", params={"club_id": test_club["id"]}).json()
@@ -302,7 +346,8 @@ def test_edit_then_publish_generated(club_officer_token, test_club):
     assert corr.json()["status"] == "draft"
     assert corr.json()["title"] == "Corrected title"
     assert corr.json()["supersedes_id"] == n["id"]
-    original = requests.get(f"{API}/notices/{n['id']}").json()
+    original = requests.get(f"{API}/notices/{n['id']}",
+                            params={"club_id": test_club["id"]}).json()
     assert original["status"] == "published" and original["title"] == "Edited title"
     # Removing a notice stays a separate audited action (allowed even for
     # published ones), not an edit of the live document.
@@ -363,7 +408,8 @@ def test_upload_publish_and_integrity(club_officer_token, test_club):
                       headers=h(club_officer_token))
     assert r.status_code == 200, r.text
     # The served bytes are exactly what was uploaded — never converted (spec 48).
-    served = requests.get(f"{API}/notices/{n['id']}").json()
+    served = requests.get(f"{API}/notices/{n['id']}",
+                          params={"club_id": test_club["id"]}).json()
     assert base64.b64decode(served["file_data_url"].split(",", 1)[1]) == MINIMAL_PDF
     assert served["file_hash"] and served["file_size"] == len(MINIMAL_PDF)
     # Publishing an uploaded draft without any document is refused.
@@ -442,17 +488,21 @@ def test_amend_creates_new_version_and_supersedes(club_officer_token, test_club)
     assert v2["root_id"] == v1["root_id"]
     assert v2["notice_number"] == v1["notice_number"]
     # v1 is still live while v2 is a draft.
-    assert requests.get(f"{API}/notices/{v1['id']}").json()["status"] == "published"
+    assert requests.get(f"{API}/notices/{v1['id']}",
+                        params={"club_id": test_club["id"]}).json()["status"] == "published"
     # Publish v2 — v1 is superseded automatically, never deleted.
     r = requests.post(f"{API}/notices/{v2['id']}/publish", json={}, headers=h(club_officer_token))
     assert r.status_code == 200
-    old = requests.get(f"{API}/notices/{v1['id']}").json()
+    old = requests.get(f"{API}/notices/{v1['id']}",
+                       params={"club_id": test_club["id"]}).json()
     assert old["status"] == "superseded" and old["superseded_by"] == v2["id"]
     # Public list shows ONLY the current version (still reachable by id).
     pub = requests.get(f"{API}/notices", params={"club_id": test_club["id"]}).json()
     ids = [x["id"] for x in pub]
     assert v2["id"] in ids and v1["id"] not in ids
-    assert requests.get(f"{API}/notices/{v1['id']}").status_code == 200
+    # The superseded original stays reachable by id, in the club's scope.
+    assert requests.get(f"{API}/notices/{v1['id']}",
+                        params={"club_id": test_club["id"]}).status_code == 200
 
 
 def test_withdraw_keeps_record(club_officer_token, test_club):
@@ -466,7 +516,8 @@ def test_withdraw_keeps_record(club_officer_token, test_club):
     assert r.status_code == 200
     w = r.json()
     assert w["status"] == "withdrawn" and w["withdrawn_by"] and w["withdrawal_reason"]
-    detail = requests.get(f"{API}/notices/{n['id']}").json()
+    detail = requests.get(f"{API}/notices/{n['id']}",
+                          params={"club_id": test_club["id"]}).json()
     assert any(e["action"] == "withdrawn" for e in detail["history"])
     # Withdrawn stays visible on the public ONB, clearly marked.
     pub = requests.get(f"{API}/notices", params={"club_id": test_club["id"]}).json()

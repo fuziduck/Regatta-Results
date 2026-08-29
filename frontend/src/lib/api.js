@@ -178,7 +178,7 @@ export const api = {
   createNoticeBoard: (d) => client.post("/notice-boards", d).then((r) => r.data),
   createNoticeSection: (boardId, d) => client.post(`/notice-boards/${boardId}/sections`, { ...d, board_id: boardId }).then((r) => r.data),
   getNotices: (params = {}) => client.get("/notices", { params }).then((r) => r.data),
-  getNotice: (id) => client.get(`/notices/${id}`, { headers: { Accept: "application/json" } }).then((r) => r.data),
+  getNotice: (id, clubId) => client.get(`/notices/${id}`, { params: clubId ? { club_id: clubId } : {}, headers: { Accept: "application/json" } }).then((r) => r.data),
   getNoticeAreas: (clubId) => client.get("/notice-areas", { params: { club_id: clubId } }).then((r) => r.data),
   addNoticeArea: (clubId, title) => client.post(`/clubs/${clubId}/notice-areas`, { title }).then((r) => r.data),
   noticeContext: (params) => client.get("/notices/context", { params }).then((r) => r.data),
