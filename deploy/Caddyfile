@@ -4,9 +4,9 @@
 # Architecture:
 #
 #   Internet ──HTTPS :443──▶ Caddy (systemd service on Ubuntu host)
-#                              │ reverse_proxy 127.0.0.1:80
+#                              │ reverse_proxy 127.0.0.1:8080
 #                              ▼
-#                         Docker frontend nginx (bound to 127.0.0.1:80 ONLY)
+#                         Docker frontend nginx (host bind 127.0.0.1:8080 ONLY)
 #                              │ /api → proxy_pass http://backend:8000
 #                              ▼
 #                         FastAPI backend (internal Docker network, no host port)
@@ -28,9 +28,10 @@ results.example.com {
     # Compression (brotli/zstd/gzip) for static assets.
     encode zstd gzip
 
-    reverse_proxy 127.0.0.1:80 {
+    reverse_proxy 127.0.0.1:8080 {
         # The app is reachable ONLY through this proxy (Docker binds the
-        # frontend to 127.0.0.1:80). Forwarding headers:
+        # frontend to 127.0.0.1:8080 on the host; the container itself
+        # listens on port 80). Forwarding headers:
         #
         # X-Forwarded-For is OVERWRITTEN with the real client IP ({remote_host}).
         # Caddy sanitises it, so a client-supplied X-Forwarded-For header can

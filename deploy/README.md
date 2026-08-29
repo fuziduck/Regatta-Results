@@ -11,9 +11,9 @@ Internet
    │ HTTPS :443
    ▼
 Caddy (systemd service, installed on the Ubuntu host)
-   │  reverse_proxy 127.0.0.1:80
+   │  reverse_proxy 127.0.0.1:8080
    ▼
-Docker frontend nginx  (bound to 127.0.0.1:80 ONLY — loopback)
+Docker frontend nginx  (host bind 127.0.0.1:8080 ONLY — loopback)
    │  /api → proxy_pass http://backend:8000
    ▼
 FastAPI backend :8000  (internal Docker network, NO host port)
@@ -21,8 +21,9 @@ FastAPI backend :8000  (internal Docker network, NO host port)
 MongoDB :27017         (internal Docker network, NO host port)
 ```
 
-Ports **3000, 8000 and 27017 are never exposed to the Internet**. Port 80 is
-loopback-only, reachable solely by Caddy on the host.
+Ports **3000, 8000 and 27017 are never exposed to the Internet**. Host port
+8080 is loopback-only, reachable solely by Caddy on the host (Caddy itself
+owns public ports 80 and 443).
 
 ---
 
@@ -40,7 +41,7 @@ The default `docker-compose.yml` is the production stack:
 
 | Service  | Published ports          | Notes                                              |
 |----------|--------------------------|----------------------------------------------------|
-| frontend | `127.0.0.1:80:80`        | nginx SPA + `/api` proxy; loopback only            |
+| frontend | `127.0.0.1:8080:80`      | nginx SPA + `/api` proxy; loopback only            |
 | backend  | none                     | internal Docker network only                       |
 | mongodb  | none                     | internal network, credentials required, auth on    |
 
@@ -179,7 +180,8 @@ Consequences:
 
 - [ ] `docker-compose.yml` used (NOT `docker-compose.dev.yml` — dev exposes
       3000/8000 and disables mongo auth).
-- [ ] Frontend bound to `127.0.0.1:80` only; backend/mongo have no host ports.
+- [ ] Frontend bound to `127.0.0.1:8080` only (container port 80);
+      backend/mongo have no host ports.
 - [ ] `CORS_ORIGINS` = the real `https://` origin (never `*`).
 - [ ] `JWT_SECRET` ≥ 32 random chars, `MONGO_*` credentials strong, all in
       gitignored `.env` (never in the repo or compose file).

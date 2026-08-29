@@ -17,7 +17,7 @@
 #   - No uvicorn --reload, no React dev server
 #   - MongoDB is internal-only (no host port) and requires credentials
 #   - The backend is NOT exposed to the host at all
-#   - The nginx frontend binds 127.0.0.1:80 — reachable ONLY from the Ubuntu
+#   - The nginx frontend binds 127.0.0.1:8080 — reachable ONLY from the Ubuntu
 #     host, where a HOST-INSTALLED Caddy terminates TLS (see deploy/)
 #   - A fresh named volume (prod-mongo-data) with auth enabled from creation
 #
@@ -108,8 +108,10 @@ services:
     ports:
       # Loopback-only: only the HOST-INSTALLED Caddy can reach the app. The
       # Internet can never talk to nginx directly (Caddy is the only entry
-      # point, and it sanitises X-Forwarded-For before forwarding).
-      - "127.0.0.1:80:80"
+      # point, and it sanitises X-Forwarded-For before forwarding). The host
+      # side is 8080 because the host-installed Caddy already owns port 80;
+      # the container keeps listening on port 80 internally.
+      - "127.0.0.1:8080:80"
     depends_on:
       backend:
         condition: service_healthy

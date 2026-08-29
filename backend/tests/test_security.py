@@ -1344,8 +1344,8 @@ class TestProductionProxyConfig:
     def test_caddyfile_sanitises_xff_and_targets_host_loopback(self):
         caddyfile = (self._repo_root() / "deploy" / "Caddyfile").read_text()
         assert "results.example.com" in caddyfile, "placeholder domain must be documented"
-        assert "reverse_proxy 127.0.0.1:80" in caddyfile, \
-            "Caddy must proxy to the host loopback (Docker frontend bind)"
+        assert "reverse_proxy 127.0.0.1:8080" in caddyfile, \
+            "Caddy must proxy to the host loopback (Docker frontend host bind)"
         assert "header_up X-Forwarded-For {remote_host}" in caddyfile, \
             "Caddy must OVERWRITE X-Forwarded-For with the real client IP"
         assert "header_up X-Forwarded-Proto https" in caddyfile
@@ -1354,8 +1354,8 @@ class TestProductionProxyConfig:
 
     def test_compose_frontend_loopback_only_and_backend_unexposed(self):
         compose = (self._repo_root() / "docker-compose.yml").read_text()
-        assert '"127.0.0.1:80:80"' in compose, \
-            "production frontend must bind to host loopback only"
+        assert '"127.0.0.1:8080:80"' in compose, \
+            "production frontend must bind to host loopback only (host 8080, container 80)"
         # backend and mongodb must never publish host ports
         assert '"8000:8000"' not in compose
         assert '"27017:27017"' not in compose
