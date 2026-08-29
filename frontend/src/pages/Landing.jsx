@@ -17,6 +17,7 @@ import { seriesNavModel } from "@/lib/seriesNav";
 import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
+import ResultsSubscription from "@/components/ResultsSubscription";
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -402,6 +403,7 @@ export default function Landing() {
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
+                {activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass} targetName={(classes.find((c) => c.id === activeClass) || {}).name || "this class"} />}
               </div>
               <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
@@ -421,6 +423,7 @@ export default function Landing() {
             <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
+                {activeSeries !== "overall" && activeSeries && <ResultsSubscription subscriptionType="series" targetId={activeSeries} targetName={(series.find((s) => s.id === activeSeries) || {}).name || "this series"} />}
               </div>
               <Tabs value={activeSeries} onValueChange={setActiveSeries}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">

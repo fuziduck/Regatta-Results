@@ -13,6 +13,8 @@ import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import Officer from "@/pages/Officer";
 import NoticeWizard from "@/pages/NoticeWizard";
+import SubscriptionManager from "@/pages/SubscriptionManager";
+import SubscriptionVerify from "@/pages/SubscriptionVerify";
 import NoticeBoardPage from "@/pages/NoticeBoardPage";
 import Admin from "@/pages/Admin";
 import Webmaster from "@/pages/Webmaster";
@@ -44,6 +46,8 @@ function App() {
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/officer" element={<Protected allow={["officer", "admin", "webmaster"]}><Officer /></Protected>} />
             <Route path="/notice/new" element={<Protected allow={["officer", "admin", "webmaster"]}><NoticeWizard /></Protected>} />
+            <Route path="/subscriptions/manage" element={<SubscriptionManager />} />
+            <Route path="/subscriptions/verify" element={<SubscriptionVerify />} />
             <Route path="/admin" element={<Protected allow={["admin", "webmaster"]}><Admin /></Protected>} />
             <Route path="/webmaster" element={<Protected allow={["webmaster"]}><Webmaster /></Protected>} />
             <Route path="*" element={<Navigate to="/" replace />} />
