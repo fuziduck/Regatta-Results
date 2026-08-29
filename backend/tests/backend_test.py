@@ -1006,11 +1006,10 @@ class TestMiniSeriesEndpoint:
                 requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
                 requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
 
-
     def test_mini_series_merge_reverts_to_single_race(self, club_officer_token, club_admin_token):
         """A split mini series can be reverted back into ONE normal race:
-        the child races are deleted, later races are renumbered back down,
-        the group config is removed and the slot race loses its stamp."""
+        the child races are deleted, the group config is removed and the
+        slot race loses its stamp. Future races keep their original numbers."""
         cls = None
         try:
             r = requests.post(f"{API}/classes", json={"name": "Merge Class", "default_start_time": "10:30"},
@@ -1018,8 +1017,7 @@ class TestMiniSeriesEndpoint:
             assert r.status_code == 200, r.text
             cls = r.json()
             r = requests.post(f"{API}/boats", json={
-                "name": "Merge Boat", "sail_no": "M1", "class_id": cls["id"],
-                "helm": "T", "year": YEAR, "active": True},
+                "name": "Merge Boat", "sail_no": "M1", "class_id": cls["id"], "helm": "T", "year": YEAR, "active": True},
                 headers=h(club_admin_token))
             assert r.status_code == 200, r.text
             boat_id = r.json()["id"]
@@ -1031,24 +1029,26 @@ class TestMiniSeriesEndpoint:
                 headers=h(club_admin_token))
             assert r.status_code == 200, r.text
             sid = r.json()["id"]
-            # Create the later planned race (race 3) so the split shifts it.
+            # Create the later planned race (race 3).
             r = requests.post(f"{API}/races", json={
                 "class_id": cls["id"], "series_id": sid, "date": "2026-09-26",
                 "race_number": 3, "start_time": "10:30",
                 "start_tz_offset_minutes": 0}, headers=h(club_officer_token))
             assert r.status_code == 200, r.text
             later_race_id = r.json()["id"]
-            # Split race 1 into two: race 3 shifts up to race 4.
+            # Split race 1 into two — no renumbering happens.
             r = requests.post(f"{API}/series/{sid}/mini-split",
                               json={"race_number": 1, "count": 2, "name": "Merge Me",
                                     "scoring": "combined"},
                               headers=h(club_officer_token))
             assert r.status_code == 200, r.text
             gi = r.json()["group_index"]
-            assert r.json()["series"]["planned_races"] == 4
+            # planned_races stays at 3 (no renumbering)
+            assert r.json()["series"]["planned_races"] == 3
             races = requests.get(f"{API}/races?series_id={sid}", headers=h(club_officer_token)).json()
-            assert sorted(x["race_number"] for x in races) == [1, 2, 4]
-            child = next(x for x in races if x["race_number"] == 2)
+            # All sub-races share race number 1, plus the original race 3
+            assert sorted(x["race_number"] for x in races) == [1, 1, 3]
+            child = next(x for x in races if x.get("mini_group_label") == "R1B")
 
             # Seed a leftover EMPTY mini-series group (debris from an earlier
             # split/merge) — the revert must sweep that away too so no phantom
@@ -1061,7 +1061,7 @@ class TestMiniSeriesEndpoint:
             r = requests.put(f"{API}/series/{sid}", json=ss, headers=h(club_admin_token))
             assert r.status_code == 200, r.text
 
-            # Merge back — the extra race disappears, race 4 returns to 3,
+            # Merge back — the extra race disappears, race 3 stays as race 3,
             # and the empty leftover group is dropped with mini_series off.
             r = requests.post(f"{API}/series/{sid}/mini/{gi}/merge", headers=h(club_officer_token))
             assert r.status_code == 200, r.text
