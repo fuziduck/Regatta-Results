@@ -1421,7 +1421,7 @@ export default function Admin() {
   // Club staff already have a scoped club in their session. Webmasters must
   // choose a club before the console can load club-scoped data.
   const clubId = isWebmaster ? (clubParam || null) : authClubId;
-  const readyForClub = isWebmaster ? !!clubParam : !!authClubId;
+  const readyForClub = role !== undefined && (!isWebmaster ? !!authClubId : !!clubParam);
   const clubName = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.name || null)
     : (authClubName || null);
