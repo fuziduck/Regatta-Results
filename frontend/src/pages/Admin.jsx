@@ -1482,7 +1482,9 @@ export default function Admin() {
             variant="outline"
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
             data-testid="admin-backup-btn"
-            onClick={() => api.downloadBackup(clubId, false)}
+            onClick={() => api.downloadBackup(clubId, false).catch(
+              (e) => toast.error(e.response?.data?.detail || "Backup download failed")
+            )}
           >
             <Archive className="w-4 h-4" /> Download backup
           </Button>

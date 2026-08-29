@@ -69,22 +69,45 @@ export const api = {
   me: () => client.get("/auth/me").then((r) => r.data),
 
   getAudit: (params = {}) => client.get("/audit", { params }).then((r) => r.data),
-  // Backup downloads use a real browser download (the session cookie is sent
-  // automatically; the server names the file via Content-Disposition).
-  downloadBackup: (club_id, admin = false) => {
+  // Backup downloads POST (never a GET with the passphrase in the URL), so an
+  // optional passphrase can accompany the request without leaking into server
+  // logs or browser history. The passphrase encrypts this archive only and is
+  // never stored server-side. A blob download is triggered client-side;
+  // resolves after the download starts. Errors surface via the reject, with the
+  // backend's detail parsed out of the blob response.
+  downloadBackup: (club_id, admin = false, passphrase = "") => {
     const base = admin ? "/admin/backup" : "/backup";
-    const qs = club_id ? `?club_id=${encodeURIComponent(club_id)}` : "";
-    const a = document.createElement("a");
-    a.href = `${API}${base}${qs}`;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    const body = {};
+    if (club_id) body.club_id = club_id;
+    if (passphrase) body.passphrase = passphrase;
+    return client.post(base, body, { responseType: "blob" }).then((r) => {
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      const cd = r.headers["content-disposition"] || "";
+      const m = /filename="?([^";]+)"?/.exec(cd);
+      a.href = url;
+      a.download = m ? m[1] : "sailscore-backup.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }).catch((err) => {
+      // A non-2xx error body is a JSON blob despite responseType; surface its
+      // detail so the caller can toast it.
+      if (!err.response || typeof err.response.data?.text !== "function") throw err;
+      return err.response.data.text().then((text) => {
+        try { err.response.data = { detail: JSON.parse(text)?.detail || "Backup download failed" }; }
+        catch { err.response.data = { detail: text || "Backup download failed" }; }
+        throw err;
+      });
+    });
   },
-  // Restore a backup ZIP. Webmaster only.
-  restoreBackup: (file) => {
+  // Restore a backup ZIP. Webmaster only. The passphrase (if any) decrypts an
+  // encrypted backup; plaintext backups ignore it.
+  restoreBackup: (file, passphrase = "") => {
     const fd = new FormData();
     fd.append("file", file);
+    if (passphrase) fd.append("passphrase", passphrase);
     return client.post("/admin/backup/restore", fd).then((r) => r.data);
   },
 

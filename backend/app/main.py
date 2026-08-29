@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Body
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 from starlette.middleware.cors import CORSMiddleware
@@ -3890,13 +3890,26 @@ BACKUP_SECRET_KEYS = ("passcode_hash", "password_hash", "reset_token_hash",
                       "email_otp_hash", "email_otp_expires")
 
 
-# Passphrase used to encrypt backups. When set, backups are AES-encrypted and
-# MAY carry the salted bcrypt passcode hashes, so a restore brings users' sign-in
-# passcodes across with no manual resets. A leaked archive is unreadable without
-# this key. When unset, backups stay plaintext and credentials are stripped as
-# before (restored users then need passcode resets).
+# Optional server-side passphrase used to encrypt backups (env fallback). The
+# preferred path is a per-backup passphrase supplied from the webmaster console
+# when downloading (and re-entered on restore) — that one is never stored, so a
+# leaked database cannot expose it. This env value is only used when the request
+# carries none, e.g. legacy plaintext downloads or deployments that still manage
+# the key server-side. Encrypted backups MAY carry the salted bcrypt passcode
+# hashes, so a restore brings users' sign-in passcodes across with no manual
+# resets; plaintext backups strip them as before.
 BACKUP_PASSPHRASE = os.environ.get("BACKUP_PASSPHRASE") or None
 BACKUP_PBKDF2_ITERATIONS = 200_000
+MIN_BACKUP_PASSPHRASE = 8
+
+
+def _effective_backup_passphrase(request_passphrase: Optional[str]) -> Optional[str]:
+    """A client-supplied passphrase wins; otherwise fall back to the env value.
+    When called directly (unit tests) the Form() default marker may be passed
+    instead of a string — treat anything non-string as absent."""
+    if isinstance(request_passphrase, str) and request_passphrase.strip():
+        return request_passphrase.strip()
+    return BACKUP_PASSPHRASE
 
 
 def _derive_backup_key(passphrase: str, salt: bytes) -> bytes:
@@ -3929,12 +3942,18 @@ def _strip_backup_secrets(doc: dict, keep_passcode_hash: bool = False) -> dict:
     return {k: v for k, v in doc.items() if k not in keys and k != "_id"}
 
 
-async def _build_backup(request: Request, user: dict, scope_club_id: Optional[str]):
+async def _build_backup(request: Request, user: dict, scope_club_id: Optional[str],
+                        passphrase: Optional[str] = None):
     """Build a zip of JSON dumps for one club (Race Admin always; Webmaster
     with ?club_id=) or every club (Webmaster, no param). The server
     constructs every query itself — callers cannot inject queries, and a
     non-webmaster caller's scope is always their own club regardless of any
-    club_id parameter."""
+    club_id parameter.
+
+    An optional ``passphrase`` (supplied from the webmaster console) encrypts
+    this archive; when absent the server's BACKUP_PASSPHRASE env value is used
+    if set, otherwise the archive is plaintext (credentials stripped).
+    """
     if user.get("role") != "webmaster":
         scope_club_id = user.get("club_id")
     if not scope_club_id and user.get("role") != "webmaster":
@@ -3945,7 +3964,11 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     if scope_club_id:
         classes_in = await db.classes.find({"club_id": scope_club_id}, {"_id": 0, "id": 1}).to_list(5000)
         class_ids = [c["id"] for c in classes_in]
-    encrypted = bool(BACKUP_PASSPHRASE)
+    passphrase = _effective_backup_passphrase(passphrase)
+    encrypted = bool(passphrase)
+    if encrypted and len(passphrase) < MIN_BACKUP_PASSPHRASE:
+        raise HTTPException(status_code=400,
+                            detail=f"Backup passphrase must be at least {MIN_BACKUP_PASSPHRASE} characters")
     clubs = await db.clubs.find({"id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     users = await db.users.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     classes = await db.classes.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
@@ -3973,7 +3996,7 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     key = None
     if encrypted:
         salt = secrets.token_bytes(16)
-        key = _derive_backup_key(BACKUP_PASSPHRASE, salt)
+        key = _derive_backup_key(passphrase, salt)
         meta["encrypted"] = True
         meta["kdf"] = {"salt": salt.hex(), "iterations": BACKUP_PBKDF2_ITERATIONS}
     buf = io.BytesIO()
@@ -4022,8 +4045,21 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
 async def admin_backup(request: Request, club_id: Optional[str] = None,
                        user: dict = Depends(require_webmaster)):
     """Webmaster only: download one club's backup (?club_id=) or the full
-    system backup (no param)."""
+    system backup (no param). Legacy plaintext endpoint — the front end uses
+    the POST variant so a passphrase can accompany the request."""
     return await _build_backup(request, user, club_id)
+
+
+@api_router.post("/admin/backup")
+async def admin_backup_post(request: Request,
+                            payload: Optional[dict] = Body(default=None),
+                            user: dict = Depends(require_webmaster)):
+    """Webmaster only: download one club's backup or the full system backup,
+    optionally encrypted with the passphrase supplied in the request body.
+    The passphrase is used for this archive only and is never stored."""
+    payload = payload or {}
+    return await _build_backup(request, user, payload.get("club_id"),
+                               payload.get("passphrase"))
 
 
 @api_router.get("/backup")
@@ -4033,6 +4069,18 @@ async def club_backup(request: Request, club_id: Optional[str] = None,
     never widen the scope — the club is derived from the authenticated
     account, and officers are denied outright."""
     return await _build_backup(request, user, club_id)
+
+
+@api_router.post("/backup")
+async def club_backup_post(request: Request,
+                           payload: Optional[dict] = Body(default=None),
+                           user: dict = Depends(require_admin)):
+    """Race Admin only: download their own club's backup, optionally encrypted
+    with a passphrase. Scope is always the caller's own club regardless of any
+    club_id in the body."""
+    payload = payload or {}
+    return await _build_backup(request, user, payload.get("club_id"),
+                               payload.get("passphrase"))
 
 
 # ---------------------------------------------------------------------------
@@ -4048,6 +4096,7 @@ BACKUP_COLLECTIONS = (
 
 @api_router.post("/admin/backup/restore")
 async def restore_backup(request: Request, file: UploadFile = File(...),
+                         passphrase: str = Form(""),
                          user: dict = Depends(require_webmaster)):
     """Webmaster only: restore data from a backup ZIP.
 
@@ -4095,22 +4144,23 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
         raise HTTPException(status_code=400,
                             detail=f"Unrecognised backup scope: {scope}")
 
-    # Encrypted backups (created when BACKUP_PASSPHRASE was set) carry the
-    # per-entry AES payloads plus the KDF salt in metadata.json. Decrypt with
-    # the server's BACKUP_PASSPHRASE — the same value must be set here as on
-    # the server that exported the backup.
+    # Encrypted backups carry the per-entry AES payloads plus the KDF salt in
+    # metadata.json. Decrypt with the passphrase supplied in the request (or,
+    # failing that, the server's BACKUP_PASSPHRASE) — the same value that was
+    # used to create the backup.
     encrypted = bool(meta.get("encrypted"))
     key = None
     if encrypted:
+        passphrase = _effective_backup_passphrase(passphrase)
         kdf = meta.get("kdf") or {}
         try:
             salt = bytes.fromhex(kdf.get("salt", ""))
         except (TypeError, ValueError):
             salt = b""
-        if not salt or not BACKUP_PASSPHRASE:
+        if not salt or not passphrase:
             raise HTTPException(status_code=400,
-                                detail="This backup is encrypted — set BACKUP_PASSPHRASE to the same value that was used when the backup was created.")
-        key = _derive_backup_key(BACKUP_PASSPHRASE, salt)
+                                detail="This backup is encrypted — enter the backup passphrase that was used when it was created.")
+        key = _derive_backup_key(passphrase, salt)
         # Fail fast on a mismatched key rather than a long list of per-file errors.
         probe = zp("clubs.json")
         if probe in names:
@@ -4118,7 +4168,7 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
                 _aes_decrypt(key, zf.read(probe))
             except Exception:
                 raise HTTPException(status_code=400,
-                                    detail="Could not decrypt this backup — BACKUP_PASSPHRASE does not match the one used to create it.")
+                                    detail="Could not decrypt this backup — the passphrase does not match the one used to create it.")
 
     def read_json(name):
         blob = zf.read(name)

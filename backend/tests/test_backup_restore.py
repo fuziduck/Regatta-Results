@@ -138,7 +138,7 @@ class TestRestoreBackupLayout:
         server._log_audit = _noop_audit
         out = asyncio.run(server.restore_backup(
             _Req(), _Upload("backup.zip", _zip_bytes("")),
-            {"role": "webmaster", "username": "webmaster"}))
+            user={"role": "webmaster", "username": "webmaster"}))
         assert out["scope"] == "all-clubs"
         assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
                                         "series", "races", "adverts"}
@@ -155,7 +155,7 @@ class TestRestoreBackupLayout:
         out = asyncio.run(server.restore_backup(
             _Req(), _Upload("sailscore-backup.zip",
                             _zip_bytes("sailscore-backup-2026-08-29/")),
-            {"role": "webmaster", "username": "webmaster"}))
+            user={"role": "webmaster", "username": "webmaster"}))
         assert out["scope"] == "all-clubs"
         assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
                                         "series", "races", "adverts"}
@@ -171,7 +171,7 @@ class TestRestoreBackupLayout:
         with pytest.raises(server.HTTPException) as exc:
             asyncio.run(server.restore_backup(
                 _Req(), _Upload("backup.zip", buf.getvalue()),
-                {"role": "webmaster", "username": "webmaster"}))
+                user={"role": "webmaster", "username": "webmaster"}))
         assert exc.value.status_code == 400
         assert "metadata.json" in exc.value.detail
 
@@ -187,9 +187,9 @@ class TestEncryptedBackups:
         db.users = _Coll([dict(TestEncryptedBackups.USER)])
         return db
 
-    def _build(self):
+    def _build(self, passphrase=None):
         return asyncio.run(server._build_backup(
-            _Req(), {"role": "webmaster", "username": "webmaster"}, None))
+            _Req(), {"role": "webmaster", "username": "webmaster"}, None, passphrase))
 
     def test_encrypted_backup_round_trips_passcode_hash(self):
         server.BACKUP_PASSPHRASE = "test-secret"
@@ -208,12 +208,63 @@ class TestEncryptedBackups:
             server.db = _stub_db()
             out = asyncio.run(server.restore_backup(
                 _Req(), _Upload("backup.zip", raw),
-                {"role": "webmaster", "username": "webmaster"}))
+                user={"role": "webmaster", "username": "webmaster"}))
             assert out["errors"] == []
             # The passcode hash survives the round trip — no manual resets needed.
             assert server.db.users.inserted == [dict(self.USER)]
         finally:
             server.BACKUP_PASSPHRASE = None
+
+    def test_request_passphrase_round_trips_without_env(self):
+        """A passphrase supplied with the download request (no env key set)
+        encrypts the archive, and the same passphrase on restore decrypts it
+        and carries the passcode hash across."""
+        server.BACKUP_PASSPHRASE = None
+        server.db = self._backup_db()
+        server._log_audit = _noop_audit
+        raw = self._build(passphrase="super secret phrase 123").body
+
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        meta = json.loads(zf.read("metadata.json"))
+        assert meta["encrypted"] is True
+
+        server.db = _stub_db()
+        out = asyncio.run(server.restore_backup(
+            _Req(), _Upload("backup.zip", raw),
+            passphrase="super secret phrase 123",
+            user={"role": "webmaster", "username": "webmaster"}))
+        assert out["errors"] == []
+        assert server.db.users.inserted == [dict(self.USER)]
+
+    def test_restore_requires_request_passphrase_when_env_unset(self):
+        server.BACKUP_PASSPHRASE = None
+        server.db = self._backup_db()
+        server._log_audit = _noop_audit
+        raw = self._build(passphrase="super secret phrase 123").body
+
+        server.db = _stub_db()
+        with pytest.raises(server.HTTPException) as exc:
+            asyncio.run(server.restore_backup(
+                _Req(), _Upload("backup.zip", raw),
+                passphrase="",
+                user={"role": "webmaster", "username": "webmaster"}))
+        assert exc.value.status_code == 400
+        assert "enter the backup passphrase" in exc.value.detail
+
+    def test_restore_rejects_wrong_request_passphrase(self):
+        server.BACKUP_PASSPHRASE = None
+        server.db = self._backup_db()
+        server._log_audit = _noop_audit
+        raw = self._build(passphrase="super secret phrase 123").body
+
+        server.db = _stub_db()
+        with pytest.raises(server.HTTPException) as exc:
+            asyncio.run(server.restore_backup(
+                _Req(), _Upload("backup.zip", raw),
+                passphrase="totally wrong passphrase",
+                user={"role": "webmaster", "username": "webmaster"}))
+        assert exc.value.status_code == 400
+        assert "does not match" in exc.value.detail
 
     def test_plaintext_backup_strips_passcode_hash(self):
         server.BACKUP_PASSPHRASE = None
@@ -227,7 +278,7 @@ class TestEncryptedBackups:
         server.db = _stub_db()
         asyncio.run(server.restore_backup(
             _Req(), _Upload("backup.zip", resp.body),
-            {"role": "webmaster", "username": "webmaster"}))
+            user={"role": "webmaster", "username": "webmaster"}))
         assert server.db.users.inserted == [{k: v for k, v in self.USER.items()
                                              if k != "passcode_hash"}]
 
@@ -242,9 +293,10 @@ class TestEncryptedBackups:
             with pytest.raises(server.HTTPException) as exc:
                 asyncio.run(server.restore_backup(
                     _Req(), _Upload("backup.zip", raw),
-                    {"role": "webmaster", "username": "webmaster"}))
+                    passphrase="",
+                    user={"role": "webmaster", "username": "webmaster"}))
             assert exc.value.status_code == 400
-            assert "BACKUP_PASSPHRASE" in exc.value.detail
+            assert "enter the backup passphrase" in exc.value.detail
         finally:
             server.BACKUP_PASSPHRASE = None
 
@@ -259,7 +311,8 @@ class TestEncryptedBackups:
             with pytest.raises(server.HTTPException) as exc:
                 asyncio.run(server.restore_backup(
                     _Req(), _Upload("backup.zip", raw),
-                    {"role": "webmaster", "username": "webmaster"}))
+                    passphrase="",
+                    user={"role": "webmaster", "username": "webmaster"}))
             assert exc.value.status_code == 400
             assert "does not match" in exc.value.detail
         finally:

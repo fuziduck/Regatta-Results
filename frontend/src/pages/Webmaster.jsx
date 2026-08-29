@@ -52,8 +52,51 @@ function BackupSection({ clubs }) {
   const [restoreScope, setRestoreScope] = useState(null); // "all" or "club"
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [dlPassphrase, setDlPassphrase] = useState("");
+  const [dlConfirm, setDlConfirm] = useState("");
+  const [restorePassphrase, setRestorePassphrase] = useState("");
   const fileInputAllRef = useRef(null);
   const fileInputClubRef = useRef(null);
+
+  // A passphrase created here encrypts the backup(s) downloaded with it and is
+  // never stored server-side — the same value is re-entered on restore. Empty
+  // passphrase = plaintext backup (credentials stripped).
+  const generatePassphrase = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const bytes = new Uint8Array(18);
+    if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    const phrase = Array.from(bytes, (b) => chars[b % chars.length]).join("");
+    setDlPassphrase(phrase);
+    setDlConfirm(phrase);
+    toast.info("Passphrase generated — keep it safe; you'll need it to restore this backup");
+  };
+
+  const downloadPhrase = () => dlPassphrase.trim();
+  const validateDlPhrase = () => {
+    const p = downloadPhrase();
+    if (!p) return p;
+    if (p.length < 8) {
+      toast.error("Backup passphrase must be at least 8 characters");
+      return null;
+    }
+    if (p !== dlConfirm.trim()) {
+      toast.error("Backup passphrases do not match");
+      return null;
+    }
+    return p;
+  };
+
+  const doDownload = async (club_id) => {
+    const p = validateDlPhrase();
+    if (p === null) return;
+    try {
+      await api.downloadBackup(club_id, true, p);
+      toast.success(p ? "Encrypted backup downloaded" : "Backup downloaded");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Backup download failed");
+    }
+  };
 
   const handleFileSelected = (e, scope) => {
     const file = e.target.files?.[0];
@@ -65,6 +108,7 @@ function BackupSection({ clubs }) {
     }
     setRestoreFile(file);
     setRestoreScope(scope);
+    setRestorePassphrase(dlPassphrase.trim());
     setRestoreConfirmOpen(true);
     e.target.value = "";
   };
@@ -73,17 +117,19 @@ function BackupSection({ clubs }) {
     if (!restoreFile) return;
     setRestoring(true);
     try {
-      const result = await api.restoreBackup(restoreFile);
+      const result = await api.restoreBackup(restoreFile, restorePassphrase.trim());
       const count = result.restored?.length || 0;
       const errMsgs = result.errors?.length ? ` (${result.errors.length} skipped)` : "";
       toast.success(`Backup restored successfully — ${count} collection${count === 1 ? "" : "s"} updated${errMsgs}`);
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Restore failed — please check the backup file");
-    } finally {
-      setRestoring(false);
       setRestoreConfirmOpen(false);
       setRestoreFile(null);
       setRestoreScope(null);
+      setRestorePassphrase("");
+    } catch (err) {
+      // Keep the dialog open so the passphrase can be corrected and retried.
+      toast.error(err.response?.data?.detail || "Restore failed — please check the backup file");
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -92,7 +138,7 @@ function BackupSection({ clubs }) {
       <div className="mb-6">
         <h1 className="text-3xl uppercase tracking-tighter mb-1">Backups</h1>
         <p className="text-muted-foreground text-sm">
-          Download or restore a zip of JSON exports. When the server's BACKUP_PASSPHRASE is set, backups are AES-encrypted and carry users' passcode hashes — so a restore brings everyone's sign-in passcodes across with no manual resets. Reset tokens and lockout state are never exported.
+          Download or restore a zip of JSON exports. Encrypt a backup by entering a passphrase below — encrypted backups are AES-encrypted and carry users' passcode hashes, so a restore brings everyone's sign-in passcodes across with no manual resets. Keep that passphrase safe; you'll re-enter it to restore. Leave the passphrase empty for a plaintext backup (credentials stripped). Reset tokens and lockout state are never exported.
         </p>
       </div>
       <div className="rounded-2xl border border-border bg-card p-5 space-y-4 max-w-2xl">
@@ -105,7 +151,7 @@ function BackupSection({ clubs }) {
             <Button
               className="gap-2 bg-ocean hover:bg-ocean-dark"
               data-testid="backup-all-btn"
-              onClick={() => api.downloadBackup(null, true)}
+              onClick={() => doDownload(null)}
             >
               <Download className="w-4 h-4" /> Download all
             </Button>
@@ -126,7 +172,39 @@ function BackupSection({ clubs }) {
             </Button>
           </div>
         </div>
-        <div className="border-t border-border pt-4 flex flex-wrap items-end gap-3">
+        <div className="rounded-xl border border-dashed border-border p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-semibold">Encrypt this backup (optional)</div>
+            <Button variant="outline" size="sm" data-testid="backup-gen-passphrase" onClick={generatePassphrase}>
+              <Lock className="w-4 h-4" /> Generate passphrase
+            </Button>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Passphrase</Label>
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={dlPassphrase}
+                onChange={(e) => setDlPassphrase(e.target.value)}
+                placeholder="Leave empty for a plaintext backup"
+                data-testid="backup-passphrase-input"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Confirm passphrase</Label>
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={dlConfirm}
+                onChange={(e) => setDlConfirm(e.target.value)}
+                placeholder="Re-enter the passphrase"
+                data-testid="backup-passphrase-confirm"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5 flex-1 min-w-52">
             <Label>Club</Label>
             <select
@@ -145,7 +223,7 @@ function BackupSection({ clubs }) {
               className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
               disabled={!clubId}
               data-testid="backup-club-btn"
-              onClick={() => api.downloadBackup(clubId, true)}
+              onClick={() => doDownload(clubId)}
             >
               <Download className="w-4 h-4" /> Download club backup
             </Button>
@@ -189,9 +267,20 @@ function BackupSection({ clubs }) {
                 This will replace data for the selected club only. Other clubs, global adverts and the webmaster account are not affected.
               </p>
             )}
-            <p className="text-xs text-muted-foreground">
-              Encrypted backups (created with BACKUP_PASSPHRASE set) restore each user's passcode hash, so existing sign-in passcodes keep working. Reset tokens and lockout state are never imported.
-            </p>
+            <div className="space-y-1.5 pt-1">
+              <Label>Backup passphrase (if the backup was encrypted)</Label>
+              <Input
+                type="password"
+                autoComplete="off"
+                value={restorePassphrase}
+                onChange={(e) => setRestorePassphrase(e.target.value)}
+                placeholder="Enter the passphrase used when this backup was created"
+                data-testid="restore-passphrase-input"
+              />
+              <p className="text-xs text-muted-foreground">
+                Encrypted backups restore each user's passcode hash, so existing sign-in passcodes keep working (plaintext backups strip them). Reset tokens and lockout state are never imported.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button
