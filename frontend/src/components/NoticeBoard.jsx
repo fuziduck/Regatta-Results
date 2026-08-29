@@ -37,6 +37,7 @@ const areaTitle = (heading) => AREA_KEY_TITLES[heading] || heading || "Club Noti
 const TYPE_ORDER = [
   "notice_to_competitors",
   "si_amendment",
+  "nor_amendment",
   "race_postponement",
   "race_cancellation",
   "hearing_schedule",

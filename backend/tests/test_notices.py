@@ -82,9 +82,10 @@ def test_meta_catalogue(club_officer_token):
     assert r.status_code == 200
     meta = r.json()
     types = {t["key"]: t for t in meta["types"]}
-    # All nine spec'd types exist, filed under the right headings (spec 43).
+    # All spec'd types exist, filed under the right headings (spec 43).
     assert types["notice_to_competitors"]["heading"] == "Notices to Competitors"
     assert types["si_amendment"]["heading"] == "Sailing Instructions / Amendments"
+    assert types["nor_amendment"]["heading"] == "Notices of Race"
     assert types["race_postponement"]["heading"] == "Race Notices"
     assert types["race_cancellation"]["heading"] == "Race Notices"
     assert types["hearing_schedule"]["heading"] == "Protests & Hearings"
@@ -102,6 +103,12 @@ def test_meta_catalogue(club_officer_token):
     assert reason["placeholder"].startswith("Example: Strong winds")
     si_new = next(f for f in types["si_amendment"]["fields"] if f["key"] == "new_wording")
     assert "orange flag on the committee vessel" in si_new["placeholder"]
+    # Change to NOR mirrors the SI amendment shape (number, wording, reason).
+    nor = {f["key"]: f for f in types["nor_amendment"]["fields"]}
+    assert {"nor_number", "existing_wording", "new_wording", "reason", "effective_at"} <= set(nor)
+    assert nor["nor_number"]["required"] is True
+    assert nor["new_wording"]["required"] is True
+    assert "NOR 4.1" in nor["nor_number"]["placeholder"]
 
 
 # ---------------------------------------------------------------------------
