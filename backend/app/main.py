@@ -6536,6 +6536,40 @@ def _notice_body(tdef: dict, fields: dict) -> List[dict]:
     return rows
 
 
+def _custom_area_key(title: str) -> str:
+    """The publication-area key for a custom club area (mirrors
+    list_notice_areas): custom:<slugified title>."""
+    return "custom:" + re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+async def _club_area_keys(club_id: str) -> set:
+    """The valid publication area keys for a club: the two built-ins plus
+    custom:<slug> keys for the club's custom areas (no request object needed,
+    so it can be called from creation/update endpoints)."""
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "notice_areas": 1})
+    keys = {"club", "open_event"}
+    for title in (club or {}).get("notice_areas") or []:
+        keys.add(_custom_area_key(title))
+    return keys
+
+
+async def _notice_area_title(club_id: str, publication_area: str) -> str:
+    """Display title for a publication area key. The two built-in areas always
+    exist; custom club areas are reverse-mapped from their custom:<slug> keys
+    (the raw title is already the display title, e.g. for the wizard's
+    newly-created-area path)."""
+    if not publication_area or publication_area == "club":
+        return "Club Notices"
+    if publication_area == "open_event":
+        return "Open Event Notices"
+    if publication_area.startswith("custom:"):
+        club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "notice_areas": 1})
+        for title in (club or {}).get("notice_areas") or []:
+            if _custom_area_key(title) == publication_area:
+                return title
+    return publication_area
+
+
 async def _next_notice_number(club_id: str, publication_area: str = "Club Notices") -> int:
     """Return the next number within a club-wide ONB area.
 
@@ -6921,7 +6955,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": ("Club Notices" if data.publication_area == "club" else data.publication_area), "publication_area": data.publication_area, "title": title,
+        "heading": await _notice_area_title(club_id, data.publication_area), "publication_area": data.publication_area, "title": title,
         "notice_number": data.notice_number or await _next_notice_number(club_id, data.publication_area),
         "content_type": "generated", "creation_method": "generated",
         "status": "draft", "version": 1, "root_id": notice_id,
@@ -7002,7 +7036,7 @@ async def upload_notice(request: Request,
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": ("Club Notices" if (publication_area or "club") == "club" else publication_area), "publication_area": publication_area or "club", "title": title,
+        "heading": await _notice_area_title(club_id, publication_area or "club"), "publication_area": publication_area or "club", "title": title,
         "notice_number": notice_number or await _next_notice_number(club_id, publication_area),
         "content_type": "uploaded", "creation_method": "uploaded",
         "status": "draft", "version": 1, "root_id": notice_id,
@@ -7088,12 +7122,10 @@ async def update_notice(notice_id: str, data: NoticeUpdateInput,
     history = None
 
     if data.publication_area is not None:
-        allowed = await list_notice_areas(request=None, club_id=notice["club_id"])
-        area_keys = {a["key"] for a in allowed}
-        if data.publication_area not in area_keys:
+        if data.publication_area not in await _club_area_keys(notice["club_id"]):
             raise HTTPException(status_code=400, detail="Unknown notice area")
         updates["publication_area"] = data.publication_area
-        updates["heading"] = next(a["title"] for a in allowed if a["key"] == data.publication_area)
+        updates["heading"] = await _notice_area_title(notice["club_id"], data.publication_area)
 
     if data.title is not None:
         title = data.title.strip()

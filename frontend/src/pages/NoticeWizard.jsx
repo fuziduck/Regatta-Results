@@ -297,6 +297,7 @@ export default function NoticeWizard({ onDone }) {
   // never its reproduced content (spec 48).
   const previewRecord = useMemo(() => {
     if (!typeDef || !noticeId) return null;
+    const areaTitle = publicationAreas.find((a) => a.key === publicationArea)?.title || publicationArea;
     // Build what the public ONB would show for this generated notice.
     if (method === "generated") {
       return {
@@ -305,7 +306,7 @@ export default function NoticeWizard({ onDone }) {
         notice_type_label: typeDef.label,
         notice_number: noticeNumber,
         title: fields.subject || typeDef.label,
-        heading: publicationArea,
+        heading: areaTitle,
         content_type: "generated",
         status: "draft",
         version: draftVersion || 1,
@@ -327,7 +328,7 @@ export default function NoticeWizard({ onDone }) {
       notice_type_label: typeDef.label,
       notice_number: noticeNumber,
       title: fields.title || (uploadFile ? uploadFile.name : "Uploaded notice"),
-      heading: publicationArea,
+      heading: areaTitle,
       content_type: "uploaded",
       status: "draft",
       version: draftVersion || 1,
@@ -343,7 +344,7 @@ export default function NoticeWizard({ onDone }) {
       file_size: uploadFile?.size || null,
       body: [],
     };
-  }, [typeDef, typeKey, noticeId, method, fields, noticeNumber, effectiveDatetime, publicationDatetime, publicationArea, ctx, draftVersion, uploadFile]);
+  }, [typeDef, typeKey, noticeId, method, fields, noticeNumber, effectiveDatetime, publicationDatetime, publicationArea, publicationAreas, ctx, draftVersion, uploadFile]);
 
   // Generate the PDF blob for the preview pane and the data URL for publishing.
   useEffect(() => {

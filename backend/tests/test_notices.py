@@ -115,11 +115,27 @@ def test_create_generated_draft(club_officer_token, test_club):
     assert n["status"] == "draft"
     assert n["content_type"] == "generated"
     assert n["notice_number"] == 1
-    assert n["heading"] == "Notices to Competitors"
+    # The default publication area is the club-wide board: notices file under
+    # the AREA heading ("Club Notices"), not the type's catalogue heading —
+    # the type heading is a wizard-catalogue concept, the area is where the
+    # notice actually sits on the board.
+    assert n["heading"] == "Club Notices"
+    assert n["publication_area"] == "club"
     # Server-side render rows: stored values only (placeholders never stored).
     body = {row["label"]: row["value"] for row in n["body"]}
     assert body["Subject"] == "Change of race area"
     assert "Strong winds" not in str(n["body"])
+
+
+def test_notice_area_title_mapping(club_officer_token):
+    """Publication area keys map to display titles on the stored heading: the
+    default "club" area, the built-in "open_event" area, and a custom club
+    area (whose key equals its title)."""
+    r = make_notice(club_officer_token, publication_area="open_event",
+                    title="Open event notice")
+    assert r.status_code == 200, r.text
+    assert r.json()["heading"] == "Open Event Notices"
+    assert r.json()["publication_area"] == "open_event"
 
 
 def test_required_fields_and_unknown_type(club_officer_token):

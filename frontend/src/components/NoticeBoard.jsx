@@ -1,9 +1,13 @@
-// The public Official Notice Board (spec 41/42/43): notices grouped under
-// their automatic headings. Generated notices show the readable HTML version
-// plus a stored formal PDF; uploaded notices show the official document in an
-// embedded viewer where possible, with Open/Download actions — the document
-// itself is served byte-for-byte as the club issued it (spec 48). Superseded
-// versions never appear in the list; withdrawn ones stay, clearly marked.
+// The public Official Notice Board (spec 41/42/43): notices grouped under the
+// club's ONB AREAS — the officer-chosen publication area the backend stores on
+// each notice ("Club Notices", "Open Event Notices" or a custom club area) —
+// each area splitting into its notice TYPES. Notice numbers are sequential per
+// area, so within each type the issued number orders the notices. Generated
+// notices show the readable HTML version plus a stored formal PDF; uploaded
+// notices show the official document in an embedded viewer where possible,
+// with Open/Download actions — the document itself is served byte-for-byte as
+// the club issued it (spec 48). Superseded versions never appear in the list;
+// withdrawn ones stay, clearly marked.
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -12,38 +16,30 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { NoticeBodyView, NoticeFacts, noticeHeadingLine, noticeContextLine } from "@/components/NoticeBody";
 import { Download, ExternalLink, FileText, FlagTriangleRight, ScrollText } from "lucide-react";
 
-// Canonical heading order — mirrors the backend catalogue order (spec 43's
-// default structure). Unknown headings fall back to alphabetical after these.
-const HEADING_ORDER = [
-  "Club Notices",
-  "Open Event Notices",
-  "Notices to Competitors",
-  "Sailing Instructions / Amendments",
-  "Race Notices",
-  "Protests & Hearings",
-  "Results",
-  "Safety",
-  "General Notices",
-];
+// The two built-in ONB areas always exist (backend /notice-areas); custom club
+// areas sort alphabetically after them. When the club's configured area list
+// is available it takes precedence over this order.
+const BUILTIN_AREA_ORDER = ["Club Notices", "Open Event Notices"];
 
-// Canonical notice types and the heading each files under (mirrors the backend
-// catalogue). Notice numbers are sequential PER TYPE, so the board groups by
-// type first and only then orders by number — shared headings (e.g. Race
-// Postponement + Race Cancellation under "Race Notices") each stay in their
-// own numbered sequence.
-const TYPE_META = [
-  { key: "notice_to_competitors", heading: "Notices to Competitors" },
-  { key: "si_amendment", heading: "Sailing Instructions / Amendments" },
-  { key: "race_postponement", heading: "Race Notices" },
-  { key: "race_cancellation", heading: "Race Notices" },
-  { key: "hearing_schedule", heading: "Protests & Hearings" },
-  { key: "hearing_decision", heading: "Protests & Hearings" },
-  { key: "results_notice", heading: "Results" },
-  { key: "safety_notice", heading: "Safety" },
-  { key: "general_club_notice", heading: "General Notices" },
+// Normalise raw publication-area KEYS to their display titles for legacy
+// notices whose stored heading predates the key→title mapping on the backend.
+const AREA_KEY_TITLES = { club: "Club Notices", open_event: "Open Event Notices" };
+const areaTitle = (heading) => AREA_KEY_TITLES[heading] || heading || "Club Notices";
+
+// Canonical notice type order (mirrors the backend catalogue) — used to order
+// the type sub-sections within each area; unknown types sort alphabetically
+// after the catalogue.
+const TYPE_ORDER = [
+  "notice_to_competitors",
+  "si_amendment",
+  "race_postponement",
+  "race_cancellation",
+  "hearing_schedule",
+  "hearing_decision",
+  "results_notice",
+  "safety_notice",
+  "general_club_notice",
 ];
-const TYPE_HEADING = Object.fromEntries(TYPE_META.map((t) => [t.key, t.heading]));
-const TYPE_ORDER = TYPE_META.map((t) => t.key);
 
 // Fetch the full notice (with the stored PDF / uploaded document payloads)
 // on demand — list responses stay light.
@@ -207,6 +203,8 @@ function NoticeCard({ notice, open, onToggle }) {
 
 export default function NoticeBoard({ clubId, embedded = false, sectionId = null }) {
   const [notices, setNotices] = useState(null);
+  // The club's configured ONB areas in display order (null when unavailable).
+  const [areas, setAreas] = useState(null);
   const [openId, setOpenId] = useState(() => {
     const h = window.location.hash || "";
     return h.startsWith("#notice-") ? h.slice(8) : null;
@@ -215,46 +213,54 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
   useEffect(() => {
     if (!clubId) return;
     api.getNotices({ club_id: clubId, ...(sectionId ? { section_id: sectionId } : {}) }).then(setNotices).catch(() => setNotices([]));
+    api.getNoticeAreas(clubId).then((list) => setAreas(list.map((a) => a.title))).catch(() => setAreas(null));
   }, [clubId, sectionId]);
-
-  // Deep link (#notice-<id>): the linked notice opens expanded.
-  useEffect(() => {
-    if (openId && notices && notices.some((n) => n.id === openId)) {
-      const el = document.getElementById(`notice-heading-anchor-${openId}`);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [openId, notices]);
-
-  if (!clubId || !notices) return null;
-  if (!notices.length) return null;
 
   // Within its type, a notice is ordered by its issued number, smallest first
   // (a number is stable across revisions, unlike publication time).
   const byNoticeNumber = (a, b) => Number(a.notice_number ?? Infinity) - Number(b.notice_number ?? Infinity)
     || ((a.published_at || "").localeCompare(b.published_at || ""));
 
-  // Group into the main notice AREAS first, then within each area by notice
-  // TYPE — a number is only comparable within its own type, so shared areas
-  // (e.g. Race Postponement + Race Cancellation both under "Race Notices")
-  // each keep their own numbered sequence.
-  const areas = new Map(); // area -> Map<typeKey, { label, items }>
-  notices.forEach((n) => {
+  // Group into the main notice AREAS first (the officer-chosen publication
+  // area stored on each notice — heading), then within each area by notice
+  // TYPE — a number is only comparable within its own type, so each type keeps
+  // its own numbered sequence.
+  const groups = new Map(); // area -> Map<typeKey, { label, items }>
+  (notices || []).forEach((n) => {
     const typeKey = n.notice_type || n.notice_type_label || "notice";
-    const area = TYPE_HEADING[typeKey] || n.heading || "General Notices";
-    if (!areas.has(area)) areas.set(area, new Map());
-    const typeGroups = areas.get(area);
+    const area = areaTitle(n.heading);
+    if (!groups.has(area)) groups.set(area, new Map());
+    const typeGroups = groups.get(area);
     if (!typeGroups.has(typeKey)) {
       typeGroups.set(typeKey, { label: n.notice_type_label || n.notice_type || "Notice", items: [] });
     }
     typeGroups.get(typeKey).items.push(n);
   });
-  // Areas follow the canonical heading order; within an area, types follow
-  // the canonical type order, then alphabetical.
+  // Areas follow the club's configured order when known; otherwise the two
+  // built-in areas first, then the rest alphabetically. Within an area, types
+  // follow the canonical type order, then alphabetical.
   const typeRank = (key) => { const i = TYPE_ORDER.indexOf(key); return i < 0 ? 99 : i; };
-  const areaOrder = [...areas.keys()].sort((a, b) => {
-    const ia = HEADING_ORDER.indexOf(a); const ib = HEADING_ORDER.indexOf(b);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  const areaRank = (area) => {
+    if (areas && areas.includes(area)) return areas.indexOf(area);
+    const i = BUILTIN_AREA_ORDER.indexOf(area);
+    return i < 0 ? 99 : i;
+  };
+  const areaOrder = [...groups.keys()].sort((a, b) => {
+    const ra = areaRank(a); const rb = areaRank(b);
+    return (ra - rb) || a.localeCompare(b);
   });
+
+  // Deep link (#notice-<id>): the linked notice opens expanded and is scrolled
+  // into view.
+  useEffect(() => {
+    if (openId && notices && notices.some((n) => n.id === openId)) {
+      const el = document.querySelector(`[data-testid="notice-trigger-${openId}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [openId, notices]);
+
+  if (!clubId || !notices) return null;
+  if (!notices.length) return null;
 
   return (
     <section className={embedded ? "" : "min-h-screen bg-background py-10"} data-testid="official-notice-board">
@@ -264,7 +270,7 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
       </div>
       <div className="columns-1 md:columns-2 xl:columns-3 gap-x-8">
         {areaOrder.map((area) => {
-          const typeGroups = areas.get(area);
+          const typeGroups = groups.get(area);
           // Each area stays whole inside one column (never split across a
           // break), splitting into its notice types below.
           const types = [...typeGroups.keys()].sort((a, b) =>
