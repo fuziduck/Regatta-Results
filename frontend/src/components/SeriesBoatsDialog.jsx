@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Users } from "lucide-react";
+import { Users, CheckSquare, Square } from "lucide-react";
 
 // Let a race officer or club admin choose exactly which boats form part of a
 // series. The DNC scoring engine scores these boats: a member that misses a
@@ -27,6 +27,8 @@ export default function SeriesBoatsDialog({ series, open, onOpenChange, clubId, 
   }, [open, series, clubId]);
 
   const toggle = (id) => setSelected((s) => ({ ...s, [id]: !s[id] }));
+  const selectAll = () => setSelected(Object.fromEntries(boats.map((b) => [b.id, true])));
+  const clearAll = () => setSelected({});
   const count = Object.values(selected).filter(Boolean).length;
 
   const save = async () => {
@@ -61,7 +63,19 @@ export default function SeriesBoatsDialog({ series, open, onOpenChange, clubId, 
           <strong>DNC</strong>, while an unticked boat is excluded from the standings even if it sailed (e.g. a boat signed
           onto a different series).
         </p>
-        <p className="text-xs text-muted-foreground">{count} of {boats.length} class boat{boats.length === 1 ? "" : "s"} selected</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-muted-foreground">{count} of {boats.length} class boat{boats.length === 1 ? "" : "s"} selected</p>
+          {boats.length > 0 && (
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1" onClick={selectAll} data-testid="series-select-all">
+                <CheckSquare className="w-3.5 h-3.5" /> Select all
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" onClick={clearAll} data-testid="series-deselect-all">
+                <Square className="w-3.5 h-3.5" /> Clear
+              </Button>
+            </div>
+          )}
+        </div>
         <div className="space-y-1.5" data-testid="series-boats-list">
           {boats.length === 0 && <p className="text-sm text-muted-foreground">No boats in this class yet.</p>}
           {boats.map((b) => (
