@@ -71,7 +71,8 @@ export default function NoticeWizard({ onDone }) {
   const [step, setStep] = useState(0);
   const [typeKey, setTypeKey] = useState(null);
   const [method, setMethod] = useState("generated"); // 'generated' | 'uploaded'
-  const [publicationArea, setPublicationArea] = useState("club");
+  const [publicationArea, setPublicationArea] = useState("Club Notices");
+  const [publicationAreas, setPublicationAreas] = useState([{ key: "Club Notices", title: "Club Notices" }, { key: "Open Event Notices", title: "Open Event Notices" }]);
   const [fields, setFields] = useState({});
   const [uploadFile, setUploadFile] = useState(null);
   const [noticeNumber, setNoticeNumber] = useState(1);
@@ -141,6 +142,7 @@ export default function NoticeWizard({ onDone }) {
   useEffect(() => {
     const effectiveClubId = role === "webmaster" ? selectedClubId : clubId;
     if (!effectiveClubId || !typeKey) return;
+    api.getNoticeAreas(effectiveClubId).then((areas) => setPublicationAreas((areas || []).map((a) => ({ key: a.title, title: a.title })))).catch(() => {});
     setLinkOptionsLoading(true);
     Promise.all([
       api.getClasses({ club_id: effectiveClubId }),
@@ -281,7 +283,7 @@ export default function NoticeWizard({ onDone }) {
         notice_type_label: typeDef.label,
         notice_number: noticeNumber,
         title: fields.subject || typeDef.label,
-        heading: typeDef.heading,
+        heading: publicationArea,
         content_type: "generated",
         status: "draft",
         version: draftVersion || 1,
@@ -303,7 +305,7 @@ export default function NoticeWizard({ onDone }) {
       notice_type_label: typeDef.label,
       notice_number: noticeNumber,
       title: fields.title || (uploadFile ? uploadFile.name : "Uploaded notice"),
-      heading: publicationArea === "open_event" ? "Open Event Notices" : "Club Notices",
+      heading: publicationArea,
       content_type: "uploaded",
       status: "draft",
       version: draftVersion || 1,
@@ -478,14 +480,10 @@ export default function NoticeWizard({ onDone }) {
               <Label className="font-heading uppercase text-sm">Where should this notice appear?</Label>
               <p className="text-xs text-muted-foreground">Choose the club-wide board or the open event notices section.</p>
               <RadioGroup value={publicationArea} onValueChange={setPublicationArea} className="grid sm:grid-cols-2 gap-2">
-                <label className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${publicationArea === "club" ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
-                  <RadioGroupItem value="club" id="publication-area-club" />
-                  <span><span className="block font-semibold">Club Notices</span><span className="block text-xs text-muted-foreground">General notices for the club</span></span>
-                </label>
-                <label className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${publicationArea === "open_event" ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
-                  <RadioGroupItem value="open_event" id="publication-area-open-event" />
-                  <span><span className="block font-semibold">Open Event Notices</span><span className="block text-xs text-muted-foreground">Notices for an open event</span></span>
-                </label>
+                {publicationAreas.map((area) => <label key={area.key} className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${publicationArea === area.key ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
+                  <RadioGroupItem value={area.key} id={`publication-area-${area.key}`} />
+                  <span><span className="block font-semibold">{area.title}</span><span className="block text-xs text-muted-foreground">Notices posted in this ONB area</span></span>
+                </label>)}
               </RadioGroup>
             </div>
             {ctx && (

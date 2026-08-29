@@ -1107,11 +1107,35 @@ function NoticeManagementTab({ clubId }) {
   const navigate = useNavigate();
   const [notices, setNotices] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [areaName, setAreaName] = useState("");
+  const [areas, setAreas] = useState(["Club Notices", "Open Event Notices"]);
   const load = useCallback(() => {
     if (!clubId) return;
     api.getNotices({ club_id: clubId }).then(setNotices).catch(() => setNotices([]));
   }, [clubId]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (clubId) api.getNoticeAreas(clubId).then((items) => setAreas((items || []).map((item) => item.title))).catch(() => {}); }, [clubId]);
+  const addArea = async () => {
+    const value = areaName.trim();
+    if (!value) return toast.error("Enter a name for the notice area");
+    if (areas.some((area) => area.toLowerCase() === value.toLowerCase())) return toast.error("That notice area already exists");
+    const nextAreas = [...areas, value];
+    setAreas(nextAreas);
+    setAreaName("");
+    try {
+      const current = await api.getClubs();
+      const club = (current || []).find((item) => item.id === clubId);
+      await api.updateClubSettings(clubId, {
+        race_day_notices: club?.race_day_notices !== false,
+        official_notice_board: club?.official_notice_board !== false,
+        notice_areas: nextAreas.filter((area) => !["Club Notices", "Open Event Notices"].includes(area)),
+      });
+      toast.success("Notice area added");
+    } catch (e) {
+      setAreas(areas);
+      toast.error(e.response?.data?.detail || "Could not save notice area");
+    }
+  };
   const remove = async (notice) => {
     if (!window.confirm(`Remove “${notice.title}” from the Official Notice Board? This cannot be undone.`)) return;
     setBusy(true);
@@ -1130,6 +1154,11 @@ function NoticeManagementTab({ clubId }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-2xl uppercase tracking-tighter">Official Notice Board</h2><p className="text-sm text-muted-foreground">Create, view and remove notices from this club’s public ONB.</p></div>
         <Button className="gap-1.5" onClick={() => navigate('/notice/new')} data-testid="create-notice-btn"><FileText className="w-4 h-4" /> New Notice</Button>
+      </div>
+      <div className="rounded-xl border border-border bg-card p-4 space-y-3" data-testid="notice-area-manager">
+        <div><h3 className="font-heading uppercase">Notice areas</h3><p className="text-xs text-muted-foreground">Create additional areas for this club’s ONB. Race Admins and Race Officers can choose them when posting.</p></div>
+        <div className="flex flex-wrap gap-2">{areas.map((area) => <Badge key={area} variant="outline">{area}</Badge>)}</div>
+        <div className="flex gap-2"><Input value={areaName} onChange={(e) => setAreaName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addArea(); }} placeholder="e.g. Regatta Notices" data-testid="new-notice-area-input" /><Button type="button" onClick={addArea} data-testid="add-notice-area-btn"><Plus className="w-4 h-4" /> Add area</Button></div>
       </div>
       {!notices.length && <p className="text-sm text-muted-foreground rounded-xl border border-dashed p-6 text-center">No notices are currently listed.</p>}
       {notices.map((notice) => (

@@ -795,6 +795,8 @@ class ClubSettingsInput(BaseModel):
     # Whether this club publishes the formal Official Notice Board. This is
     # independent from race-day notices: a club may use one without the other.
     official_notice_board: bool = True
+    # Custom ONB areas created by the club's Race Admin/Race Officer.
+    notice_areas: List[str] = []
 
 
 class MiniGroupSettingsInput(BaseModel):
@@ -2397,6 +2399,7 @@ async def update_club_settings(club_id: str, data: ClubSettingsInput,
                               {"$set": {
                                   "race_day_notices": data.race_day_notices,
                                   "official_notice_board": data.official_notice_board,
+                                  "notice_areas": list(dict.fromkeys([a.strip() for a in data.notice_areas if a.strip()]))[:50],
                               }})
     await _log_audit(request=None, user=user, action="CLUB_SETTINGS_UPDATED",
                      description=(f"Set race_day_notices={data.race_day_notices}, "
@@ -6078,7 +6081,7 @@ class NoticeCreateInput(BaseModel):
     Uploaded notices go through POST /notices/upload (multipart)."""
     notice_type: str
     # Where the notice is published within the club ONB.
-    publication_area: Literal["club", "open_event"] = "club"
+    publication_area: str = "club"
     title: str
     fields: dict = {}
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
@@ -6094,7 +6097,7 @@ class NoticeUpdateInput(BaseModel):
     create a new version (POST /notices/{id}/new-version, spec 49). Uploaded
     documents are never editable here; a corrected document is attached to a
     new version (PUT /notices/{id}/file)."""
-    publication_area: Optional[Literal["club", "open_event"]] = None
+    publication_area: Optional[str] = None
     title: Optional[str] = None
     fields: Optional[dict] = None
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
@@ -6162,6 +6165,21 @@ async def create_notice_section(board_id: str, data: NoticeSectionInput, request
     return doc
 
 
+@api_router.get("/notice-areas")
+async def list_notice_areas(request: Request, club_id: Optional[str] = None):
+    scope = await _resolve_club_id(request, club_id)
+    if not scope:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    club = await db.clubs.find_one({"id": scope}, {"_id": 0, "notice_areas": 1})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
+    return [{"key": "club", "title": "Club Notices"},
+            {"key": "open_event", "title": "Open Event Notices"}] + [
+                {"key": "custom:" + re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-"), "title": title}
+                for title in (club.get("notice_areas") or [])
+            ]
+
+
 @api_router.get("/notices/meta")
 async def notices_meta(user: dict = Depends(require_officer)):
     """The notice type catalogue for the creation wizard: labels, ONB headings
@@ -6199,6 +6217,8 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
     limit = max(1, min(int(limit), 500))
 
     q = {"club_id": scope}
+    if request.query_params.get("publication_area"):
+        q["publication_area"] = request.query_params.get("publication_area")
     if request.query_params.get("section_id"):
         q["section_id"] = request.query_params.get("section_id")
     if request.query_params.get("board_id"):
@@ -6320,7 +6340,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": tdef["heading"], "publication_area": data.publication_area, "title": title,
+        "heading": data.publication_area, "publication_area": data.publication_area, "title": title,
         "notice_number": data.notice_number or await _next_notice_number(club_id, tdef["key"]),
         "content_type": "generated", "creation_method": "generated",
         "status": "draft", "version": 1, "root_id": notice_id,
@@ -6401,7 +6421,7 @@ async def upload_notice(request: Request,
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": tdef["heading"], "publication_area": publication_area if publication_area in ("club", "open_event") else "club", "title": title,
+        "heading": publication_area or "Club Notices", "publication_area": publication_area or "Club Notices", "title": title,
         "notice_number": notice_number or await _next_notice_number(club_id, tdef["key"]),
         "content_type": "uploaded", "creation_method": "uploaded",
         "status": "draft", "version": 1, "root_id": notice_id,
