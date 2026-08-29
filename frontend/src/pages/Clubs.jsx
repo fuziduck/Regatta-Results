@@ -8,7 +8,7 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, LogIn, Sailboat, Search, Trophy } from "lucide-react";
+import { CalendarDays, ChevronRight, LogIn, Sailboat, Search, Trophy } from "lucide-react";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import Logo from "@/components/Logo";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
@@ -65,6 +65,24 @@ export default function Clubs() {
   const [seasons, setSeasons] = useState([]);
   const { adverts, roll } = useAdverts();
   const sideAdverts = pickAdverts(adverts, 3, roll);
+
+  // Individual class boxes: the class with the newest published result sits at
+  // the top; classes without published results keep their name order below.
+  const sortedClasses = (classes) => [...classes].sort((a, b) => {
+    const da = a.latest ? a.latest.date : "";
+    const db = b.latest ? b.latest.date : "";
+    if (da && db) return db < da ? -1 : db > da ? 1 : 0;
+    return da ? -1 : db ? 1 : 0;
+  });
+
+  // Deep link straight to a class's results: the Landing page preselects the
+  // class tab and, when we know the series, lands on that series' results.
+  const classHref = (slug, c) => {
+    const params = [`class=${c.id}`];
+    if (c.latest?.series_id) params.push(`series=${c.latest.series_id}`);
+    if (year !== CURRENT_YEAR) params.push(`year=${year}`);
+    return `/club/${slug}?${params.join("&")}`;
+  };
 
   // Refresh when new series may have been set up elsewhere (page re-focus or a
   // 30s poll): the future-year buttons and the per-year club directory must
@@ -172,54 +190,66 @@ export default function Clubs() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 [grid-auto-rows:masonry]" data-testid="club-grid">
             {directory.map((cell) => (
               <div key={cell.id} className="contents">
-              <Link
-                to={`/club/${cell.slug}${year === CURRENT_YEAR ? "" : `?year=${year}`}`}
-                data-testid={`club-card-${cell.slug}`}
-                className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all break-inside-avoid mb-5"
-              >
-                <div className="flex items-center gap-4">
-                  <ClubIcon club={cell} />
-                  <div>
-                    <div className="font-heading text-2xl uppercase tracking-tight leading-none group-hover:text-ocean transition-colors">{cell.name}</div>
-                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><Sailboat className="w-3.5 h-3.5" /> {cell.classes.length} class{cell.classes.length === 1 ? "" : "es"}</div>
-                  </div>
-                </div>
-
-                <div className="mt-5 space-y-4">
-                  {cell.classes.length === 0 && <p className="text-xs text-muted-foreground">No classes set up yet.</p>}
-                  {cell.classes.map((c) => (
-                    <div key={c.id} className="rounded-xl bg-muted/40 border border-border/60 p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="font-heading uppercase tracking-tight text-sm">{c.name}</div>
-                        {c.latest?.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50 dark:text-indigo-300 dark:border-indigo-500/40 dark:bg-indigo-500/15">IRC</Badge>}
-                        {c.latest?.scoring_mode === "py" && <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-300 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-500/40 dark:bg-emerald-500/15">PY</Badge>}
-                        {c.latest?.scoring_mode === "one_design" && <Badge variant="outline" className="text-[10px] text-slate-600 border-slate-300 bg-slate-50 dark:text-slate-300 dark:border-slate-500/40 dark:bg-slate-500/15">One Design</Badge>}
+                <div className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all break-inside-avoid mb-5">
+                  {/* The club header links to the club's main page. */}
+                  <Link
+                    to={`/club/${cell.slug}${year === CURRENT_YEAR ? "" : `?year=${year}`}`}
+                    data-testid={`club-card-${cell.slug}`}
+                    className="block"
+                  >
+                    <div className="flex items-center gap-4">
+                      <ClubIcon club={cell} />
+                      <div>
+                        <div className="font-heading text-2xl uppercase tracking-tight leading-none group-hover:text-ocean transition-colors">{cell.name}</div>
+                        <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><Sailboat className="w-3.5 h-3.5" /> {cell.classes.length} class{cell.classes.length === 1 ? "" : "es"}</div>
                       </div>
-                      {c.latest ? (
-                        <LatestResults latest={c.latest} />
-                      ) : c.planned_series?.length ? (
-                        <div className="mt-3 rounded-lg bg-ocean/5 border border-ocean/20 p-2.5">
-                          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-ocean">
-                            <CalendarDays className="w-3.5 h-3.5" /> Series planned
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
-                            {c.planned_series.map((s) => (
-                              <div key={s.name}>
-                                <span className="font-semibold text-foreground">{s.name}</span>
-                                {s.planned_races ? ` · ${s.planned_races} races` : ""}
-                                {s.first_date ? ` · starts ${fmtDateShort(s.first_date)}` : ""}
-                              </div>
-                            ))}
+                    </div>
+                  </Link>
+
+                  {/* Each class box links straight to that class's results (deep
+                      links to the series tab when the class has published races). */}
+                  <div className="mt-5 space-y-4">
+                    {cell.classes.length === 0 && <p className="text-xs text-muted-foreground">No classes set up yet.</p>}
+                    {sortedClasses(cell.classes).map((c) => (
+                      <Link
+                        key={c.id}
+                        to={classHref(cell.slug, c)}
+                        data-testid={`class-card-${cell.slug}-${c.id}`}
+                        className="group/class block rounded-xl bg-muted/40 border border-border/60 p-3 hover:border-ocean/50 hover:bg-muted/60 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-heading uppercase tracking-tight text-sm group-hover/class:text-ocean transition-colors">{c.name}</div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {c.latest?.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50 dark:text-indigo-300 dark:border-indigo-500/40 dark:bg-indigo-500/15">IRC</Badge>}
+                            {c.latest?.scoring_mode === "py" && <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-300 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-500/40 dark:bg-emerald-500/15">PY</Badge>}
+                            {c.latest?.scoring_mode === "one_design" && <Badge variant="outline" className="text-[10px] text-slate-600 border-slate-300 bg-slate-50 dark:text-slate-300 dark:border-slate-500/40 dark:bg-slate-500/15">One Design</Badge>}
+                            <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover/class:text-ocean group-hover/class:translate-x-0.5 transition-all" />
                           </div>
                         </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground mt-1">No published races yet.</p>
-                      )}
-                    </div>
-                  ))}
+                        {c.latest ? (
+                          <LatestResults latest={c.latest} />
+                        ) : c.planned_series?.length ? (
+                          <div className="mt-3 rounded-lg bg-ocean/5 border border-ocean/20 p-2.5">
+                            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-ocean">
+                              <CalendarDays className="w-3.5 h-3.5" /> Series planned
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                              {c.planned_series.map((s) => (
+                                <div key={s.id || s.name}>
+                                  <span className="font-semibold text-foreground">{s.name}</span>
+                                  {s.planned_races ? ` · ${s.planned_races} races` : ""}
+                                  {s.first_date ? ` · starts ${fmtDateShort(s.first_date)}` : ""}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground mt-1">No published races yet.</p>
+                        )}
+                      </Link>
+                    ))}
+                  </div>
                 </div>
-              </Link>
-
               </div>
             ))}
           </div>

@@ -2313,6 +2313,7 @@ async def clubs_directory(year: Optional[int] = None):
                     "date": r.get("date"),
                     "scoring_mode": mode or c.get("scoring_mode") or "one_design",
                     "is_overall": is_overall,
+                    "series_id": r.get("series_id"),
                     "series_name": ser.get("name") if (is_overall and ser) else None,
                     "top3": top3,
                 }
@@ -2323,7 +2324,7 @@ async def clubs_directory(year: Optional[int] = None):
             series_year = year or datetime.now(tz=timezone.utc).year
             if series_year:
                 series = await db.series.find({"class_id": c["id"], "year": series_year},
-                                              {"_id": 0, "name": 1, "planned_races": 1,
+                                              {"_id": 0, "id": 1, "name": 1, "planned_races": 1,
                                                "order": 1, "schedule": 1}).to_list(50)
 
                 def _series_first_date(s):
@@ -2339,7 +2340,7 @@ async def clubs_directory(year: Optional[int] = None):
                     return (1, s.get("order") or 0)
 
                 series.sort(key=_series_sort_key)
-                planned_series = [{"name": s.get("name", ""),
+                planned_series = [{"id": s.get("id", ""), "name": s.get("name", ""),
                                    "planned_races": s.get("planned_races", 0),
                                    "first_date": _series_first_date(s)} for s in series]
             class_info.append({"id": c["id"], "name": c["name"],
