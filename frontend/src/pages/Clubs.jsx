@@ -75,6 +75,19 @@ export default function Clubs() {
     return da ? -1 : db ? 1 : 0;
   });
 
+  // Club cards: the club with the newest published result across its classes
+  // sits at the top of the grid; clubs without published results keep their
+  // name order below (stable sort preserves the API's name ordering).
+  const sortedClubs = (clubs) => [...clubs].sort((a, b) => {
+    const newest = (cell) =>
+      (cell.classes || []).reduce(
+        (m, c) => (c.latest?.date && c.latest.date > m ? c.latest.date : m), "");
+    const da = newest(a);
+    const db = newest(b);
+    if (da && db) return db < da ? -1 : db > da ? 1 : 0;
+    return da ? -1 : db ? 1 : 0;
+  });
+
   // Deep link straight to a class's results: the Landing page preselects the
   // class tab and, when we know the series, lands on that series' results.
   const classHref = (slug, c) => {
@@ -188,7 +201,7 @@ export default function Clubs() {
           )
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 [grid-auto-rows:masonry]" data-testid="club-grid">
-            {directory.map((cell) => (
+            {sortedClubs(directory).map((cell) => (
               <div key={cell.id} className="contents">
                 <div className="group rounded-2xl border border-border bg-card p-5 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all break-inside-avoid mb-5">
                   {/* The club header links to the club's main page. */}
