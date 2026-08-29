@@ -5747,7 +5747,10 @@ def _subscription_links(manage_token: str, verify_token: Optional[str] = None,
     verify = None
     if verify_token:
         verify = f"{_public_web_base()}/subscriptions/verify?token={verify_token}"
-    unsubscribe = f"{_public_api_base()}/subscriptions/unsubscribe?token={unsubscribe_token}" if unsubscribe_token else None
+    # Use the web route, not the API route, so the recipient gets a clear
+    # confirmation page and the token can remove every subscription for that
+    # address. The manage token is intentionally stable across subscriptions.
+    unsubscribe = f"{_public_web_base()}/subscriptions/unsubscribe?token={manage_token}" if manage_token else None
     return {"manage": manage, "verify": verify, "unsubscribe": unsubscribe}
 
 
@@ -5920,10 +5923,14 @@ async def _unsubscribe_one_by_token(token: str, request: Request):
 
 @api_router.get("/subscriptions/unsubscribe")
 async def unsubscribe_results_link(token: str, request: Request):
-    """One-click browser unsubscribe from the specific subscription represented
-    by the secure manage token in an email."""
-    sub = await _unsubscribe_one_by_token(token, request)
-    return HTMLResponse("<main style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:24px;text-align:center'><h1>You have been unsubscribed from these results emails.</h1><p>Other subscriptions for this email address remain active.</p><a href='" + html_lib.escape(_public_web_base() + "/subscriptions/manage?token=" + token, quote=True) + "'>Manage my subscriptions</a></main>")
+    """One-click browser unsubscribe that permanently removes the email's subscriptions."""
+    token_hash = _subscription_token_hash(token)
+    subs = await db.subscriptions.find({"manage_token_hash": token_hash}, {"_id": 0, "id": 1, "club_id": 1}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    if not subs:
+        raise HTTPException(status_code=404, detail="Unsubscribe link not found or already used")
+    await db.subscriptions.delete_many({"manage_token_hash": token_hash})
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED_ALL", description="Deleted all results subscriptions for an email address", resource_type="subscription", resource_id=subs[0]["id"], club_id=subs[0].get("club_id"))
+    return HTMLResponse("<main style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:24px;text-align:center'><h1>You have been unsubscribed.</h1><p>All results email subscriptions for this address have been permanently removed.</p></main>")
 
 
 @api_router.post("/subscriptions/unsubscribe")
@@ -5939,8 +5946,8 @@ async def unsubscribe_all_results(data: SubscriptionTokenInput, request: Request
     if not subs:
         raise HTTPException(status_code=404, detail="Subscription link not found or already unsubscribed")
     ids = [s["id"] for s in subs]
-    await db.subscriptions.update_many({"id": {"$in": ids}, "active": True}, {"$set": {"active": False, "unsubscribed_at": now_iso()}})
-    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED_ALL", description="Removed all results subscriptions", resource_type="subscription", resource_id=ids[0], club_id=subs[0].get("club_id"))
+    await db.subscriptions.delete_many({"manage_token_hash": token_hash})
+    await _log_audit(request=request, user=None, action="RESULTS_SUBSCRIPTION_UNSUBSCRIBED_ALL", description="Deleted all results subscriptions for an email address", resource_type="subscription", resource_id=ids[0], club_id=subs[0].get("club_id"))
     return {"ok": True, "message": "You have been unsubscribed from all Sailscore results emails."}
 
 
@@ -5958,6 +5965,18 @@ async def delete_results_subscription(subscription_id: str, token: str, request:
 # ---------------------------------------------------------------------------
 # Results notification rendering and delivery
 # ---------------------------------------------------------------------------
+
+def _results_email_html(title: str, cls: dict, race: dict, result_rows: list, manage_url: str) -> str:
+    rows = "".join(
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(str(row['position']))}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(row['name'])}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(row['sail'])}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(row['code'])}</td></tr>"
+        for row in result_rows)
+    if not rows:
+        rows = "<tr><td colspan='4' style='padding:12px'>No classified boats</td></tr>"
+    return f"<html><body style='font-family:Arial,sans-serif;color:#172033'><h2>{html_lib.escape(title)}</h2><p><strong>Class:</strong> {html_lib.escape(str(cls.get('name') or '—'))} &nbsp; <strong>Race:</strong> {html_lib.escape(str(race.get('race_number') or '—'))}</p><table style='border-collapse:collapse;width:100%;max-width:680px'><thead><tr style='background:#0a369d;color:#fff'><th style='padding:8px;text-align:left'>Pos</th><th style='padding:8px;text-align:left'>Boat</th><th style='padding:8px;text-align:left'>Sail no.</th><th style='padding:8px;text-align:left'>Status</th></tr></thead><tbody>{rows}</tbody></table><p><a href='{html_lib.escape(_public_web_base(), quote=True)}'>View latest results</a> · <a href='{html_lib.escape(manage_url, quote=True)}'>Manage subscriptions</a></p></body></html>"
+
 
 async def _send_published_results_email(email: str, race: dict, series: dict,
                                         cls: dict, target: dict) -> bool:
@@ -5982,6 +6001,10 @@ async def _send_published_results_email(email: str, race: dict, series: dict,
         result = row.get("position") or row.get("code") or "—"
         lines.append(f"{result}. {name} {sail}".rstrip())
     result_text = "\\n".join(lines) or "Results were published without classified boats."
+    result_rows = []
+    for row in sorted(rows, key=lambda item: (item.get("position") is None, item.get("position") or 9999))[:100]:
+        boat = await db.boats.find_one({"id": row.get("boat_id")}, {"_id": 0, "name": 1, "sail_no": 1})
+        result_rows.append({"position": row.get("position") or "—", "name": (boat or {}).get("name") or row.get("boat_name") or "Boat", "sail": (boat or {}).get("sail_no") or row.get("sail_no") or "", "code": row.get("code") or "—"})
     manage_token = target.get("manage_token")
     links = _subscription_links(manage_token or "") if manage_token else {}
     msg = EmailMessage()
@@ -5989,10 +6012,13 @@ async def _send_published_results_email(email: str, race: dict, series: dict,
     msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
     msg["To"] = email
     msg.set_content(
-        f"{title}\\n\\nClass: {cls.get('name', '—')}\\n\\n{result_text}\\n\\n"
-        f"View the latest results at {_public_web_base()}.\\n"
-        f"Manage subscriptions: {links.get('manage', _public_web_base())}\\n"
+        f"{title}\\n\\nClass: {cls.get('name', '—')}\\n\\n"
+        + "Position | Boat | Sail no. | Status\\n"
+        + "----------------------------------------\\n"
+        + "\\n".join(f"{r['position']} | {r['name']} | {r['sail']} | {r['code']}" for r in result_rows)
+        + f"\\n\\nView the latest results at {_public_web_base()}.\\nManage subscriptions: {links.get('manage', _public_web_base())}\\n"
     )
+    msg.add_alternative(_results_email_html(title, cls, race, result_rows, links.get("manage", _public_web_base())), subtype="html")
     try:
         with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as smtp:
             smtp.starttls()
@@ -6920,6 +6946,10 @@ async def get_notice(notice_id: str, request: Request):
     staff = user and (user.get("role") == "webmaster" or user.get("club_id") == notice.get("club_id"))
     if not staff and notice.get("status") not in ("published", "superseded", "withdrawn"):
         raise HTTPException(status_code=404, detail="Notice not found")
+    if notice.get("content_type") == "uploaded" and notice.get("file_data_url"):
+        raw = notice["file_data_url"]
+        if not raw.startswith("data:"):
+            notice["file_data_url"] = f"data:{notice.get('file_type') or 'application/pdf'};base64,{raw}"
     return notice
 
 

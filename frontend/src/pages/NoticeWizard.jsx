@@ -84,8 +84,13 @@ export default function NoticeWizard({ onDone }) {
   const [noticeId, setNoticeId] = useState(null);
   const [draftVersion, setDraftVersion] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
-  const uploadPreviewUrl = useMemo(() => uploadFile ? URL.createObjectURL(uploadFile) : null, [uploadFile]);
-  useEffect(() => () => { if (uploadPreviewUrl) URL.revokeObjectURL(uploadPreviewUrl); }, [uploadPreviewUrl]);
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState(null);
+  useEffect(() => {
+    if (!uploadFile) { setUploadPreviewUrl(null); return undefined; }
+    const url = URL.createObjectURL(uploadFile);
+    setUploadPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [uploadFile]);
 
   const [meta, setMeta] = useState(null);
   const [ctx, setCtx] = useState(null);
@@ -364,7 +369,6 @@ export default function NoticeWizard({ onDone }) {
 
   // ---- Discard / cancel -------------------------------------------------------
   const discard = async () => {
-    if (uploadPreviewUrl) URL.revokeObjectURL(uploadPreviewUrl);
     setUploadFile(null);
     setAttachments([]);
     setFields({});
