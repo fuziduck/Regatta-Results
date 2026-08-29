@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
+import ShareInstall from "@/components/ShareInstall";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
@@ -360,6 +361,7 @@ export default function Landing() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            <ShareInstall title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} />
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs

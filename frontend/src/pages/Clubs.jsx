@@ -6,6 +6,7 @@ import YearSwitcher from "@/components/YearSwitcher";
 import ClubBadge from "@/components/ClubBadge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import ThemeToggle from "@/components/ThemeToggle";
+import ShareInstall from "@/components/ShareInstall";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CalendarDays, ChevronRight, LogIn, Sailboat, Search, Trophy } from "lucide-react";
@@ -127,6 +128,7 @@ export default function Clubs() {
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            <ShareInstall title="SailScore — club racing results & standings" />
             <Link to="/boats">
               <Button variant="ghost" size="sm" data-testid="boats-link" className="gap-1.5 text-muted-foreground hover:text-ocean">
                 <Search className="w-4 h-4" /> Boats
