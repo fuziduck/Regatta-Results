@@ -590,7 +590,9 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             <FlagOff className="w-4 h-4 shrink-0" /> This race is abandoned — it is excluded from the series scoring, so the series has one fewer race scored and its discards may reduce. Use “Restore race” below to count it again.
           </section>
         )}
-        {/* Live timing */}
+        {/* Live timing — the clock & elapsed timer only matter while the race is
+            being run; once it has finished and been published they're removed. */}
+        {race.status !== "published" && (
         <section className="rounded-2xl overflow-hidden bg-ocean-dark text-white relative" data-testid="timing-strip">
           <div className="absolute inset-0 bg-gradient-to-br from-ocean-dark via-ocean to-ocean-light opacity-90" />
           <div className="relative p-4 sm:p-5 flex flex-wrap items-center gap-4">
@@ -628,6 +630,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             </div>
           </div>
         </section>
+        )}
 
         {/* Race day notice — collapsible, hidden entirely when the club has
             race-day notices disabled. */}
