@@ -34,6 +34,13 @@ const STEPS = ["Notice Type", "Create Method", "Notice Details", "Attachments", 
 
 const inputKind = (kind) => ({ text: "text", textarea: "textarea", date: "date", time: "time" }[kind] || "text");
 
+// Local datetime in the format a datetime-local input expects. Used to default
+// the publication/effective date-time to the moment the notice was started.
+function toLocalDatetime(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // Seed a generated notice's fields from Sailscore context where the ids match
 // the type's own series/race/class field keys (spec 46). Values stay editable.
 function seedFields(typeDef, ctx, noticeNumber) {
@@ -78,8 +85,11 @@ export default function NoticeWizard({ onDone }) {
   const [fields, setFields] = useState({});
   const [uploadFile, setUploadFile] = useState(null);
   const [noticeNumber, setNoticeNumber] = useState(1);
-  const [effectiveDatetime, setEffectiveDatetime] = useState("");
-  const [publicationDatetime, setPublicationDatetime] = useState("");
+  // Publication and effective date/time default to the moment the notice
+  // started being created (captured once on mount); both stay editable.
+  const [startDatetime] = useState(() => toLocalDatetime(new Date()));
+  const [effectiveDatetime, setEffectiveDatetime] = useState(startDatetime);
+  const [publicationDatetime, setPublicationDatetime] = useState(startDatetime);
   const [attachments, setAttachments] = useState([]); // [{file, name}]
   const [noticeId, setNoticeId] = useState(null);
   const [draftVersion, setDraftVersion] = useState(null);
