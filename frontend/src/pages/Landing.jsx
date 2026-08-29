@@ -359,9 +359,6 @@ export default function Landing() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            {club.official_notice_board !== false && <Link to={`/club/${club.slug}/notice-board`}>
-              <Button variant="outline" size="sm" className="gap-1.5 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid="notice-board-link">Official Notice Board</Button>
-            </Link>}
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs
@@ -391,8 +388,13 @@ export default function Landing() {
           <p className="text-white/80 mt-3 max-w-xl leading-relaxed">
             Follow every fleet across the season. Provisional and confirmed results, series championships and race-day notices — all in one place.
           </p>
-          <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4"
-            labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
+          <div className="mt-4 flex flex-wrap items-end gap-2">
+            <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]}
+              labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
+            {club.official_notice_board !== false && <Link to={`/club/${club.slug}/notice-board`} className="self-end">
+              <Button variant="outline" size="sm" className="gap-1.5 border-white/60 bg-white/10 text-white hover:bg-white hover:text-ocean" data-testid="notice-board-link">Official Notice Board</Button>
+            </Link>}
+          </div>
 
           <BoatSearchBox />
 
