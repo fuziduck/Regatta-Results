@@ -126,7 +126,14 @@ export default function NoticeWizard({ onDone }) {
 
   // Load catalogue + optional Sailscore context on mount.
   useEffect(() => {
-    if (role === "webmaster") api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
+    if (role === "webmaster") api.getClubs().then((cs) => {
+      setClubs(cs || []);
+      // The webmaster has no club of their own — default to the first club
+      // so posting to the ONB never fails for a missing club id. The choice
+      // stays editable on the details step.
+      if (!selectedClubId && (cs || []).length) setSelectedClubId(cs[0].id);
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
 
   useEffect(() => {
@@ -272,7 +279,11 @@ export default function NoticeWizard({ onDone }) {
       fields,
     };
     const targetClubId = ctx?.club_id || selectedClubId || clubId;
-    if (targetClubId) payload.club_id = targetClubId;
+    if (!targetClubId) {
+      toast.error("Select a club first.");
+      return null;
+    }
+    payload.club_id = targetClubId;
     const n = await api.createNotice(payload);
     setNoticeId(n.id);
     setDraftVersion(n.version);
@@ -296,7 +307,11 @@ export default function NoticeWizard({ onDone }) {
       link_url: url,
     };
     const targetClubId = ctx?.club_id || selectedClubId || clubId;
-    if (targetClubId) payload.club_id = targetClubId;
+    if (!targetClubId) {
+      toast.error("Select a club first.");
+      return null;
+    }
+    payload.club_id = targetClubId;
     const n = await api.createNotice(payload);
     setNoticeId(n.id);
     setDraftVersion(n.version);
@@ -306,6 +321,11 @@ export default function NoticeWizard({ onDone }) {
   // ---- Create draft (uploaded) -----------------------------------------------
   const createUploaded = async () => {
     if (!uploadFile) { toast.error("Choose a document to upload."); return null; }
+    const targetClubId = ctx?.club_id || selectedClubId || clubId;
+    if (!targetClubId) {
+      toast.error("Select a club first.");
+      return null;
+    }
     const n = await api.uploadNotice({
       notice_type: typeKey,
       publication_area: publicationArea,
@@ -316,7 +336,7 @@ export default function NoticeWizard({ onDone }) {
       class_id: fields.class_id || (ctx?.class_id || null),
       publication_datetime: publicationDatetime || null,
       effective_datetime: effectiveDatetime || null,
-      club_id: ctx?.club_id || selectedClubId || clubId || null,
+      club_id: targetClubId,
     }, uploadFile);
     setNoticeId(n.id);
     setDraftVersion(n.version);

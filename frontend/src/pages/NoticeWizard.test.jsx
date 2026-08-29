@@ -8,8 +8,11 @@ jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
   useSearchParams: () => [new URLSearchParams()],
 }));
+// The webmaster variant (role: webmaster, no club) needs to flip the auth
+// holder per test, so useAuth reads it at call time (same pattern as Login.test).
+const mockAuth = { role: "officer", clubId: "c1", clubName: "Medway Yacht Club" };
 jest.mock("@/context/AuthContext", () => ({
-  useAuth: () => ({ role: "officer", clubId: "c1", clubName: "Medway Yacht Club" }),
+  useAuth: () => ({ role: mockAuth.role, clubId: mockAuth.clubId, clubName: mockAuth.clubName }),
 }));
 jest.mock("@/lib/api", () => {
   const api = {
@@ -91,6 +94,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  mockAuth.role = "officer";
+  mockAuth.clubId = "c1";
   if (root) {
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     act(() => root.unmount());
@@ -243,5 +248,35 @@ describe("NoticeWizard — uploaded flow", () => {
     });
     expect(container.querySelector('[data-testid="step-attachments"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="step-preview"]')).toBeNull();
+  });
+});
+
+describe("NoticeWizard — webmaster club selection", () => {
+  it("auto-selects the first club and sends its club_id when creating", async () => {
+    mockAuth.role = "webmaster";
+    mockAuth.clubId = null;
+    mockApi.getClubs.mockResolvedValue([
+      { id: "c1", name: "Medway Yacht Club" },
+      { id: "c2", name: "Bough Beech Sailing Club" },
+    ]);
+    mockApi.createNotice.mockResolvedValue({ id: "n1", version: 1 });
+    renderWizard();
+    await act(async () => {}); // meta catalogue + clubs load
+    await act(async () => {
+      container.querySelector('[data-testid="type-notice_to_competitors"]').click();
+      container.querySelector('[data-testid="type-next"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="method-next"]').click();
+    });
+    await act(async () => {});
+    // The club field is pre-filled with the first club (no "Select club"
+    // placeholder), so creating a notice always carries a club_id.
+    expect(container.querySelector('[data-testid="field-club"]').textContent).toContain("Medway Yacht Club");
+    await act(async () => {
+      container.querySelector('[data-testid="details-next"]').click();
+    });
+    await act(async () => {});
+    expect(mockApi.createNotice).toHaveBeenCalledWith(expect.objectContaining({ club_id: "c1" }));
   });
 });
