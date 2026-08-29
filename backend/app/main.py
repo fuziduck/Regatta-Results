@@ -5738,7 +5738,6 @@ NOTICE_TYPES = [
         "description": "General instructions or information for racing competitors.",
         "fields": [
             _nf("series_id", "Event / Series", "series"),
-            _nf("race_id", "Race", "race"),
             _nf("class_id", "Class / Fleet", "class"),
             _nf("date", "Date", "date"),
             _nf("time", "Time", "time"),
@@ -5762,7 +5761,6 @@ NOTICE_TYPES = [
         "description": "Amend an instruction in the published sailing instructions.",
         "fields": [
             _nf("series_id", "Event / Series", "series"),
-            _nf("race_id", "Race", "race"),
             _nf("class_id", "Class / Fleet", "class"),
             _nf("si_number", "SI number being changed", "text", "Example: SI 8.2", True),
             _nf("instruction_number", "Existing instruction number", "text",
@@ -5787,7 +5785,6 @@ NOTICE_TYPES = [
         "heading": "Race Notices",
         "description": "Postpone a race already scheduled or under way.",
         "fields": [
-            _nf("race_id", "Race / event", "race", "", True),
             _nf("series_id", "Event / Series", "series"),
             _nf("class_id", "Class / Fleet", "class"),
             _nf("original_start_time", "Original start time", "time", "Example: 14:00"),
@@ -5809,7 +5806,6 @@ NOTICE_TYPES = [
         "heading": "Race Notices",
         "description": "Cancel a scheduled race entirely.",
         "fields": [
-            _nf("race_id", "Race / event", "race", "", True),
             _nf("series_id", "Event / Series", "series"),
             _nf("class_id", "Class / Fleet", "class"),
             _nf("scheduled_date", "Scheduled date", "date"),
@@ -5835,7 +5831,8 @@ NOTICE_TYPES = [
             _nf("location", "Location", "text", "Example: Clubhouse — committee room"),
             _nf("parties", "Parties", "text",
                 "Example: Protestor: GBR 4502 Wild Rose. Protestee: GBR 112 Blue Peter."),
-            _nf("race_id", "Race", "race"),
+            _nf("series_id", "Event / Series", "series"),
+            _nf("class_id", "Class / Fleet", "class"),
             _nf("additional_info", "Additional information", "textarea",
                 "Example: Parties may bring witnesses and a representative; inform the race office if unable to attend."),
         ],
@@ -5851,7 +5848,8 @@ NOTICE_TYPES = [
             _nf("decision_date", "Decision date", "date"),
             _nf("parties", "Parties", "text",
                 "Example: Protestor: GBR 4502 Wild Rose. Protestee: GBR 112 Blue Peter."),
-            _nf("race_id", "Race", "race"),
+            _nf("series_id", "Event / Series", "series"),
+            _nf("class_id", "Class / Fleet", "class"),
             _nf("facts_summary", "Summary of facts", "textarea",
                 "Example: Boat A tacked within two lengths of Boat B's bow; Boat B luffed and made contact."),
             _nf("decision", "Decision", "textarea",
@@ -5866,7 +5864,6 @@ NOTICE_TYPES = [
         "heading": "Results",
         "description": "Publish or correct a results statement.",
         "fields": [
-            _nf("race_id", "Race / event", "race"),
             _nf("series_id", "Event / Series", "series"),
             _nf("class_id", "Class / Fleet", "class"),
             _nf("results_status", "Results status", "text",

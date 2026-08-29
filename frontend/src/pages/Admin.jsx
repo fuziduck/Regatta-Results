@@ -1099,6 +1099,7 @@ function SeriesTab({ classes, clubId }) {
 
 /* ---------------- Historic Results ---------------- */
 function NoticeManagementTab({ clubId }) {
+  const navigate = useNavigate();
   const [notices, setNotices] = useState([]);
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => {
@@ -1121,7 +1122,10 @@ function NoticeManagementTab({ clubId }) {
   };
   return (
     <section className="space-y-3" data-testid="notice-management">
-      <div><h2 className="text-2xl uppercase tracking-tighter">Official Notice Board</h2><p className="text-sm text-muted-foreground">Remove draft or published notices from this club’s public ONB. Removal is recorded in the audit trail.</p></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div><h2 className="text-2xl uppercase tracking-tighter">Official Notice Board</h2><p className="text-sm text-muted-foreground">Create, view and remove notices from this club’s public ONB.</p></div>
+        <Button className="gap-1.5" onClick={() => navigate('/notice/new')} data-testid="create-notice-btn"><FileText className="w-4 h-4" /> New Notice</Button>
+      </div>
       {!notices.length && <p className="text-sm text-muted-foreground rounded-xl border border-dashed p-6 text-center">No notices are currently listed.</p>}
       {notices.map((notice) => (
         <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
