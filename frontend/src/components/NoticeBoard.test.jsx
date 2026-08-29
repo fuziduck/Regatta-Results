@@ -107,6 +107,22 @@ it("groups the club's notice areas into their notice types, each by number", asy
   ]);
 });
 
+it("renders a link notice with a Visit website button", async () => {
+  mockApi.getNoticeAreas.mockResolvedValue([{ key: "club", title: "Club Notices" }]);
+  mockApi.getNotices.mockResolvedValue([
+    { ...mk("l1", "general_club_notice", "General Club Notice", 1, "Club Notices"),
+      content_type: "link", link_url: "https://example.com/sailing-results" },
+  ]);
+
+  await renderBoard();
+
+  const link = container.querySelector('[data-testid="visit-link-l1"]');
+  expect(link).not.toBeNull();
+  expect(link.getAttribute("href")).toBe("https://example.com/sailing-results");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toContain("noopener");
+});
+
 it("falls back to built-in area order and Club Notices when areas are unavailable", async () => {
   // The areas fetch fails: the two built-in areas come first, then the rest
   // alphabetically, and a notice without a stored heading lands in Club

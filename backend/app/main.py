@@ -6422,6 +6422,19 @@ def _detect_notice_doc_type(data: bytes) -> Optional[str]:
     return _detect_image_type(data)
 
 
+def _valid_link_url(url: Optional[str]) -> str:
+    """Validate the external website URL of a LINK notice. Only http(s) is
+    allowed — never a javascript:, file: or other scheme — and the URL is
+    returned trimmed for storage."""
+    url = (url or "").strip()
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        raise HTTPException(status_code=400,
+                            detail="Link URL must start with http:// or https://")
+    if len(url) > 2048:
+        raise HTTPException(status_code=400, detail="Link URL is too long")
+    return url
+
+
 def _valid_notice_datetime(value: Optional[str], label: str) -> Optional[str]:
     """Validate a datetime-local / ISO string for metadata fields. Returns the
     normalised ISO string, or None when nothing was supplied."""
@@ -6609,6 +6622,7 @@ def _notice_summary(doc: dict) -> dict:
         "publication_area", "title", "notice_number", "content_type", "status", "version",
         "root_id", "supersedes_id", "superseded_by", "published_at",
         "published_by", "effective_at", "publication_datetime",
+        "link_url",
         "created_at", "created_by", "modified_at", "modified_by",
         "event_name", "series_name", "race_number", "race_date",
         "class_name", "public_path", "board_id", "section_id", "has_file", "has_pdf",
@@ -6659,7 +6673,9 @@ class NoticeSectionInput(BaseModel):
 
 class NoticeCreateInput(BaseModel):
     """A Sailscore-GENERATED notice: structured fields for the selected type.
-    Uploaded notices go through POST /notices/upload (multipart)."""
+    Uploaded notices go through POST /notices/upload (multipart). A LINK notice
+    (content is an external website URL) is created through this endpoint too,
+    by providing link_url."""
     notice_type: str
     # Where the notice is published within the club ONB.
     publication_area: str = "club"
@@ -6667,6 +6683,9 @@ class NoticeCreateInput(BaseModel):
     fields: dict = {}
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
     effective_datetime: Optional[str] = None
+    publication_datetime: Optional[str] = None
+    # A LINK notice: content is an external website URL (http/https only).
+    link_url: Optional[str] = None
     # Webmaster-only: create on behalf of a club. Staff are always pinned to
     # their own club regardless of this value.
     club_id: Optional[str] = None
@@ -6681,6 +6700,7 @@ class NoticeUpdateInput(BaseModel):
     fields: Optional[dict] = None
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
     effective_datetime: Optional[str] = None
+    link_url: Optional[str] = None
     expected_version: Optional[int] = None
 
 
@@ -6939,16 +6959,27 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     title = (data.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
-    fields_in = data.fields or {}
-    links = await _validate_notice_links(
-        club_id,
-        fields_in.get("race_id"), fields_in.get("series_id"), fields_in.get("class_id"))
-    # Keep the link values out of the sanitised field dict (they are stored as
-    # denormalised columns) but tolerate their presence in the payload.
-    fields_in = {k: v for k, v in fields_in.items()
-                 if k not in ("series_id", "race_id", "class_id")}
-    fields = _clean_notice_fields(tdef, fields_in)
     effective = _valid_notice_datetime(data.effective_datetime, "Effective date/time")
+    publication = _valid_notice_datetime(data.publication_datetime, "Publication date/time")
+    # A LINK notice: the content is an external website URL, so the type's
+    # structured fields are neither required nor stored — the link is the
+    # notice. Everything else follows the generated flow.
+    link_url = _valid_link_url(data.link_url) if (data.link_url or "").strip() else None
+    if link_url:
+        fields, body, links = {}, [], {}
+        content_type, creation_method = "link", "link"
+    else:
+        fields_in = data.fields or {}
+        links = await _validate_notice_links(
+            club_id,
+            fields_in.get("race_id"), fields_in.get("series_id"), fields_in.get("class_id"))
+        # Keep the link values out of the sanitised field dict (they are stored as
+        # denormalised columns) but tolerate their presence in the payload.
+        fields_in = {k: v for k, v in fields_in.items()
+                     if k not in ("series_id", "race_id", "class_id")}
+        fields = _clean_notice_fields(tdef, fields_in)
+        body = _notice_body(tdef, fields)
+        content_type, creation_method = "generated", "generated"
     club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
 
     notice_id = new_id()
@@ -6957,12 +6988,13 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
         "heading": await _notice_area_title(club_id, data.publication_area), "publication_area": data.publication_area, "title": title,
         "notice_number": data.notice_number or await _next_notice_number(club_id, data.publication_area),
-        "content_type": "generated", "creation_method": "generated",
+        "content_type": content_type, "creation_method": creation_method,
         "status": "draft", "version": 1, "root_id": notice_id,
         "supersedes_id": None, "superseded_by": None,
-        "fields": fields, "body": _notice_body(tdef, fields),
+        "fields": fields, "body": body,
+        "link_url": link_url,
         "published_at": None, "published_by": None,
-        "effective_at": effective, "publication_datetime": None,
+        "effective_at": effective, "publication_datetime": publication,
         "created_at": now_iso(), "created_by": user.get("username"),
         "created_by_id": user.get("user_id"),
         "modified_at": None, "modified_by": None,
@@ -7136,6 +7168,10 @@ async def update_notice(notice_id: str, data: NoticeUpdateInput,
         updates["notice_number"] = data.notice_number
     if data.effective_datetime is not None:
         updates["effective_at"] = _valid_notice_datetime(data.effective_datetime, "Effective date/time")
+    if data.link_url is not None:
+        if not (data.link_url or "").strip():
+            raise HTTPException(status_code=400, detail="Link URL is required")
+        updates["link_url"] = _valid_link_url(data.link_url)
 
     if data.fields is not None:
         if notice["content_type"] == "uploaded":
@@ -7354,6 +7390,7 @@ async def _send_published_notice_email(email: str, notice: dict, pdf: Optional[b
         f"{title}\n\n"
         + (f"Notice number: {notice.get('notice_number')}\n" if notice.get("notice_number") else "")
         + (f"Published: {published}\n" if published else "")
+        + (f"Website: {notice.get('link_url')}\n" if notice.get("link_url") else "")
         + f"\nView the notice: {link}\n"
         + f"Manage subscriptions: {links.get('manage', _public_web_base())}\n"
     )
@@ -7363,6 +7400,7 @@ async def _send_published_notice_email(email: str, notice: dict, pdf: Optional[b
         + (f"<p><strong>Notice number:</strong> {html_lib.escape(str(notice.get('notice_number')))}</p>" if notice.get("notice_number") else "")
         + (f"<p><strong>Published:</strong> {html_lib.escape(str(published))}</p>" if published else "")
         + (f"<p>The official document is attached to this email.</p>" if pdf else f"<p>View the notice on the Official Notice Board.</p>")
+        + (f"<p><a href='{html_lib.escape(notice['link_url'], quote=True)}' style='background:#0a369d;color:white;padding:12px 18px;text-decoration:none;border-radius:6px'>Visit website</a></p>" if notice.get("link_url") else "")
         + f"<p><a href='{html_lib.escape(link, quote=True)}' style='background:#0a369d;color:white;padding:12px 18px;text-decoration:none;border-radius:6px'>View Notice</a></p>"
         + f"<p><a href='{html_lib.escape(_public_web_base(), quote=True)}'>SailScore</a> · <a href='{html_lib.escape(links.get('manage', _public_web_base()), quote=True)}'>Manage subscriptions</a></p>"
         + "</body></html>"
@@ -7538,6 +7576,7 @@ async def _spawn_notice_version(notice: dict, user: dict) -> dict:
         "supersedes_id": notice["id"], "superseded_by": None,
         "fields": dict(notice.get("fields") or {}),
         "body": list(notice.get("body") or []),
+        "link_url": notice.get("link_url"),
         "published_at": None, "published_by": None,
         "effective_at": notice.get("effective_at"),
         "publication_datetime": None,

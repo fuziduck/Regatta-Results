@@ -77,7 +77,7 @@ export default function NoticeWizard({ onDone }) {
   // Step state
   const [step, setStep] = useState(0);
   const [typeKey, setTypeKey] = useState(null);
-  const [method, setMethod] = useState("generated"); // 'generated' | 'uploaded'
+  const [method, setMethod] = useState("generated"); // 'generated' | 'uploaded' | 'link'
   const [publicationArea, setPublicationArea] = useState("Club Notices");
   const [publicationAreas, setPublicationAreas] = useState([{ key: "Club Notices", title: "Club Notices" }, { key: "Open Event Notices", title: "Open Event Notices" }]);
   const [newAreaName, setNewAreaName] = useState("");
@@ -182,24 +182,27 @@ export default function NoticeWizard({ onDone }) {
     }
   }, [typeKey, ctx]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Uploaded and link notices skip the Preview step: the browser PDF preview
+  // from an object URL does not render (and the document/URL is already shown
+  // on the details step), so they jump straight to the publish confirmation.
+  const skipsPreview = method === "uploaded" || method === "link";
+
   const goNext = async () => {
     // Create the server-side draft when leaving the details step. This keeps
     // the preview and final publish actions tied to a real notice record.
     if (step === 2 && !noticeId) {
       try {
-        const draft = method === "uploaded" ? await createUploaded() : await createGenerated();
+        const draft = method === "uploaded" ? await createUploaded()
+          : method === "link" ? await createLink() : await createGenerated();
         if (!draft) return;
       } catch (e) {
         toast.error(e?.response?.data?.detail || e?.message || "Could not create the notice draft.");
         return;
       }
     }
-    // Uploaded notices skip the Preview step: its browser PDF preview from an
-    // object URL does not render (and the document is already shown on the
-    // details step), so jump straight to the publish confirmation.
-    setStep((s) => Math.min(s === 3 && method === "uploaded" ? 5 : s + 1, STEPS.length - 1));
+    setStep((s) => Math.min(s === 3 && skipsPreview ? 5 : s + 1, STEPS.length - 1));
   };
-  const goBack = () => setStep((s) => Math.max(s === 5 && method === "uploaded" ? 3 : s - 1, 0));
+  const goBack = () => setStep((s) => Math.max(s === 5 && skipsPreview ? 3 : s - 1, 0));
 
   // ---- Step 1: type selection -------------------------------------------------
   const typeCards = (meta?.types || []).map((t) => ({
@@ -271,6 +274,30 @@ export default function NoticeWizard({ onDone }) {
     return n;
   };
 
+  // ---- Create draft (link) ---------------------------------------------------
+  const createLink = async () => {
+    const url = (fields.link_url || "").trim();
+    if (!/^https?:\/\//i.test(url)) {
+      toast.error("Enter a valid website link starting with http:// or https://");
+      return null;
+    }
+    const payload = {
+      notice_type: typeKey,
+      publication_area: publicationArea,
+      title: fields.title || (typeDef ? typeDef.label : ""),
+      notice_number: noticeNumber,
+      effective_datetime: effectiveDatetime || null,
+      publication_datetime: publicationDatetime || null,
+      link_url: url,
+    };
+    const targetClubId = ctx?.club_id || selectedClubId || clubId;
+    if (targetClubId) payload.club_id = targetClubId;
+    const n = await api.createNotice(payload);
+    setNoticeId(n.id);
+    setDraftVersion(n.version);
+    return n;
+  };
+
   // ---- Create draft (uploaded) -----------------------------------------------
   const createUploaded = async () => {
     if (!uploadFile) { toast.error("Choose a document to upload."); return null; }
@@ -327,9 +354,10 @@ export default function NoticeWizard({ onDone }) {
       notice_type: typeKey,
       notice_type_label: typeDef.label,
       notice_number: noticeNumber,
-      title: fields.title || (uploadFile ? uploadFile.name : "Uploaded notice"),
+      title: fields.title || (uploadFile ? uploadFile.name : (method === "link" ? "Link to website" : "Uploaded notice")),
       heading: areaTitle,
-      content_type: "uploaded",
+      content_type: method === "link" ? "link" : "uploaded",
+      link_url: fields.link_url || null,
       status: "draft",
       version: draftVersion || 1,
       published_at: publicationDatetime || null,
@@ -481,6 +509,14 @@ export default function NoticeWizard({ onDone }) {
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">Upload a PDF you have already produced — it is stored as the authoritative official document and never altered.</p>
               </label>
+              <label className={`flex flex-col rounded-xl border p-5 cursor-pointer ${method === "link" ? "border-ocean ring-2 ring-ocean/20 bg-ocean/5" : "border-border bg-card"}`}>
+                <RadioGroupItem value="link" id="method-link" className="sr-only" />
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🔗</span>
+                  <span className="font-heading uppercase tracking-tight">Link to another website</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">Point competitors to an external webpage — the notice card shows a button that opens the website in a new tab.</p>
+              </label>
             </RadioGroup>
             <div className="mt-6 flex justify-between">
               <Button variant="outline" onClick={goBack} className="gap-1.5"><ChevronLeft className="w-4 h-4" /> Back</Button>
@@ -565,13 +601,24 @@ export default function NoticeWizard({ onDone }) {
                 </div>
               )}
 
-              {/* Generated: title = subject; uploaded: separate title */}
-              {method === "uploaded" && (
+              {/* Generated: title = subject; uploaded/link: separate title */}
+              {method !== "generated" && (
                 <div className="space-y-1.5">
                   <Label>Title</Label>
                   <Input data-testid="field-title" value={fields.title || ""}
                     placeholder="Example: Notice to Competitors No. 4 — change of race area"
                     onChange={(e) => setFields((p) => ({ ...p, title: e.target.value }))} />
+                </div>
+              )}
+
+              {/* Link: the external website the notice points to */}
+              {method === "link" && (
+                <div className="space-y-1.5">
+                  <Label>Website link</Label>
+                  <Input type="url" inputMode="url" data-testid="field-link-url"
+                    value={fields.link_url || ""} placeholder="https://example.com/results"
+                    onChange={(e) => setFields((p) => ({ ...p, link_url: e.target.value }))} />
+                  <p className="text-xs text-muted-foreground">Competitors will open this website from the notice card.</p>
                 </div>
               )}
 
@@ -587,7 +634,7 @@ export default function NoticeWizard({ onDone }) {
               {/* Metadata shared by both methods (spec 38/39) */}
               <div className="rounded-xl border border-border p-4 bg-card space-y-4">
                 <h3 className="text-xs font-bold uppercase tracking-widest text-ocean">Publication &amp; effective date/time</h3>
-                {method === "uploaded" && (
+                {method !== "generated" && (
                   <div className="space-y-1.5">
                     <Label>Publication date/time</Label>
                     <Input type="datetime-local" data-testid="field-publication-datetime"
@@ -641,9 +688,10 @@ export default function NoticeWizard({ onDone }) {
           </section>
         )}
 
-        {/* STEP 5 — Preview (generated notices only; uploaded submissions skip
-            this step because the PDF preview does not load from the blob) */}
-        {step === 4 && method !== "uploaded" && (
+        {/* STEP 5 — Preview (generated notices only; uploaded/link submissions
+            skip this step: the PDF preview does not load from the blob, and a
+            link notice has no document to preview) */}
+        {step === 4 && !skipsPreview && (
           <section data-testid="step-preview">
             <h2 className="text-lg uppercase tracking-tight mb-1">Preview</h2>
             <p className="text-muted-foreground text-sm mb-5">This is exactly what competitors will see on the Official Notice Board.</p>
@@ -723,7 +771,7 @@ export default function NoticeWizard({ onDone }) {
               <div className="mb-6 rounded-lg bg-muted/50 px-4 py-3 text-sm space-y-1 text-left">
                 <div className="flex justify-between"><span className="text-muted-foreground">Notice no.</span><span>{noticeNumber}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Heading</span><span>{previewRecord?.heading}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Documents</span><span>{method === "uploaded" ? (uploadFile ? "1 official document" : "0") : "1 formal PDF"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Content</span><span>{method === "uploaded" ? (uploadFile ? "1 official document" : "0") : method === "link" ? "1 external link" : "1 formal PDF"}</span></div>
               </div>
               <div className="flex justify-center gap-3">
                 <Button variant="outline" onClick={goBack} className="gap-1.5"><ChevronLeft className="w-4 h-4" /> Back</Button>

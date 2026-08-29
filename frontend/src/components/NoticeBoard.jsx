@@ -146,6 +146,26 @@ function GeneratedNotice({ notice }) {
   );
 }
 
+function LinkNotice({ notice }) {
+  // A LINK notice points at an external website: the card carries the URL and
+  // a button that opens it in a new tab.
+  const url = notice.link_url || "";
+  if (!url) {
+    return <p className="mt-3 text-xs text-muted-foreground" data-testid={`link-notice-${notice.id}`}>Website link unavailable.</p>;
+  }
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2" data-testid={`link-notice-${notice.id}`}>
+      <Button size="sm" variant="outline" className="gap-1.5 border-ocean text-ocean hover:bg-ocean hover:text-white" asChild
+        data-testid={`visit-link-${notice.id}`}>
+        <a href={url} target="_blank" rel="noopener noreferrer">
+          <ExternalLink className="w-4 h-4" /> Visit website
+        </a>
+      </Button>
+      <span className="text-xs text-muted-foreground truncate max-w-[260px]" title={url}>{url}</span>
+    </div>
+  );
+}
+
 function NoticeCard({ notice, open, onToggle }) {
   const ctx = noticeContextLine(notice);
   return (
@@ -183,7 +203,9 @@ function NoticeCard({ notice, open, onToggle }) {
           </div>
         )}
         <NoticeFacts notice={notice} />
-        {notice.content_type === "uploaded" ? <UploadedDocument notice={notice} /> : <GeneratedNotice notice={notice} />}
+        {notice.content_type === "uploaded" ? <UploadedDocument notice={notice} />
+          : notice.content_type === "link" ? <LinkNotice notice={notice} />
+            : <GeneratedNotice notice={notice} />}
         {(notice.attachments || []).length > 0 && (
           <div className="mt-4 pt-3 border-t border-border" data-testid={`attachments-${notice.id}`}>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Attachments</div>

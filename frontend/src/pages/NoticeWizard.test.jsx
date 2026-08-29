@@ -146,6 +146,51 @@ describe("NoticeWizard — publication/effective date-time defaults", () => {
   });
 });
 
+describe("NoticeWizard — link flow", () => {
+  it("creates a link notice with the website URL and skips preview", async () => {
+    mockApi.createNotice.mockResolvedValue({ id: "n1", version: 1 });
+    // Type -> Link method -> details.
+    renderWizard();
+    await act(async () => {});
+    await act(async () => {
+      container.querySelector('[data-testid="type-notice_to_competitors"]').click();
+      container.querySelector('[data-testid="type-next"]').click();
+    });
+    await act(async () => {});
+    await act(async () => {
+      document.getElementById("method-link").click();
+      container.querySelector('[data-testid="method-next"]').click();
+    });
+    await act(async () => {});
+    // Fill title + website URL, then create the draft.
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      const title = container.querySelector('[data-testid="field-title"]');
+      setter.call(title, "Live results website");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      const url = container.querySelector('[data-testid="field-link-url"]');
+      setter.call(url, "https://results.example.com/2026");
+      url.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="details-next"]').click();
+    });
+    await act(async () => {});
+    expect(mockApi.createNotice).toHaveBeenCalledWith(expect.objectContaining({
+      link_url: "https://results.example.com/2026",
+      title: "Live results website",
+    }));
+    expect(container.querySelector('[data-testid="step-attachments"]')).not.toBeNull();
+    // Link notices skip the Preview step, landing straight on Publish confirm.
+    await act(async () => {
+      container.querySelector('[data-testid="attachments-next"]').click();
+    });
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="step-preview"]')).toBeNull();
+    expect(container.querySelector('[data-testid="step-publish"]')).not.toBeNull();
+  });
+});
+
 describe("NoticeWizard — uploaded flow", () => {
   it("skips the broken PDF preview step and goes straight to publish confirmation", async () => {
     mockApi.uploadNotice.mockResolvedValue({ id: "n1", version: 1 });

@@ -138,6 +138,36 @@ def test_notice_area_title_mapping(club_officer_token):
     assert r.json()["publication_area"] == "open_event"
 
 
+def test_create_link_notice(club_officer_token):
+    """A LINK notice's content is an external website URL: no structured
+    fields are required, the URL is stored, and it publishes to the public
+    list like any other notice."""
+    r = make_notice(club_officer_token, title="Live results website",
+                    link_url="https://results.medwayyc.example/2026")
+    assert r.status_code == 200, r.text
+    n = r.json()
+    assert n["content_type"] == "link"
+    assert n["link_url"] == "https://results.medwayyc.example/2026"
+    assert n["heading"] == "Club Notices"
+    assert n["body"] == []
+    # Publish and confirm it appears in the public list.
+    p = requests.post(f"{API}/notices/{n['id']}/publish", json={},
+                      headers=h(club_officer_token))
+    assert p.status_code == 200, p.text
+    assert p.json()["content_type"] == "link"
+    pub = requests.get(f"{API}/notices", params={"club_id": n["club_id"]}).json()
+    assert any(x["id"] == n["id"] and x["content_type"] == "link"
+               and x["link_url"] == n["link_url"] for x in pub)
+
+
+def test_create_link_notice_rejects_bad_urls(club_officer_token):
+    """Only http(s) URLs are accepted — anything that could execute code or
+    a non-web scheme is rejected."""
+    for bad in ("javascript:alert(1)", "ftp://example.com/file", "not a url"):
+        r = make_notice(club_officer_token, title="Bad link", link_url=bad)
+        assert r.status_code == 400, (bad, r.text)
+
+
 def test_required_fields_and_unknown_type(club_officer_token):
     # Missing the type's required content field.
     r = make_notice(club_officer_token, fields={"subject": "Only a subject"})
