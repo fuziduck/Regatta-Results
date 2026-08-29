@@ -342,16 +342,20 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
           </Tabs>
         </div>
       )}
-      <div className="columns-1 md:columns-2 xl:columns-3 gap-x-8">
+      {/* Grid (not CSS columns): same-row area headings always start at the
+          same height in every browser, and each area stays whole inside its
+          cell — CSS multi-column balancing can push later columns' content
+          down unevenly depending on the engine. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-8 items-start">
         {visibleAreas.map((area) => {
           const typeGroups = groups.get(area);
-          // Each area stays whole inside one column (never split across a
-          // break), splitting into its notice types below.
+          // Each area sits in its own grid cell, splitting into its notice
+          // types below.
           const types = [...typeGroups.keys()].sort((a, b) =>
             typeRank(a) - typeRank(b) || typeGroups.get(a).label.localeCompare(typeGroups.get(b).label));
           return (
             <div key={area} id={`notice-heading-anchor-${area.replace(/\W+/g, "-").toLowerCase()}`}
-              className="mb-8 break-inside-avoid">
+              className="min-w-0">
               <h3 className="font-heading text-base font-bold uppercase tracking-tight text-ocean border-b border-ocean/30 pb-1.5 mb-4">
                 {area}
               </h3>
