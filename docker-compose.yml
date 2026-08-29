@@ -109,7 +109,7 @@ services:
       # Loopback-only: only the HOST-INSTALLED Caddy can reach the app. The
       # Internet can never talk to nginx directly (Caddy is the only entry
       # point, and it sanitises X-Forwarded-For before forwarding).
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:80:80"
     depends_on:
       backend:
         condition: service_healthy

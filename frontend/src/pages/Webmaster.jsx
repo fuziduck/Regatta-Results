@@ -385,7 +385,7 @@ export default function Webmaster() {
         )}
         {section === "adverts" && <AdvertsManager />}
         {section === "email" && <EmailSettingsManager />}
-        {section === "subscriptions" && <SubscriptionOverview />}
+        {section === "subscriptions" && <SubscriptionOverview webmaster />}
         {section === "audit" && (
           <div>
             <div className="mb-6">

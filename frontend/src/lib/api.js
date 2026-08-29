@@ -208,6 +208,7 @@ export const api = {
   withdrawNotice: (id, reason, v) =>
     client.post(`/notices/${id}/withdraw`, withVer({ reason }, v)).then((r) => r.data),
   newNoticeVersion: (id) => client.post(`/notices/${id}/new-version`).then((r) => r.data),
+  updateNotice: (id, d, v) => client.put(`/notices/${id}`, withVer(d, v)).then((r) => r.data),
   deleteNotice: (id, v) => client.delete(`/notices/${id}`, { params: verQuery(v) }).then((r) => r.data),
 
 };

@@ -6544,10 +6544,8 @@ class NoticeCreateInput(BaseModel):
 
 
 class NoticeUpdateInput(BaseModel):
-    """Edit a DRAFT notice. Published notices are immutable — amendments
-    create a new version (POST /notices/{id}/new-version, spec 49). Uploaded
-    documents are never editable here; a corrected document is attached to a
-    new version (PUT /notices/{id}/file)."""
+    """Edit notice metadata/content. Published notices are corrected by
+    creating a new version, preserving the original audit record."""
     publication_area: Optional[str] = None
     title: Optional[str] = None
     fields: Optional[dict] = None
@@ -6721,7 +6719,7 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
         q["status"] = {"$in": ["published", "withdrawn"]}
 
     docs = await db.notices.find(q, {"_id": 0}) \
-        .sort("created_at", 1).to_list(limit)
+        .sort("created_at", -1).to_list(limit)
     if staff_view:
         return [_notice_summary(d) for d in docs]
     # Public: keep only the latest version of each notice (root) — an amended
@@ -6823,7 +6821,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": data.publication_area, "publication_area": data.publication_area, "title": title,
+        "heading": ("Club Notices" if data.publication_area == "club" else data.publication_area), "publication_area": data.publication_area, "title": title,
         "notice_number": data.notice_number or await _next_notice_number(club_id, data.publication_area),
         "content_type": "generated", "creation_method": "generated",
         "status": "draft", "version": 1, "root_id": notice_id,
@@ -6904,7 +6902,7 @@ async def upload_notice(request: Request,
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": publication_area or "Club Notices", "publication_area": publication_area or "Club Notices", "title": title,
+        "heading": ("Club Notices" if (publication_area or "club") == "club" else publication_area), "publication_area": publication_area or "club", "title": title,
         "notice_number": notice_number or await _next_notice_number(club_id, publication_area),
         "content_type": "uploaded", "creation_method": "uploaded",
         "status": "draft", "version": 1, "root_id": notice_id,
@@ -6978,12 +6976,25 @@ async def update_notice(notice_id: str, data: NoticeUpdateInput,
     never modified through this endpoint."""
     notice = await _notice_of_club(notice_id, user)
     if notice.get("status") != "draft":
-        raise HTTPException(status_code=409,
-                            detail="Only draft notices can be edited — create a new version to amend a published notice")
+        # Published ONB notices are corrected through a new immutable version;
+        # the original remains available in history and is never overwritten.
+        if notice.get("status") not in ("published", "withdrawn"):
+            raise HTTPException(status_code=409, detail="This notice cannot be edited in its current state")
+        created = await create_notice_version(notice_id, request=None, user=user)
+        notice_id = created["id"]
+        notice = await db.notices.find_one({"id": notice_id}, {"_id": 0})
     expected = _expected_version(data)
     tdef = NOTICE_TYPES_BY_KEY[notice["notice_type"]]
     updates = {"modified_at": now_iso(), "modified_by": user.get("username")}
     history = None
+
+    if data.publication_area is not None:
+        allowed = await list_notice_areas(request=None, club_id=notice["club_id"])
+        area_keys = {a["key"] for a in allowed}
+        if data.publication_area not in area_keys:
+            raise HTTPException(status_code=400, detail="Unknown notice area")
+        updates["publication_area"] = data.publication_area
+        updates["heading"] = next(a["title"] for a in allowed if a["key"] == data.publication_area)
 
     if data.title is not None:
         title = data.title.strip()
@@ -7312,7 +7323,7 @@ async def new_notice_version(notice_id: str, user: dict = Depends(require_office
 
 @api_router.delete("/notices/{notice_id}")
 async def delete_notice(notice_id: str, request: Request,
-                        user: dict = Depends(require_admin)):
+                        user: dict = Depends(require_officer)):
     """Remove a notice from the club ONB.
 
     Race Admins and Webmasters may remove draft or published notices. Published
