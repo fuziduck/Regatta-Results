@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import { NoticeBodyView, NoticeFacts, noticeHeadingLine, noticeContextLine } from "@/components/NoticeBody";
 import { noticePdfDataUrl, noticePdfBlobUrl } from "@/lib/noticePdf";
 import { Badge } from "@/components/ui/badge";
@@ -90,6 +91,10 @@ export default function NoticeWizard({ onDone }) {
   const [startDatetime] = useState(() => toLocalDatetime(new Date()));
   const [effectiveDatetime, setEffectiveDatetime] = useState(startDatetime);
   const [publicationDatetime, setPublicationDatetime] = useState(startDatetime);
+  // The publication/effective date-time fields are collapsed by default: both
+  // values already default to the moment the notice was started, so the fields
+  // only appear when the officer wants to override them.
+  const [showDatetimes, setShowDatetimes] = useState(false);
   const [attachments, setAttachments] = useState([]); // [{file, name}]
   const [noticeId, setNoticeId] = useState(null);
   const [draftVersion, setDraftVersion] = useState(null);
@@ -631,21 +636,38 @@ export default function NoticeWizard({ onDone }) {
                 </div>
               )}
 
-              {/* Metadata shared by both methods (spec 38/39) */}
+              {/* Metadata shared by both methods (spec 38/39). The date-times
+                  default to the moment the notice was started, so they stay
+                  collapsed behind a toggle unless the officer needs to set
+                  specific publication/effective moments. */}
               <div className="rounded-xl border border-border p-4 bg-card space-y-4">
                 <h3 className="text-xs font-bold uppercase tracking-widest text-ocean">Publication &amp; effective date/time</h3>
-                {method !== "generated" && (
-                  <div className="space-y-1.5">
-                    <Label>Publication date/time</Label>
-                    <Input type="datetime-local" data-testid="field-publication-datetime"
-                      value={publicationDatetime} onChange={(e) => setPublicationDatetime(e.target.value)} />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm">
+                    <div className="font-medium">Set a specific date/time</div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Off: both default to the moment you started creating this notice.
+                    </p>
+                  </div>
+                  <Switch checked={showDatetimes} onCheckedChange={setShowDatetimes}
+                    data-testid="toggle-datetimes" aria-label="Show publication and effective date/time fields" />
+                </div>
+                {showDatetimes && (
+                  <div className="space-y-4" data-testid="datetime-fields">
+                    {method !== "generated" && (
+                      <div className="space-y-1.5">
+                        <Label>Publication date/time</Label>
+                        <Input type="datetime-local" data-testid="field-publication-datetime"
+                          value={publicationDatetime} onChange={(e) => setPublicationDatetime(e.target.value)} />
+                      </div>
+                    )}
+                    <div className="space-y-1.5">
+                      <Label>Effective date/time (optional)</Label>
+                      <Input type="datetime-local" data-testid="field-effective-datetime"
+                        value={effectiveDatetime} onChange={(e) => setEffectiveDatetime(e.target.value)} />
+                    </div>
                   </div>
                 )}
-                <div className="space-y-1.5">
-                  <Label>Effective date/time (optional)</Label>
-                  <Input type="datetime-local" data-testid="field-effective-datetime"
-                    value={effectiveDatetime} onChange={(e) => setEffectiveDatetime(e.target.value)} />
-                </div>
               </div>
             </div>
 

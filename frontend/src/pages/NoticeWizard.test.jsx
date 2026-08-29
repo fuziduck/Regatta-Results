@@ -28,6 +28,13 @@ jest.mock("@/lib/api", () => {
   return { api, formatApiError: (d) => d || "error" };
 });
 jest.mock("sonner", () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
+// Radix Switch does not respond to synthetic clicks in jsdom, so drive it as a
+// plain button that flips onCheckedChange (same pattern as NewRaceDialog.test).
+jest.mock("@/components/ui/switch", () => ({
+  Switch: ({ checked, onCheckedChange, ...rest }) => (
+    <button type="button" {...rest} onClick={() => onCheckedChange?.(!checked)} />
+  ),
+}));
 
 import NoticeWizard from "./NoticeWizard";
 
@@ -120,9 +127,23 @@ const reachDetailsStep = async () => {
   await act(async () => {});
 };
 
-describe("NoticeWizard — publication/effective date-time defaults", () => {
+describe("NoticeWizard — publication/effective date-time toggle", () => {
+  const toggleDatetimes = () => {
+    act(() => container.querySelector('[data-testid="toggle-datetimes"]').click());
+  };
+
+  it("hides the date-time fields by default (values still default to now)", async () => {
+    await reachDetailsStep();
+    expect(container.querySelector('[data-testid="datetime-fields"]')).toBeNull();
+    expect(container.querySelector('[data-testid="field-publication-datetime"]')).toBeNull();
+    expect(container.querySelector('[data-testid="field-effective-datetime"]')).toBeNull();
+    toggleDatetimes();
+    expect(container.querySelector('[data-testid="datetime-fields"]')).not.toBeNull();
+  });
+
   it("pre-fills both date-times with the moment creation started", async () => {
     await reachDetailsStep();
+    toggleDatetimes();
     const before = new Date(Date.now() - 2 * 60 * 1000);
     const after = new Date(Date.now() + 2 * 60 * 1000);
     for (const testid of ["field-publication-datetime", "field-effective-datetime"]) {
@@ -136,6 +157,7 @@ describe("NoticeWizard — publication/effective date-time defaults", () => {
 
   it("keeps the effective date-time editable alongside the default", async () => {
     await reachDetailsStep();
+    toggleDatetimes();
     const input = container.querySelector('[data-testid="field-effective-datetime"]');
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
