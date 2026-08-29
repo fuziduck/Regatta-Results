@@ -427,6 +427,48 @@ def test_upload_rejects_non_document(club_officer_token):
     assert r.status_code == 400
 
 
+def test_webmaster_upload_targets_chosen_club(webmaster_token, test_club):
+    """A webmaster uploading a document must be able to post it to a chosen
+    club — the multipart body carries the club as the `club_id` form field
+    (the JSON-body `club_id` convention), which the endpoint must honour."""
+    r = requests.post(f"{API}/notices/upload",
+                      data={"notice_type": "general_club_notice",
+                            "title": "Webmaster upload",
+                            "club_id": test_club["id"]},
+                      files={"file": ("wm-upload.pdf", MINIMAL_PDF, "application/pdf")},
+                      headers=h(webmaster_token))
+    assert r.status_code == 200, r.text
+    n = r.json()
+    _created_notices.append(n["id"])
+    assert n["club_id"] == test_club["id"]
+    assert n["content_type"] == "uploaded" and n["has_file"] is True
+
+
+def test_webmaster_upload_still_requires_a_club(webmaster_token):
+    r = requests.post(f"{API}/notices/upload",
+                      data={"notice_type": "general_club_notice", "title": "No club"},
+                      files={"file": ("wm-noclub.pdf", MINIMAL_PDF, "application/pdf")},
+                      headers=h(webmaster_token))
+    assert r.status_code == 400 and "club_id" in r.text
+
+
+def test_notice_cannot_be_created_for_unknown_club(webmaster_token):
+    """A notice must be pinned to a REAL club — an unknown/stale id must be
+    rejected so the ONB can never accumulate ghost notices that look like the
+    same announcement repeated across clubs."""
+    bogus = "00000000-0000-4000-8000-000000000000"
+    r = requests.post(f"{API}/notices", json={
+        "notice_type": "general_club_notice", "title": "Ghost",
+        "club_id": bogus, "fields": {"body": "x"}}, headers=h(webmaster_token))
+    assert r.status_code == 400 and "Club not found" in r.text
+    r = requests.post(f"{API}/notices/upload",
+                      data={"notice_type": "general_club_notice", "title": "Ghost upload",
+                            "club_id": bogus},
+                      files={"file": ("ghost.pdf", MINIMAL_PDF, "application/pdf")},
+                      headers=h(webmaster_token))
+    assert r.status_code == 400 and "Club not found" in r.text
+
+
 def test_replace_document_on_draft(club_officer_token):
     r = requests.post(f"{API}/notices/upload",
                       data={"notice_type": "si_amendment", "title": "Amendment No. 2"},

@@ -6985,6 +6985,12 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     club_id = data.club_id if (user.get("role") == "webmaster" and data.club_id) else user.get("club_id")
     if not club_id:
         raise HTTPException(status_code=400, detail="club_id is required")
+    # A notice must be pinned to a REAL club: an unknown id (typo, stale id
+    # from a deleted club) would silently store a notice that belongs to no
+    # board — the exact ghost records that once made the same announcement
+    # look repeated across clubs.
+    if not await db.clubs.find_one({"id": club_id}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=400, detail="Club not found")
     title = (data.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
@@ -7062,6 +7068,10 @@ async def upload_notice(request: Request,
                         title: str = Form(...),
                         publication_area: str = Form("club"),
                         notice_number: Optional[int] = Form(None),
+                        # The club for a webmaster upload. The frontend sends the
+                        # conventional field name `club_id`; `club_id_param` is
+                        # accepted too for any older clients.
+                        club_id: Optional[str] = Form(None),
                         club_id_param: Optional[str] = Form(None),
                         series_id: Optional[str] = Form(None),
                         race_id: Optional[str] = Form(None),
@@ -7075,9 +7085,14 @@ async def upload_notice(request: Request,
     tdef = _notice_type_or_400(notice_type)
     # Staff are pinned to their own club; a webmaster uploading needs an
     # explicit club (multipart bodies carry no JSON club_id field).
-    club_id = (club_id_param if user.get("role") == "webmaster" else None) or user.get("club_id")
+    club_id = ((club_id or club_id_param) if user.get("role") == "webmaster" else None) or user.get("club_id")
     if not club_id:
         raise HTTPException(status_code=400, detail="club_id is required")
+    # Same guard as the JSON path: an uploaded notice must belong to a real
+    # club, never to a ghost id that would leave it visible nowhere (or, with
+    # a past id-mixing bug, on the wrong boards).
+    if not await db.clubs.find_one({"id": club_id}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=400, detail="Club not found")
     title = (title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
