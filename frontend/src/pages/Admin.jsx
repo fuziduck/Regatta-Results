@@ -1421,6 +1421,7 @@ export default function Admin() {
   // Club staff already have a scoped club in their session. Webmasters must
   // choose a club before the console can load club-scoped data.
   const clubId = isWebmaster ? (clubParam || null) : authClubId;
+  const readyForClub = isWebmaster ? !!clubParam : !!authClubId;
   const clubName = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.name || null)
     : (authClubName || null);
@@ -1438,6 +1439,10 @@ export default function Admin() {
   // Club options for the boat form: the webmaster sees every club (override
   // allowed); club staff only ever see their own club.
   const boatClubs = isWebmaster ? clubs : (clubId && clubName ? [{ id: clubId, name: clubName }] : []);
+
+  if (!readyForClub) {
+    return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading club console…</div>;
+  }
 
   if (isWebmaster && !clubParam) {
     return (
