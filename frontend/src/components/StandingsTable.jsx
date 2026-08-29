@@ -55,7 +55,12 @@ const PODIUM_CELL = {
   // missing), the remaining races no longer line up with their schedule index,
   // so padding with an index-derived race number would invent a duplicate —
   // show only the races actually scored instead.
-  const contiguous = races.every((r, i) => r.race_number === i + 1);
+  // Check if published races are contiguous (no gaps between them), regardless
+  // of whether they start from race 1. This allows future planned races to
+  // be shown as TBC columns even when earlier races haven't been published yet.
+  const sortedRaceNums = races.map((r) => r.race_number).sort((a, b) => a - b);
+  const contiguous = sortedRaceNums.length === 0 ||
+    sortedRaceNums.every((n, i) => i === 0 || n === sortedRaceNums[i - 1] + 1);
   // When viewing a mini-series group (combined or individual), the parent
   // series' planned_races / schedule would pad phantom columns for races
   // outside the group — cap at the actual race count so only the group's

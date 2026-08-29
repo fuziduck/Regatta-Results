@@ -6023,7 +6023,7 @@ def _notice_summary(doc: dict) -> dict:
     are fetched per notice via GET /notices/{id} on demand."""
     return {k: doc.get(k) for k in (
         "id", "club_id", "notice_type", "notice_type_label", "heading",
-        "title", "notice_number", "content_type", "status", "version",
+        "publication_area", "title", "notice_number", "content_type", "status", "version",
         "root_id", "supersedes_id", "superseded_by", "published_at",
         "published_by", "effective_at", "publication_datetime",
         "created_at", "created_by", "modified_at", "modified_by",
@@ -6077,6 +6077,8 @@ class NoticeCreateInput(BaseModel):
     """A Sailscore-GENERATED notice: structured fields for the selected type.
     Uploaded notices go through POST /notices/upload (multipart)."""
     notice_type: str
+    # Where the notice is published within the club ONB.
+    publication_area: Literal["club", "open_event"] = "club"
     title: str
     fields: dict = {}
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
@@ -6092,6 +6094,7 @@ class NoticeUpdateInput(BaseModel):
     create a new version (POST /notices/{id}/new-version, spec 49). Uploaded
     documents are never editable here; a corrected document is attached to a
     new version (PUT /notices/{id}/file)."""
+    publication_area: Optional[Literal["club", "open_event"]] = None
     title: Optional[str] = None
     fields: Optional[dict] = None
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
@@ -6216,7 +6219,7 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
         q["status"] = {"$in": ["published", "withdrawn"]}
 
     docs = await db.notices.find(q, {"_id": 0}) \
-        .sort("created_at", -1).to_list(limit)
+        .sort("created_at", 1).to_list(limit)
     if staff_view:
         return [_notice_summary(d) for d in docs]
     # Public: keep only the latest version of each notice (root) — an amended
@@ -6228,7 +6231,7 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
         if root not in latest or int(d.get("version") or 1) > int(latest[root].get("version") or 1):
             latest[root] = d
     out = [d for d in latest.values() if d["status"] in ("published", "withdrawn")]
-    out.sort(key=lambda d: (d.get("published_at") or d.get("created_at") or ""), reverse=True)
+    out.sort(key=lambda d: (d.get("published_at") or d.get("created_at") or ""))
     return [_notice_summary(d) for d in out]
 
 
@@ -6317,7 +6320,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": tdef["heading"], "title": title,
+        "heading": tdef["heading"], "publication_area": data.publication_area, "title": title,
         "notice_number": data.notice_number or await _next_notice_number(club_id, tdef["key"]),
         "content_type": "generated", "creation_method": "generated",
         "status": "draft", "version": 1, "root_id": notice_id,
@@ -6361,6 +6364,7 @@ async def upload_notice(request: Request,
                         user: dict = Depends(require_officer),
                         notice_type: str = Form(...),
                         title: str = Form(...),
+                        publication_area: str = Form("club"),
                         notice_number: Optional[int] = Form(None),
                         club_id_param: Optional[str] = Form(None),
                         series_id: Optional[str] = Form(None),
@@ -6397,7 +6401,7 @@ async def upload_notice(request: Request,
     doc = {
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
-        "heading": tdef["heading"], "title": title,
+        "heading": tdef["heading"], "publication_area": publication_area if publication_area in ("club", "open_event") else "club", "title": title,
         "notice_number": notice_number or await _next_notice_number(club_id, tdef["key"]),
         "content_type": "uploaded", "creation_method": "uploaded",
         "status": "draft", "version": 1, "root_id": notice_id,

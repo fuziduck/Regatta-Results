@@ -71,6 +71,7 @@ export default function NoticeWizard({ onDone }) {
   const [step, setStep] = useState(0);
   const [typeKey, setTypeKey] = useState(null);
   const [method, setMethod] = useState("generated"); // 'generated' | 'uploaded'
+  const [publicationArea, setPublicationArea] = useState("club");
   const [fields, setFields] = useState({});
   const [uploadFile, setUploadFile] = useState(null);
   const [noticeNumber, setNoticeNumber] = useState(1);
@@ -232,6 +233,7 @@ export default function NoticeWizard({ onDone }) {
     }
     const payload = {
       notice_type: typeKey,
+      publication_area: publicationArea,
       title: fields.subject || (typeDef ? typeDef.label : ""),
       notice_number: noticeNumber,
       effective_datetime: effectiveDatetime || null,
@@ -250,6 +252,7 @@ export default function NoticeWizard({ onDone }) {
     if (!uploadFile) { toast.error("Choose a document to upload."); return null; }
     const n = await api.uploadNotice({
       notice_type: typeKey,
+      publication_area: publicationArea,
       title: fields.title || (uploadFile.name || "Uploaded notice"),
       notice_number: noticeNumber,
       series_id: fields.series_id || (ctx?.series_id || null),
@@ -300,7 +303,7 @@ export default function NoticeWizard({ onDone }) {
       notice_type_label: typeDef.label,
       notice_number: noticeNumber,
       title: fields.title || (uploadFile ? uploadFile.name : "Uploaded notice"),
-      heading: typeDef.heading,
+      heading: publicationArea === "open_event" ? "Open Event Notices" : "Club Notices",
       content_type: "uploaded",
       status: "draft",
       version: draftVersion || 1,
@@ -316,7 +319,7 @@ export default function NoticeWizard({ onDone }) {
       file_size: uploadFile?.size || null,
       body: [],
     };
-  }, [typeDef, typeKey, noticeId, method, fields, noticeNumber, effectiveDatetime, publicationDatetime, ctx, draftVersion, uploadFile]);
+  }, [typeDef, typeKey, noticeId, method, fields, noticeNumber, effectiveDatetime, publicationDatetime, publicationArea, ctx, draftVersion, uploadFile]);
 
   // Generate the PDF blob for the preview pane and the data URL for publishing.
   useEffect(() => {
@@ -471,6 +474,20 @@ export default function NoticeWizard({ onDone }) {
                 </Select>
               </div>
             )}
+            <div className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 space-y-2" data-testid="publication-area-selector">
+              <Label className="font-heading uppercase text-sm">Where should this notice appear?</Label>
+              <p className="text-xs text-muted-foreground">Choose the club-wide board or the open event notices section.</p>
+              <RadioGroup value={publicationArea} onValueChange={setPublicationArea} className="grid sm:grid-cols-2 gap-2">
+                <label className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${publicationArea === "club" ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
+                  <RadioGroupItem value="club" id="publication-area-club" />
+                  <span><span className="block font-semibold">Club Notices</span><span className="block text-xs text-muted-foreground">General notices for the club</span></span>
+                </label>
+                <label className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${publicationArea === "open_event" ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
+                  <RadioGroupItem value="open_event" id="publication-area-open-event" />
+                  <span><span className="block font-semibold">Open Event Notices</span><span className="block text-xs text-muted-foreground">Notices for an open event</span></span>
+                </label>
+              </RadioGroup>
+            </div>
             {ctx && (
               <div className="mt-2 mb-5 inline-flex flex-wrap items-center gap-2 rounded-lg border border-ocean/20 bg-ocean/5 px-3 py-2 text-xs text-ocean" data-testid="prefilled-context">
                 <Check className="w-4 h-4" /> Auto-filled from: {contextSummary(ctx)}

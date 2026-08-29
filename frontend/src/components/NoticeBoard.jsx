@@ -15,6 +15,8 @@ import { Download, ExternalLink, FileText, FlagTriangleRight, ScrollText } from 
 // Canonical heading order — mirrors the backend catalogue order (spec 43's
 // default structure). Unknown headings fall back to alphabetical after these.
 const HEADING_ORDER = [
+  "Club Notices",
+  "Open Event Notices",
   "Notices to Competitors",
   "Sailing Instructions / Amendments",
   "Race Notices",
@@ -83,10 +85,6 @@ function UploadedDocument({ notice }) {
           <ScrollText className="w-4 h-4" /> View PDF
         </Button>
         <Button size="sm" variant="ghost" className="gap-1.5 text-muted-foreground"
-          data-testid={`open-pdf-${notice.id}`} onClick={openTab}>
-          <ExternalLink className="w-4 h-4" /> Open PDF
-        </Button>
-        <Button size="sm" variant="ghost" className="gap-1.5 text-muted-foreground"
           data-testid={`download-pdf-${notice.id}`} onClick={download}>
           <Download className="w-4 h-4" /> Download PDF
         </Button>
@@ -99,12 +97,8 @@ function UploadedDocument({ notice }) {
       {error && <p className="mt-1.5 text-xs text-red-600">{error}</p>}
       {open && full && (
         <div className="mt-3 rounded-xl border border-border overflow-hidden bg-muted/30">
-          <object data={full.file_data_url} type={full.file_type || "application/pdf"} className="w-full h-[70vh]"
-            data-testid={`pdf-embed-${notice.id}`}>
-            <div className="p-6 text-sm text-muted-foreground text-center">
-              Your browser cannot display this document inline — use <strong>Open PDF</strong> above.
-            </div>
-          </object>
+          <iframe src={full.file_data_url} title="PDF preview" className="w-full h-[70vh] border-0"
+            data-testid={`pdf-embed-${notice.id}`} />
         </div>
       )}
     </div>

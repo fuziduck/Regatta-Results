@@ -671,19 +671,24 @@ function SeriesTab({ classes, clubId }) {
         } else {
           toast.error("This series has been changed by another user. Reload the latest settings before editing again.");
         }
-        load();
-        return;
+      } else {
+        toast.error(e.response?.data?.detail || "Could not save series");
       }
-      throw e;
+      load();
+      return;
     }
     toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank(), class_id: classFilter });
     reloadYears(); load();
   };
   const genSchedule = async () => {
     if (!editing) return toast.error("Save the series first, then re-open to auto-fill dates");
-    const s = await api.generateSchedule(editing, { start_date: schedStart, count: Number(form.planned_races) || undefined });
-    setForm((f) => ({ ...f, schedule: s.schedule || [], planned_races: s.planned_races }));
-    toast.success("Weekly schedule generated"); load();
+    try {
+      const s = await api.generateSchedule(editing, { start_date: schedStart, count: Number(form.planned_races) || undefined });
+      setForm((f) => ({ ...f, schedule: s.schedule || [], planned_races: s.planned_races }));
+      toast.success("Weekly schedule generated"); load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not generate schedule");
+    }
   };
   const setSchedDate = (idx, val) => setForm((f) => { const sc = [...(f.schedule || [])]; sc[idx] = val; return { ...f, schedule: sc }; });
   const del = async (id) => { await api.deleteSeries(id, series.find((x) => x.id === id)?.version); toast.success("Deleted"); load(); };
