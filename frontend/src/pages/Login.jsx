@@ -36,6 +36,17 @@ export default function Login() {
     }).catch(() => {});
   }, [searchParams]);
 
+  // Arrived because a session expired mid-use (the api client redirects any
+  // 401 here): explain why they're back on the sign-in page.
+  useEffect(() => {
+    if (searchParams.get("reason") === "session") {
+      toast.info("Your session expired — please sign in again to continue.", { id: "session-expired" });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("reason");
+      window.history.replaceState({}, "", url);
+    }
+  }, [searchParams]);
+
   // Close the club dropdown on outside click / Escape
   useEffect(() => {
     if (!clubOpen) return;

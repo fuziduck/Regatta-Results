@@ -7,6 +7,29 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 // the browser attach the cookie on every request.
 const client = axios.create({ baseURL: API, withCredentials: true });
 
+// Session-expiry handling: any 401 from the backend means the session cookie is
+// missing, expired, or was invalidated server-side (passcode reset, role
+// change, or logout on another tab). Instead of surfacing a cryptic per-action
+// "Not authenticated" error (e.g. when recalling a result), redirect the user
+// back to the sign-in page so they can resume. Skips the login page itself to
+// avoid a redirect loop, and is disabled under test (jsdom has no navigation).
+// NB: only reference process.env.NODE_ENV (never the bare `process` global) —
+// CRA statically replaces it via DefinePlugin at build time, so this works in
+// the browser where no runtime `process` object exists.
+if (process.env.NODE_ENV !== "test") {
+  client.interceptors.response.use(
+    (resp) => resp,
+    (error) => {
+      if (error?.response?.status === 401
+          && typeof window !== "undefined"
+          && window.location.pathname !== "/login") {
+        window.location.href = "/login?reason=session";
+      }
+      return Promise.reject(error);
+    }
+  );
+}
+
 export function formatApiError(detail) {
   if (detail == null) return "Something went wrong. Please try again.";
   if (typeof detail === "string") return detail;
