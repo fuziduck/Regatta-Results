@@ -64,8 +64,8 @@ const renderBoard = async () => {
   return container;
 };
 
-it("groups by notice type and orders each type by number", async () => {
-  // Two types share the "Race Notices" heading, and cancellation numbers are
+it("splits the main notice areas into their notice types, each by number", async () => {
+  // Two types share the "Race Notices" area, and cancellation numbers are
   // supplied out of numerical order to prove the per-type sort.
   const p1 = mk("p1", "race_postponement", "Race Postponement", 1);
   const c2 = mk("c2", "race_cancellation", "Race Cancellation", 2);
@@ -75,9 +75,13 @@ it("groups by notice type and orders each type by number", async () => {
 
   await renderBoard();
 
-  // The group headers appear in canonical type order, not alphabetical.
-  const headers = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
-  expect(headers).toEqual(["Notice to Competitors", "Race Postponement", "Race Cancellation"]);
+  // Main areas are the section headers, in canonical order.
+  const areas = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
+  expect(areas).toEqual(["Notices to Competitors", "Race Notices"]);
+
+  // Each area splits into its notice types.
+  const types = [...container.querySelectorAll("h4")].map((h) => h.textContent.trim());
+  expect(types).toEqual(["Notice to Competitors", "Race Postponement", "Race Cancellation"]);
 
   // Within each type, notices are ordered by number ascending.
   const cards = [...container.querySelectorAll('[data-testid="card-heading"]')].map((c) => c.textContent);
