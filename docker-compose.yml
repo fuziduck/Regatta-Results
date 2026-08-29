@@ -85,6 +85,10 @@ services:
       MAIL_FROM: ${MAIL_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL:?set in .env}
       RESET_TOKEN_MINUTES: ${RESET_TOKEN_MINUTES:-30}
+      # When set, backups are AES-encrypted and carry passcode hashes so a
+      # restore preserves sign-in credentials (see .env.example). Leave empty
+      # for legacy plaintext backups.
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
     command: uvicorn server:app --host 0.0.0.0 --port 8000
     depends_on:
       mongodb:
