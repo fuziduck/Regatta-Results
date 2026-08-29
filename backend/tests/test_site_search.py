@@ -143,3 +143,22 @@ class TestUnifiedSearch:
         server.db = _db(clubs=clubs, classes=_Coll([]), series=_Coll([]), boats=_Coll([]))
         out = asyncio.run(server.unified_search("club", limit=2))
         assert len(out["clubs"]) == 2
+
+    def test_orphaned_series_and_classes_are_excluded(self):
+        # A series whose class (or club) no longer exists used to surface with
+        # an empty club_slug and link to a dead "/club/" page from the search
+        # popup — rows that can't link anywhere must not be offered.
+        server.db = _db(
+            clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "medway-yacht-club"}]),
+            classes=_Coll([{"id": "c1", "name": "Sonata", "club_id": "club-a"},
+                           {"id": "c2", "name": "Ghost Class", "club_id": "ghost-club"}]),
+            series=_Coll([{"id": "s1", "name": "Summer Series", "class_id": "c1", "year": 2026},
+                          {"id": "s2", "name": "Summer Series", "class_id": "gone-class", "year": 2026},
+                          {"id": "s3", "name": "Summer Series", "class_id": "c2", "year": 2026}]),
+            boats=_Coll([]))
+        out = asyncio.run(server.unified_search("summer"))
+        assert [s["id"] for s in out["series"]] == ["s1"]
+        assert all(s.get("club_slug") for s in out["series"])
+        # A class whose club no longer exists is excluded as well.
+        out2 = asyncio.run(server.unified_search("ghost"))
+        assert out2["classes"] == []

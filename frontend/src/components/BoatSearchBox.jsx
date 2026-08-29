@@ -138,9 +138,18 @@ export default function BoatSearchBox() {
   const clear = () => { setQ(""); setOpen(false); setType("all"); inputRef.current?.focus(); };
 
   const total = data.boats.length + data.clubs.length + data.series.length + data.classes.length;
+  // Only offer rows that can actually link somewhere. Orphaned series/classes
+  // (their club no longer exists) would produce a dead "/club/" link — the
+  // backend already filters these, this guards against any that slip through.
   const shown = type === "all"
-    ? { boats: data.boats, clubs: data.clubs, series: data.series, classes: data.classes }
-    : { ...{ boats: [], clubs: [], series: [], classes: [] }, [type]: data[type] };
+    ? {
+        boats: data.boats.filter((b) => b.fleet_id),
+        clubs: data.clubs.filter((c) => c.slug),
+        series: data.series.filter((s) => s.club_slug),
+        classes: data.classes.filter((c) => c.club_slug),
+      }
+    : { ...{ boats: [], clubs: [], series: [], classes: [] }, [type]: data[type].filter((row) =>
+        type === "boats" ? row.fleet_id : type === "clubs" ? row.slug : row.club_slug) };
   const empty = searched && !busy && total === 0;
 
   return (

@@ -5538,23 +5538,30 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
                          "classes": n_classes})
     club_out.sort(key=lambda c: (c["name"] or "").lower())
 
-    # Classes: name (club context attached).
+    # Classes: name (club context attached). Orphaned classes (whose club no
+    # longer exists) can't link anywhere, so they're skipped — otherwise the
+    # search popup offers a dead "/club/" link.
     class_rows = await db.classes.find({"name": rx}, {"_id": 0}).to_list(1000)
     class_out = []
     for c in class_rows:
         club = clubs.get(c.get("club_id"), {})
+        if not club.get("slug"):
+            continue
         n_series = await db.series.count_documents({"class_id": c["id"]})
         class_out.append({"id": c["id"], "name": c.get("name"),
                           "club_name": club.get("name", ""), "club_slug": club.get("slug", ""),
                           "series": n_series})
     class_out.sort(key=lambda c: (c["name"] or "").lower())
 
-    # Series: name (class + club context attached).
+    # Series: name (class + club context attached). Series whose class or club
+    # is gone are skipped for the same reason.
     series_rows = await db.series.find({"name": rx}, {"_id": 0}).to_list(1000)
     series_out = []
     for s in series_rows:
         cls = classes.get(s.get("class_id"), {})
         club = clubs.get(cls.get("club_id"), {})
+        if not cls.get("id") or not club.get("slug"):
+            continue
         series_out.append({"id": s["id"], "name": s.get("name"), "year": s.get("year"),
                            "class_id": s.get("class_id"), "class_name": cls.get("name", ""),
                            "club_name": club.get("name", ""), "club_slug": club.get("slug", "")})
