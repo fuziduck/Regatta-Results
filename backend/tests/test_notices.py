@@ -264,6 +264,35 @@ def test_notice_areas_for_club_without_custom_areas(club_officer_token, test_clu
     assert r.json()["title"] == title
 
 
+def test_delete_notice_area(club_officer_token, test_club):
+    """A race admin can remove a custom notice area; the built-in areas are
+    protected. Removing an area it does not own answers 404."""
+    title = f"Regatta HQ {uuid4().hex[:6]}"
+    r = requests.post(f"{API}/clubs/{test_club['id']}/notice-areas",
+                      json={"title": title}, headers=h(club_officer_token))
+    assert r.status_code == 200, r.text
+
+    r = requests.delete(f"{API}/clubs/{test_club['id']}/notice-areas/{title}",
+                        headers=h(club_officer_token))
+    assert r.status_code == 200, r.text
+    assert title not in r.json()["notice_areas"]
+
+    # The area is no longer offered to the club's picker.
+    keys = {a["key"] for a in requests.get(f"{API}/notice-areas",
+                                           params={"club_id": test_club["id"]}).json()}
+    assert "custom:" + title.lower().replace(" ", "-") not in keys
+
+    # The built-in areas cannot be deleted.
+    r = requests.delete(f"{API}/clubs/{test_club['id']}/notice-areas/Club%20Notices",
+                        headers=h(club_officer_token))
+    assert r.status_code == 409, r.text
+
+    # Deleting a non-existent area answers 404.
+    r = requests.delete(f"{API}/clubs/{test_club['id']}/notice-areas/Does%20Not%20Exist",
+                        headers=h(club_officer_token))
+    assert r.status_code == 404, r.text
+
+
 # ---------------------------------------------------------------------------
 # Reuse Sailscore data (spec 46)
 # ---------------------------------------------------------------------------

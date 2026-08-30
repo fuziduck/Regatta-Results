@@ -27,7 +27,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -1148,6 +1148,16 @@ function NoticeManagementTab({ clubId }) {
       toast.error(e.response?.data?.detail || "Could not save notice area");
     }
   };
+  const removeArea = async (area) => {
+    if (!window.confirm(`Remove the notice area “${area}” from this club? Existing notices in it remain on the board.`)) return;
+    try {
+      await api.deleteNoticeArea(clubId, area);
+      setAreas(areas.filter((a) => a !== area));
+      toast.success("Notice area removed");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not remove notice area");
+    }
+  };
   const edit = async (notice) => {
     const title = window.prompt("Correct notice title", notice.title || "");
     if (title === null) return;
@@ -1180,7 +1190,14 @@ function NoticeManagementTab({ clubId }) {
       </div>
       <div className="rounded-xl border border-border bg-card p-4 space-y-3" data-testid="notice-area-manager">
         <div><h3 className="font-heading uppercase">Notice areas</h3><p className="text-xs text-muted-foreground">Create additional areas for this club’s ONB. Race Admins and Race Officers can choose them when posting.</p></div>
-        <div className="flex flex-wrap gap-2">{areas.map((area) => <Badge key={area} variant="outline">{area}</Badge>)}</div>
+        <div className="flex flex-wrap gap-2">{areas.map((area) =>
+          <Badge key={area} variant="outline" className="gap-1.5 pr-1">
+            {area}
+            {!["Club Notices", "Open Event Notices"].includes(area) && (
+              <button type="button" title={`Remove “${area}”`} aria-label={`Remove notice area ${area}`} data-testid={`remove-notice-area-${area}`} className="rounded-full p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive" onClick={() => removeArea(area)}><X className="w-3.5 h-3.5" /></button>
+            )}
+          </Badge>
+        )}</div>
         <div className="flex gap-2"><Input value={areaName} onChange={(e) => setAreaName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addArea(); }} placeholder="e.g. Regatta Notices" data-testid="new-notice-area-input" /><Button type="button" onClick={addArea} data-testid="add-notice-area-btn"><Plus className="w-4 h-4" /> Add area</Button></div>
       </div>
       {!notices.length && <p className="text-sm text-muted-foreground rounded-xl border border-dashed p-6 text-center">No notices are currently listed.</p>}

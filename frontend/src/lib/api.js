@@ -227,6 +227,7 @@ export const api = {
   getNotice: (id, clubId) => client.get(`/notices/${id}`, { params: clubId ? { club_id: clubId } : {}, headers: { Accept: "application/json" } }).then((r) => r.data),
   getNoticeAreas: (clubId) => client.get("/notice-areas", { params: { club_id: clubId } }).then((r) => r.data),
   addNoticeArea: (clubId, title) => client.post(`/clubs/${clubId}/notice-areas`, { title }).then((r) => r.data),
+  deleteNoticeArea: (clubId, title) => client.delete(`/clubs/${clubId}/notice-areas/${encodeURIComponent(title)}`).then((r) => r.data),
   noticeContext: (params) => client.get("/notices/context", { params }).then((r) => r.data),
   nextNoticeNumber: (notice_type, club_id, publication_area) =>
     client.get("/notices/next-number", { params: { notice_type, ...(club_id ? { club_id } : {}), ...(publication_area ? { publication_area } : {}) } }).then((r) => r.data),

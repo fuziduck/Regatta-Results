@@ -6976,6 +6976,32 @@ async def add_notice_area(club_id: str, data: NoticeAreaInput, request: Request,
     return {"key": "custom:" + re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-"), "title": title}
 
 
+@api_router.delete("/clubs/{club_id}/notice-areas/{title}")
+async def delete_notice_area(club_id: str, title: str, request: Request,
+                             user: dict = Depends(require_officer)):
+    _ensure_club(user, club_id)
+    title = title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Area name is required")
+    reserved = {"club notices", "open event notices"}
+    if title.lower() in reserved:
+        raise HTTPException(status_code=409, detail="That notice area cannot be removed")
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "notice_areas": 1})
+    # NB: the projection can legitimately return an EMPTY dict (a club with no
+    # custom areas), which is falsy — so test for None, never `not club`.
+    if club is None:
+        raise HTTPException(status_code=404, detail="Club not found")
+    areas = list(club.get("notice_areas") or [])
+    if not any(existing.strip().lower() == title.lower() for existing in areas):
+        raise HTTPException(status_code=404, detail="That notice area does not exist")
+    next_areas = [existing for existing in areas if existing.strip().lower() != title.lower()]
+    await db.clubs.update_one({"id": club_id}, {"$set": {"notice_areas": next_areas}})
+    await _log_audit(request=request, user=user, action="NOTICE_AREA_DELETED",
+                     description=f"Deleted ONB notice area '{title}'", resource_type="club",
+                     resource_id=club_id, club_id=club_id)
+    return {"key": _custom_area_key(title), "title": title, "notice_areas": next_areas}
+
+
 @api_router.get("/notice-areas")
 async def list_notice_areas(request: Request, club_id: Optional[str] = None):
     scope = await _resolve_club_id(request, club_id)
