@@ -104,11 +104,35 @@ export const api = {
   },
   // Restore a backup ZIP. Webmaster only. The passphrase (if any) decrypts an
   // encrypted backup; plaintext backups ignore it.
+  // Errors surface the real backend detail (or, failing that, the HTTP status
+  // and response text) instead of leaving the caller with only a generic
+  // message — a failed restore on a server behind a proxy is otherwise hard
+  // to diagnose (the rejection can come from Caddy/nginx rather than the API).
   restoreBackup: (file, passphrase = "") => {
     const fd = new FormData();
     fd.append("file", file);
     if (passphrase) fd.append("passphrase", passphrase);
-    return client.post("/admin/backup/restore", fd).then((r) => r.data);
+    return client.post("/admin/backup/restore", fd).then((r) => r.data).catch((err) => {
+      const resp = err.response;
+      if (!resp) {
+        err.message = err.message || "Network error — could not reach the server";
+        throw err;
+      }
+      const data = resp.data;
+      if (data && typeof data === "object" && data.detail) {
+        resp.data = { detail: data.detail };
+      } else {
+        let detail = "Restore failed";
+        if (typeof data === "string" && data.trim()) {
+          try { detail = JSON.parse(data)?.detail || data.trim().slice(0, 500); }
+          catch { detail = data.trim().slice(0, 500); }
+        }
+        // Always include the HTTP status so a proxy rejection (413 size limit,
+        // 502/504 timeout) is identifiable even when the body has no JSON detail.
+        resp.data = { detail: (resp.status ? `HTTP ${resp.status}: ` : "") + detail };
+      }
+      throw err;
+    });
   },
 
   getClubs: () => client.get("/clubs").then((r) => r.data),

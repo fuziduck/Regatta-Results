@@ -141,7 +141,10 @@ function BackupSection({ clubs }) {
       setRestorePassphrase("");
     } catch (err) {
       // Keep the dialog open so the passphrase can be corrected and retried.
-      toast.error(err.response?.data?.detail || "Restore failed — please check the backup file");
+      // Surface the real reason (backend detail, or a true network/proxy
+      // error) rather than a generic "check the file" message.
+      const detail = err.response?.data?.detail || err.message || "";
+      toast.error(detail ? `Restore failed: ${detail}` : "Restore failed — please check the backup file");
     } finally {
       setRestoring(false);
     }
