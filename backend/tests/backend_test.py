@@ -665,6 +665,60 @@ class TestRaceFlow:
         # cleanup
         requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
 
+    def test_single_series_class_counts_as_overall_championship(self, club_officer_token, club_admin_token):
+        """A class with exactly ONE series (even when it is not flagged
+        included_in_overall) still has an overall championship: that single
+        series IS the championship, so its boats appear in the boat-search
+        overall list (e.g. Sonata Nationals 2026)."""
+        r = requests.post(f"{API}/classes",
+                          json={"name": "Solo Series Class", "default_start_time": "10:30"},
+                          headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        cls = r.json()
+        r = requests.post(f"{API}/series", json={
+            "name": "Solo Championship", "class_id": cls["id"], "year": YEAR,
+            "discards": 0, "included_in_overall": False, "order": 1},
+            headers=h(club_admin_token))
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        boats = []
+        for i, (name, sail) in enumerate([("Solo One", "S1"), ("Solo Two", "S2")], start=1):
+            r = requests.post(f"{API}/boats", json={
+                "name": name, "sail_no": sail, "class_id": cls["id"],
+                "helm": f"Helm {i}", "year": YEAR, "active": True,
+                "home_club": f"{name} SC"}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            boats.append(r.json()["id"])
+        r = requests.post(f"{API}/races", json={
+            "date": f"{YEAR}-06-01", "class_id": cls["id"], "series_id": sid,
+            "race_number": 1, "start_time": "10:45"}, headers=h(club_officer_token))
+        assert r.status_code == 200, r.text
+        rid = r.json()["id"]
+        try:
+            for b in boats:
+                r = requests.post(f"{API}/races/{rid}/finish", json={"boat_id": b},
+                                  headers=h(club_officer_token))
+                assert r.status_code == 200, r.text
+            r = requests.post(f"{API}/races/{rid}/status/published", headers=h(club_officer_token))
+            assert r.status_code == 200, r.text
+
+            # The sole (non-included) series is the overall championship.
+            overall = requests.get(f"{API}/standings/overall",
+                                   params={"class_id": cls["id"], "year": YEAR}).json()
+            assert overall["series_names"] == ["Solo Championship"]
+            assert len(overall["standings"]) == 2
+            assert overall["standings"][0]["boat_name"] == "Solo One"
+            # ... and it surfaces in the boat-search overall championships.
+            prof = requests.get(f"{API}/fleet/{boats[0]}").json()
+            assert any(o.get("class_id") == cls["id"] and o.get("year") == YEAR
+                       for o in prof["overall"])
+        finally:
+            requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            for b in boats:
+                requests.delete(f"{API}/boats/{b}", headers=h(club_officer_token))
+            requests.delete(f"{API}/series/{sid}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
     def test_duplicate_race_number_rejected_with_clear_error(self, club_officer_token, club_admin_token):
         """A race number may only be used once per series — the API must
         answer 400 with a helpful message, not crash into the unique index

@@ -5686,8 +5686,22 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
 
 async def compute_overall_standings(class_id: str, year: int):
     """Overall championship standings for a class and year (every series in
-    the class that counts towards the championship, summed by net score)."""
+    the class that counts towards the championship, summed by net score).
+
+    A class that fields exactly ONE series has no multi-series championship
+    to combine — that single series IS its overall championship (e.g. a
+    one-off regatta such as Sonata Nationals). Without this fallback such a
+    class (whose only series is not flagged ``included_in_overall``) would
+    show no overall at all, and its boats would miss the boat-search overall
+    championship list."""
     all_series = await db.series.find({"class_id": class_id, "year": year, "included_in_overall": True}, {"_id": 0}).to_list(1000)
+    if not all_series:
+        # Fallback: a class with exactly one series — the series itself is the
+        # championship. Never applies when the class fields multiple series
+        # (then the club's included_in_overall flags are authoritative).
+        sole = await db.series.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(1000)
+        if len(sole) == 1:
+            all_series = sole
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
     club_name = await _club_name_of_class(class_id)
     boat_map = {b["id"]: b for b in boats}
