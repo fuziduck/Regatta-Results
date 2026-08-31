@@ -15,7 +15,9 @@ RRS A5.3 / 'finishers' convention so DNF/RET score that race's participants
 
 Schema (all keys under ``series[i].races`` map a sail number to a result —
 a finishing position ``1,2,3,...``, a code ``"DNF"``/``"RET"``/``"DNS"``/
-``"OCS"``/``"UFD"``/etc., or ``["RDG", points]``; every sail number in
+``"OCS"``/``"UFD"``/etc., ``["code", points]`` for an explicit committee
+score (``["ZFP", 0]``, ``["RDG", 11]``), or ``["FINISHED", position,
+points]`` for a finishing place with explicit points; every sail number in
 ``boats`` that isn't listed that day scores DNC):
 
     {
@@ -34,6 +36,9 @@ a finishing position ``1,2,3,...``, a code ``"DNF"``/``"RET"``/``"DNS"``/
           "discards": 1,
           "included_in_overall": true,
           "order": 1,
+          // Either form of "races" is accepted:
+          //   dict  {date: placings}                    — race numbers 1..n in order
+          //   list  [{date, number?, placings}, ...]    — explicit numbers (multi-race days)
           "races": {
             "2025-04-26": {"8087": 1, "8420": "DNF"},
             "2025-05-03": {"8087": 3, "8420": 1}
@@ -53,6 +58,7 @@ Idempotency / safety:
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -96,6 +102,17 @@ def resolve_class(db, club_id: str, name: str):
     return cls_doc
 
 
+def _fleet_key(name, sail_no):
+    """The boat-registry identity key: sail number + name, alphanumerics only.
+
+    Mirrors fleet_key() in the app so an imported boat automatically shares a
+    fleet identity with the same physical boat already recorded at another
+    club or in another year (e.g. a Medway club boat that also raced at the
+    Nationals)."""
+    clean = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    return f"{clean(sail_no)}|{clean(name)}"
+
+
 def upsert_boats(db, class_id, year, boats, home_club):
     """Upsert boats by (class, year, sail_no). Returns sail_no -> boat_id."""
     boat_by_prefix = {}
@@ -103,12 +120,19 @@ def upsert_boats(db, class_id, year, boats, home_club):
         name = info.get("name") or f"Boat {prefix}"
         helm = info.get("helm") or ""
         sail = info.get("sail_no") or f"GBR {prefix}".strip()
+        key = _fleet_key(name, sail)
         existing = db.boats.find_one({"class_id": class_id, "year": year, "sail_no": sail},
                                      {"_id": 0})
+        skip_id = existing["id"] if existing else ""
+        # Link to an existing fleet identity (same physical boat at another
+        # club/year) so the shared boat registry groups them together.
+        fleet_id, key = _find_fleet_link(db, class_id, key, name, sail, skip_id)
         if existing:
             db.boats.update_one({"id": existing["id"]},
                                 {"$set": {"name": name, "helm": helm,
                                           "home_club": home_club, "active": True,
+                                          "fleet_key": key,
+                                          "fleet_id": fleet_id,
                                           "boat_type": info.get("boat_type") or existing.get("boat_type"),
                                           "class_id": class_id, "year": year}})
             boat_by_prefix[prefix] = existing["id"]
@@ -117,11 +141,42 @@ def upsert_boats(db, class_id, year, boats, home_club):
             db.boats.insert_one({
                 "id": bid, "name": name, "sail_no": sail, "class_id": class_id,
                 "helm": helm, "year": year, "active": True, "tcc": None, "py": None,
+                "fleet_key": key, "fleet_id": fleet_id,
                 "boat_type": info.get("boat_type") or "Keelboat",
                 "home_club": home_club, "created_at": now_iso(), "version": 1,
             })
             boat_by_prefix[prefix] = bid
     return boat_by_prefix
+
+
+def _find_fleet_link(db, class_id, key, name, sail, skip_id):
+    """Resolve a shared fleet identity for an imported boat.
+
+    Returns ``(fleet_id, client_key)`` where ``client_key`` is the fleet_key the
+    imported boat should take. Preference order:
+
+    1. An existing boat with the exact same normalized fleet_key (same sail and
+       name) elsewhere → share that identity.
+    2. An existing boat in the same class whose sail number matches but whose
+       recorded name is spelled differently (e.g. ``KNEBTFAT`` in one year and
+       ``Knebfat`` in another) → share that identity using the *canonical*
+       fleet_key already registered, so the shared boat registry still groups
+       them as one boat.
+
+    Returns ``(None, key)`` (i.e. keep the freshly computed key) when no link
+    is found."""
+    link = db.boats.find_one({"fleet_key": key, "id": {"$ne": skip_id}},
+                             {"_id": 0, "fleet_id": 1, "id": 1})
+    if link:
+        return (link.get("fleet_id") or link["id"]), key
+    sail_clean = re.sub(r"[^a-z0-9]", "", (sail or "").lower())
+    if sail_clean and class_id:
+        for c in db.boats.find({"class_id": class_id, "id": {"$ne": skip_id}},
+                                {"_id": 0, "fleet_id": 1, "id": 1, "fleet_key": 1,
+                                 "sail_no": 1}):
+            if re.sub(r"[^a-z0-9]", "", (c.get("sail_no") or "").lower()) == sail_clean:
+                return (c.get("fleet_id") or c["id"]), (c.get("fleet_key") or key)
+    return None, key
 
 
 def a5_flags(convention):
@@ -134,7 +189,17 @@ def a5_flags(convention):
 
 def build_race(class_id, sid, year, date, race_num, placings, boat_by_prefix,
                entries_count, default_start):
-    """One published race. Every fleet boat appears; absent runners are DNC."""
+    """One published race. Every fleet boat appears; absent runners are DNC.
+
+    Each placing is one of:
+      - an int                 : a finishing position (code FINISHED)
+      - a code string          : "DNF", "RET", "DNS", "OCS", "UFD", "DNC", ...
+      - [code, points]         : the code with an explicit committee score
+                                 (e.g. ["ZFP", 0] or ["RDG", 11]) — stored as
+                                 penalty_points so the engine honours it
+      - ["FINISHED", pos, pts]: a finishing position with explicit points
+                                 (a published place-plus-penalty score)
+    """
     results = []
     for prefix, bid in boat_by_prefix.items():
         v = placings.get(prefix)
@@ -145,8 +210,17 @@ def build_race(class_id, sid, year, date, race_num, placings, boat_by_prefix,
             results.append({"boat_id": bid, "code": "FINISHED",
                             "finish_time": f"{date}T{10 + v // 60:02d}:{30 + v:02d}:00+00:00",
                             "position": v, "penalty_points": 0})
-        elif isinstance(v, (list, tuple)) and v and v[0] == "RDG":
-            results.append({"boat_id": bid, "code": "RDG", "finish_time": None,
+        elif isinstance(v, (list, tuple)) and v and v[0] == "FINISHED":
+            # A finishing position with explicit points (a published
+            # place-plus-penalty score): the engine scores position +
+            # penalty_points, so the stored penalty is the points difference.
+            pos = int(v[1])
+            pts = float(v[2]) if len(v) > 2 and v[2] is not None else float(pos)
+            results.append({"boat_id": bid, "code": "FINISHED",
+                            "finish_time": f"{date}T{10 + pos // 60:02d}:{30 + pos:02d}:00+00:00",
+                            "position": pos, "penalty_points": pts - pos})
+        elif isinstance(v, (list, tuple)) and v:
+            results.append({"boat_id": bid, "code": str(v[0]), "finish_time": None,
                             "position": None, "penalty_points": float(v[1])})
         else:
             results.append({"boat_id": bid, "code": str(v), "finish_time": None,
@@ -159,6 +233,21 @@ def build_race(class_id, sid, year, date, race_num, placings, boat_by_prefix,
         "status": "published", "entries_count": entries_count, "results": results,
         "created_at": now_iso(), "published_at": now_iso(), "version": 1,
     }
+
+
+def iter_races(races):
+    """Yield (date, race_number, placings) from either the dict form
+    {date: placings} (numbers 1..n in insertion order) or the list form
+    [{date, number?, placings}, ...] (explicit numbers, for multi-race days)."""
+    if isinstance(races, list):
+        for i, item in enumerate(races, start=1):
+            date = item.get("date")
+            if not date:
+                raise ValueError(f"Race entry missing 'date': {item!r}")
+            yield date, int(item.get("number") or i), item.get("placings") or {}
+    else:
+        for n, (date, placings) in enumerate((races or {}).items(), start=1):
+            yield date, n, placings
 
 
 def main() -> int:
@@ -221,10 +310,9 @@ def main() -> int:
         })
         # Replace this series' races cleanly.
         db.races.delete_many({"series_id": sid})
-        races = s.get("races") or {}
-        docs = [build_race(cls["id"], sid, year, date, n, placings,
+        docs = [build_race(cls["id"], sid, year, date, race_no, placings,
                            boat_by_prefix, entries_count, default_start)
-                for n, (date, placings) in enumerate(races.items(), start=1)]
+                for _, (date, race_no, placings) in enumerate(iter_races(s.get("races")))]
         if docs:
             db.races.insert_many(docs)
         total_races += len(docs)
