@@ -1,5 +1,5 @@
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -21,10 +21,15 @@ import Webmaster from "@/pages/Webmaster";
 
 function Protected({ children, allow }) {
   const { role } = useAuth();
+  const location = useLocation();
   if (role === undefined) {
     return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
   }
-  if (!allow.includes(role)) return <Navigate to="/login" replace />;
+  if (!allow.includes(role)) {
+    // Preserve where the visitor was headed so the login page can return them
+    // there after a successful sign-in (see Login.jsx canReturnTo).
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
   return children;
 }
 

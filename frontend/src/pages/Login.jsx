@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { useNavigate, Link, useSearchParams, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import ThemeToggle from "@/components/ThemeToggle";
 import { api, formatApiError } from "@/lib/api";
@@ -14,7 +14,13 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 export default function Login() {
   const { login, login2fa } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
+  // Destination preserved when a protected page bounced the visitor here
+  // (state.from from the Protected guard, or ?from= from the api client's
+  // session-expiry redirect). After login we return them there — but only
+  // when their account can actually access that page.
+  const returnTo = location.state?.from || searchParams.get("from");
   const [clubs, setClubs] = useState([]);
   const [clubId, setClubId] = useState("");
   const [username, setUsername] = useState("");
@@ -77,6 +83,23 @@ export default function Login() {
 
   const selectedClub = clubs.find((c) => c.id === clubId);
 
+  // Only ever return a user to a destination their role can access — otherwise
+  // they would be bounced straight back to the login page. Consoles map to the
+  // roles allowed in App.js's Protected guard.
+  const canReturnTo = (dest, role) => {
+    if (!dest) return false;
+    const path = String(dest).split("?")[0].split("#")[0];
+    const allowed = {
+      "/webmaster": ["webmaster"],
+      "/admin": ["admin", "webmaster"],
+      "/officer": ["officer", "admin", "webmaster"],
+      "/notice/new": ["officer", "admin", "webmaster"],
+    };
+    return (allowed[path] || []).includes(role);
+  };
+  const roleDefault = (role) =>
+    role === "webmaster" ? "/webmaster" : role === "admin" ? "/admin" : "/officer";
+
   // One form for everyone: typing the webmaster username switches the club
   // picker off and routes the sign-in to the webmaster account. `role` sent to
   // the server is only a routing hint — the account's own role is authoritative.
@@ -95,13 +118,8 @@ export default function Login() {
         setOtpSent(false);
         return;
       }
-      if (r.role === "webmaster") {
-        toast.success("Signed in as Webmaster");
-        navigate("/webmaster");
-      } else {
-        toast.success(`Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
-        navigate(r.role === "admin" ? "/admin" : "/officer");
-      }
+      toast.success(r.role === "webmaster" ? "Signed in as Webmaster" : `Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
+      navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Login failed");
     } finally {
@@ -115,13 +133,8 @@ export default function Login() {
     setLoading(true);
     try {
       const r = await login2fa(otpMethod, otpCode.trim());
-      if (r.role === "webmaster") {
-        toast.success("Signed in as Webmaster");
-        navigate("/webmaster");
-      } else {
-        toast.success(`Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
-        navigate(r.role === "admin" ? "/admin" : "/officer");
-      }
+      toast.success(r.role === "webmaster" ? "Signed in as Webmaster" : `Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
+      navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Invalid verification code");
       setOtpCode("");

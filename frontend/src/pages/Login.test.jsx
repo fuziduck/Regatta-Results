@@ -10,14 +10,20 @@ import { createRoot } from "react-dom/client";
 // the mock's own require) and the api module builds its mocks internally.
 const mockAuth = { login: jest.fn(), login2fa: jest.fn() };
 const mockNavigate = jest.fn();
+// Lazy holders so tests can drive the preserved-destination behaviour: the
+// router state (from the Protected guard) and the ?from= query param (from
+// the api client's session-expiry redirect).
+const mockLocation = { state: null };
+const mockSearchParams = new URLSearchParams();
 
 jest.mock("@/context/AuthContext", () => ({
   useAuth: () => mockAuth,
 }));
 jest.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
+  useLocation: () => mockLocation,
   Link: ({ to, children, ...rest }) => <a href={to} {...rest}>{children}</a>,
-  useSearchParams: () => [new URLSearchParams(), jest.fn()],
+  useSearchParams: () => [mockSearchParams, jest.fn()],
 }));
 // react-scripts sets resetMocks:true, so any implementation attached at
 // factory-creation time is wiped before the first test — implementations must
@@ -70,6 +76,8 @@ const renderLogin = () => {
 beforeEach(() => {
   mockApi.getClubs.mockResolvedValue([]);
   mockApi.sendEmailCode.mockResolvedValue({ ok: true });
+  mockLocation.state = null;
+  mockSearchParams.delete("from");
 });
 
 afterEach(async () => {
@@ -193,5 +201,45 @@ describe("two-step webmaster login", () => {
     act(() => setNativeValue(hidden, "123456"));
     await submitPasscode();
     expect(mockNavigate).toHaveBeenCalledWith("/admin");
+  });
+});
+
+describe("return to preserved destination after login", () => {
+  it("returns to the page the visitor was headed to when the role can access it", async () => {
+    mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "club", name: "Club" }]);
+    mockLocation.state = { from: "/admin?tab=boats" };
+    mockAuth.login.mockResolvedValue({ role: "admin", club_id: "c1", club_name: "Club" });
+    renderLogin();
+    await act(async () => {}); // flush the clubs fetch so clubId is set
+    typeUsername("admin@club.org");
+    act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "test1234!"));
+    await submitPasscode();
+    expect(mockNavigate).toHaveBeenCalledWith("/admin?tab=boats");
+  });
+
+  it("falls back to the role console when the preserved destination is not accessible", async () => {
+    mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "club", name: "Club" }]);
+    // An officer bounced off /admin must not be sent back there (the guard
+    // would reject them again) — land on /officer instead.
+    mockLocation.state = { from: "/admin" };
+    mockAuth.login.mockResolvedValue({ role: "officer", club_id: "c1", club_name: "Club" });
+    renderLogin();
+    await act(async () => {});
+    typeUsername("officer@club.org");
+    act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "test1234!"));
+    await submitPasscode();
+    expect(mockNavigate).toHaveBeenCalledWith("/officer");
+  });
+
+  it("honours the ?from= query param from a session-expiry redirect", async () => {
+    mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "club", name: "Club" }]);
+    mockSearchParams.set("from", "/officer");
+    mockAuth.login.mockResolvedValue({ role: "officer", club_id: "c1", club_name: "Club" });
+    renderLogin();
+    await act(async () => {});
+    typeUsername("officer@club.org");
+    act(() => setNativeValue(container.querySelector('[data-testid="pin-input"]'), "test1234!"));
+    await submitPasscode();
+    expect(mockNavigate).toHaveBeenCalledWith("/officer");
   });
 });

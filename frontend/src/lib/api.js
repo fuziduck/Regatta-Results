@@ -11,19 +11,39 @@ const client = axios.create({ baseURL: API, withCredentials: true });
 // missing, expired, or was invalidated server-side (passcode reset, role
 // change, or logout on another tab). Instead of surfacing a cryptic per-action
 // "Not authenticated" error (e.g. when recalling a result), redirect the user
-// back to the sign-in page so they can resume. Skips the login page itself to
-// avoid a redirect loop, and is disabled under test (jsdom has no navigation).
+// back to the sign-in page so they can resume.
+//
+// The redirect is scoped to PROTECTED pages only. Public routes (the homepage,
+// club/class/series results, notice boards, boats) never redirect on 401 — an
+// anonymous visitor's very first call (/auth/me) is unauth'd by design and must
+// not bounce the whole site to the login page. When a protected page's session
+// dies we carry the destination along (?from=) so the sign-in page can return
+// the user to where they were. The login page itself is skipped to avoid a
+// redirect loop. Disabled under test (jsdom has no navigation).
 // NB: only reference process.env.NODE_ENV (never the bare `process` global) —
 // CRA statically replaces it via DefinePlugin at build time, so this works in
 // the browser where no runtime `process` object exists.
+// NB: the homepage (exact "/") is matched explicitly below — a bare "/"
+// prefix would match every path via startsWith. These are prefixes only.
+const PUBLIC_ROUTE_PREFIXES = [
+  "/login", "/forgot-password", "/reset-password",
+  "/boats", "/boat/", "/club/", "/subscriptions/",
+];
+
+export function isPublicRoute(pathname) {
+  if (pathname === "/") return true;
+  return PUBLIC_ROUTE_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
 if (process.env.NODE_ENV !== "test") {
   client.interceptors.response.use(
     (resp) => resp,
     (error) => {
       if (error?.response?.status === 401
           && typeof window !== "undefined"
-          && window.location.pathname !== "/login") {
-        window.location.href = "/login?reason=session";
+          && !isPublicRoute(window.location.pathname)) {
+        const from = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/login?reason=session&from=${from}`;
       }
       return Promise.reject(error);
     }

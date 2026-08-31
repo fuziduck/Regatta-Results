@@ -1446,9 +1446,11 @@ export default function Admin() {
   }, []);
 
   // Club staff already have a scoped club in their session. Webmasters must
-  // choose a club before the console can load club-scoped data.
+  // choose a club before the console can load club-scoped data — the ClubPicker
+  // branch below handles that, so the console is "ready" once the role is known
+  // (a webmaster without ?club= should see the picker, not a loading spinner).
   const clubId = isWebmaster ? (clubParam || null) : authClubId;
-  const readyForClub = role !== undefined && role !== null && (!isWebmaster || !!clubParam) && (isWebmaster || !!authClubId);
+  const readyForClub = role !== undefined && role !== null && (isWebmaster || !!authClubId);
   const clubName = isWebmaster
     ? (clubs.find((c) => c.id === clubParam)?.name || null)
     : (authClubName || null);
