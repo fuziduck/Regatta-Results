@@ -120,11 +120,13 @@ describe("exportSeriesPdf cell styling", () => {
     expect(cell.styles.textColor).toBeUndefined();
   });
 
-  it("leaves non-race columns (rank/net) untouched", () => {
-    const col = 3 + 3; // the Net column
-    const cell = styleFor("10", col);
-    expect(cell.text).toEqual([]);
-    expect(cell.styles).toEqual({});
+  it("leaves non-race columns (rank/total/net) untouched", () => {
+    // The fixture has 3 race columns; Total then Net follow them.
+    for (const col of [3 + 3, 4 + 3]) {
+      const cell = styleFor("10", col);
+      expect(cell.text).toEqual([]);
+      expect(cell.styles).toEqual({});
+    }
   });
 
   it("leaves empty TBC cells untouched", () => {

@@ -116,8 +116,8 @@ const PODIUM_CELL = {
               </TableHead>
             ))}
             {miniCombined && <TableHead className="text-white text-center">Daily avg</TableHead>}
+            <TableHead className="text-white text-center">Total</TableHead>
             <TableHead className="text-white text-center">Net</TableHead>
-            <TableHead className="text-white text-center hidden sm:table-cell">Total</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -163,8 +163,8 @@ const PODIUM_CELL = {
                   {row.combined_average != null ? row.combined_average : "–"}
                 </TableCell>
               )}
-              <TableCell className="text-center font-mono font-bold text-ocean">{row.net}</TableCell>
-              <TableCell className="text-center font-mono text-muted-foreground hidden sm:table-cell">{row.total}</TableCell>
+              <TableCell className="text-center font-mono font-bold text-ocean">{row.total}</TableCell>
+              <TableCell className="text-center font-mono text-muted-foreground">{row.net}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -203,6 +203,7 @@ export function OverallStandingsTable({ data }) {
               <TableHead key={s} className="text-white text-center hidden md:table-cell whitespace-nowrap">{s}</TableHead>
             ))}
             <TableHead className="text-white text-center">Total</TableHead>
+            <TableHead className="text-white text-center">Net</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -225,7 +226,8 @@ export function OverallStandingsTable({ data }) {
                   {row.per_series[s] ?? "—"}
                 </TableCell>
               ))}
-              <TableCell className="text-center font-mono font-bold text-ocean text-lg">{row.net}</TableCell>
+              <TableCell className="text-center font-mono font-bold text-ocean text-lg">{row.total}</TableCell>
+              <TableCell className="text-center font-mono text-muted-foreground text-lg">{row.net}</TableCell>
             </TableRow>
           ))}
         </TableBody>

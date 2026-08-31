@@ -5510,6 +5510,7 @@ async def compute_overall_standings(class_id: str, year: int):
     club_name = await _club_name_of_class(class_id)
     boat_map = {b["id"]: b for b in boats}
     totals = {}
+    totals_gross = {}
     per_series_nets = {}
     series_names = []
     # A boat that never signed onto a series scores DNC in EVERY race of that
@@ -5559,7 +5560,12 @@ async def compute_overall_standings(class_id: str, year: int):
         pos = use_position[name]
         for row in result["standings"]:
             net = row["rank"] if pos else row["net"]
+            # Gross companion for display: the series' points BEFORE its
+            # discards were applied (combined mini-series days score by
+            # finishing position, so their gross equals the net contribution).
+            gross = row["rank"] if pos else row.get("total", row["net"])
             totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + net
+            totals_gross[row["boat_id"]] = totals_gross.get(row["boat_id"], 0.0) + gross
             per_series_nets.setdefault(row["boat_id"], {})[name] = net
         # Boats that never raced this series score its DNC net (DNC in every
         # race, discards applied) so they sink below everyone who sailed it.
@@ -5570,6 +5576,7 @@ async def compute_overall_standings(class_id: str, year: int):
                     continue
                 dnc = dnc_series_net[name] if not pos else (len(result["standings"]) + 1)
                 totals[bid] = totals.get(bid, 0.0) + dnc
+                totals_gross[bid] = totals_gross.get(bid, 0.0) + dnc
                 per_series_nets.setdefault(bid, {})[name] = dnc
     rows = []
     for bid, total in totals.items():
@@ -5589,6 +5596,7 @@ async def compute_overall_standings(class_id: str, year: int):
             "helm": b["helm"],
             "home_club": b.get("home_club") or club_name,
             "net": round(total, 1),
+            "total": round(totals_gross.get(bid, total), 1),
             "per_series": {k: round(v, 1) for k, v in per_series_nets[bid].items()},
             "_tb": (a8_1, a8_2),
         })
@@ -5837,7 +5845,8 @@ async def fleet_profile(fleet_id: str):
         if row:
             overall.append({"class_id": s.get("class_id"), "class_name": s["class_name"],
                             "club_name": s["club_name"], "club_slug": s.get("club_slug"),
-                            "year": s["year"], "rank": row.get("rank"), "net": row.get("net")})
+                            "year": s["year"], "rank": row.get("rank"),
+                            "net": row.get("net"), "total": row.get("total")})
     overall.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
     primary = min(members, key=lambda m: m.get("created_at") or "")
     records = []

@@ -118,6 +118,7 @@ export default function Boat() {
                     <th className="py-2.5 px-4 font-semibold">Class</th>
                     <th className="py-2.5 px-4 font-semibold">Year</th>
                     <th className="py-2.5 px-4 font-semibold text-center">Position</th>
+                    <th className="py-2.5 px-4 font-semibold text-center">Total</th>
                     <th className="py-2.5 px-4 font-semibold text-center">Net</th>
                   </tr>
                 </thead>
@@ -138,7 +139,8 @@ export default function Boat() {
                         <td className="py-2 px-4">{o.class_name}</td>
                         <td className="py-2 px-4">{o.year}</td>
                         <td className="py-2 px-4 text-center font-heading text-base">{o.rank}</td>
-                        <td className="py-2 px-4 text-center font-mono font-bold text-ocean dark:text-ocean-light">{o.net}</td>
+                        <td className="py-2 px-4 text-center font-mono font-bold text-ocean dark:text-ocean-light">{o.total}</td>
+                        <td className="py-2 px-4 text-center font-mono text-muted-foreground">{o.net}</td>
                       </tr>
                     );
                   })}
