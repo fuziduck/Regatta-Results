@@ -235,9 +235,9 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
   autoTable(doc, {
     startY: 94,
     margin: { top: 94, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
-    head: [["#", "Boat", "Club", ...data.series_names, "Total", "Net"]],
+    head: [["Pos", "Boat", "Club", ...data.series_names, "Total", "Net"]],
     body: data.standings.map((row) => [
-      String(row.rank),
+      `${row.rank} / ${row.entries ?? data.entries ?? "–"}`,
       `${row.boat_name}\n${row.sail_no} · ${row.helm}`,
       row.home_club || "—",
       ...data.series_names.map((s) => (row.per_series?.[s] ?? "—")),
@@ -248,8 +248,8 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
     headStyles: { fillColor: OCEAN, fontSize: 8.5, halign: "center" },
     styles: { fontSize: 8.5, cellPadding: 4, valign: "middle" },
     columnStyles: {
-      0: { cellWidth: 30, halign: "center", fontStyle: "bold" },
-      1: { cellWidth: 150 },
+      0: { cellWidth: 42, halign: "center", fontStyle: "bold" },
+      1: { cellWidth: 145 },
       2: { cellWidth: 90 },
       ...Object.fromEntries(data.series_names.map((_, j) => [j + 3, { halign: "center" }])),
       [3 + data.series_names.length]: { cellWidth: 45, halign: "center", fontStyle: "bold" },

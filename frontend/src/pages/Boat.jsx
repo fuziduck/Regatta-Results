@@ -138,7 +138,7 @@ export default function Boat() {
                         <td className="py-2 px-4">{o.club_name}</td>
                         <td className="py-2 px-4">{o.class_name}</td>
                         <td className="py-2 px-4">{o.year}</td>
-                        <td className="py-2 px-4 text-center font-heading text-base">{o.rank}</td>
+                        <td className="py-2 px-4 text-center font-heading text-base whitespace-nowrap">{o.rank}<span className="text-muted-foreground font-normal text-sm"> / {o.entries ?? "–"}</span></td>
                         <td className="py-2 px-4 text-center font-mono font-bold text-ocean dark:text-ocean-light">{o.total}</td>
                         <td className="py-2 px-4 text-center font-mono text-muted-foreground">{o.net}</td>
                       </tr>

@@ -211,7 +211,8 @@ export function OverallStandingsTable({ data }) {
             <TableRow key={row.boat_id} className={i % 2 ? "bg-muted hover:bg-muted" : "bg-card hover:bg-muted"} data-testid={`overall-row-${row.sail_no}`}>
               <TableCell className="font-heading text-lg sticky left-0 z-20 bg-inherit">
                 <span className={`inline-flex items-center gap-1 ${medal(row.rank)}`}>
-                  {row.rank <= 3 && <Trophy className="w-4 h-4" />} {row.rank}
+                  {row.rank <= 3 && <Trophy className="w-4 h-4" />}
+                  <span className="whitespace-nowrap">{row.rank}<span className="text-muted-foreground text-sm font-normal"> / {row.entries ?? data.entries ?? "–"}</span></span>
                 </span>
               </TableCell>
               <TableCell className={`sticky z-10 bg-inherit${shouldWrapBoatName(row.boat_name) ? " max-w-52" : ""}`} style={{ left: "var(--rank-w, 3rem)" }}>

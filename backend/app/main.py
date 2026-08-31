@@ -5800,7 +5800,12 @@ async def compute_overall_standings(class_id: str, year: int):
     for i, r in enumerate(rows):
         r["rank"] = i + 1
         r.pop("_tb", None)
-    return {"series_names": series_names, "standings": rows}
+    # The championship's field: every scored boat (including those that sat
+    # every series out and scored DNC). Positions are shown as "rank / entries"
+    # so the size of the fleet is visible beside each boat's placing.
+    for r in rows:
+        r["entries"] = len(rows)
+    return {"series_names": series_names, "standings": rows, "entries": len(rows)}
 
 
 @api_router.get("/standings/overall")
@@ -6042,6 +6047,7 @@ async def fleet_profile(fleet_id: str):
             overall.append({"class_id": s.get("class_id"), "class_name": s["class_name"],
                             "club_name": s["club_name"], "club_slug": s.get("club_slug"),
                             "year": s["year"], "rank": row.get("rank"),
+                            "entries": len(payload.get("standings", [])),
                             "net": row.get("net"), "total": row.get("total")})
     overall.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
     primary = min(members, key=lambda m: m.get("created_at") or "")
