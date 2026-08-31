@@ -1,6 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Body
 from dotenv import load_dotenv
-from fastapi.responses import JSONResponse, Response, HTMLResponse
+from fastapi.responses import JSONResponse, Response, HTMLResponse, StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -14,7 +14,9 @@ import html as html_lib
 import time
 import hashlib
 import secrets
+import shutil
 import smtplib
+import tempfile
 import zipfile
 from collections import defaultdict, deque
 from email.message import EmailMessage
@@ -3931,14 +3933,18 @@ def _aes_decrypt(key: bytes, blob: bytes) -> bytes:
     return AESGCM(key).decrypt(nonce, ct, None)
 
 
-def _strip_backup_secrets(doc: dict, keep_passcode_hash: bool = False) -> dict:
+def _strip_backup_secrets(doc: dict, keep_credentials: bool = False) -> dict:
     """Remove credential/security fields from a document before export. With
-    keep_passcode_hash (encrypted backups only) the salted bcrypt passcode
-    hash is retained so a restore carries users' sign-in passcodes; the hash
-    is never included in a plaintext backup."""
+    keep_credentials (encrypted backups only) the salted bcrypt passcode
+    hash, any TOTP 2FA secret and the account email are retained so a restore
+    carries users' sign-in credentials across with no manual resets; they are
+    never included in a plaintext backup. Reset tokens, revocation counters
+    and lockout state are always stripped (a restored account must never come
+    back locked out or with stale reset tokens)."""
     keys = set(BACKUP_SECRET_KEYS)
-    if keep_passcode_hash:
-        keys.discard("passcode_hash")
+    if keep_credentials:
+        for k in ("passcode_hash", "totp_secret_enc", "totp_enabled", "email"):
+            keys.discard(k)
     return {k: v for k, v in doc.items() if k not in keys and k != "_id"}
 
 
@@ -3975,12 +3981,39 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     boats = await db.boats.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     series = await db.series.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     races = await db.races.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
-    # Adverts are GLOBAL (webmaster-managed, no club_id) — they are never part
-    # of a club-scoped backup. Only the webmaster's full-system backup (no
-    # scope) includes them; a club admin can never obtain another club's (or
-    # any global) advert data this way.
+    series_ids = [s["id"] for s in series]
+    # Adverts and settings are GLOBAL (webmaster-managed, no club_id) — they
+    # are never part of a club-scoped backup. Only the webmaster's full-system
+    # backup (no scope) includes them; a club admin can never obtain another
+    # club's (or any global) advert/settings data this way.
     adverts = await db.adverts.find({}, {"_id": 0}).to_list(5000) if not scope_club_id else []
+    settings = await db.settings.find({}, {"_id": 0}).to_list(1000) if not scope_club_id else []
     audit_logs = await db.audit_logs.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(20000)
+    # Official Notice Board + subscriptions: every document carries its club,
+    # so a club backup carries exactly that club's notices (with their
+    # embedded PDF/data-URL attachments), boards, sections, subscriptions and
+    # delivery records. Frozen season snapshots are scoped by series.
+    if scope_club_id:
+        boards = await db.notice_boards.find({"club_id": scope_club_id}, {"_id": 0}).to_list(5000)
+        board_ids = [b["id"] for b in boards]
+        subs = await db.subscriptions.find({"club_id": scope_club_id}, {"_id": 0}).to_list(20000)
+        sub_ids = [s["id"] for s in subs]
+        notices = await db.notices.find({"club_id": scope_club_id}, {"_id": 0}).to_list(20000)
+        notice_sections = (await db.notice_sections.find(
+            {"board_id": {"$in": board_ids}}, {"_id": 0}).to_list(50000) if board_ids else [])
+        subscriptions = subs
+        subscription_deliveries = (await db.subscription_deliveries.find(
+            {"subscription_id": {"$in": sub_ids}}, {"_id": 0}).to_list(50000) if sub_ids else [])
+        season_snapshots = (await db.season_snapshots.find(
+            {"series_id": {"$in": series_ids}}, {"_id": 0}).to_list(20000) if series_ids else [])
+    else:
+        boards = await db.notice_boards.find({}, {"_id": 0}).to_list(5000)
+        board_ids = [b["id"] for b in boards]
+        notices = await db.notices.find({}, {"_id": 0}).to_list(50000)
+        notice_sections = await db.notice_sections.find({}, {"_id": 0}).to_list(50000)
+        subscriptions = await db.subscriptions.find({}, {"_id": 0}).to_list(50000)
+        subscription_deliveries = await db.subscription_deliveries.find({}, {"_id": 0}).to_list(50000)
+        season_snapshots = await db.season_snapshots.find({}, {"_id": 0}).to_list(50000)
     results = []
     for r in races:
         for res in r.get("results", []):
@@ -4004,13 +4037,20 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
         for name, payload in (
             ("metadata.json", meta),
             ("clubs.json", clubs),
-            ("users.json", [_strip_backup_secrets(u, keep_passcode_hash=encrypted) for u in users]),
+            ("users.json", [_strip_backup_secrets(u, keep_credentials=encrypted) for u in users]),
             ("classes.json", classes),
             ("boats.json", boats),
             ("series.json", series),
             ("races.json", races),
             ("results.json", results),
+            ("season_snapshots.json", season_snapshots),
+            ("notices.json", notices),
+            ("notice_boards.json", boards),
+            ("notice_sections.json", notice_sections),
+            ("subscriptions.json", subscriptions),
+            ("subscription_deliveries.json", subscription_deliveries),
             ("adverts.json", adverts),
+            ("settings.json", settings),
             ("audit_logs.json", audit_logs),
         ):
             blob = json.dumps(payload, indent=2, default=str).encode("utf-8")
@@ -4086,36 +4126,63 @@ async def club_backup_post(request: Request,
 # ---------------------------------------------------------------------------
 # Backup / restore (webmaster only)
 # ---------------------------------------------------------------------------
-# Collections included in a backup (insertion order matters for
-# referential consistency — clubs first, then users, etc.).
+# Collections included in a backup. Insertion order matters for referential
+# consistency — parents before children: clubs → users → classes → boats →
+# series → races → season snapshots → notices → notice boards → notice
+# sections → subscriptions → subscription deliveries → adverts → audit log →
+# settings. A club-scoped backup omits the GLOBAL collections (adverts,
+# settings); everything else is filtered to that club. A full-system backup
+# carries every collection, so it is a complete logical image of the server
+# (the mongodump "full image" endpoint is the byte-exact equivalent).
 BACKUP_COLLECTIONS = (
     "clubs", "users", "classes", "boats", "series", "races",
-    "adverts",
+    "season_snapshots", "notices", "notice_boards", "notice_sections",
+    "subscriptions", "subscription_deliveries",
+    "adverts", "audit_logs", "settings",
 )
 
+# Collections that are GLOBAL (no club_id): never part of a club backup.
+_BACKUP_GLOBAL_COLLECTIONS = ("adverts", "settings")
 
-@api_router.post("/admin/backup/restore")
-async def restore_backup(request: Request, file: UploadFile = File(...),
-                         passphrase: str = Form(""),
-                         user: dict = Depends(require_webmaster)):
-    """Webmaster only: restore data from a backup ZIP.
 
-    Full-system backups (scope=all-clubs) replace every collection.
-    Club backups (scope=club) replace only that club's data — other clubs,
-    global adverts and global users are untouched.
+async def _ensure_restored_webmaster(encrypted: bool) -> None:
+    """Guarantee a working webmaster account after a FULL-SYSTEM restore, so
+    a lost server can never be locked out of its own console.
 
-    Security fields (passcode_hash, reset tokens, lockout state) are
-    stripped from imported user records so a leaked backup cannot inject
-    credentials.
-    """
-    if not file.filename or not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400,
-                            detail="Backup file must be a .zip archive")
-    raw = await file.read()
-    if len(raw) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=400,
-                            detail="Backup file too large (50 MB max)")
+    Encrypted backups carry the passcode hash (+ 2FA secret and email), so
+    the original credentials survive verbatim. A plaintext backup cannot
+    carry credential material, so the account falls back to the server's
+    WEBMASTER_PASSCODE env value (required in production). If no webmaster
+    exists at all it is bootstrapped like a fresh install."""
+    wm = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
+    if wm:
+        if wm.get("passcode_hash"):
+            return
+        if WEBMASTER_PASSCODE:
+            await db.users.update_one(
+                {"id": wm["id"]},
+                {"$set": {"passcode_hash": hash_passcode(WEBMASTER_PASSCODE),
+                           "active": True, "failed_attempts": 0,
+                           "locked_until": None}})
+            logger.info("BACKUP RESTORE webmaster passcode reset from WEBMASTER_PASSCODE "
+                        "(backup carried no passcode hash)")
+        return
+    if WEBMASTER_PASSCODE:
+        await db.users.insert_one({
+            "id": new_id(), "club_id": None, "role": "webmaster",
+            "username": "webmaster", "name": "Webmaster",
+            "passcode_hash": hash_passcode(WEBMASTER_PASSCODE),
+            "active": True, "created_by": "system", "created_at": now_iso(),
+            "failed_attempts": 0, "token_version": 0,
+        })
+        logger.info("BACKUP RESTORE webmaster account bootstrapped from WEBMASTER_PASSCODE")
 
+
+async def _restore_zip_core(raw: bytes, passphrase: str) -> dict:
+    """Shared zip-restore core (no auth, no audit): validate the archive,
+    decrypt it if needed, and wipe/restore the collections it contains.
+    Raises HTTPException on invalid/mismatched archives; returns the same
+    summary the webmaster endpoint returns, plus ``encrypted``."""
     # Parse the zip and validate it looks like a valid backup. Backups are
     # normally flat (the JSON exports sit at the archive root), but a zip made
     # by re-compressing an extracted folder nests them one level deep — accept
@@ -4145,9 +4212,9 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
                             detail=f"Unrecognised backup scope: {scope}")
 
     # Encrypted backups carry the per-entry AES payloads plus the KDF salt in
-    # metadata.json. Decrypt with the passphrase supplied in the request (or,
-    # failing that, the server's BACKUP_PASSPHRASE) — the same value that was
-    # used to create the backup.
+    # metadata.json. Decrypt with the passphrase supplied (or, failing that,
+    # the server's BACKUP_PASSPHRASE) — the same value that was used to create
+    # the backup.
     encrypted = bool(meta.get("encrypted"))
     key = None
     if encrypted:
@@ -4189,7 +4256,20 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
     restored = []
     errors = []
 
+    # Scoping keys for the club-restore delete step, read once from the
+    # backup's own contents so a re-restore REPLACES the club's data (a
+    # club_id filter would match nothing on collections that carry only
+    # class_id/series_id/board_id/subscription_id).
+    backup_class_ids = {c["id"] for c in read_json(zp("classes.json"))}
+    backup_series_ids = {s["id"] for s in read_json(zp("series.json"))}
+    backup_board_ids = {b["id"] for b in read_json(zp("notice_boards.json"))}
+    backup_sub_ids = {s["id"] for s in read_json(zp("subscriptions.json"))}
+
     for coll_name in BACKUP_COLLECTIONS:
+        # Adverts/settings are global and never written into a club backup —
+        # skip them silently for club restores rather than reporting noise.
+        if scope == "club" and coll_name in _BACKUP_GLOBAL_COLLECTIONS:
+            continue
         fname = zp(f"{coll_name}.json")
         if fname not in names:
             errors.append(f"{coll_name}: not in backup (skipped)")
@@ -4219,61 +4299,163 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
                     await db.clubs.insert_one(docs[0])
             elif coll_name == "users":
                 # Replace only users belonging to this club (keep the
-                # webmaster and users of other clubs intact). Passcode hashes
-                # are only present in (and kept from) encrypted backups, so a
+                # webmaster and users of other clubs intact). Credentials are
+                # only present in (and kept from) encrypted backups, so a
                 # restore carries sign-in passcodes without manual resets.
                 await db.users.delete_many({"club_id": scope_club_id})
                 if docs:
-                    cleaned = [_strip_backup_secrets(u, keep_passcode_hash=encrypted) for u in docs]
+                    cleaned = [_strip_backup_secrets(u, keep_credentials=encrypted) for u in docs]
                     await db.users.insert_many(cleaned, ordered=False)
-            elif coll_name == "adverts":
-                # Adverts are global — only restore if this is a full backup.
-                errors.append("adverts: global collection (skipped for club restore)")
-                continue
             elif coll_name == "audit_logs":
-                # Audit logs are append-only; insert without removing existing.
+                # Replace the club's audit log with the backup's records.
+                await db.audit_logs.delete_many({"club_id": scope_club_id})
                 if docs:
                     await db.audit_logs.insert_many(docs, ordered=False)
+            elif coll_name == "classes":
+                await db.classes.delete_many({"club_id": scope_club_id})
+                if docs:
+                    await db.classes.insert_many(docs, ordered=False)
             else:
-                # Class-scoped collections: delete existing, then insert.
-                if coll_name == "classes":
-                    await db.classes.delete_many({"club_id": scope_club_id})
-                else:
-                    # Boats/series/races are scoped by class_id, not club_id
-                    # (only classes carry club_id). Classes were already
-                    # replaced above, so use the backup's class list to
-                    # identify the club's existing racing data — a club_id
-                    # filter would match nothing on these collections and
-                    # silently append duplicates (with unique-index
-                    # conflicts) instead of replacing the club's data.
-                    backup_class_ids = {c["id"] for c in
-                                         read_json(zp("classes.json"))}
-                    await db[coll_name].delete_many(
-                        {"class_id": {"$in": list(backup_class_ids)}})
+                # Races/series/boats are scoped by class_id; season snapshots
+                # by series_id; notice sections by board_id; subscription
+                # deliveries by subscription_id — only classes and notices/
+                # boards/subscriptions carry club_id directly. Delete by the
+                # backup's ids so the club's existing data is replaced, then
+                # insert the backup's documents.
+                if coll_name in ("boats", "series", "races"):
+                    del_q = {"class_id": {"$in": list(backup_class_ids)}}
+                elif coll_name == "season_snapshots":
+                    del_q = {"series_id": {"$in": list(backup_series_ids)}}
+                elif coll_name == "notice_sections":
+                    del_q = {"board_id": {"$in": list(backup_board_ids)}}
+                elif coll_name == "subscription_deliveries":
+                    del_q = {"subscription_id": {"$in": list(backup_sub_ids)}}
+                else:  # notices, notice_boards, subscriptions
+                    del_q = {"club_id": scope_club_id}
+                await db[coll_name].delete_many(del_q)
                 if docs:
                     await db[coll_name].insert_many(docs, ordered=False)
 
         restored.append(coll_name)
-
-    # Log the restore action.
-    scope_label = "full system" if scope == "all-clubs" else f"club {scope_club_id}"
-    desc = (f"{user.get('username')} restored {scope_label} from backup "
-            f"({meta.get('exported_at', '?')})")
-    await _log_audit(request=request, user=user, action="BACKUP_RESTORE",
-                     description=desc, resource_type="backup",
-                     resource_id=scope_club_id or "all",
-                     club_id=scope_club_id)
-    logger.info("BACKUP RESTORE scope=%s by=%s ip=%s", scope_club_id or "all",
-                user.get("username"), _client_ip(request))
 
     return {
         "scope": scope,
         "club_id": scope_club_id,
         "restored": restored,
         "errors": errors,
+        "encrypted": encrypted,
         "backup_exported_at": meta.get("exported_at"),
         "backup_generated_by": meta.get("generated_by"),
     }
+
+
+@api_router.post("/admin/backup/restore")
+async def restore_backup(request: Request, file: UploadFile = File(...),
+                         passphrase: str = Form(""),
+                         user: dict = Depends(require_webmaster)):
+    """Webmaster only: restore data from a backup ZIP.
+
+    Full-system backups (scope=all-clubs) replace every collection. Club
+    backups (scope=club) replace only that club's data — other clubs, global
+    adverts and global users are untouched.
+
+    The shared core (_restore_zip_core) does the actual work; here we guard
+    the upload, then audit the result and guarantee the webmaster account
+    survives a full-system restore.
+    """
+    if not file.filename or not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400,
+                            detail="Backup file must be a .zip archive")
+    raw = await file.read()
+    if len(raw) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=400,
+                            detail="Backup file too large (200 MB max)")
+
+    result = await _restore_zip_core(raw, passphrase)
+
+    # A full-system restore replaces the users collection — make sure the
+    # webmaster can still sign in (encrypted backups carry the passcode hash;
+    # plaintext falls back to WEBMASTER_PASSCODE so a restored server is
+    # never locked out of its own console).
+    if result["scope"] == "all-clubs":
+        await _ensure_restored_webmaster(result["encrypted"])
+
+    scope_label = "full system" if result["scope"] == "all-clubs"         else f"club {result['club_id']}"
+    desc = (f"{user.get('username')} restored {scope_label} from backup "
+            f"({result.get('backup_exported_at', '?')})")
+    await _log_audit(request=request, user=user, action="BACKUP_RESTORE",
+                     description=desc, resource_type="backup",
+                     resource_id=result["club_id"] or "all",
+                     club_id=result["club_id"])
+    logger.info("BACKUP RESTORE scope=%s by=%s ip=%s", result["club_id"] or "all",
+                user.get("username"), _client_ip(request))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Full image (byte-exact mongodump archive) — disaster recovery
+# ---------------------------------------------------------------------------
+# A complete mongodump --archive of the database: every collection, every
+# _id, every credential hash — nothing stripped, nothing transformed. It is
+# the one backup that can resurrect a lost server without any manual
+# passcode resets (the webmaster account's credentials are preserved
+# verbatim). Restore from the terminal with mongorestore (see
+# backend/restore_backup.py and the README).
+@api_router.post("/admin/backup/full-image")
+async def full_image_backup(request: Request, user: dict = Depends(require_webmaster)):
+    """Webmaster only: stream a gzip mongodump archive of the whole database.
+    The archive is written to a temp file (so a failure yields a clean error
+    rather than a truncated stream), then streamed out and deleted."""
+    if not shutil.which("mongodump"):
+        raise HTTPException(status_code=503,
+                            detail="mongodump is not available in this build (rebuild the backend image)")
+    cmd = ["mongodump", "--uri", mongo_url, "--db", os.environ["DB_NAME"],
+           "--archive", "--gzip"]
+    fd, tmp_path = tempfile.mkstemp(prefix="sailscore-full-image-", suffix=".archive.gz")
+    os.close(fd)
+    try:
+        with open(tmp_path, "wb") as out:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=out, stderr=asyncio.subprocess.PIPE)
+            _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail="mongodump failed: " + stderr.decode(errors="replace")[-500:])
+        size = os.path.getsize(tmp_path)
+        if size == 0:
+            raise HTTPException(status_code=500, detail="mongodump produced an empty archive")
+        stamp = datetime.now(timezone.utc).date().isoformat()
+        await _log_audit(request=request, user=user, action="FULL_IMAGE_DOWNLOAD",
+                         description="Webmaster downloaded the full-image (mongodump) backup",
+                         resource_type="backup", resource_id="full-image", club_id=None)
+        logger.info("FULL IMAGE DOWNLOAD by=%s ip=%s size=%s",
+                    user.get("username"), _client_ip(request), size)
+
+        async def _stream():
+            try:
+                with open(tmp_path, "rb") as f:
+                    while chunk := f.read(65536):
+                        yield chunk
+            finally:
+                os.unlink(tmp_path)
+
+        return StreamingResponse(
+            _stream(),
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="sailscore-full-image-{stamp}.archive.gz"',
+                "Content-Length": str(size),
+                "Cache-Control": "no-store",
+            })
+    except Exception:
+        # Ensure the temp file never lingers if streaming never starts.
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 # ---------------------------------------------------------------------------

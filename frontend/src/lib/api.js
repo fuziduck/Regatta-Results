@@ -122,6 +122,32 @@ export const api = {
       });
     });
   },
+  // Byte-exact mongodump archive of the entire database (webmaster only).
+  // Nothing is stripped — credentials included. Restore from the terminal:
+  //   docker exec sailscore-backend python /app/restore_backup.py \
+  //       --full-image /tmp/sailscore-full-image-....archive.gz
+  downloadFullImage: () => client.post("/admin/backup/full-image", null, {
+    responseType: "blob",
+    timeout: 300000, // a full image can take a while to dump/stream
+  }).then((r) => {
+    const url = URL.createObjectURL(r.data);
+    const a = document.createElement("a");
+    const cd = r.headers["content-disposition"] || "";
+    const m = /filename="?([^";]+)"?/.exec(cd);
+    a.href = url;
+    a.download = m ? m[1] : "sailscore-full-image.archive.gz";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }).catch((err) => {
+    if (!err.response || typeof err.response.data?.text !== "function") throw err;
+    return err.response.data.text().then((text) => {
+      try { err.response.data = { detail: JSON.parse(text)?.detail || "Full-image download failed" }; }
+      catch { err.response.data = { detail: text || "Full-image download failed" }; }
+      throw err;
+    });
+  }),
   // Restore a backup ZIP. Webmaster only. The passphrase (if any) decrypts an
   // encrypted backup; plaintext backups ignore it.
   // Errors surface the real backend detail (or, failing that, the HTTP status

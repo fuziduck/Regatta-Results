@@ -59,9 +59,11 @@ class _Coll:
 
     async def drop(self):
         self.dropped += 1
+        self.docs = []
 
     async def insert_many(self, docs, ordered=False):
         self.inserted.extend(docs)
+        self.docs.extend(list(docs))
 
     async def find_one(self, q, proj=None):
         for d in self.docs:
@@ -81,10 +83,18 @@ class _Coll:
         return types.SimpleNamespace(deletedCount=0)
 
     async def update_one(self, q, update):
-        return types.SimpleNamespace(matched_count=0)
+        n = 0
+        for d in self.docs:
+            if all(d.get(k) == v for k, v in q.items()):
+                if "$set" in update:
+                    d.update(update["$set"])
+                n += 1
+        return types.SimpleNamespace(matched_count=n, modified_count=n)
 
     async def insert_one(self, doc):
-        return None
+        self.inserted.append(doc)
+        self.docs.append(doc)
+        return types.SimpleNamespace(inserted_id=None)
 
 
 class _DB:
@@ -93,7 +103,10 @@ class _DB:
     def __init__(self):
         self.cols = {n: _Coll() for n in
                      ("clubs", "users", "classes", "boats", "series",
-                      "races", "adverts", "audit_logs")}
+                      "races", "season_snapshots", "notices",
+                      "notice_boards", "notice_sections", "subscriptions",
+                      "subscription_deliveries", "adverts", "audit_logs",
+                      "settings")}
 
     def __getitem__(self, name):
         return self.cols[name]
@@ -127,8 +140,13 @@ def _zip_bytes(prefix, macos_junk=True):
     docs = {
         "clubs": [{"id": "c1", "name": "Medway YC", "slug": "medway-yacht-club"}],
         "users": [], "classes": [], "boats": [], "series": [], "races": [],
-        "adverts": [],
+        "season_snapshots": [], "notices": [], "notice_boards": [],
+        "notice_sections": [], "subscriptions": [],
+        "subscription_deliveries": [], "adverts": [], "audit_logs": [],
+        "settings": [],
     }
+    # webmaster is bootstrapped from env after a full restore — tests that
+    # assert on users must account for it (or set WEBMASTER_PASSCODE empty).
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(f"{prefix}metadata.json", json.dumps(meta))
@@ -148,7 +166,11 @@ class TestRestoreBackupLayout:
             user={"role": "webmaster", "username": "webmaster"}))
         assert out["scope"] == "all-clubs"
         assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
-                                        "series", "races", "adverts"}
+                                        "series", "races", "season_snapshots",
+                                        "notices", "notice_boards",
+                                        "notice_sections", "subscriptions",
+                                        "subscription_deliveries", "adverts",
+                                        "audit_logs", "settings"}
         assert out["errors"] == []
         assert server.db.clubs.dropped == 1
         assert [c["id"] for c in server.db.clubs.inserted] == ["c1"]
@@ -165,7 +187,11 @@ class TestRestoreBackupLayout:
             user={"role": "webmaster", "username": "webmaster"}))
         assert out["scope"] == "all-clubs"
         assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
-                                        "series", "races", "adverts"}
+                                        "series", "races", "season_snapshots",
+                                        "notices", "notice_boards",
+                                        "notice_sections", "subscriptions",
+                                        "subscription_deliveries", "adverts",
+                                        "audit_logs", "settings"}
         assert out["errors"] == []
         assert [c["id"] for c in server.db.clubs.inserted] == ["c1"]
 
@@ -218,7 +244,9 @@ class TestEncryptedBackups:
                 user={"role": "webmaster", "username": "webmaster"}))
             assert out["errors"] == []
             # The passcode hash survives the round trip — no manual resets needed.
-            assert server.db.users.inserted == [dict(self.USER)]
+            # (A full restore also re-ensures the webmaster account.)
+            assert dict(self.USER) in server.db.users.inserted
+            assert any(u.get("role") == "webmaster" for u in server.db.users.inserted)
         finally:
             server.BACKUP_PASSPHRASE = None
 
@@ -241,7 +269,7 @@ class TestEncryptedBackups:
             passphrase="super secret phrase 123",
             user={"role": "webmaster", "username": "webmaster"}))
         assert out["errors"] == []
-        assert server.db.users.inserted == [dict(self.USER)]
+        assert dict(self.USER) in server.db.users.inserted
 
     def test_restore_requires_request_passphrase_when_env_unset(self):
         server.BACKUP_PASSPHRASE = None
@@ -286,8 +314,10 @@ class TestEncryptedBackups:
         asyncio.run(server.restore_backup(
             _Req(), _Upload("backup.zip", resp.body),
             user={"role": "webmaster", "username": "webmaster"}))
-        assert server.db.users.inserted == [{k: v for k, v in self.USER.items()
-                                             if k != "passcode_hash"}]
+        stripped = {k: v for k, v in self.USER.items() if k != "passcode_hash"}
+        assert stripped in server.db.users.inserted
+        assert not any(u.get("passcode_hash") for u in server.db.users.inserted
+                       if u.get("role") != "webmaster")
 
     def test_encrypted_backup_restore_requires_key(self):
         server.BACKUP_PASSPHRASE = "test-secret"
@@ -348,7 +378,18 @@ class TestClubRestoreReplacesRacingData:
                         "race_number": 1, "status": "published",
                         "results": [{"boat_id": "b1", "code": "FINISHED",
                                       "position": 1, "penalty_points": 0}]}],
-            "adverts": [],
+            "season_snapshots": [{"id": "sn-new", "series_id": "s-new",
+                                   "version": 1, "status": "locked"}],
+            "notices": [{"id": "n-new", "club_id": "c1", "title": "Club notice",
+                          "pdf_data_url": "data:application/pdf;base64,AAAA"}],
+            "notice_boards": [{"id": "b-new", "club_id": "c1", "title": "ONB"}],
+            "notice_sections": [{"id": "sec-new", "board_id": "b-new",
+                                  "title": "General"}],
+            "subscriptions": [{"id": "sub-new", "club_id": "c1",
+                                "email_enc": "gAAAA...", "active": True}],
+            "subscription_deliveries": [{"id": "d-new",
+                                          "subscription_id": "sub-new"}],
+            "adverts": [], "audit_logs": [],
         }
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -370,6 +411,18 @@ class TestClubRestoreReplacesRacingData:
                                     "year": 2025, "name": "Early Spring"}]
         db.cols["races"].docs = [{"id": "r-old", "series_id": "s-old",
                                    "class_id": "cl-a", "race_number": 1}]
+        db.cols["season_snapshots"].docs = [{"id": "sn-old", "series_id": "s-old",
+                                              "version": 1, "status": "locked"}]
+        db.cols["notices"].docs = [{"id": "n-old", "club_id": "c1",
+                                     "title": "Old notice"}]
+        db.cols["notice_boards"].docs = [{"id": "b-old", "club_id": "c1",
+                                           "title": "Old ONB"}]
+        db.cols["notice_sections"].docs = [{"id": "sec-old", "board_id": "b-old",
+                                             "title": "Old"}]
+        db.cols["subscriptions"].docs = [{"id": "sub-old", "club_id": "c1",
+                                           "active": True}]
+        db.cols["subscription_deliveries"].docs = [{"id": "d-old",
+                                                     "subscription_id": "sub-old"}]
         server.db = db
         server._log_audit = _noop_audit
 
@@ -377,20 +430,40 @@ class TestClubRestoreReplacesRacingData:
             _Req(), _Upload("club.zip", self._club_zip()),
             user={"role": "webmaster", "username": "webmaster"}))
 
-        # (The only "error" note is the expected adverts skip for club
-        # restores — global adverts are never part of a club-scoped backup.)
-        assert out["errors"] == ["adverts: global collection (skipped for club restore)"]
+        # Global collections are silently skipped for club restores.
+        assert out["errors"] == []
+        assert "adverts" not in out["restored"]
+        assert "settings" not in out["restored"]
         # Deletes for series/races are keyed on the backup's class ids (a
         # club_id filter would have matched nothing on these collections).
         assert db.cols["series"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
         assert db.cols["races"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
-        # Old racing data is gone; the backup's series/races took its place.
+        # Frozen snapshots are scoped by the backup's series ids.
+        assert db.cols["season_snapshots"].deleted == [{"series_id": {"$in": ["s-new"]}}]
+        # ONB + subscriptions are scoped by club_id / board_id / sub id.
+        assert db.cols["notices"].deleted == [{"club_id": "c1"}]
+        assert db.cols["notice_boards"].deleted == [{"club_id": "c1"}]
+        assert db.cols["notice_sections"].deleted == [{"board_id": {"$in": ["b-new"]}}]
+        assert db.cols["subscriptions"].deleted == [{"club_id": "c1"}]
+        assert db.cols["subscription_deliveries"].deleted == [{"subscription_id": {"$in": ["sub-new"]}}]
+        # Old data is gone; the backup's documents took its place.
         assert [s["id"] for s in db.cols["series"].inserted] == ["s-new"]
         assert [r["id"] for r in db.cols["races"].inserted] == ["r-new"]
+        assert [n["id"] for n in db.cols["notices"].inserted] == ["n-new"]
+        assert [n["pdf_data_url"] for n in db.cols["notices"].inserted] \
+            == ["data:application/pdf;base64,AAAA"]
+        assert [b["id"] for b in db.cols["notice_boards"].inserted] == ["b-new"]
+        assert [s["id"] for s in db.cols["notice_sections"].inserted] == ["sec-new"]
+        assert [s["id"] for s in db.cols["subscriptions"].inserted] == ["sub-new"]
+        assert [d["id"] for d in db.cols["subscription_deliveries"].inserted] == ["d-new"]
         assert db.cols["series"].docs == [d for d in db.cols["series"].docs
                                            if d["id"] != "s-old"]
         assert db.cols["races"].docs == [d for d in db.cols["races"].docs
                                           if d["id"] != "r-old"]
+        assert db.cols["notices"].docs == [d for d in db.cols["notices"].docs
+                                            if d["id"] != "n-old"]
+        # The webmaster is never touched by a club restore.
+        assert not any(d.get("role") == "webmaster" for d in db.cols["users"].inserted)
 
     def test_club_restore_rejects_missing_club(self):
         db = _stub_db()
@@ -402,3 +475,162 @@ class TestClubRestoreReplacesRacingData:
                 user={"role": "webmaster", "username": "webmaster"}))
         assert exc.value.status_code == 400
         assert "no longer exists" in exc.value.detail
+
+
+class TestBuildBackupIncludesEverything:
+    """_build_backup must export the ONB (notices incl. embedded documents,
+    boards, sections), subscriptions, frozen snapshots and — for full-system
+    backups only — global adverts and settings."""
+
+    @staticmethod
+    def _rich_db():
+        db = _stub_db()
+        db.cols["clubs"].docs = [{"id": "c1", "name": "Medway YC",
+                                   "slug": "medway-yacht-club"},
+                                  {"id": "c2", "name": "Other YC",
+                                   "slug": "other-yacht-club"}]
+        db.cols["classes"].docs = [{"id": "cl-a", "club_id": "c1", "name": "Sonata"},
+                                    {"id": "cl-b", "club_id": "c2", "name": "Dinghy"}]
+        db.cols["series"].docs = [{"id": "s-1", "class_id": "cl-a"},
+                                   {"id": "s-2", "class_id": "cl-b"}]
+        db.cols["races"].docs = [{"id": "r-1", "class_id": "cl-a", "series_id": "s-1"}]
+        db.cols["season_snapshots"].docs = [{"id": "sn-1", "series_id": "s-1", "version": 1},
+                                             {"id": "sn-2", "series_id": "s-2", "version": 1}]
+        db.cols["notices"].docs = [{"id": "n-1", "club_id": "c1",
+                                     "title": "Club notice",
+                                     "pdf_data_url": "data:application/pdf;base64,QUJD"},
+                                    {"id": "n-2", "club_id": "c2", "title": "Other"}]
+        db.cols["notice_boards"].docs = [{"id": "b-1", "club_id": "c1", "title": "ONB"},
+                                          {"id": "b-2", "club_id": "c2", "title": "Other"}]
+        db.cols["notice_sections"].docs = [{"id": "sec-1", "board_id": "b-1"},
+                                            {"id": "sec-2", "board_id": "b-2"}]
+        db.cols["subscriptions"].docs = [{"id": "sub-1", "club_id": "c1", "active": True},
+                                          {"id": "sub-2", "club_id": "c2", "active": True}]
+        db.cols["subscription_deliveries"].docs = [{"id": "d-1", "subscription_id": "sub-1"},
+                                                    {"id": "d-2", "subscription_id": "sub-2"}]
+        db.cols["adverts"].docs = [{"id": "adv-1"}]
+        db.cols["settings"].docs = [{"key": "email", "smtp_host": "x"}]
+        return db
+
+    @staticmethod
+    def _read_zip(resp):
+        zf = zipfile.ZipFile(io.BytesIO(resp.body))
+        return {n: json.loads(zf.read(n)) for n in zf.namelist()}
+
+    def test_club_backup_is_club_scoped_and_includes_onb(self):
+        server.db = self._rich_db()
+        server._log_audit = _noop_audit
+        resp = asyncio.run(server._build_backup(
+            _Req(), {"role": "webmaster", "username": "webmaster"}, "c1"))
+        data = self._read_zip(resp)
+        assert [n["id"] for n in data["notices.json"]] == ["n-1"]
+        assert data["notices.json"][0]["pdf_data_url"].startswith("data:application/pdf")
+        assert [b["id"] for b in data["notice_boards.json"]] == ["b-1"]
+        assert [s["id"] for s in data["notice_sections.json"]] == ["sec-1"]
+        assert [s["id"] for s in data["subscriptions.json"]] == ["sub-1"]
+        assert [d["id"] for d in data["subscription_deliveries.json"]] == ["d-1"]
+        assert [s["id"] for s in data["season_snapshots.json"]] == ["sn-1"]
+        # Global collections never leak into a club backup.
+        assert data["adverts.json"] == []
+        assert data["settings.json"] == []
+
+    def test_full_backup_includes_everything(self):
+        server.db = self._rich_db()
+        server._log_audit = _noop_audit
+        resp = asyncio.run(server._build_backup(
+            _Req(), {"role": "webmaster", "username": "webmaster"}, None))
+        data = self._read_zip(resp)
+        assert {n["id"] for n in data["notices.json"]} == {"n-1", "n-2"}
+        assert {n["id"] for n in data["notice_boards.json"]} == {"b-1", "b-2"}
+        assert {s["id"] for s in data["notice_sections.json"]} == {"sec-1", "sec-2"}
+        assert {s["id"] for s in data["subscriptions.json"]} == {"sub-1", "sub-2"}
+        assert {d["id"] for d in data["subscription_deliveries.json"]} == {"d-1", "d-2"}
+        assert {s["id"] for s in data["season_snapshots.json"]} == {"sn-1", "sn-2"}
+        assert [a["id"] for a in data["adverts.json"]] == ["adv-1"]
+        assert data["settings.json"][0]["key"] == "email"
+
+
+class TestWebmasterRedundancy:
+    """A full-system restore must never leave the server without a usable
+    webmaster account: encrypted backups preserve the passcode (+2FA/email),
+    plaintext backups fall back to WEBMASTER_PASSCODE."""
+
+    USER = {"id": "u1", "club_id": "c1", "username": "officer@club.org",
+            "role": "officer", "passcode_hash": "$2b$12$abcdefghijklmnopqrstuv",
+            "totp_secret_enc": "enc-totp", "totp_enabled": True,
+            "email": "officer@club.org"}
+    WM = {"id": "wm1", "club_id": None, "username": "webmaster",
+          "role": "webmaster", "passcode_hash": "$2b$12$zzz",
+          "totp_secret_enc": "enc-totp-wm", "totp_enabled": True,
+          "email": "webmaster@example.org"}
+
+    def test_encrypted_backup_keeps_2fa_and_email(self):
+        server.BACKUP_PASSPHRASE = "test-secret-123"
+        try:
+            db = _stub_db()
+            db.cols["users"].docs = [dict(self.USER)]
+            server.db = db
+            server._log_audit = _noop_audit
+            resp = asyncio.run(server._build_backup(
+                _Req(), {"role": "webmaster", "username": "webmaster"}, None))
+            zf = zipfile.ZipFile(io.BytesIO(resp.body))
+            meta = json.loads(zf.read("metadata.json"))
+            key = server._derive_backup_key(
+                "test-secret-123", bytes.fromhex(meta["kdf"]["salt"]))
+            users = json.loads(server._aes_decrypt(key, zf.read("users.json")))
+            assert users[0]["passcode_hash"] == self.USER["passcode_hash"]
+            assert users[0]["totp_secret_enc"] == "enc-totp"
+            assert users[0]["totp_enabled"] is True
+            assert users[0]["email"] == "officer@club.org"
+        finally:
+            server.BACKUP_PASSPHRASE = None
+
+    def test_plaintext_backup_strips_2fa_and_email(self):
+        server.BACKUP_PASSPHRASE = None
+        db = _stub_db()
+        db.cols["users"].docs = [dict(self.USER)]
+        server.db = db
+        server._log_audit = _noop_audit
+        resp = asyncio.run(server._build_backup(
+            _Req(), {"role": "webmaster", "username": "webmaster"}, None))
+        zf = zipfile.ZipFile(io.BytesIO(resp.body))
+        users = json.loads(zf.read("users.json"))
+        assert "passcode_hash" not in users[0]
+        assert "totp_secret_enc" not in users[0]
+        assert "email" not in users[0]
+
+    def test_plaintext_full_restore_sets_webmaster_passcode_from_env(self):
+        old = server.WEBMASTER_PASSCODE
+        server.WEBMASTER_PASSCODE = "env-passcode"
+        try:
+            meta = {"app": "SailScore", "exported_at": "2026-08-29T00:00:00+00:00",
+                    "scope": "all-clubs", "club_id": None}
+            docs = {
+                "clubs": [{"id": "c1", "name": "Medway YC", "slug": "medway-yacht-club"}],
+                "users": [{"id": "wm1", "club_id": None, "username": "webmaster",
+                            "role": "webmaster", "active": True}],
+                "classes": [], "boats": [], "series": [], "races": [],
+                "season_snapshots": [], "notices": [], "notice_boards": [],
+                "notice_sections": [], "subscriptions": [],
+                "subscription_deliveries": [], "adverts": [], "audit_logs": [],
+                "settings": [],
+            }
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("metadata.json", json.dumps(meta))
+                for name, payload in docs.items():
+                    zf.writestr(f"{name}.json", json.dumps(payload))
+            server.db = _stub_db()
+            server._log_audit = _noop_audit
+            out = asyncio.run(server.restore_backup(
+                _Req(), _Upload("backup.zip", buf.getvalue()),
+                user={"role": "webmaster", "username": "webmaster"}))
+            assert out["errors"] == []
+            # The restored webmaster (passcode stripped by plaintext) got a
+            # fresh hash from WEBMASTER_PASSCODE so the server is not locked out.
+            wm = [u for u in server.db.users.docs
+                  if u.get("role") == "webmaster" and u.get("club_id") is None]
+            assert wm and wm[0].get("passcode_hash")
+            assert server.verify_passcode("env-passcode", wm[0]["passcode_hash"])
+        finally:
+            server.WEBMASTER_PASSCODE = old

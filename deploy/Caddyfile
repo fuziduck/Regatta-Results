@@ -53,9 +53,12 @@ results.example.com {
         }
     }
 
-    # Reasonable max request size for image uploads (club icons, adverts).
+    # Max request size: club icons/adverts are small, but the webmaster
+    # console RESTORE uploads backup zips that can carry full ONB PDFs and
+    # years of results — allow up to 200MB (the backend itself caps restores
+    # at 200MB). Terminal restores bypass this limit entirely.
     request_body {
-        max_size 12MB
+        max_size 200MB
     }
 }
 

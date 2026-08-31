@@ -112,6 +112,20 @@ function BackupSection({ clubs }) {
     }
   };
 
+  const [dlImageBusy, setDlImageBusy] = useState(false);
+  const doDownloadFullImage = async () => {
+    if (dlImageBusy) return;
+    setDlImageBusy(true);
+    try {
+      await api.downloadFullImage();
+      toast.success("Full-image backup downloaded — keep it somewhere safe (it contains all credentials)");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Full-image download failed");
+    } finally {
+      setDlImageBusy(false);
+    }
+  };
+
   const handleFileSelected = (e, scope) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -155,7 +169,7 @@ function BackupSection({ clubs }) {
       <div className="mb-6">
         <h1 className="text-3xl uppercase tracking-tighter mb-1">Backups</h1>
         <p className="text-muted-foreground text-sm">
-          Download or restore a zip of JSON exports. Encrypt a backup by entering a passphrase below — encrypted backups are AES-encrypted and carry users' passcode hashes, so a restore brings everyone's sign-in passcodes across with no manual resets. Keep that passphrase safe; you'll re-enter it to restore. Leave the passphrase empty for a plaintext backup (credentials stripped). Reset tokens and lockout state are never exported.
+          Download a club backup (one club) or the full system backup (all clubs). Every backup covers the club's results data (classes, boats, series, races, frozen snapshots), the Official Notice Board (notices with their uploaded documents, boards and sections), subscriptions and the audit log; full-system backups also include global adverts and email settings. Encrypt a backup by entering a passphrase below — encrypted backups are AES-encrypted and carry users' passcode, 2FA and email details, so a restore brings sign-in credentials across with no manual resets. Keep that passphrase safe; you'll re-enter it to restore. Leave the passphrase empty for a plaintext backup (credentials stripped). Reset tokens and lockout state are never exported.
         </p>
       </div>
       <div className="rounded-2xl border border-border bg-card p-5 space-y-4 max-w-2xl">
@@ -188,6 +202,28 @@ function BackupSection({ clubs }) {
               <Upload className="w-4 h-4" /> Restore all
             </Button>
           </div>
+        </div>
+        <div className="rounded-xl border border-dashed border-border p-4 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-semibold">Full image (disaster recovery)</div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+              data-testid="backup-full-image-btn"
+              disabled={dlImageBusy}
+              onClick={doDownloadFullImage}
+            >
+              <Download className="w-4 h-4" /> {dlImageBusy ? "Preparing…" : "Download full image"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A byte-exact mongodump archive of the entire database — every collection, credentials included, nothing stripped. This is the backup to use when resurrecting a lost server. Restore it from the terminal:
+          </p>
+          <code className="block text-[11px] font-mono bg-muted rounded-md px-2 py-1.5 overflow-x-auto">
+            docker cp sailscore-full-image-….archive.gz sailscore-backend:/tmp/full.archive.gz<br />
+            docker exec sailscore-backend python /app/restore_backup.py --full-image /tmp/full.archive.gz
+          </code>
         </div>          <div className="rounded-xl border border-dashed border-border p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-semibold">Encrypt this backup (optional)</div>
@@ -286,7 +322,7 @@ function BackupSection({ clubs }) {
             </p>
             {restoreScope === "all" ? (
               <p className="text-sm text-destructive font-semibold">
-                This will replace ALL clubs, users, classes, boats, series, races, adverts and audit logs with the contents of the backup. This cannot be undone.
+                This will replace ALL clubs, users, classes, boats, series, races, season snapshots, notices (including uploaded documents), boards, sections, subscriptions, adverts and audit logs with the contents of the backup. This cannot be undone.
               </p>
             ) : (
               <p className="text-sm text-destructive font-semibold">

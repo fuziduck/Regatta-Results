@@ -88,10 +88,64 @@ docker cp backend/manifests/sonata-medway-2025.json regatta-backend:/tmp/manifes
 ```
 
 Note on club backups: a club-scoped restore replaces the whole club —
-classes, boats, series and races (series/races are deleted via the backup's
-class ids, so a re-restore cannot leave stale duplicate series or races
-behind). Individual club logins are replaced too; use an encrypted backup
-(generate a passphrase) if you want sign-in passcodes carried across.
+classes, boats, series, races, frozen snapshots, notices (with their uploaded
+documents), notice boards/sections, subscriptions and the club's audit log
+(each deleted via the backup's own ids, so a re-restore cannot leave stale
+duplicates behind). Other clubs, global adverts, email settings and the
+webmaster account are untouched. Individual club logins are replaced too;
+use an encrypted backup (generate a passphrase) to carry sign-in passcodes
+across.
+
+## Backups and disaster recovery
+
+Every SailScore backup is a zip of JSON collection exports, downloadable from
+the webmaster console (Backups tab) as either **one club** or **all clubs**.
+A backup always covers the club's results data (classes, boats, series,
+races, frozen season snapshots), the **Official Notice Board** (notices
+including their uploaded documents — PDFs are embedded in the notice
+records — plus boards and sections), subscriptions, delivery records and the
+audit log. Full-system backups additionally include the global adverts and
+email settings. Full-system backups are a complete logical image of the
+server.
+
+**Credentials ("webmaster redundancy").** Encrypt a backup with a passphrase
+(Generate in the console) and it carries each user's passcode hash, 2FA
+secret and account email — a restore brings sign-in credentials across with
+no manual resets. Plaintext backups strip all credential material. Either
+way, after a full-system restore the webmaster account is guaranteed to work:
+encrypted backups preserve the original passcode, plaintext falls back to
+the server's `WEBMASTER_PASSCODE` env value, so a restored server can never
+lock itself out.
+
+**Restoring from the webmaster console** (Backups tab): Restore all / Restore
+club, re-enter the passphrase if the backup was encrypted.
+
+**Restoring from the terminal** (for a lost server, when the console cannot
+be reached — no auth needed, runs inside the backend container):
+
+```bash
+# ZIP backup (club or full — the archive records its own scope)
+docker cp sailscore-backup.zip sailscore-backend:/tmp/backup.zip
+docker exec sailscore-backend python /app/restore_backup.py /tmp/backup.zip \
+    --passphrase 'the phrase used when downloading'
+
+# Full image (byte-exact mongodump archive, downloaded from the console)
+docker cp sailscore-full-image-….archive.gz sailscore-backend:/tmp/full.archive.gz
+docker exec sailscore-backend python /app/restore_backup.py --full-image /tmp/full.archive.gz
+```
+
+**Full image.** The webmaster console's *Download full image* streams a
+`mongodump --archive` of the entire database — every collection, `_id`,
+credential and attachment, nothing stripped or transformed. It is the
+backup to use when resurrecting a lost server: restore it from the terminal
+with the command above (mongorestore), then sign in with the original
+webmaster passcode. Keep it somewhere safe — it contains everything.
+
+Notes: the webmaster console restore uploads through the web proxy, so very
+large archives may hit the proxy's request-body limit (bump `request_body`
+in `deploy/Caddyfile` if needed); the terminal path has no such limit. The
+`mongodb-database-tools` (mongodump/mongorestore) are baked into the backend
+image by `backend/Dockerfile`.
 
 ## Tests and quality checks
 
