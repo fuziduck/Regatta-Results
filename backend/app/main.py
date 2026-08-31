@@ -4236,16 +4236,20 @@ async def restore_backup(request: Request, file: UploadFile = File(...),
                     await db.audit_logs.insert_many(docs, ordered=False)
             else:
                 # Class-scoped collections: delete existing, then insert.
-                if coll_name == "boats":
-                    # Boats are scoped by class_id, not club_id directly.
-                    # Classes were already replaced above, so use the
-                    # backup's class list to identify which boats to remove.
+                if coll_name == "classes":
+                    await db.classes.delete_many({"club_id": scope_club_id})
+                else:
+                    # Boats/series/races are scoped by class_id, not club_id
+                    # (only classes carry club_id). Classes were already
+                    # replaced above, so use the backup's class list to
+                    # identify the club's existing racing data — a club_id
+                    # filter would match nothing on these collections and
+                    # silently append duplicates (with unique-index
+                    # conflicts) instead of replacing the club's data.
                     backup_class_ids = {c["id"] for c in
                                          read_json(zp("classes.json"))}
-                    await db.boats.delete_many(
+                    await db[coll_name].delete_many(
                         {"class_id": {"$in": list(backup_class_ids)}})
-                elif coll_name in ("classes", "series", "races"):
-                    await db[coll_name].delete_many({"club_id": scope_club_id})
                 if docs:
                     await db[coll_name].insert_many(docs, ordered=False)
 

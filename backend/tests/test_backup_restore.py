@@ -44,6 +44,7 @@ class _Coll:
         self.docs = list(docs or [])
         self.dropped = 0
         self.inserted = []
+        self.deleted = []
 
     def find(self, q, proj=None):
         def matches(doc):
@@ -65,12 +66,18 @@ class _Coll:
     async def find_one(self, q, proj=None):
         for d in self.docs:
             if all(d.get(k) == v for k, v in q.items()):
-                if proj:
-                    return {k: d[k] for k in proj if k in d and k != "_id"}
+                if proj is not None:
+                    # Only "_id"-style exclusions are used in the restore
+                    # path — honour them by returning the doc sans _id.
+                    return {k: v for k, v in d.items() if k != "_id"}
                 return d
         return None
 
     async def delete_many(self, q):
+        self.deleted.append(q)
+        self.docs = [d for d in self.docs if not all(
+            (d.get(k) in v["$in"]) if isinstance(v, dict) and "$in" in v
+            else d.get(k) == v for k, v in q.items())]
         return types.SimpleNamespace(deletedCount=0)
 
     async def update_one(self, q, update):
@@ -317,3 +324,81 @@ class TestEncryptedBackups:
             assert "does not match" in exc.value.detail
         finally:
             server.BACKUP_PASSPHRASE = None
+
+
+class TestClubRestoreReplacesRacingData:
+    """A club-scoped restore must REPLACE the club's racing data, not append
+    to it. Series and races are scoped by class_id (only classes carry
+    club_id), so the delete must be keyed on the backup's class ids — a
+    club_id filter would match nothing, silently leaving the old series/races
+    in place while the insert hits the unique (series_id, race_number) index.
+    """
+
+    def _club_zip(self):
+        meta = {"app": "SailScore", "exported_at": "2026-08-29T00:00:00+00:00",
+                "scope": "club", "club_id": "c1"}
+        docs = {
+            "clubs": [{"id": "c1", "name": "Medway YC", "slug": "medway-yacht-club"}],
+            "users": [],
+            "classes": [{"id": "cl-a", "club_id": "c1", "name": "Sonata"}],
+            "boats": [],
+            "series": [{"id": "s-new", "class_id": "cl-a", "year": 2025,
+                         "name": "Early Spring"}],
+            "races": [{"id": "r-new", "series_id": "s-new", "class_id": "cl-a",
+                        "race_number": 1, "status": "published",
+                        "results": [{"boat_id": "b1", "code": "FINISHED",
+                                      "position": 1, "penalty_points": 0}]}],
+            "adverts": [],
+        }
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("metadata.json", json.dumps(meta))
+            for name, payload in docs.items():
+                zf.writestr(f"{name}.json", json.dumps(payload))
+        return buf.getvalue()
+
+    def test_club_restore_deletes_existing_series_and_races_by_class_id(self):
+        db = _stub_db()
+        # Live already holds the same class ids but an OLDER generation of
+        # series/races under them (exactly the pre-import state on the live
+        # server): the restore must delete those before inserting the backup's.
+        # Note: the restore loop reads collections by item access (db[name]).
+        db.cols["clubs"].docs = [{"id": "c1", "name": "Medway YC",
+                                   "slug": "medway-yacht-club"}]
+        db.cols["classes"].docs = [{"id": "cl-a", "club_id": "c1", "name": "Sonata"}]
+        db.cols["series"].docs = [{"id": "s-old", "class_id": "cl-a",
+                                    "year": 2025, "name": "Early Spring"}]
+        db.cols["races"].docs = [{"id": "r-old", "series_id": "s-old",
+                                   "class_id": "cl-a", "race_number": 1}]
+        server.db = db
+        server._log_audit = _noop_audit
+
+        out = asyncio.run(server.restore_backup(
+            _Req(), _Upload("club.zip", self._club_zip()),
+            user={"role": "webmaster", "username": "webmaster"}))
+
+        # (The only "error" note is the expected adverts skip for club
+        # restores — global adverts are never part of a club-scoped backup.)
+        assert out["errors"] == ["adverts: global collection (skipped for club restore)"]
+        # Deletes for series/races are keyed on the backup's class ids (a
+        # club_id filter would have matched nothing on these collections).
+        assert db.cols["series"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
+        assert db.cols["races"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
+        # Old racing data is gone; the backup's series/races took its place.
+        assert [s["id"] for s in db.cols["series"].inserted] == ["s-new"]
+        assert [r["id"] for r in db.cols["races"].inserted] == ["r-new"]
+        assert db.cols["series"].docs == [d for d in db.cols["series"].docs
+                                           if d["id"] != "s-old"]
+        assert db.cols["races"].docs == [d for d in db.cols["races"].docs
+                                          if d["id"] != "r-old"]
+
+    def test_club_restore_rejects_missing_club(self):
+        db = _stub_db()
+        server.db = db
+        server._log_audit = _noop_audit
+        with pytest.raises(server.HTTPException) as exc:
+            asyncio.run(server.restore_backup(
+                _Req(), _Upload("club.zip", self._club_zip()),
+                user={"role": "webmaster", "username": "webmaster"}))
+        assert exc.value.status_code == 400
+        assert "no longer exists" in exc.value.detail
