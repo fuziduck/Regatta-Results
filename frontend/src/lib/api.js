@@ -220,6 +220,18 @@ export const api = {
   // listed are excluded from the series standings entirely.
   updateSeriesBoats: (id, boat_ids, v) => client.put(`/series/${id}/boats`, withVer({ boat_ids }, v)).then((r) => r.data),
   deleteSeries: (id, v) => client.delete(`/series/${id}`, { params: verQuery(v) }).then((r) => r.data),
+  // Regattas: racing occasions that group series across classes. A series
+  // joins a regatta via its regatta_id field (set from the series form).
+  getRegattas: (params = {}) => client.get("/regattas", { params }).then((r) => r.data),
+  getRegatta: (id, params = {}) => client.get(`/regattas/${id}`, { params }).then((r) => r.data),
+  createRegatta: (d) => client.post("/regattas", d).then((r) => r.data),
+  updateRegatta: (id, d) => client.put(`/regattas/${id}`, d).then((r) => r.data),
+  deleteRegatta: (id) => client.delete(`/regattas/${id}`).then((r) => r.data),
+  uploadRegattaThumbnail: (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return client.put(`/regattas/${id}/thumbnail`, fd).then((r) => r.data);
+  },
   generateSchedule: (id, body) => client.post(`/series/${id}/generate-schedule`, body).then((r) => r.data),
   splitMiniSeries: (id, d, v) => client.post(`/series/${id}/mini-split`, withVer(d, v)).then((r) => r.data),
   addMiniRace: (id, gi, d) => client.post(`/series/${id}/mini/${gi}/races`, d).then((r) => r.data),

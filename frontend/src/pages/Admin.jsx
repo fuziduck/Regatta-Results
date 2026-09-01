@@ -27,7 +27,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -552,6 +552,147 @@ function useSeasonYears(clubId) {
 const withSeasonYears = (base, seasonYears) =>
   [...new Set([...base, ...seasonYears])].sort((a, b) => b - a);
 
+// Regattas: racing occasions that group series across classes. A regatta
+// holds no races or results itself — series opt in via their regatta_id,
+// and the regatta card/page derives classes and race counts from them.
+function RegattasTab({ clubId }) {
+  const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
+  const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
+  const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
+  const [regattas, setRegattas] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ name: "", year: CURRENT_YEAR, start_date: "", end_date: "", host_club: "", status: "" });
+  const [busy, setBusy] = useState(false);
+  const [thumbFor, setThumbFor] = useState(null);
+  const thumbRef = useRef(null);
+
+  const load = useCallback(() => {
+    api.getRegattas({ year: yearFilter, ...(clubId ? { club_id: clubId } : {}) }).then(setRegattas).catch(() => {});
+  }, [clubId, yearFilter]);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    if (!form.name) return toast.error("Regatta name required");
+    setBusy(true);
+    try {
+      const payload = { ...form, year: Number(form.year), status: form.status || undefined };
+      if (editing) await api.updateRegatta(editing, payload);
+      else await api.createRegatta(payload);
+      toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", year: yearFilter, start_date: "", end_date: "", host_club: "", status: "" });
+      reloadYears(); load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not save regatta");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const del = async (r) => {
+    if (!window.confirm(`Delete the regatta “${r.name}”? Its series stay intact and simply become standalone series again.`)) return;
+    try {
+      await api.deleteRegatta(r.id);
+      toast.success("Regatta deleted — series unlinked");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not delete regatta");
+    }
+  };
+
+  const pickThumb = async (e, regatta) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 512 * 1024) {
+      toast.error("Photo must be 512 KB or smaller");
+      e.target.value = "";
+      return;
+    }
+    setThumbFor(regatta.id);
+    try {
+      await api.uploadRegattaThumbnail(regatta.id, file);
+      toast.success("Regatta photo updated");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not upload photo");
+    } finally {
+      setThumbFor(null);
+      e.target.value = "";
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <div className="flex items-center gap-2">
+          <Label className="text-sm">Year</Label>
+          <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(Number(v))}>
+            <SelectTrigger className="w-28" data-testid="regatta-year-filter"><SelectValue /></SelectTrigger>
+            <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", year: yearFilter, start_date: "", end_date: "", host_club: "", status: "" }); } }}>
+          <DialogTrigger asChild><Button data-testid="add-regatta-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add regatta</Button></DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} regatta</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-1.5"><Label>Regatta name</Label><Input data-testid="regatta-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. 2026 Regatta" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label>Year</Label><Input type="number" min="2000" max="2100" data-testid="regatta-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
+                <div className="space-y-1.5"><Label>Host club</Label><Input value={form.host_club} onChange={(e) => setForm({ ...form, host_club: e.target.value })} placeholder="e.g. Medway Yacht Club" /></div>
+                <div className="space-y-1.5"><Label>Start date</Label><Input type="date" value={form.start_date || ""} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></div>
+                <div className="space-y-1.5"><Label>End date</Label><Input type="date" value={form.end_date || ""} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></div>
+              </div>
+              <div className="space-y-1.5"><Label>Status <span className="text-muted-foreground normal-case text-xs">(optional — derived from dates/races if blank)</span></Label>
+                <Select value={form.status || ""} onValueChange={(v) => setForm({ ...form, status: v === "__none__" ? "" : v })}>
+                  <SelectTrigger data-testid="regatta-status-input"><SelectValue placeholder="Auto (from dates & races)" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Auto (from dates & races)</SelectItem>
+                    <SelectItem value="Upcoming">Upcoming</SelectItem>
+                    <SelectItem value="In Progress">In Progress</SelectItem>
+                    <SelectItem value="Complete">Complete</SelectItem>
+                  </SelectContent>
+                </Select></div>
+            </div>
+            <DialogFooter><Button onClick={save} disabled={busy} data-testid="save-regatta-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+      <p className="text-sm text-muted-foreground mb-4">A regatta groups series across classes. Add the club's series to it from the Series tab — the regatta page then shows each class's results separately.</p>
+      <div className="rounded-xl border overflow-hidden overflow-x-auto">
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Photo</TableHead><TableHead>Regatta</TableHead><TableHead>Year</TableHead><TableHead>Dates</TableHead><TableHead>Host</TableHead><TableHead>Status</TableHead><TableHead>Series</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+          <TableBody>{regattas.map((r) => (
+            <TableRow key={r.id} data-testid={`regatta-row-${r.name}`}>
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  <div className="w-16 h-10 shrink-0 overflow-hidden rounded-md border border-border bg-ocean/10 grid place-items-center">
+                    {r.thumbnail ? <img src={r.thumbnail} alt="" className="h-full w-full object-cover" /> : <ImagePlus className="w-4 h-4 text-ocean/50" />}
+                  </div>
+                  <input ref={thumbRef} type="file" accept="image/*" className="hidden" data-testid={`regatta-thumb-file-${r.name}`} onChange={(e) => pickThumb(e, r)} />
+                  <Button size="sm" variant="outline" className="h-8" disabled={thumbFor === r.id}
+                    onClick={() => thumbRef.current?.click()} data-testid={`regatta-thumb-${r.name}`}>
+                    <Upload className="w-3.5 h-3.5" /> {thumbFor === r.id ? "…" : r.thumbnail ? "Change" : "Photo"}
+                  </Button>
+                </div>
+              </TableCell>
+              <TableCell className="font-heading text-lg uppercase tracking-tight">{r.name}</TableCell>
+              <TableCell className="font-mono">{r.year || "—"}</TableCell>
+              <TableCell className="text-xs text-muted-foreground">{r.date_label || "—"}</TableCell>
+              <TableCell className="text-xs">{r.host_club || "—"}</TableCell>
+              <TableCell>{r.status ? <Badge variant={r.status === "Complete" ? "default" : r.status === "Upcoming" ? "outline" : "secondary"}>{r.status}</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
+              <TableCell className="text-xs text-muted-foreground">{r.series?.length || 0} series · {r.class_count || 0} classes · {r.race_count || 0} races</TableCell>
+              <TableCell className="text-right whitespace-nowrap">
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(r.id); setForm({ name: r.name, year: r.year, start_date: r.start_date || "", end_date: r.end_date || "", host_club: r.host_club || "", status: r.status || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" className="text-destructive" onClick={() => del(r)}><Trash2 className="w-4 h-4" /></Button>
+              </TableCell>
+            </TableRow>
+          ))}
+            {!regattas.length && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">No regattas for this year yet.</TableCell></TableRow>}
+          </TableBody></Table>
+      </div>
+    </div>
+  );
+}
+
 function SeriesTab({ classes, clubId }) {
   const [classFilter, setClassFilter] = useState("");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
@@ -594,7 +735,9 @@ function SeriesTab({ classes, clubId }) {
     cfg.duty = { ...defaultScoringConfig().duty, ...cfg.duty };
     return cfg;
   };
-  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig() });
+  const [regattas, setRegattas] = useState([]);
+  useEffect(() => { api.getRegattas({ ...(clubId ? { club_id: clubId } : {}) }).then(setRegattas).catch(() => {}); }, [clubId]);
+  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
   const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
   const [schedStart, setSchedStart] = useState("2026-08-08");
@@ -654,7 +797,8 @@ function SeriesTab({ classes, clubId }) {
     // source of truth the engine actually reads.
     const convention = cfg.a5_convention;
     const payload = {
-      ...form, discards: Number(form.discards), order: Number(form.order),
+      ...form, regatta_id: form.regatta_id || null,
+      discards: Number(form.discards), order: Number(form.order),
       year: Number(form.year), planned_races: Number(form.planned_races),
       schedule: form.schedule || [],
       use_a5_3: convention === "a5_3", use_finishers: convention === "finishers",
@@ -739,6 +883,16 @@ function SeriesTab({ classes, clubId }) {
                   <SelectTrigger data-testid="series-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
+              <div className="space-y-1.5"><Label>Regatta <span className="text-muted-foreground normal-case text-xs">(optional)</span></Label>
+                <Select value={form.regatta_id || "__none__"} onValueChange={(v) => setForm({ ...form, regatta_id: v === "__none__" ? "" : v })}>
+                  <SelectTrigger data-testid="series-regatta-input"><SelectValue placeholder="Not part of a regatta" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Not part of a regatta</SelectItem>
+                    {regattas.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} · {r.year}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Series belonging to a regatta appear on the regatta page (per class) instead of the club's championship list.</p>
+              </div>
               <div className="space-y-1.5"><Label>Scoring system</Label>
                 <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
                   <SelectTrigger data-testid="series-scoring-input"><SelectValue /></SelectTrigger>
@@ -987,7 +1141,7 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Regatta</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => {
             const cfg = scoringConfigFromSeries(s);
             const locked = s.lock_status === "locked" || s.lock_status === "archived";
@@ -995,6 +1149,7 @@ function SeriesTab({ classes, clubId }) {
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
+              <TableCell>{s.regatta_id ? <Badge className="gap-1 bg-ocean/10 text-ocean border border-ocean/30"><CalendarDays className="w-3 h-3" />{(regattas.find((r) => r.id === s.regatta_id) || {}).name || "Regatta"}</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
               <TableCell>{s.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : s.scoring_mode === "py" ? <Badge className="bg-emerald-100 text-emerald-800">PY</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
               <TableCell className="font-mono">{s.discards}</TableCell>
@@ -1013,7 +1168,7 @@ function SeriesTab({ classes, clubId }) {
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
                 <Button size="icon" variant="ghost" disabled={locked} title="Boats in this series" data-testid={`series-boats-${s.name}`} onClick={() => setBoatsSeries(s)}><Users className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
                   <>
@@ -1029,7 +1184,7 @@ function SeriesTab({ classes, clubId }) {
               </TableCell>
             </TableRow>
           );})}
-            {!series.length && <TableRow><TableCell colSpan={11} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={12} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
 
@@ -1228,6 +1383,41 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
   const [lockDialog, setLockDialog] = useState(null);
   const [lockReason, setLockReason] = useState("");
   const [lockBusy, setLockBusy] = useState(false);
+  // RDG / DPI committee decision: the engine never infers these scores, so
+  // the resulting points (and optional decision details) are collected here
+  // before the code change is sent. null = panel closed.
+  const [decision, setDecision] = useState(null);
+  const openDecision = (r, code) => {
+    const prefix = code.toLowerCase();
+    // Only pre-fill points when re-editing an existing RDG/DPI decision — a
+    // fresh one starts empty so the committee's score can never default to 0.
+    const existing = r.code === code;
+    setDecision({
+      boatId: r.boat_id,
+      code,
+      penalty_points: existing ? (r.penalty_points ?? "") : "",
+      reason: r[`${prefix}_reason`] || "",
+      decision_maker: r[`${prefix}_decision_maker`] || "",
+      date: r[`${prefix}_date`] || "",
+      notes: r[`${prefix}_notes`] || "",
+    });
+  };
+  const saveDecision = async () => {
+    if (!decision) return;
+    const pts = Number(decision.penalty_points);
+    if (Number.isNaN(pts) || decision.penalty_points === "") {
+      return toast.error(`${decision.code} requires the committee-entered points — the system will not guess a score`);
+    }
+    const prefix = decision.code.toLowerCase();
+    const payload = { code: decision.code, penalty_points: pts };
+    ["reason", "decision_maker", "date", "notes"].forEach((k) => {
+      const v = (decision[k] || "").trim();
+      if (v) payload[`${prefix}_${k}`] = v;
+    });
+    const boatId = decision.boatId;
+    setDecision(null);
+    await change(boatId, payload);
+  };
 
   useEffect(() => { if (!classId && classes[0]) setClassId(classes[0].id); }, [classes]); // eslint-disable-line
   // Reset filters only when the club actually changes — not on first mount,
@@ -1411,12 +1601,12 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
                   <TableCell className="font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></TableCell>
                   <TableCell>{r.code === "FINISHED"
                     ? <Input type="number" min="1" defaultValue={r.position || ""} className="h-8 w-20 font-mono" data-testid={`hist-pos-${b.sail_no}`} onBlur={(e) => change(r.boat_id, { position: Number(e.target.value) })} />
-                    : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}</TableCell>
+                    : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}{"RDG" === r.code || "DPI" === r.code ? (r.penalty_points != null && r.penalty_points !== "" ? ` · ${r.penalty_points} pts` : " · points?") : ""}</Badge>}</TableCell>
                   <TableCell>{r.code === "FINISHED"
                     ? <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => change(r.boat_id, { elapsed_seconds: secs })} data-testid={`hist-elapsed-${b.sail_no}`} className="[&_input]:w-12" />
                     : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell>
-                    <Select value={r.code} onValueChange={(v) => change(r.boat_id, { code: v })}>
+                    <Select value={r.code} onValueChange={(v) => (v === "RDG" || v === "DPI") ? openDecision(r, v) : change(r.boat_id, { code: v })}>
                       <SelectTrigger className="h-8 w-28" data-testid={`hist-code-${b.sail_no}`}><SelectValue /></SelectTrigger>
                       <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{c.code}</SelectItem>)}</SelectContent>
                     </Select>
@@ -1427,6 +1617,27 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
           </div>
         </div>
       )}
+
+      {/* RDG / DPI committee decision dialog (historic results tab) */}
+      <Dialog open={!!decision} onOpenChange={(o) => { if (!o) setDecision(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle className="font-heading uppercase">{decision?.code === "RDG" ? "Redress (RDG) — committee score" : "Discretionary penalty (DPI) — committee score"}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">The scoring engine will not infer this score. Enter the resulting points the committee awards — every other boat's result is left exactly as it is.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5"><Label>Resulting points *</Label><Input type="number" min="0" step="0.5" value={decision?.penalty_points ?? ""} onChange={(e) => setDecision({ ...decision, penalty_points: e.target.value })} placeholder="e.g. 4.5" data-testid="hist-decision-points" autoFocus /></div>
+              <div className="space-y-1.5"><Label>Decision date</Label><Input type="date" value={decision?.date || ""} onChange={(e) => setDecision({ ...decision, date: e.target.value })} data-testid="hist-decision-date" /></div>
+            </div>
+            <div className="space-y-1.5"><Label>Reason (basis of the decision)</Label><Input value={decision?.reason || ""} onChange={(e) => setDecision({ ...decision, reason: e.target.value })} placeholder="e.g. Interference from a boat not racing (RRS 62.1(a))" data-testid="hist-decision-reason" /></div>
+            <div className="space-y-1.5"><Label>Decision maker</Label><Input value={decision?.decision_maker || ""} onChange={(e) => setDecision({ ...decision, decision_maker: e.target.value })} placeholder="e.g. Protest Committee" data-testid="hist-decision-maker" /></div>
+            <div className="space-y-1.5"><Label>Notes</Label><Input value={decision?.notes || ""} onChange={(e) => setDecision({ ...decision, notes: e.target.value })} data-testid="hist-decision-notes" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDecision(null)}>Cancel</Button>
+            <Button disabled={decision?.penalty_points === "" || Number.isNaN(Number(decision?.penalty_points))} onClick={saveDecision} data-testid="hist-decision-save">Record decision</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1519,6 +1730,7 @@ export default function Admin() {
               <TabsTrigger value="classes" data-testid="tab-classes" className="gap-1.5 py-1.5"><Layers className="w-4 h-4" /> Classes</TabsTrigger>
               <TabsTrigger value="boats" data-testid="tab-boats" className="gap-1.5 py-1.5"><Sailboat className="w-4 h-4" /> Boats</TabsTrigger>
               <TabsTrigger value="series" data-testid="tab-series" className="gap-1.5 py-1.5"><Trophy className="w-4 h-4" /> Series</TabsTrigger>
+              <TabsTrigger value="regattas" data-testid="tab-regattas" className="gap-1.5 py-1.5"><CalendarDays className="w-4 h-4" /> Regattas</TabsTrigger>
               <TabsTrigger value="notices" data-testid="tab-notices" className="gap-1.5 py-1.5"><FileText className="w-4 h-4" /> Notice Board</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="historic" data-testid="tab-historic" className="gap-1.5 py-1.5"><Archive className="w-4 h-4" /> Historic Results</TabsTrigger>
@@ -1537,6 +1749,7 @@ export default function Admin() {
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
           <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
+          <TabsContent value="regattas" className="pt-6"><RegattasTab clubId={clubId} /></TabsContent>
           <TabsContent value="notices" className="pt-6"><NoticeManagementTab clubId={clubId} /></TabsContent>
           <TabsContent value="subscriptions" className="pt-6"><SubscriptionOverview clubId={clubId} /></TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>

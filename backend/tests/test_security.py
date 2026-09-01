@@ -640,12 +640,17 @@ class TestLiveIdor:
     def test_club_a_admin_cannot_read_club_b(self, test_club, club_admin_token, other_club_with_data):
         other = other_club_with_data
         other_cls = other["classes"][0]["id"]
-        # club-scoped reads are forced to the caller's own club
+        # Public read endpoints honour an explicit club_id (their data is
+        # already visible to anonymous callers), so a staff member browsing
+        # another club's public page sees that club's public data — not their
+        # own club's.
         r = requests.get(f"{API}/classes", params={"club_id": other["id"]},
                          headers=h(club_admin_token))
         assert r.status_code == 200
-        assert all(c["club_id"] == test_club["id"] for c in r.json())
-        # class_id-scoped reads of another club's class are rejected outright
+        assert all(c["club_id"] == other["id"] for c in r.json())
+        # ...but class_id-scoped reads of another club's class are still
+        # rejected outright when no club_id is given — staff may never widen
+        # access to another club's resources.
         for path, params in (("/boats", {"class_id": other_cls}),
                              ("/series", {"class_id": other_cls}),
                              ("/races", {"class_id": other_cls})):

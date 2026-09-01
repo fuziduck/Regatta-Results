@@ -144,7 +144,9 @@ const PODIUM_CELL = {
                   <Link to={`/boat/${row.boat_id}`} className="hover:text-ocean transition-colors" data-testid={`boat-sail-link-${row.sail_no}`}>{row.sail_no}</Link> · {row.helm}
                 </div>
               </TableCell>
-              <TableCell className="text-muted-foreground whitespace-nowrap">{row.home_club || "—"}</TableCell>
+              <TableCell className="text-muted-foreground whitespace-nowrap">
+                {row.home_club_slug ? <Link to={`/club/${row.home_club_slug}`} className="hover:text-ocean transition-colors">{row.home_club || "—"}</Link> : (row.home_club || "—")}
+              </TableCell>
               {cols.map((_, j) => {
                 const s = (row.scores || [])[j];
                 if (!s) return <TableCell key={j} className="text-center text-muted-foreground/30">–</TableCell>;
@@ -221,7 +223,9 @@ export function OverallStandingsTable({ data }) {
                   <Link to={`/boat/${row.boat_id}`} className="hover:text-ocean transition-colors" data-testid={`boat-sail-link-${row.sail_no}`}>{row.sail_no}</Link> · {row.helm}
                 </div>
               </TableCell>
-              <TableCell className="text-muted-foreground whitespace-nowrap">{row.home_club || "—"}</TableCell>
+              <TableCell className="text-muted-foreground whitespace-nowrap">
+                {row.home_club_slug ? <Link to={`/club/${row.home_club_slug}`} className="hover:text-ocean transition-colors">{row.home_club || "—"}</Link> : (row.home_club || "—")}
+              </TableCell>
               {data.series_names.map((s) => (
                 <TableCell key={s} className="text-center font-mono text-sm text-muted-foreground hidden md:table-cell">
                   {row.per_series[s] ?? "—"}

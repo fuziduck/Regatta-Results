@@ -34,9 +34,10 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from datetime import datetime, timezone, timedelta
+from datetime import date as _date, datetime, timezone, timedelta
 
 from app.racing.export import normalize_series_export, result_export_lines
+from app.uk_club_names import match_club, _initials, _words
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -515,19 +516,32 @@ def _ensure_club(user: dict, club_id):
         raise HTTPException(status_code=403, detail="Access to this club's data denied")
 
 
-async def _resolve_club_id(request: Request, club_id: Optional[str] = None) -> Optional[str]:
+async def _resolve_club_id(request: Request, club_id: Optional[str] = None,
+                           honor_param: bool = False) -> Optional[str]:
     """The club scope for a request.
 
     - Anonymous callers (public pages): the explicit club_id query param.
     - Race Officer / Race Admin: always their own club — the param can never
       widen access to another club.
     - Webmaster: any club_id param (or None for all clubs).
+
+    Public read endpoints (classes, series, standings, notices, regattas …)
+    pass ``honor_param=True``: the data they serve is already visible to
+    anonymous callers, so a staff member browsing another club's public page
+    must see that club rather than being pinned to their own.
     """
     user = await get_current_user(request)
     if not user:
         return club_id
     if user.get("role") == "webmaster":
         return club_id
+    if honor_param:
+        # Public read endpoint: honour an explicit club_id — the data it
+        # serves is already visible to anonymous callers, so a staff member
+        # browsing another club's public page must see that club rather than
+        # being pinned to their own. Fall back to the caller's own club when
+        # no club_id is given, so staff management views keep working.
+        return club_id if club_id else user.get("club_id")
     return user.get("club_id")
 
 
@@ -793,6 +807,9 @@ class ClubInput(BaseModel):
     name: str
     slug: Optional[str] = None
     color: str = "#0A369D"
+    # Preferred abbreviation (e.g. "MYC" for Medway Yacht Club). When set it
+    # is the highest-priority match when linking free-text club labels.
+    abbr: Optional[str] = None
     # No PIN fields: logins are individual user accounts managed per club.
 
 
@@ -954,9 +971,29 @@ class SeriesInput(BaseModel):
     # PUT /series/{id}/boats by race officers and admins; the edit form never
     # touches it.
     member_boat_ids: Optional[List[str]] = None
+    # When set, this series forms part of the named regatta (the regatta's
+    # id in the regattas collection). A regatta is a separate racing occasion
+    # that groups series across classes; it is never a championship. Races and
+    # results stay on the series — the regatta only references them.
+    regatta_id: Optional[str] = None
     # Optimistic concurrency control: version this edit was based on (see
     # BoatInput.expected_version).
     expected_version: Optional[int] = None
+
+
+class RegattaInput(BaseModel):
+    """A regatta / open-meeting: a racing occasion that groups series across
+    one or more classes. The regatta itself holds no races or results —
+    participating series reference it via their ``regatta_id``."""
+    name: str
+    year: int
+    # Optional presentation metadata for the regatta cards/page.
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    host_club: Optional[str] = None
+    status: Optional[str] = None  # "upcoming" / "in_progress" / "complete"
+    date_label: Optional[str] = None
+    club_id: Optional[str] = None  # webmaster only: which club the regatta belongs to
 
 
 class SeriesBoatsInput(BaseModel):
@@ -2252,6 +2289,42 @@ def _club_public(club: dict) -> dict:
     return {k: v for k, v in club.items() if k not in ("officer_pin", "admin_pin")}
 
 
+async def _club_map_for_display():
+    """id -> {name, slug} for every registered club, for resolving a boat's
+    linked home club in standings rows. Tolerant of stub DBs (unit tests)
+    that have no clubs collection — those simply skip the linking."""
+    try:
+        return {c["id"]: c for c in await db.clubs.find({}, {"_id": 0, "id": 1, "name": 1, "slug": 1}).to_list(1000)}
+    except (AttributeError, TypeError):
+        return {}
+
+
+async def _resolve_home_club(home_club: str, context_club_id: Optional[str] = None):
+    """Link a free-text club label to a registered club, returning its
+    canonical name, id and slug. ``context_club_id`` is the club the boat
+    races at — it wins ties (e.g. "MYC" entered at Medway is Medway Yacht
+    Club). Returns None when nothing matches or the label is ambiguous."""
+    label = (home_club or "").strip()
+    if not label:
+        return None
+    clubs = await db.clubs.find({}, {"_id": 0, "id": 1, "name": 1, "slug": 1, "abbr": 1}).to_list(2000)
+    m = match_club(label, clubs, context_club_id=context_club_id)
+    if not m:
+        return None
+    return {"name": m.get("name"), "club_id": m.get("id"), "slug": m.get("slug")}
+
+
+def _home_club_display(boat: dict, fallback: str, club_map: dict):
+    """The boat's home club as shown in results: the linked club's canonical
+    name (+ slug for linking) when the boat was entered against a registered
+    club (e.g. 'MYC'), otherwise its free-text label."""
+    hid = boat.get("home_club_id")
+    c = club_map.get(hid) if hid else None
+    if c:
+        return c.get("name") or fallback, c.get("slug") or ""
+    return (boat.get("home_club") or fallback), ""
+
+
 @api_router.get("/clubs")
 async def get_clubs():
     clubs = await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
@@ -2395,7 +2468,7 @@ async def create_club(data: ClubInput, user: dict = Depends(require_webmaster)):
     if await db.clubs.find_one({"slug": slug}, {"_id": 0}):
         slug = f"{slug}-{new_id()[:4]}"
     doc = {"id": new_id(), "name": data.name, "slug": slug, "color": data.color,
-           "created_at": now_iso()}
+           "abbr": (data.abbr or "").strip() or None, "created_at": now_iso()}
     await db.clubs.insert_one(doc)
     doc.pop("_id", None)
     logger.info("CLUB CREATE id=%s name=%s by=%s", doc["id"], doc["name"], user.get("username"))
@@ -2410,13 +2483,36 @@ async def update_club(club_id: str, data: ClubInput, user: dict = Depends(requir
     club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
     if not club:
         raise HTTPException(status_code=404, detail="Club not found")
-    update = {"name": data.name, "color": data.color}
+    old_name = club.get("name")
+    update = {"name": data.name, "color": data.color, "abbr": (data.abbr or "").strip() or None}
+    # The handle (URL slug) always derives from the club name, so renaming
+    # the club re-slugs it (an explicit slug override still wins). Keep the
+    # slug unique against any other club that already has it.
     if data.slug:
         update["slug"] = data.slug.lower()
+    else:
+        new_slug = slugify(data.name)
+        if new_slug != club.get("slug"):
+            if await db.clubs.find_one({"slug": new_slug, "id": {"$ne": club_id}}, {"_id": 0}):
+                new_slug = f"{new_slug}-{new_id()[:4]}"
+            update["slug"] = new_slug
     await db.clubs.update_one({"id": club_id}, {"$set": update})
-    logger.info("CLUB UPDATE id=%s by=%s", club_id, user.get("username"))
+    # Everything associated with the club follows the rename: regatta host
+    # club labels and boats whose home club was this club (all other
+    # references are by club_id and resolve the name/slug at read time).
+    if old_name and old_name != data.name:
+        await db.regattas.update_many({"host_club": old_name},
+                                      {"$set": {"host_club": data.name}})
+        await db.boats.update_many({"home_club": old_name},
+                                   {"$set": {"home_club": data.name}})
+        # Boats linked to this club by id follow too (they may have been
+        # entered with the old name or an abbreviation).
+        await db.boats.update_many({"home_club_id": club_id},
+                                   {"$set": {"home_club": data.name}})
+    logger.info("CLUB UPDATE id=%s name=%s->%s slug=%s by=%s", club_id, old_name, data.name,
+                update.get("slug", club.get("slug")), user.get("username"))
     await _log_audit(request=None, user=user, action="CLUB_UPDATED",
-                     description=f"Updated club {club.get('name')}",
+                     description=f"Updated club {old_name} -> {data.name}",
                      resource_type="club", resource_id=club_id, club_id=club_id)
     return _club_public(await db.clubs.find_one({"id": club_id}, {"_id": 0}))
 
@@ -2762,7 +2858,7 @@ async def test_email_settings(data: TestEmailInput, request: Request,
 @api_router.get("/classes")
 async def get_classes(request: Request, club_id: Optional[str] = None):
     q = {}
-    club = await _resolve_club_id(request, club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
     if club:
         q["club_id"] = club
     items = await db.classes.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
@@ -2854,6 +2950,11 @@ async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
     doc["fleet_key"] = key
     doc["created_at"] = now_iso()
     doc["version"] = 1
+    if data.home_club:
+        hc = await _resolve_home_club(data.home_club, cls.get("club_id"))
+        if hc:
+            doc["home_club"] = hc["name"]
+            doc["home_club_id"] = hc["club_id"]
     await db.boats.insert_one(doc)
     doc.pop("_id", None)
     linked = fleet_id != doc["id"]
@@ -2883,6 +2984,11 @@ async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(requir
     update.pop("separate_fleet", None)
     update["fleet_id"] = fleet_id
     update["fleet_key"] = key
+    if data.home_club:
+        hc = await _resolve_home_club(data.home_club, cls.get("club_id"))
+        if hc:
+            update["home_club"] = hc["name"]
+            update["home_club_id"] = hc["club_id"]
     result = await db.boats.update_one(_version_filter(boat_id, expected),
                                        {"$set": update, "$inc": {"version": 1}})
     if result.modified_count == 0:
@@ -2933,10 +3039,12 @@ async def get_series(request: Request, class_id: Optional[str] = None, year: Opt
                     club_id: Optional[str] = None):
     q = {}
     user = await get_current_user(request)
-    if user and user.get("role") != "webmaster" and class_id:
+    # When the request names a club explicitly it's a public page view, so the
+    # class belongs to that club and the staff-scope check does not apply.
+    if user and user.get("role") != "webmaster" and class_id and not club_id:
         # Staff may never enumerate another club's series via a class_id param.
         await _class_visible_or_404(class_id, user)
-    club = await _resolve_club_id(request, club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
     if class_id:
         q["class_id"] = class_id
     elif club:
@@ -3388,6 +3496,154 @@ async def delete_series(series_id: str, request: Request,
                      description=f"Deleted series {series.get('name')}",
                      resource_type="series", resource_id=series_id, club_id=club_id)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Regattas (racing occasions that group series across classes)
+# ---------------------------------------------------------------------------
+def _regatta_status(regatta: dict, race_count: int) -> str:
+    """Derive a display status from dates and published races. Explicitly
+    configured statuses win; otherwise: a past end date with races published
+    is complete, an upcoming start date is upcoming, anything else is in
+    progress."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    start = regatta.get("start_date") or regatta.get("date")
+    end = regatta.get("end_date") or regatta.get("start_date") or regatta.get("date")
+    if race_count > 0 and end and end < today:
+        return "Complete"
+    if start and start > today:
+        return "Upcoming"
+    return "In Progress"
+
+
+def _regatta_date_label(regatta: dict) -> str:
+    start = regatta.get("start_date")
+    end = regatta.get("end_date")
+    if start and end and end != start:
+        return f"{start} – {end}"
+    if start:
+        return start
+    return "Dates to be confirmed"
+
+
+@api_router.get("/regattas")
+async def get_regattas(request: Request, year: Optional[int] = None, club_id: Optional[str] = None):
+    """Regatta cards for a club (optionally a year). Read-only projection:
+    classes and race counts are derived from the participating series' own
+    data — nothing is copied or rewritten."""
+    club = await _resolve_club_id(request, club_id, honor_param=True)
+    q = {"year": year} if year else {}
+    if club:
+        q["club_id"] = club
+    docs = await db.regattas.find(q, {"_id": 0}).sort([("year", -1), ("start_date", 1)]).to_list(1000) if hasattr(db, "regattas") else []
+    for regatta in docs:
+        series = await db.series.find({"regatta_id": regatta.get("id")}, {"_id": 0}).to_list(1000)
+        class_ids = {s.get("class_id") for s in series if s.get("class_id")}
+        classes = await db.classes.find({"id": {"$in": list(class_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000) if class_ids else []
+        races = await db.races.find({"series_id": {"$in": [s.get("id") for s in series]}}, {"_id": 0, "series_id": 1, "status": 1}).to_list(5000)
+        regatta["classes"] = [c.get("name") for c in classes]
+        regatta["class_count"] = len(class_ids)
+        regatta["race_count"] = len([r for r in races if r.get("status") == "published"])
+        regatta["status"] = regatta.get("status") or _regatta_status(regatta, regatta["race_count"])
+        regatta["date_label"] = regatta.get("date_label") or _regatta_date_label(regatta)
+        regatta["host_club"] = regatta.get("host_club") or regatta.get("club_name")
+        regatta["series"] = [{"id": s.get("id"), "class_id": s.get("class_id"),
+                               "name": s.get("name", ""),
+                               "class_name": next((c.get("name") for c in classes if c.get("id") == s.get("class_id")), "Class"),
+                               "race_count": sum(1 for r in races if r.get("series_id") == s.get("id") and r.get("status") == "published")}
+                              for s in series]
+    return docs
+
+
+@api_router.get("/regattas/{regatta_id}")
+async def get_regatta(regatta_id: str, request: Request, club_id: Optional[str] = None):
+    regattas = await get_regattas(request, club_id=club_id)
+    regatta = next((r for r in regattas if r.get("id") == regatta_id), None)
+    if not regatta:
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    # Per-class summary for the regatta overview: series leader (winner),
+    # boats entered and races sailed — computed from the live standings so
+    # the regatta page never duplicates or rewrites race data.
+    series_docs = await db.series.find({"regatta_id": regatta_id}, {"_id": 0}).to_list(1000)
+    for s in regatta.get("series", []):
+        series_doc = next((x for x in series_docs if x.get("id") == s["id"]), None)
+        if not series_doc:
+            continue
+        frozen = await _standings_for_series(series_doc)
+        standings = frozen if frozen is not None else await compute_series_standings(series_doc)
+        rows = standings.get("standings") or []
+        s["boat_count"] = len(rows)
+        s["winner"] = rows[0].get("boat_name") if rows else None
+    return regatta
+
+
+@api_router.post("/regattas")
+async def create_regatta(data: RegattaInput, request: Request, user: dict = Depends(require_admin)):
+    club_id = await _resolve_club_id(request, data.club_id)
+    if not club_id:
+        raise HTTPException(status_code=400, detail="A club is required")
+    doc = data.model_dump()
+    doc.pop("club_id", None)
+    doc["id"] = new_id()
+    doc["club_id"] = club_id
+    doc["created_at"] = now_iso()
+    await db.regattas.insert_one(doc)
+    doc.pop("_id", None)
+    await _log_audit(request=request, user=user, action="REGATTA_CREATED",
+                     description=f"Created regatta {data.name} ({data.year})",
+                     resource_type="regatta", resource_id=doc["id"], club_id=club_id)
+    return doc
+
+
+@api_router.put("/regattas/{regatta_id}")
+async def update_regatta(regatta_id: str, data: RegattaInput, request: Request,
+                         user: dict = Depends(require_admin)):
+    regatta = await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
+    if not regatta:
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    club_id = await _resolve_club_id(request, data.club_id or regatta.get("club_id"))
+    if club_id != regatta.get("club_id") and user.get("role") != "webmaster":
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    update = data.model_dump()
+    update.pop("club_id", None)
+    await db.regattas.update_one({"id": regatta_id}, {"$set": update})
+    await _log_audit(request=request, user=user, action="REGATTA_UPDATED",
+                     description=f"Updated regatta {data.name}",
+                     resource_type="regatta", resource_id=regatta_id, club_id=regatta.get("club_id"))
+    return await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
+
+
+@api_router.delete("/regattas/{regatta_id}")
+async def delete_regatta(regatta_id: str, request: Request, user: dict = Depends(require_admin)):
+    regatta = await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
+    if not regatta:
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    club_id = await _resolve_club_id(request, regatta.get("club_id"))
+    if club_id != regatta.get("club_id") and user.get("role") != "webmaster":
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    await db.regattas.delete_one({"id": regatta_id})
+    # Unlink the series that referenced it — their races and results stay
+    # untouched; they simply become standalone series again.
+    await db.series.update_many({"regatta_id": regatta_id}, {"$unset": {"regatta_id": ""}})
+    await _log_audit(request=request, user=user, action="REGATTA_DELETED",
+                     description=f"Deleted regatta {regatta.get('name')}",
+                     resource_type="regatta", resource_id=regatta_id, club_id=regatta.get("club_id"))
+    return {"ok": True}
+
+
+@api_router.put("/regattas/{regatta_id}/thumbnail")
+async def upload_regatta_thumbnail(regatta_id: str, request: Request,
+                                   user: dict = Depends(require_admin),
+                                   file: UploadFile = File(...)):
+    regatta = await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
+    if not regatta:
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    club_id = await _resolve_club_id(request, regatta.get("club_id"))
+    if club_id != regatta.get("club_id") and user.get("role") != "webmaster":
+        raise HTTPException(status_code=404, detail="Regatta not found")
+    data = await _read_advert_image(file)
+    await db.regattas.update_one({"id": regatta_id}, {"$set": {"thumbnail": data}})
+    return {"id": regatta_id, "thumbnail": data}
 
 
 # ---------------------------------------------------------------------------
@@ -4464,7 +4720,7 @@ async def full_image_backup(request: Request, user: dict = Depends(require_webma
 @api_router.get("/notifications")
 async def get_notifications(request: Request, club_id: Optional[str] = None):
     q = {"status": {"$in": ["setup", "provisional"]}}
-    club = await _resolve_club_id(request, club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
     if club:
         ids = await _club_class_ids(club)
         if not ids:
@@ -5242,6 +5498,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
     agg, boat_map, race_meta, cfg, races = await _series_scores(
         series, race_numbers, fold_combined=(race_numbers is None))
     club_name = await _club_name_of_class(series.get("class_id"))
+    club_map = await _club_map_for_display()
     race_count = len(race_meta)
     # A mini-series view of a group configured as "combined" also reports the
     # group's daily average per boat (after the group's own discards), so the
@@ -5281,12 +5538,14 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
         a8_1, a8_2 = _a8_tiebreak(entries, drop)
         scores = [{"points": round(e["points"], 1), "code": e["code"], "discarded": i in drop}
                   for i, e in enumerate(entries)]
+        home_name, home_slug = _home_club_display(b, club_name, club_map)
         row = {
             "boat_id": bid,
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
-            "home_club": b.get("home_club") or club_name,
+            "home_club": home_name,
+            "home_club_slug": home_slug,
             "net": round(net, 1),
             "total": round(total, 1),
             "scores": scores,
@@ -5655,7 +5914,7 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     series = await db.series.find_one({"id": series_id}, {"_id": 0})
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
-    club = await _resolve_club_id(request, club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
     if club and (await _class_club_id(series.get("class_id"))) != club:
         raise HTTPException(status_code=404, detail="Series not found")
     if mini is None:
@@ -5704,6 +5963,7 @@ async def compute_overall_standings(class_id: str, year: int):
             all_series = sole
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
     club_name = await _club_name_of_class(class_id)
+    club_map = await _club_map_for_display()
     boat_map = {b["id"]: b for b in boats}
     totals = {}
     totals_gross = {}
@@ -5785,12 +6045,14 @@ async def compute_overall_standings(class_id: str, year: int):
         # most recent series backwards.
         a8_1 = sorted(counting)
         a8_2 = list(reversed(counting))
+        home_name, home_slug = _home_club_display(b, club_name, club_map)
         rows.append({
             "boat_id": bid,
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
-            "home_club": b.get("home_club") or club_name,
+            "home_club": home_name,
+            "home_club_slug": home_slug,
             "net": round(total, 1),
             "total": round(totals_gross.get(bid, total), 1),
             "per_series": {k: round(v, 1) for k, v in per_series_nets[bid].items()},
@@ -5810,7 +6072,7 @@ async def compute_overall_standings(class_id: str, year: int):
 
 @api_router.get("/standings/overall")
 async def overall_standings(class_id: str, year: int, request: Request, club_id: Optional[str] = None):
-    club = await _resolve_club_id(request, club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
     if club and (await _class_club_id(class_id)) != club:
         raise HTTPException(status_code=404, detail="Class not found")
     return await compute_overall_standings(class_id, year)
@@ -5883,8 +6145,18 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
     clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
 
-    # Clubs: name or slug.
-    club_rows = await db.clubs.find({"$or": [{"name": rx}, {"slug": rx}]}, {"_id": 0}).to_list(100)
+    # Clubs: name, slug or configured abbreviation.
+    club_rows = await db.clubs.find({"$or": [{"name": rx}, {"slug": rx}, {"abbr": rx}]}, {"_id": 0}).to_list(100)
+    # Plus abbreviation-by-initials: "MYC" finds "Medway Yacht Club" even
+    # when no abbreviation is configured (initials of the registered name).
+    q_letters = re.sub(r"[^a-z0-9]+", "", (q or "").lower())
+    if 2 <= len(q_letters) <= 8 and rx:
+        for c in clubs.values():
+            if _initials(_words(c.get("name") or "")) == q_letters and \
+               not rx.search(c.get("name") or "") and not rx.search(c.get("slug") or "") and \
+               not rx.search(c.get("abbr") or "") and \
+               not any(x["id"] == c["id"] for x in club_rows):
+                club_rows.append(c)
     club_out = []
     for c in club_rows:
         n_classes = sum(1 for x in classes.values() if x.get("club_id") == c["id"])
@@ -5990,6 +6262,7 @@ async def fleet_profile(fleet_id: str):
                 boat_results_by_series.setdefault(sid, []).append(res)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
     clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    series_payloads = {}
     series_out = []
     for sid in sorted(series_ids):
         series = series_docs.get(sid)
@@ -6000,6 +6273,7 @@ async def fleet_profile(fleet_id: str):
             standings = frozen if frozen is not None else await compute_series_standings(series)
         except HTTPException:
             continue
+        series_payloads[sid] = standings
         row = next((r for r in standings.get("standings", []) if r["boat_id"] in ids), None)
         if row is None:
             continue
@@ -6032,6 +6306,7 @@ async def fleet_profile(fleet_id: str):
                                    x.get("series_name") or ""), reverse=True)
     # Overall championship position per class+year the boat raced in.
     overall = []
+    overall_payloads = {}
     seen_cy = set()
     for s in series_out:
         cy = (s.get("class_id"), s.get("year"))
@@ -6042,6 +6317,7 @@ async def fleet_profile(fleet_id: str):
             payload = await compute_overall_standings(s["class_id"], s["year"])
         except HTTPException:
             continue
+        overall_payloads[cy] = payload
         row = next((r for r in payload.get("standings", []) if r["boat_id"] in ids), None)
         if row:
             overall.append({"class_id": s.get("class_id"), "class_name": s["class_name"],
@@ -6061,8 +6337,143 @@ async def fleet_profile(fleet_id: str):
             "year": m.get("year"), "helm": m.get("helm"), "home_club": m.get("home_club"),
         })
     records.sort(key=lambda r: (r["club_name"], r["class_name"], r["year"] or 0))
+    # ---- Per-season profile -------------------------------------------------
+    # For every class+year the boat raced: summary stats, a preview of the
+    # championship standings, the race-by-race history (with running totals)
+    # and upcoming scheduled races. Everything is derived from the same
+    # standings the results pages show — nothing is recomputed or duplicated.
+    DID_NOT_SAIL = {"DNC", "DNS"}
+    today = _date.today().isoformat()
+    member_by_cy = {(m.get("class_id"), m.get("year")): m for m in members}
+    seasons = []
+    for s in series_out:
+        cy = (s.get("class_id"), s.get("year"))
+        if any(x.get("class_id") == s.get("class_id") and x.get("year") == s.get("year") for x in seasons):
+            continue
+        member = member_by_cy.get(cy) or primary
+        season_series = [x for x in series_out
+                         if x.get("class_id") == s.get("class_id") and x.get("year") == s.get("year")]
+        # Race history from the series standings payloads (same races/tables
+        # the results pages show), then running Total / Net in date order.
+        history = []
+        for ss in sorted(season_series, key=lambda x: (x.get("series_name") or "")):
+            payload = series_payloads.get(ss["series_id"])
+            if not payload:
+                continue
+            meta = payload.get("races") or []
+            rows = payload.get("standings") or []
+            myrow = next((r for r in rows if r.get("boat_id") in ids), None)
+            if not myrow:
+                continue
+            scores = myrow.get("scores") or []
+            race_docs = {int(r.get("race_number") or 0): r for r in races if r.get("series_id") == ss["series_id"]}
+            for i, m in enumerate(meta):
+                sc = scores[i] if i < len(scores) else None
+                points = round(float((sc or {}).get("points", 0.0)), 1)
+                code = (sc or {}).get("code", "DNC")
+                discarded = bool((sc or {}).get("discarded"))
+                rdoc = race_docs.get(int(m.get("race_number") or 0)) or {}
+                boat_res = next((x for x in (rdoc.get("results") or []) if x.get("boat_id") in ids), None)
+                position = (boat_res or {}).get("position")
+                if position is None and code not in DID_NOT_SAIL:
+                    # TLE / penalty / redress boats carry points but no stored
+                    # position — rank them by points among those who raced.
+                    raced_points = []
+                    for r in rows:
+                        if r.get("boat_id") in ids:
+                            continue
+                        rs = r.get("scores") or []
+                        if i < len(rs) and (rs[i].get("code") or "DNC") not in DID_NOT_SAIL:
+                            raced_points.append(float(rs[i].get("points", 0)))
+                    position = 1 + sum(1 for p in raced_points if p < points)
+                history.append({
+                    "series_id": ss["series_id"], "series_name": ss["series_name"],
+                    "race_number": m.get("race_number"), "date": m.get("date"),
+                    "position": position, "code": None if position is not None else code,
+                    "points": points, "discarded": discarded,
+                })
+        history.sort(key=lambda h: (h.get("date") or "", h.get("series_name") or "", h.get("race_number") or 0))
+        gross = 0.0
+        net = 0.0
+        for h in history:
+            gross += h["points"]
+            net += 0 if h["discarded"] else h["points"]
+            h["total"] = round(gross, 1)
+            h["net"] = round(net, 1)
+        # Season stats (positions where the boat finished, points across every
+        # race it sailed).
+        sailed = [h for h in history if (h.get("code") or "") not in DID_NOT_SAIL]
+        finished = [h for h in history if h.get("position") is not None]
+        positions = [h["position"] for h in finished]
+        stats = {
+            "races_total": len(history),
+            "races_sailed": len(sailed),
+            "wins": sum(1 for p in positions if p == 1),
+            "seconds": sum(1 for p in positions if p == 2),
+            "thirds": sum(1 for p in positions if p == 3),
+            "podiums": sum(1 for p in positions if p <= 3),
+            "avg_position": round(sum(positions) / len(positions), 1) if positions else None,
+            "completion_rate": round(100.0 * len(finished) / len(history), 0) if history else 0,
+            "avg_points": round(sum(h["points"] for h in sailed) / len(sailed), 1) if sailed else None,
+            "best": min(positions) if positions else None,
+            "worst": max(positions) if positions else None,
+            "discards": sum(1 for h in history if h["discarded"]),
+        }
+        # Championship preview: the top rows with leader / behind gaps.
+        preview = []
+        ov = overall_payloads.get(cy)
+        if ov:
+            leader_net = None
+            prev_net = None
+            for r in ov.get("standings", [])[:3]:
+                netv = r.get("net")
+                if leader_net is None:
+                    leader_net = netv
+                preview.append({
+                    "rank": r.get("rank"), "boat_name": r.get("boat_name"),
+                    "sail_no": r.get("sail_no"), "club_name": r.get("home_club"),
+                    "club_slug": r.get("home_club_slug"),
+                    "races": len(history), "total": r.get("total"), "net": netv,
+                    "leader": None if r.get("rank") == 1 else round(leader_net - netv, 1),
+                    "behind": None if r.get("rank") == 1 else round(prev_net - netv, 1),
+                })
+                prev_net = netv
+        # Upcoming scheduled races for the season's series.
+        upcoming = []
+        for ss in season_series:
+            sdoc = series_docs.get(ss["series_id"])
+            if not sdoc:
+                continue
+            for i, d in enumerate(sdoc.get("schedule") or []):
+                if d and str(d) >= today:
+                    upcoming.append({"series_name": ss["series_name"], "race_number": i + 1, "date": str(d)})
+        upcoming.sort(key=lambda u: (u["date"], u["series_name"]))
+        ov_row = next((x for x in overall
+                       if x.get("class_id") == s.get("class_id") and x.get("year") == s.get("year")), None)
+        seasons.append({
+            "class_id": s.get("class_id"), "class_name": s["class_name"],
+            "club_name": s["club_name"], "club_slug": s.get("club_slug"), "year": s["year"],
+            "boat_id": member.get("id"),
+            "overall": ov_row,
+            "qualified": bool(ov_row and ov_row.get("rank") == 1),
+            "stats": stats, "standings_preview": preview,
+            "race_history": history[-12:][::-1], "upcoming": upcoming[:6],
+            "boat_info": {
+                "name": member.get("name"), "sail_no": member.get("sail_no"),
+                "class_name": s["class_name"], "club_name": s["club_name"],
+                "helm": member.get("helm"),
+                "home_club": (clubs.get(member.get("home_club_id")) or {}).get("name") or member.get("home_club"),
+                "home_club_slug": (clubs.get(member.get("home_club_id")) or {}).get("slug") or "",
+                "boat_type": member.get("boat_type"), "py": member.get("py"), "tcc": member.get("tcc"),
+            },
+        })
+    seasons.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
     return {"fleet_id": fleet_id, "name": primary.get("name"), "sail_no": primary.get("sail_no"),
-            "records": records, "series": series_out, "overall": overall}
+            "boat": {"helm": primary.get("helm"),
+                      "home_club": (clubs.get(primary.get("home_club_id")) or {}).get("name") or primary.get("home_club"),
+                      "home_club_slug": (clubs.get(primary.get("home_club_id")) or {}).get("slug") or "",
+                      "boat_type": primary.get("boat_type"), "py": primary.get("py"), "tcc": primary.get("tcc")},
+            "records": records, "series": series_out, "overall": overall, "seasons": seasons}
 
 
 @api_router.get("/rrs-codes")
@@ -6073,7 +6484,7 @@ async def rrs_codes():
 @api_router.get("/scheduled-races")
 async def scheduled_races(request: Request, date: Optional[str] = None, club_id: Optional[str] = None):
     q = {}
-    club = await _resolve_club_id(request, club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
     if club:
         ids = await _club_class_ids(club)
         if not ids:
@@ -7116,7 +7527,7 @@ class NoticeWithdrawInput(BaseModel):
 
 @api_router.get("/notice-boards")
 async def list_notice_boards(request: Request, club_id: Optional[str] = None):
-    scope = await _resolve_club_id(request, club_id)
+    scope = await _resolve_club_id(request, club_id, honor_param=True)
     if not scope:
         raise HTTPException(status_code=400, detail="club_id is required")
     club = await db.clubs.find_one({"id": scope}, {"_id": 0, "official_notice_board": 1})
@@ -7219,7 +7630,7 @@ async def delete_notice_area(club_id: str, title: str, request: Request,
 
 @api_router.get("/notice-areas")
 async def list_notice_areas(request: Request, club_id: Optional[str] = None):
-    scope = await _resolve_club_id(request, club_id)
+    scope = await _resolve_club_id(request, club_id, honor_param=True)
     if not scope:
         raise HTTPException(status_code=400, detail="club_id is required")
     club = await db.clubs.find_one({"id": scope}, {"_id": 0, "notice_areas": 1})
@@ -7261,7 +7672,7 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
     listed. Signed-in staff of the club (or the webmaster) additionally see
     drafts and can filter by status / root, for the management views."""
     user = await get_current_user(request)
-    scope = await _resolve_club_id(request, club_id)
+    scope = await _resolve_club_id(request, club_id, honor_param=True)
     club_settings = await db.clubs.find_one({"id": scope}, {"_id": 0, "official_notice_board": 1}) if scope else None
     onb_enabled = not club_settings or club_settings.get("official_notice_board") is not False
     if not scope:

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
@@ -15,7 +15,7 @@ import CopyLinkButton from "@/components/CopyLinkButton";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
-import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download } from "lucide-react";
+import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
@@ -257,6 +257,13 @@ export default function Landing() {
   const seriesParamRef = useRef(searchParams.get("series"));
   const [overall, setOverall] = useState(null);
   const [seriesData, setSeriesData] = useState({});
+  const [regattas, setRegattas] = useState([]);
+  const [clubSeries, setClubSeries] = useState([]);
+  // Two ways to browse the year: the club's championships (class → series →
+  // results) or its regattas (regatta → the classes that raced in it).
+  const [view, setView] = useState("championship");
+  const [regattaId, setRegattaId] = useState(null);
+  const [regattaDetail, setRegattaDetail] = useState(null);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -299,6 +306,54 @@ export default function Landing() {
     api.overallStandings(activeClass, year, clubId).then(setOverall).catch(() => setOverall(null));
   }, [clubId, activeClass, year]);
 
+  // Regattas are club-wide racing occasions (across classes), independent of
+  // the active class — load them for the selected year once.
+  useEffect(() => {
+    if (!clubId) return;
+    api.getRegattas({ year, club_id: clubId }).then(setRegattas).catch(() => setRegattas([]));
+  }, [clubId, year]);
+
+  // Club-wide series for the year: tells us whether this club runs
+  // championships at all (vs. racing only regattas). Independent of the
+  // active class, since a single class may only race regattas while others
+  // race championships.
+  useEffect(() => {
+    if (!clubId) return;
+    api.getSeries({ year, club_id: clubId }).then(setClubSeries).catch(() => setClubSeries([]));
+  }, [clubId, year]);
+
+  // Hide the Championship/Regattas toggle when the club only has one kind of
+  // racing for the shown year, and default to the kind it actually has.
+  const hasRegattas = regattas.length > 0;
+  const hasChampionships = clubSeries.some((s) => !s.regatta_id);
+  const showViewToggle = hasRegattas && hasChampionships;
+  useEffect(() => {
+    if (hasRegattas && !hasChampionships) setView("regattas");
+    else if (!hasRegattas && view === "regattas") setView("championship");
+  }, [hasRegattas, hasChampionships]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Default the Regattas view to the first regatta of the year.
+  useEffect(() => {
+    if (regattas.length === 0) { setRegattaId(null); return; }
+    setRegattaId((prev) => (prev && regattas.some((r) => r.id === prev) ? prev : regattas[0].id));
+  }, [regattas]);
+
+  // Per-class summary for the selected regatta (winner / races / boats),
+  // computed by the backend from the live standings — never duplicated.
+  useEffect(() => {
+    if (view !== "regattas" || !clubId || !regattaId) return;
+    api.getRegatta(regattaId, { club_id: clubId }).then(setRegattaDetail).catch(() => setRegattaDetail(null));
+  }, [view, clubId, regattaId]);
+
+  const regattaClasses = useMemo(() => {
+    const seen = [];
+    (regattaDetail?.series || []).forEach((s) => {
+      if (s.class_name && !seen.includes(s.class_name)) seen.push(s.class_name);
+    });
+    return seen;
+  }, [regattaDetail]);
+  const seriesOf = (cn) => (regattaDetail?.series || []).filter((s) => s.class_name === cn);
+
   useEffect(() => { setActiveMini(null); }, [activeSeries]);
 
   useEffect(() => {
@@ -319,12 +374,20 @@ export default function Landing() {
       .catch(() => {});
   }, [clubId, activeClass, activeSeries, activeMini, seriesData]);
 
+  // Series linked to a regatta are that regatta's racing, not a championship:
+  // they stay out of the championship tabs below (the regatta section and its
+  // own page show them instead). A class whose series are ALL regattas still
+  // shows its standings in the results block — the nav model just sees the
+  // full series list for that case.
+  const championshipSeries = series.filter((s) => !s.regatta_id);
+  const displaySeries = championshipSeries.length > 0 ? championshipSeries : series;
+
   // Navigation model for the year's series: a single-series year shows that
   // series directly (no redundant Overall tab, no "(excl.)" label); with
   // multiple series the Overall tab appears when the overall championship has
   // rows and stays the default. See seriesNavModel for the rules.
   const hasOverall = !!(overall && overall.standings && overall.standings.length > 0);
-  const nav = seriesNavModel(series, hasOverall);
+  const nav = seriesNavModel(displaySeries, hasOverall);
   useEffect(() => {
     if (series.length === 0) return;
     // Deep link from the site search: land on the requested series once.
@@ -336,15 +399,15 @@ export default function Landing() {
     // Single-series year: land straight on the series, whatever the overall
     // payload says (it would only repeat the same standings).
     if (nav.single) {
-      if (activeSeries !== series[0].id) setActiveSeries(series[0].id);
+      if (activeSeries !== displaySeries[0].id) setActiveSeries(displaySeries[0].id);
       return;
     }
     // Multi-series year: wait for the overall result to decide whether the
     // Overall tab exists, then land on a valid tab.
     if (overall === null) return; // overall not loaded yet
     const valid = nav.showOverall
-      ? ["overall", ...series.map((s) => s.id)]
-      : series.map((s) => s.id);
+      ? ["overall", ...displaySeries.map((s) => s.id)]
+      : displaySeries.map((s) => s.id);
     if (!valid.includes(activeSeries)) setActiveSeries(nav.defaultTab);
   }, [series, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
 
@@ -418,7 +481,24 @@ export default function Landing() {
 
           <BoatSearchBox />
 
-            {classes.length > 0 && (
+          {/* Browse the year's racing two ways: championships (class → series)
+              or regattas (racing occasions across classes). The toggle only
+              appears when the club has both — a club racing only one kind
+              shows its results directly. */}
+          {showViewToggle && (
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2" data-testid="results-view-toggle">
+              <button type="button" onClick={() => setView("championship")} data-testid="view-championship-btn"
+                className={`px-5 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${view === "championship" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
+                <Trophy className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Championship
+              </button>
+              <button type="button" onClick={() => setView("regattas")} data-testid="view-regattas-btn"
+                className={`px-5 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${view === "regattas" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
+                <CalendarDays className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Regattas
+              </button>
+            </div>
+          )}
+
+          {view === "championship" && classes.length > 0 && (
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
@@ -438,7 +518,7 @@ export default function Landing() {
             </div>
           )}
 
-          {activeClass && series.length > 0 && (
+          {view === "championship" && activeClass && championshipSeries.length > 0 && (
             <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
@@ -452,7 +532,7 @@ export default function Landing() {
                       Overall
                     </TabsTrigger>
                   )}
-                  {series.map((s) => (
+                  {championshipSeries.map((s) => (
                   <TabsTrigger key={s.id} value={s.id}
                     className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
                       {s.name}{nav.showExcl(s) && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
@@ -460,6 +540,22 @@ export default function Landing() {
                   ))}
                 </TabsList>
               </Tabs>
+            </div>
+          )}
+
+          {view === "regattas" && regattas.length > 0 && (
+            <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="regatta-tabs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Regatta</span>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {regattas.map((r) => (
+                  <button key={r.id} type="button" onClick={() => setRegattaId(r.id)} data-testid={`regatta-tab-${r.name}`}
+                    className={`px-4 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${regattaId === r.id ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
+                    {r.name}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -517,48 +613,100 @@ export default function Landing() {
           </div>
         )}
 
-        <div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
-              <div>
-                <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
-                <p className="text-muted-foreground text-sm">Each fleet races its own series and overall championship.</p>
+        {view === "championship" && (
+          <div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
+                <div>
+                  <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
+                  <p className="text-muted-foreground text-sm">Each fleet races its own series and overall championship.</p>
+                </div>
+                {/* Sponsor adverts sit beside the section heading, on the right. */}
+                {sideAdverts.length > 0 && (
+                  <div className="flex flex-wrap gap-4" data-testid="section-adverts">
+                    {sideAdverts.map((a) => (
+                      <div key={a.id} className="w-48 md:w-56">
+                        <AdvertCard advert={a} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              {/* Sponsor adverts sit beside the section heading, on the right. */}
-              {sideAdverts.length > 0 && (
-                <div className="flex flex-wrap gap-4" data-testid="section-adverts">
-                  {sideAdverts.map((a) => (
-                    <div key={a.id} className="w-48 md:w-56">
-                      <AdvertCard advert={a} />
+
+              {classes.length === 0 ? (
+                <p className="text-muted-foreground">No classes set up yet.</p>
+              ) : !activeClass ? (
+                <p className="text-muted-foreground">Loading classes…</p>
+              ) : (
+                <ClassResults
+                  classId={activeClass}
+                  clubId={clubId}
+                  year={year}
+                  clubName={club.name}
+                  className={(classes.find((c) => c.id === activeClass) || {}).name}
+                  clubIcon={club.icon}
+                  series={displaySeries}
+                  activeSeries={activeSeries}
+                  activeMini={activeMini}
+                  setActiveMini={setActiveMini}
+                  adverts={adverts}
+                  overall={overall}
+                  seriesData={seriesData}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        {view === "regattas" && (
+          <div data-testid="regatta-results">
+            {regattas.length === 0 ? (
+              <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
+                <p className="font-heading text-xl uppercase tracking-tight">No regattas for {year}</p>
+                <p className="text-muted-foreground text-sm mt-1">Regattas and open meetings will appear here once set up.</p>
+              </div>
+            ) : !regattaDetail ? (
+              <p className="text-muted-foreground py-6">Loading regatta…</p>
+            ) : (
+              <div className="pt-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <h2 className="font-heading uppercase tracking-tight text-2xl text-ocean">{regattaDetail.name}</h2>
+                      <Badge variant="outline">{regattaDetail.status || "Complete"}</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {regattaDetail.date_label && <span className="inline-flex items-center gap-1 mr-4"><CalendarDays className="w-4 h-4" />{regattaDetail.date_label}</span>}
+                      {regattaDetail.host_club && <span className="inline-flex items-center gap-1"><MapPin className="w-4 h-4" />{regattaDetail.host_club}</span>}
+                    </p>
+                  </div>
+                  <Link to={`/club/${club.slug}/regatta/${regattaId}`}>
+                    <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0">
+                      View full regatta results <ArrowRight className="w-4 h-4" />
+                    </Button>
+                  </Link>
+                </div>
+                <div className="grid gap-5 md:grid-cols-2">
+                  {regattaClasses.map((cn) => (
+                    <div key={cn} className="rounded-2xl border border-border bg-card p-5">
+                      <div className="font-heading text-lg uppercase tracking-tight flex items-center gap-2"><Trophy className="w-4 h-4 text-ocean" />{cn}</div>
+                      {seriesOf(cn).map((s) => (
+                        <div key={s.id} className="mt-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{s.name !== regattaDetail.name ? s.name : "Overall"}</div>
+                          <div className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-sm">
+                            <span><span className="text-muted-foreground">Winner:</span> <strong>{s.winner || "—"}</strong></span>
+                            <span className="text-muted-foreground">{s.race_count} races</span>
+                            <span className="text-muted-foreground">{s.boat_count} boats</span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-
-            {classes.length === 0 ? (
-              <p className="text-muted-foreground">No classes set up yet.</p>
-            ) : !activeClass ? (
-              <p className="text-muted-foreground">Loading classes…</p>
-            ) : (
-              <ClassResults
-                classId={activeClass}
-                clubId={clubId}
-                year={year}
-                clubName={club.name}
-                className={(classes.find((c) => c.id === activeClass) || {}).name}
-                clubIcon={club.icon}
-                series={series}
-                activeSeries={activeSeries}
-                activeMini={activeMini}
-                setActiveMini={setActiveMini}
-                adverts={adverts}
-                overall={overall}
-                seriesData={seriesData}
-              />
+              </div>
             )}
           </div>
-        </div>
+        )}
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">

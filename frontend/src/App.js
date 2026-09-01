@@ -6,6 +6,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Clubs from "@/pages/Clubs";
 import Landing from "@/pages/Landing";
+import Regatta from "@/pages/Regatta";
 import Boats from "@/pages/Boats";
 import Boat from "@/pages/Boat";
 import Login from "@/pages/Login";
@@ -43,6 +44,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Clubs />} />
             <Route path="/club/:slug" element={<Landing />} />
+            <Route path="/club/:slug/regatta/:regattaId" element={<Regatta />} />
             <Route path="/club/:slug/notice-board" element={<NoticeBoardPage />} />
             <Route path="/boats" element={<Boats />} />
             <Route path="/boat/:fleetId" element={<Boat />} />

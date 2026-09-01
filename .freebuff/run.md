@@ -173,12 +173,25 @@ webmaster account).
 
 ### Security model notes (backups & restores)
 
-- Backups (`GET /admin/backup`) and restores require the webmaster session;
-  2FA is enforced at login, not per-request, so a live webmaster session can
-  still back up or restore without re-authenticating. Revoke a stolen
-  session by rotating `JWT_SECRET` or deleting the session in Mongo.
-- Backup export already strips secrets (passcode hashes, TOTP secret, emails)
-  via `BACKUP_SECRET_KEYS`, so a downloaded backup cannot leak credentials.
+- Backups and restores require the webmaster session; 2FA is enforced at
+  login, not per-request, so a live webmaster session can still back up or
+  restore without re-authenticating. Revoke a stolen session by rotating
+  `JWT_SECRET` or deleting the session in Mongo.
+- The webmaster creates a backup **passphrase in the Backups UI** when
+  downloading (generate + confirm). That passphrase AES-encrypts that archive
+  (PBKDF2 + AES-256-GCM), and the same value is re-entered to restore. It is
+  never stored server-side — only sent per-request. Encrypted backups carry
+  the salted passcode hashes so a restore brings sign-in passcodes across
+  with no manual resets.
+- Plaintext backups (no passphrase) still strip credentials via
+  `BACKUP_SECRET_KEYS` (passcode hashes, TOTP secret, emails) so a leaked
+  archive cannot inject accounts.
+- API: downloads are `POST /admin/backup` (webmaster) / `POST /backup`
+  (club admin) with a JSON body `{ club_id?, passphrase? }` returning the zip
+  (never a GET with the passphrase in the URL). Restore is
+  `POST /admin/backup/restore` (multipart `file` + optional `passphrase`
+  form field). The GET backup endpoints remain as legacy plaintext. An empty
+ / env `BACKUP_PASSPHRASE` value acts as a server-side fallback key.
 
 Gotcha (2026-08-22): running a bare `npm run build` **without**
 `REACT_APP_BACKEND_URL` bakes `undefined/api` into the bundle — every page

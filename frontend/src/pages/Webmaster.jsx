@@ -17,7 +17,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { toast } from "sonner";
 import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock, Eye, EyeOff, Copy } from "lucide-react";
 
-const blank = { name: "", color: "#0A369D" };
+const blank = { name: "", color: "#0A369D", abbr: "" };
+const slugify = (name) => (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "club";
 
 function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
   return (
@@ -31,7 +32,7 @@ function ClubCard({ club, onEdit, onDelete, onConsole, onLogins }) {
         </div>
       </div>
       <div className="mt-3">
-        <div className="font-heading text-2xl uppercase tracking-tight leading-tight break-words">{club.name}</div>
+        <div className="font-heading text-2xl uppercase tracking-tight leading-tight break-words">{club.name}{club.abbr ? <span className="ml-2 align-middle text-sm font-sans font-semibold text-ocean dark:text-ocean-light">({club.abbr})</span> : null}</div>
         <div className="text-xs text-muted-foreground mt-1 font-mono break-all">/{club.slug}</div>
       </div>
       <div className="mt-5 grid grid-cols-2 gap-2">
@@ -399,7 +400,7 @@ export default function Webmaster() {
   };
   const edit = (c) => {
     setEditing(c.id);
-    setForm({ name: c.name, color: c.color || "#0A369D" });
+    setForm({ name: c.name, color: c.color || "#0A369D", abbr: c.abbr || "" });
     setOpen(true);
   };
   const del = async (c) => {
@@ -515,8 +516,22 @@ export default function Webmaster() {
             <DialogContent>
               <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} club</DialogTitle></DialogHeader>
               <div className="space-y-3">
-                <div className="space-y-1.5"><Label>Club name</Label><Input data-testid="club-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Seafarers Sailing Club" /></div>
+                <div className="space-y-1.5"><Label>Club name</Label><Input data-testid="club-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Seafarers Sailing Club" />
+                  {editing && (() => {
+                    const orig = clubs.find((c) => c.id === editing);
+                    const unchanged = orig && form.name.trim() === orig.name;
+                    return (
+                      <p className="text-xs text-muted-foreground">
+                        URL handle: <span className="font-mono">/{slugify(form.name)}</span>
+                        {!unchanged && <span className="text-amber-600 dark:text-amber-400"> — this will change when you save</span>}
+                      </p>
+                    );
+                  })()}
+                </div>
                 <div className="space-y-1.5"><Label>Colour</Label><Input type="color" data-testid="club-color-input" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="h-12 p-1" /></div>
+                <div className="space-y-1.5"><Label>Abbreviation <span className="text-muted-foreground normal-case text-xs">(optional)</span></Label><Input data-testid="club-abbr-input" value={form.abbr || ""} onChange={(e) => setForm({ ...form, abbr: e.target.value })} placeholder="e.g. MYC" maxLength={12} />
+                  <p className="text-xs text-muted-foreground">How this club is usually written short (e.g. "MYC" for Medway Yacht Club). Used to link boat home clubs entered as abbreviations.</p>
+                </div>
                 <p className="text-xs text-muted-foreground">Logins are individual accounts — manage them from the club's "Manage logins" button after creating the club.</p>
               </div>
               <DialogFooter><Button onClick={save} data-testid="save-club-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
