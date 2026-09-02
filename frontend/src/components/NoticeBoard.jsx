@@ -230,7 +230,7 @@ function NoticeCard({ notice, open, onToggle, clubId }) {
   );
 }
 
-export default function NoticeBoard({ clubId, embedded = false, sectionId = null }) {
+export default function NoticeBoard({ clubId, embedded = false, sectionId = null, boardId = null }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [notices, setNotices] = useState(null);
   // The club's configured ONB areas in display order (null when unavailable).
@@ -250,9 +250,9 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
     // club's notices would render until this fetch resolves. Never show the
     // wrong club's notices, even transiently.
     setNotices(null); setAreas(null); setActiveArea(null);
-    api.getNotices({ club_id: clubId, ...(sectionId ? { section_id: sectionId } : {}) }).then(setNotices).catch(() => setNotices([]));
+    api.getNotices({ club_id: clubId, ...(boardId ? { board_id: boardId } : {}), ...(sectionId ? { section_id: sectionId } : {}) }).then(setNotices).catch(() => setNotices([]));
     api.getNoticeAreas(clubId).then((list) => setAreas(list.map((a) => a.title))).catch(() => setAreas(null));
-  }, [clubId, sectionId]);
+  }, [clubId, boardId, sectionId]);
 
   // Within its type, a notice is ordered by its issued number, smallest first
   // (a number is stable across revisions, unlike publication time).

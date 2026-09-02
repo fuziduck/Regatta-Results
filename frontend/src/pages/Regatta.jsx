@@ -8,6 +8,7 @@ import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
+import NoticeBoard from "@/components/NoticeBoard";
 
 // Human label for a competition's type + championship scope, e.g.
 // "Class Championship" or "Regatta".
@@ -29,6 +30,7 @@ export default function Regatta() {
   // Standings payloads per series id, fetched lazily when the Results tab
   // needs them (never duplicated or written — straight from the series API).
   const [standings, setStandings] = useState({});
+  const [noticeBoard, setNoticeBoard] = useState(null);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -49,6 +51,12 @@ export default function Regatta() {
     });
     return seen;
   }, [regatta]);
+
+  useEffect(() => {
+    if (!regattaId) return;
+    if (!club) return;
+    api.getRegattaNoticeBoard(regattaId, { club_id: club.id }).then(setNoticeBoard).catch(() => setNoticeBoard(null));
+  }, [regattaId, club]);
 
   useEffect(() => {
     if (tab !== "results" || !regatta || !club) return;
@@ -224,10 +232,13 @@ export default function Regatta() {
 
           {tab === "notice" && (
             <div className="pt-6" data-testid="regatta-notice">
-              <p className="text-sm text-muted-foreground mb-4">Race-day notices for this regatta's classes appear on the club's official notice board.</p>
-              <Link to={`/club/${club.slug}/notice-board`}>
-                <Button variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">Official Notice Board</Button>
-              </Link>
+              <div className="mb-5 rounded-xl border border-ocean/20 bg-ocean/5 p-4">
+                <div className="font-heading uppercase tracking-tight text-ocean">{noticeBoard?.title || `${regatta.name} Official Notice Board`}</div>
+                <p className="mt-1 text-sm text-muted-foreground">Official notices for this competition only. Club-wide notices remain on the main club board.</p>
+              </div>
+              {noticeBoard ? <NoticeBoard clubId={club.id} boardId={noticeBoard.id} embedded /> : (
+                <p className="text-sm text-muted-foreground">The competition notice board is unavailable.</p>
+              )}
               <p className="text-sm text-muted-foreground mt-4">Dates: {fmtDate(regatta.start_date)}{regatta.end_date && regatta.end_date !== regatta.start_date ? ` – ${fmtDate(regatta.end_date)}` : ""}</p>
             </div>
           )}

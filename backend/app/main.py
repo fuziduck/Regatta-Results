@@ -3537,6 +3537,46 @@ def _regatta_date_label(regatta: dict) -> str:
     return "Dates to be confirmed"
 
 
+async def _competition_notice_board(competition: dict, *, create: bool = False) -> Optional[dict]:
+    """Return the ONB linked to a competition. Competition boards are created
+    lazily/idempotently so existing regattas and databases need no destructive
+    migration. The main club board remains the implicit board for legacy
+    notices and is never duplicated here."""
+    if (not competition or not hasattr(db, "notice_boards")
+            or not competition.get("id") or not competition.get("club_id")):
+        return None
+    existing = await db.notice_boards.find_one({
+        "club_id": competition.get("club_id"),
+        "competition_id": competition.get("id"),
+        "board_type": "competition",
+    }, {"_id": 0})
+    if existing or not create:
+        return existing
+    name = (competition.get("name") or "Competition").strip()
+    doc = {
+        "id": new_id(), "club_id": competition.get("club_id"),
+        "title": f"{name} Official Notice Board",
+        "slug": re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") + "-notices",
+        "status": "active", "board_type": "competition",
+        "competition_id": competition.get("id"),
+        "competition_type": (competition.get("competition_type") or "regatta").lower(),
+        "championship_scope": competition.get("championship_scope"),
+        "competition_name": name, "year": competition.get("year"),
+        "created_at": now_iso(), "created_by": "system",
+    }
+    try:
+        await db.notice_boards.insert_one(doc)
+    except DuplicateKeyError:
+        existing = await db.notice_boards.find_one({
+            "club_id": competition.get("club_id"),
+            "competition_id": competition.get("id"),
+            "board_type": "competition",
+        }, {"_id": 0})
+        return existing
+    doc.pop("_id", None)
+    return doc
+
+
 @api_router.get("/regattas")
 async def get_regattas(request: Request, year: Optional[int] = None, club_id: Optional[str] = None):
     """Regatta cards for a club (optionally a year). Read-only projection:
@@ -3613,6 +3653,9 @@ async def create_regatta(data: RegattaInput, request: Request, user: dict = Depe
     doc["club_id"] = club_id
     doc["created_at"] = now_iso()
     await db.regattas.insert_one(doc)
+    # Every competition gets one linked ONB. This board stores no race data;
+    # it is only the target for competition notices and uploaded documents.
+    await _competition_notice_board(doc, create=True)
     doc.pop("_id", None)
     await _log_audit(request=request, user=user, action="REGATTA_CREATED",
                      description=f"Created regatta {data.name} ({data.year})",
@@ -3658,6 +3701,23 @@ async def delete_regatta(regatta_id: str, request: Request, user: dict = Depends
                      description=f"Deleted regatta {regatta.get('name')}",
                      resource_type="regatta", resource_id=regatta_id, club_id=regatta.get("club_id"))
     return {"ok": True}
+
+
+@api_router.get("/regattas/{regatta_id}/notice-board")
+async def get_regatta_notice_board(regatta_id: str, club_id: Optional[str] = None):
+    """Public metadata for a competition's dedicated Official Notice Board.
+
+    When a club is supplied by the public competition page, require the
+    competition to belong to that club so a board can never be displayed under
+    another club's route.
+    """
+    competition = await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
+    if not competition or (club_id and competition.get("club_id") != club_id):
+        raise HTTPException(status_code=404, detail="Competition not found")
+    board = await _competition_notice_board(competition, create=True)
+    if not board:
+        raise HTTPException(status_code=404, detail="Notice board unavailable")
+    return board
 
 
 @api_router.put("/regattas/{regatta_id}/thumbnail")
@@ -7419,18 +7479,27 @@ async def _notice_area_title(club_id: str, publication_area: str) -> str:
     return publication_area
 
 
-async def _next_notice_number(club_id: str, publication_area: str = "Club Notices") -> int:
-    """Return the next number within a club-wide ONB area.
+async def _next_notice_number(club_id: str, publication_area: str = "Club Notices",
+                              board_id: Optional[str] = None) -> int:
+    """Return the next number within one ONB and publication area.
 
-    Notice numbering belongs to the board area, not the notice type: a new
-    uploaded or generated document in the same area continues that area's
-    sequence. Legacy records without an area remain in Club Notices.
+    Legacy notices without ``board_id`` belong to the main club ONB. Dedicated
+    competition boards have independent numbering, so No. 1 on a regatta board
+    cannot collide conceptually with No. 1 on the club board.
     """
     area = publication_area or "Club Notices"
+    board_filter = ({"$or": [{"board_id": {"$exists": False}}, {"board_id": None}]}
+                    if not board_id else {"board_id": board_id})
+    query = {
+        "club_id": club_id,
+        "$and": [
+            {"$or": [{"publication_area": area},
+                     {"publication_area": {"$exists": False}, "heading": area}]},
+            board_filter,
+        ],
+    }
     agg = await db.notices.find_one(
-        {"club_id": club_id,
-         "$or": [{"publication_area": area}, {"publication_area": {"$exists": False}, "heading": area}]},
-        sort=[("notice_number", -1)], projection={"notice_number": 1})
+        query, sort=[("notice_number", -1)], projection={"notice_number": 1})
     return int((agg or {}).get("notice_number") or 0) + 1
 
 
@@ -7461,7 +7530,7 @@ def _notice_summary(doc: dict) -> dict:
         "link_url",
         "created_at", "created_by", "modified_at", "modified_by",
         "event_name", "series_name", "race_number", "race_date",
-        "class_name", "public_path", "board_id", "section_id", "has_file", "has_pdf",
+        "class_name", "public_path", "board_id", "board_title", "competition_id", "section_id", "has_file", "has_pdf",
         "attachments", "withdrawn_at", "withdrawn_by", "withdrawal_reason",
         # Render rows + structured fields (small): the public ONB renders the
         # HTML notice straight from the list response (spec 41).
@@ -7513,8 +7582,11 @@ class NoticeCreateInput(BaseModel):
     (content is an external website URL) is created through this endpoint too,
     by providing link_url."""
     notice_type: str
-    # Where the notice is published within the club ONB.
+    # Where the notice is published within the selected ONB.
     publication_area: str = "club"
+    # Optional dedicated competition ONB. Omitted means the main club ONB,
+    # preserving all existing notice records and clients.
+    board_id: Optional[str] = None
     title: str
     fields: dict = {}
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
@@ -7532,6 +7604,7 @@ class NoticeUpdateInput(BaseModel):
     """Edit notice metadata/content. Published notices are corrected by
     creating a new version, preserving the original audit record."""
     publication_area: Optional[str] = None
+    board_id: Optional[str] = None
     title: Optional[str] = None
     fields: Optional[dict] = None
     notice_number: Optional[int] = Field(None, ge=1, le=9999)
@@ -7553,6 +7626,22 @@ class NoticeWithdrawInput(BaseModel):
     expected_version: Optional[int] = None
 
 
+async def _notice_board_target(club_id: str, board_id: Optional[str]) -> dict:
+    """Validate a selected board belongs to the target club and denormalise
+    its competition identity onto the notice. Empty/omitted means the main
+    club ONB and intentionally returns no board fields."""
+    if not board_id:
+        return {"board_id": None, "board_title": None, "competition_id": None}
+    board = await db.notice_boards.find_one({"id": board_id, "status": "active"}, {"_id": 0})
+    if (not board or board.get("club_id") != club_id
+            or board.get("board_type") != "competition"):
+        raise HTTPException(status_code=400, detail="Competition notice board not found in this club")
+    return {
+        "board_id": board["id"], "board_title": board.get("title"),
+        "competition_id": board.get("competition_id"),
+    }
+
+
 @api_router.get("/notice-boards")
 async def list_notice_boards(request: Request, club_id: Optional[str] = None):
     scope = await _resolve_club_id(request, club_id, honor_param=True)
@@ -7561,6 +7650,12 @@ async def list_notice_boards(request: Request, club_id: Optional[str] = None):
     club = await db.clubs.find_one({"id": scope}, {"_id": 0, "official_notice_board": 1})
     if club and club.get("official_notice_board") is False:
         return []
+    # Provision competition boards while listing the club's ONB. This keeps
+    # existing competitions discoverable without a destructive migration and
+    # guarantees that boards are created under their owning club only.
+    competitions = await db.regattas.find({"club_id": scope}, {"_id": 0}).to_list(1000)
+    for competition in competitions:
+        await _competition_notice_board(competition, create=True)
     return await db.notice_boards.find({"club_id": scope, "status": "active"}, {"_id": 0}).sort("title", 1).to_list(100)
 
 
@@ -7602,6 +7697,35 @@ async def create_notice_section(board_id: str, data: NoticeSectionInput, request
 
 class NoticeAreaInput(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
+
+
+@api_router.get("/notice-targets")
+async def list_notice_targets(request: Request, club_id: Optional[str] = None,
+                              user: dict = Depends(require_officer)):
+    """Return the main club ONB plus one dedicated target for every active
+    Regatta/Championship. The endpoint is for authorised creation workflows;
+    public readers use the board-specific notice endpoints instead."""
+    scope = await _resolve_club_id(request, club_id, honor_param=True)
+    if not scope:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    _ensure_club(user, scope)
+    club = await db.clubs.find_one({"id": scope}, {"_id": 0, "name": 1})
+    competitions = await db.regattas.find({"club_id": scope}, {"_id": 0}).sort([("year", -1), ("start_date", 1)]).to_list(1000)
+    targets = []
+    for competition in competitions:
+        board = await _competition_notice_board(competition, create=True)
+        if board:
+            targets.append({
+                "id": board["id"], "title": board["title"], "kind": "competition",
+                "competition_id": competition.get("id"), "competition_name": competition.get("name"),
+                "competition_type": (competition.get("competition_type") or "regatta").lower(),
+                "championship_scope": competition.get("championship_scope"),
+                "year": competition.get("year"),
+            })
+    return {
+        "main": {"id": None, "title": f"{(club or {}).get('name') or 'Club'} Official Notice Board", "kind": "club"},
+        "competitions": targets,
+    }
 
 
 @api_router.post("/clubs/{club_id}/notice-areas")
@@ -7694,6 +7818,7 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
                        status: Optional[str] = None, notice_type: Optional[str] = None,
                        race_id: Optional[str] = None, root_id: Optional[str] = None,
                        publication_area: Optional[str] = None,
+                       competition_id: Optional[str] = None,
                        limit: int = 200):
     """Public ONB: only published (and withdrawn, marked as such) notices for a
     club, the latest version of each notice — superseded versions are never
@@ -7711,6 +7836,22 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
     limit = max(1, min(int(limit), 500))
 
     q = {"club_id": scope}
+    requested_board = request.query_params.get("board_id")
+    requested_competition = competition_id or request.query_params.get("competition_id")
+    if requested_board:
+        q["board_id"] = requested_board
+    elif requested_competition:
+        q["competition_id"] = requested_competition
+    elif not staff_view:
+        # Public club ONB: hide only notices assigned to the new competition
+        # boards. Legacy notices without board_id and older series-section
+        # notices assigned to generic boards remain visible as before.
+        competition_boards = await db.notice_boards.find(
+            {"club_id": scope, "board_type": "competition", "status": "active"},
+            {"_id": 0, "id": 1}).to_list(1000)
+        competition_board_ids = [b["id"] for b in competition_boards]
+        if competition_board_ids:
+            q["board_id"] = {"$nin": competition_board_ids}
     if request.query_params.get("publication_area"):
         q["publication_area"] = request.query_params.get("publication_area")
     if request.query_params.get("section_id"):
@@ -7803,6 +7944,7 @@ async def notice_context(request: Request, race_id: Optional[str] = None,
 async def next_notice_number(request: Request, notice_type: str,
                              club_id: Optional[str] = None,
                              publication_area: str = "Club Notices",
+                             board_id: Optional[str] = None,
                              user: dict = Depends(require_officer)):
     """The next free notice number for a club + type — pre-filled in the wizard
     so officers never have to track numbering themselves."""
@@ -7811,7 +7953,9 @@ async def next_notice_number(request: Request, notice_type: str,
     if not scope:
         raise HTTPException(status_code=400, detail="club_id is required")
     _ensure_club(user, scope)
-    return {"next": await _next_notice_number(scope, publication_area)}
+    if board_id:
+        await _notice_board_target(scope, board_id)
+    return {"next": await _next_notice_number(scope, publication_area, board_id)}
 
 
 @api_router.post("/notices")
@@ -7837,6 +7981,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
     # structured fields are neither required nor stored — the link is the
     # notice. Everything else follows the generated flow.
     link_url = _valid_link_url(data.link_url) if (data.link_url or "").strip() else None
+    board_target = await _notice_board_target(club_id, data.board_id)
     if link_url:
         fields, body, links = {}, [], {}
         content_type, creation_method = "link", "link"
@@ -7859,7 +8004,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
         "heading": await _notice_area_title(club_id, data.publication_area), "publication_area": data.publication_area, "title": title,
-        "notice_number": data.notice_number or await _next_notice_number(club_id, data.publication_area),
+        "notice_number": data.notice_number or await _next_notice_number(club_id, data.publication_area, data.board_id),
         "content_type": content_type, "creation_method": creation_method,
         "status": "draft", "version": 1, "root_id": notice_id,
         "supersedes_id": None, "superseded_by": None,
@@ -7879,6 +8024,7 @@ async def create_notice(data: NoticeCreateInput, user: dict = Depends(require_of
         "attachments": [],
         "history": [_notice_history_entry(user, "created", "Generated with Sailscore")],
     }
+    doc.update(board_target)
     doc.update(links)
     for _ in range(5):
         try:
@@ -7904,6 +8050,7 @@ async def upload_notice(request: Request,
                         notice_type: str = Form(...),
                         title: str = Form(...),
                         publication_area: str = Form("club"),
+                        board_id: Optional[str] = Form(None),
                         notice_number: Optional[int] = Form(None),
                         # The club for a webmaster upload. The frontend sends the
                         # conventional field name `club_id`; `club_id_param` is
@@ -7933,6 +8080,7 @@ async def upload_notice(request: Request,
     title = (title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
+    board_target = await _notice_board_target(club_id, board_id)
     links = await _validate_notice_links(club_id, race_id, series_id, class_id)
     publication = _valid_notice_datetime(publication_datetime, "Publication date/time")
     effective = _valid_notice_datetime(effective_datetime, "Effective date/time")
@@ -7950,7 +8098,7 @@ async def upload_notice(request: Request,
         "id": notice_id, "club_id": club_id,
         "notice_type": tdef["key"], "notice_type_label": tdef["label"],
         "heading": await _notice_area_title(club_id, publication_area or "club"), "publication_area": publication_area or "club", "title": title,
-        "notice_number": notice_number or await _next_notice_number(club_id, publication_area),
+        "notice_number": notice_number or await _next_notice_number(club_id, publication_area, board_id),
         "content_type": "uploaded", "creation_method": "uploaded",
         "status": "draft", "version": 1, "root_id": notice_id,
         "supersedes_id": None, "superseded_by": None,
@@ -7974,6 +8122,7 @@ async def upload_notice(request: Request,
             user, "created",
             f"Uploaded document '{file.filename or 'document'}' ({len(data)} bytes)")],
     }
+    doc.update(board_target)
     doc.update(links)
     if _encoded_notice_size(doc) > NOTICE_ENCODED_BUDGET:
         raise HTTPException(status_code=400,
@@ -8046,6 +8195,9 @@ async def update_notice(notice_id: str, data: NoticeUpdateInput,
             raise HTTPException(status_code=400, detail="Unknown notice area")
         updates["publication_area"] = data.publication_area
         updates["heading"] = await _notice_area_title(notice["club_id"], data.publication_area)
+
+    if data.board_id is not None:
+        updates.update(await _notice_board_target(notice["club_id"], data.board_id))
 
     if data.title is not None:
         title = data.title.strip()
@@ -8483,6 +8635,9 @@ async def _spawn_notice_version(notice: dict, user: dict) -> dict:
         "history": [_notice_history_entry(
             user, "created",
             f"New version of notice v{notice.get('version')} — amendment in progress")],
+        "board_id": notice.get("board_id"),
+        "board_title": notice.get("board_title"),
+        "competition_id": notice.get("competition_id"),
     }
     for key in ("series_id", "series_name", "event_name", "race_id", "race_number",
                 "race_date", "class_id", "class_name"):

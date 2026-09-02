@@ -13,6 +13,7 @@ export default function NoticeBoardPage() {
   const { slug } = useParams();
   const [club, setClub] = useState(null);
   const [board, setBoard] = useState(null);
+  const [competitionBoards, setCompetitionBoards] = useState([]);
   const [sections, setSections] = useState([]);
   const [disabled, setDisabled] = useState(false);
   useEffect(() => {
@@ -21,9 +22,11 @@ export default function NoticeBoardPage() {
   useEffect(() => {
     if (!club) return;
     api.getNoticeBoards({ club_id: club.id }).then((boards) => {
-      const selected = boards?.[0] || null;
+      const list = boards || [];
+      const selected = list.find((candidate) => candidate.board_type !== "competition") || null;
       setDisabled(club.official_notice_board === false);
       setBoard(selected);
+      setCompetitionBoards(list.filter((candidate) => candidate.board_type === "competition"));
       if (selected) api.getNoticeSections(selected.id).then(setSections).catch(() => {});
     }).catch(() => {});
   }, [club]);
@@ -39,10 +42,15 @@ export default function NoticeBoardPage() {
       </header>
       <main className="max-w-6xl mx-auto px-4 py-10">
         <div className="mb-8"><div className="flex items-center gap-2 text-ocean mb-2"><FileText className="w-6 h-6" /><span className="text-xs font-bold uppercase tracking-widest">{club.name}</span></div><h1 className="text-3xl md:text-4xl uppercase tracking-tighter">Official Notice Board</h1><p className="text-muted-foreground mt-2">Sailing instructions, race notices, hearings, results, safety information and general club notices.</p></div>
-        {board && sections.length > 0 ? (
+        {(board || competitionBoards.length > 0) ? (
           <Tabs defaultValue="club-onb" data-testid="onb-tabs">
             <TabsList className="w-full justify-start overflow-x-auto h-auto gap-2 bg-transparent mb-6">
               <TabsTrigger value="club-onb" className="rounded-lg border border-ocean/30 px-4 py-2 data-[state=active]:bg-ocean data-[state=active]:text-white" data-testid="club-onb-tab">Club ONB</TabsTrigger>
+              {competitionBoards.map((competitionBoard) => (
+                <TabsTrigger key={competitionBoard.id} value={`competition-${competitionBoard.id}`} className="rounded-lg border border-ocean/30 px-4 py-2 data-[state=active]:bg-ocean data-[state=active]:text-white" data-testid={`competition-onb-tab-${competitionBoard.competition_id}`}>
+                  {competitionBoard.competition_name || competitionBoard.title}
+                </TabsTrigger>
+              ))}
               {sections.filter((s) => s.series_id).map((section) => (
                 <TabsTrigger key={section.id} value={section.id} className="rounded-lg border border-ocean/30 px-4 py-2 data-[state=active]:bg-ocean data-[state=active]:text-white" data-testid={`series-onb-tab-${section.id}`}>
                   {section.title}
@@ -50,6 +58,14 @@ export default function NoticeBoardPage() {
               ))}
             </TabsList>
             <TabsContent value="club-onb"><NoticeBoard key={club.id} clubId={club.id} embedded /></TabsContent>
+            {competitionBoards.map((competitionBoard) => (
+              <TabsContent key={competitionBoard.id} value={`competition-${competitionBoard.id}`} data-testid={`competition-onb-content-${competitionBoard.competition_id}`}>
+                <div className="mb-4 rounded-lg border border-ocean/20 bg-ocean/5 px-4 py-3 text-sm text-ocean">
+                  {competitionBoard.title}
+                </div>
+                <NoticeBoard key={`${club.id}:${competitionBoard.id}`} clubId={club.id} embedded boardId={competitionBoard.id} />
+              </TabsContent>
+            ))}
             {sections.filter((s) => s.series_id).map((section) => (
               <TabsContent key={section.id} value={section.id} data-testid={`series-onb-content-${section.id}`}>
                 <NoticeBoard key={`${club.id}:${section.id}`} clubId={club.id} embedded sectionId={section.id} />

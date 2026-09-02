@@ -449,7 +449,7 @@ export default function Landing() {
       ? ["overall", ...displaySeries.map((s) => s.id)]
       : displaySeries.map((s) => s.id);
     if (!valid.includes(activeSeries)) setActiveSeries(nav.defaultTab);
-  }, [series, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
+  }, [series, displaySeries, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
 
   // Future years only appear once this club has set up a series for them.
   // Future years are data-driven: any year a club has set a series up for.

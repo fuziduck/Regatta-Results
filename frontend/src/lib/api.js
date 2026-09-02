@@ -224,6 +224,7 @@ export const api = {
   // joins a regatta via its regatta_id field (set from the series form).
   getRegattas: (params = {}) => client.get("/regattas", { params }).then((r) => r.data),
   getRegatta: (id, params = {}) => client.get(`/regattas/${id}`, { params }).then((r) => r.data),
+  getRegattaNoticeBoard: (id, params = {}) => client.get(`/regattas/${id}/notice-board`, { params }).then((r) => r.data),
   createRegatta: (d) => client.post("/regattas", d).then((r) => r.data),
   updateRegatta: (id, d) => client.put(`/regattas/${id}`, d).then((r) => r.data),
   deleteRegatta: (id) => client.delete(`/regattas/${id}`).then((r) => r.data),
@@ -302,6 +303,7 @@ export const api = {
   // ------------------------------------------------------------------
   noticeMeta: () => client.get("/notices/meta").then((r) => r.data),
   getNoticeBoards: (params = {}) => client.get("/notice-boards", { params }).then((r) => r.data),
+  getNoticeTargets: (club_id) => client.get("/notice-targets", { params: { club_id } }).then((r) => r.data),
   getNoticeSections: (boardId) => client.get(`/notice-boards/${boardId}/sections`).then((r) => r.data),
   createNoticeBoard: (d) => client.post("/notice-boards", d).then((r) => r.data),
   createNoticeSection: (boardId, d) => client.post(`/notice-boards/${boardId}/sections`, { ...d, board_id: boardId }).then((r) => r.data),
@@ -311,8 +313,8 @@ export const api = {
   addNoticeArea: (clubId, title) => client.post(`/clubs/${clubId}/notice-areas`, { title }).then((r) => r.data),
   deleteNoticeArea: (clubId, title) => client.delete(`/clubs/${clubId}/notice-areas/${encodeURIComponent(title)}`).then((r) => r.data),
   noticeContext: (params) => client.get("/notices/context", { params }).then((r) => r.data),
-  nextNoticeNumber: (notice_type, club_id, publication_area) =>
-    client.get("/notices/next-number", { params: { notice_type, ...(club_id ? { club_id } : {}), ...(publication_area ? { publication_area } : {}) } }).then((r) => r.data),
+  nextNoticeNumber: (notice_type, club_id, publication_area, board_id) =>
+    client.get("/notices/next-number", { params: { notice_type, ...(club_id ? { club_id } : {}), ...(publication_area ? { publication_area } : {}), ...(board_id ? { board_id } : {}) } }).then((r) => r.data),
   createNotice: (d) => client.post("/notices", d).then((r) => r.data),
   uploadNotice: (meta, file) => {
     const fd = new FormData();
