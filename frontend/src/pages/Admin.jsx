@@ -79,9 +79,6 @@ function ClubIconField({ clubId }) {
       <ClubBadge club={{ icon, name: "Club" }} size="w-16 h-16" textSize="text-3xl" />
       <div className="min-w-0 flex-1">
         <div className="font-heading text-lg uppercase tracking-tight">Club icon</div>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Shown on the results pages, club directory and pickers in place of the first letter.
-        </p>
       </div>
       <div className="flex items-center gap-2">
         <input ref={fileRef} type="file" accept="image/*" className="hidden" data-testid="club-icon-file" onChange={pick} />
