@@ -1764,7 +1764,9 @@ class TestEmailInput(BaseModel):
 
 class ResultsSubscriptionInput(BaseModel):
     email: EmailStr
-    subscription_type: Literal["class", "series", "boat", "notice"]
+    # `notice` is the backwards-compatible main club ONB subscription.
+    # `notice_board` targets one competition's dedicated ONB by board id.
+    subscription_type: Literal["class", "series", "boat", "notice", "notice_board"]
     target_id: str
 
 
@@ -6615,7 +6617,9 @@ async def scheduled_races(request: Request, date: Optional[str] = None, club_id:
 
 class ResultsSubscriptionInput(BaseModel):
     email: EmailStr
-    subscription_type: Literal["class", "series", "boat", "notice"]
+    # `notice` is the backwards-compatible main club ONB subscription.
+    # `notice_board` targets one competition's dedicated ONB by board id.
+    subscription_type: Literal["class", "series", "boat", "notice", "notice_board"]
     target_id: str
 
 
@@ -6673,14 +6677,39 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
                 "class_id": target.get("class_id"), "class_name": cls.get("name"),
                 "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
     if subscription_type == "notice":
-        # A notice subscription is per-club: every new ONB document published
-        # by that club is emailed to the subscriber (with its PDF attached).
+        # Backwards-compatible main club ONB subscription: every new notice
+        # published by that club is emailed to the subscriber.
         target = await db.clubs.find_one({"id": target_id}, {"_id": 0, "id": 1, "name": 1, "slug": 1})
         if not target:
             raise HTTPException(status_code=404, detail="Club not found")
         return {"club_id": target["id"],
                 "target_name": f"{target.get('name', 'Club')} Official Notice Board",
                 "club_name": target.get("name"), "club_slug": target.get("slug")}
+    if subscription_type == "notice_board":
+        # Dedicated competition ONBs are public targets, but only active
+        # competition boards may be subscribed to. Resolving through the board
+        # itself prevents a caller from subscribing to another club by passing
+        # a club/competition id that happens to be valid elsewhere.
+        board = await db.notice_boards.find_one({
+            "id": target_id, "status": "active", "board_type": "competition",
+        }, {"_id": 0})
+        if not board or not board.get("club_id") or not board.get("competition_id"):
+            raise HTTPException(status_code=404, detail="Competition notice board not found")
+        competition = await db.regattas.find_one({
+            "id": board.get("competition_id"), "club_id": board.get("club_id"),
+        }, {"_id": 0, "name": 1, "competition_type": 1, "championship_scope": 1})
+        if not competition:
+            raise HTTPException(status_code=404, detail="Competition notice board not found")
+        club = await db.clubs.find_one({"id": board["club_id"]}, {"_id": 0, "name": 1, "slug": 1})
+        if not club:
+            raise HTTPException(status_code=404, detail="Competition notice board not found")
+        return {
+            "club_id": board["club_id"], "notice_board_id": board["id"],
+            "competition_id": board["competition_id"],
+            "target_name": board.get("title") or f"{competition.get('name', 'Competition')} Official Notice Board",
+            "club_name": club.get("name"), "club_slug": club.get("slug"),
+            "competition_name": competition.get("name"),
+        }
     if subscription_type == "boat":
         target = await db.boats.find_one({"id": target_id}, {"_id": 0})
         if not target:
@@ -8467,16 +8496,31 @@ async def _send_published_notice_email(email: str, notice: dict, pdf: Optional[b
 
 
 async def _notify_published_notice(notice: dict) -> dict:
-    """Email each newly published ONB document once to the club's active
-    notice subscribers, attaching the official PDF. Uses the same
-    subscription_deliveries dedup ledger as the results delivery, so one
-    publication (and one version of it) reaches each subscriber exactly once."""
+    """Email each newly published ONB document once to matching active
+    subscribers. Main club subscriptions receive all notices for their club;
+    a competition-board subscription receives only notices assigned to that
+    board. Uses the same delivery ledger for exactly-once publication sends."""
     club_id = notice.get("club_id")
     if not club_id:
         return {"matched": 0, "sent": 0, "skipped": 0}
-    subscribers = await db.subscriptions.find({
-        "active": True, "verified": True,
+    board_id = notice.get("board_id")
+    # The original `notice` subscription means the main club ONB. Keep it
+    # backwards-compatible for existing subscribers, but do not leak a
+    # competition publication into their inbox. Legacy generic board records
+    # remain part of the main club stream; only dedicated competition boards
+    # are excluded. A new `notice_board` subscription receives its exact board.
+    competition_boards = await db.notice_boards.find(
+        {"club_id": club_id, "board_type": "competition", "status": "active"},
+        {"_id": 0, "id": 1}).to_list(1000)
+    competition_board_ids = [b["id"] for b in competition_boards]
+    target_or = [{
         "subscription_type": "notice", "target_id": club_id,
+        "board_id": {"$nin": competition_board_ids},
+    }]
+    if board_id:
+        target_or.append({"subscription_type": "notice_board", "target_id": board_id})
+    subscribers = await db.subscriptions.find({
+        "active": True, "verified": True, "$or": target_or,
     }, {"_id": 0}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
     event_id = f"notice:{notice.get('id')}:{notice.get('version') or 1}"
     pdf = _notice_pdf_bytes(notice)

@@ -7,8 +7,16 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
+const subscriptionLabel = (type) => ({
+  notice: "Club ONB",
+  notice_board: "Competition ONB",
+  class: "Class results",
+  series: "Series results",
+  boat: "Boat results",
+}[type] || type);
+
 function SubscriptionTable({ rows, deleting, remove }) {
-  return <div className="overflow-x-auto rounded-xl border border-border"><table className="w-full text-sm"><thead className="bg-muted"><tr><th className="px-3 py-2 text-left">Email address</th><th className="px-3 py-2 text-left">Notification target</th><th className="px-3 py-2 text-left">Confirmed</th><th className="px-3 py-2 text-right">Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-border"><td className="px-3 py-3 font-medium"><span className="inline-flex items-center gap-2"><Mail className="w-4 h-4 text-muted-foreground" />{row.email}</span></td><td className="px-3 py-3"><span className="capitalize text-xs font-semibold text-ocean">{row.subscription_type}</span><div>{row.target_name || row.target_id}</div></td><td className="px-3 py-3 text-xs text-muted-foreground">{row.verified_at ? new Date(row.verified_at).toLocaleString("en-GB") : "—"}</td><td className="px-3 py-3 text-right"><Button variant="ghost" size="icon" aria-label={`Delete ${row.email}`} disabled={deleting === row.id} onClick={() => remove(row)} data-testid={`delete-subscription-${row.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button></td></tr>)}</tbody></table></div>;
+  return <div className="overflow-x-auto rounded-xl border border-border"><table className="w-full text-sm"><thead className="bg-muted"><tr><th className="px-3 py-2 text-left">Email address</th><th className="px-3 py-2 text-left">Notification target</th><th className="px-3 py-2 text-left">Confirmed</th><th className="px-3 py-2 text-right">Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-border"><td className="px-3 py-3 font-medium"><span className="inline-flex items-center gap-2"><Mail className="w-4 h-4 text-muted-foreground" />{row.email}</span></td><td className="px-3 py-3"><span className="text-xs font-semibold text-ocean">{subscriptionLabel(row.subscription_type)}</span><div>{row.target_name || row.target_id}</div></td><td className="px-3 py-3 text-xs text-muted-foreground">{row.verified_at ? new Date(row.verified_at).toLocaleString("en-GB") : "—"}</td><td className="px-3 py-3 text-right"><Button variant="ghost" size="icon" aria-label={`Delete ${row.email}`} disabled={deleting === row.id} onClick={() => remove(row)} data-testid={`delete-subscription-${row.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button></td></tr>)}</tbody></table></div>;
 }
 
 export default function SubscriptionOverview({ clubId = null, webmaster = false }) {
@@ -55,8 +63,8 @@ export default function SubscriptionOverview({ clubId = null, webmaster = false 
   return <section className="rounded-2xl border border-border bg-card p-5 space-y-4" data-testid="subscription-overview">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 className="flex items-center gap-2 text-xl uppercase tracking-tight"><Bell className="w-5 h-5 text-ocean" /> Results email subscriptions</h2>
-        <p className="text-sm text-muted-foreground mt-1">Active, verified email subscriptions and what each address follows.</p>
+        <h2 className="flex items-center gap-2 text-xl uppercase tracking-tight"><Bell className="w-5 h-5 text-ocean" /> Email subscriptions</h2>
+        <p className="text-sm text-muted-foreground mt-1">Active, verified subscriptions for results and Official Notice Boards.</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {webmaster && (

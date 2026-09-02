@@ -60,8 +60,16 @@ export default function NoticeBoardPage() {
             <TabsContent value="club-onb"><NoticeBoard key={club.id} clubId={club.id} embedded /></TabsContent>
             {competitionBoards.map((competitionBoard) => (
               <TabsContent key={competitionBoard.id} value={`competition-${competitionBoard.id}`} data-testid={`competition-onb-content-${competitionBoard.competition_id}`}>
-                <div className="mb-4 rounded-lg border border-ocean/20 bg-ocean/5 px-4 py-3 text-sm text-ocean">
-                  {competitionBoard.title}
+                <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-ocean/20 bg-ocean/5 px-4 py-3">
+                  <div className="pt-1 text-sm text-ocean">{competitionBoard.title}</div>
+                  <ResultsSubscription
+                    subscriptionType="notice_board"
+                    targetId={competitionBoard.id}
+                    targetName={competitionBoard.title}
+                    buttonLabel="Subscribe to this ONB"
+                    dialogTitle={`Subscribe to ${competitionBoard.competition_name || competitionBoard.title} notices`}
+                    description={<>We'll email you whenever a new notice is published to the <strong className="text-foreground">{competitionBoard.title}</strong>. No Sailscore account is needed.</>}
+                  />
                 </div>
                 <NoticeBoard key={`${club.id}:${competitionBoard.id}`} clubId={club.id} embedded boardId={competitionBoard.id} />
               </TabsContent>

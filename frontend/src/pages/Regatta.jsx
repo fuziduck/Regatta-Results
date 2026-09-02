@@ -9,6 +9,7 @@ import { exportSeriesPdf } from "@/lib/exportPdf";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
+import ResultsSubscription from "@/components/ResultsSubscription";
 
 // Human label for a competition's type + championship scope, e.g.
 // "Class Championship" or "Regatta".
@@ -233,8 +234,20 @@ export default function Regatta() {
           {tab === "notice" && (
             <div className="pt-6" data-testid="regatta-notice">
               <div className="mb-5 rounded-xl border border-ocean/20 bg-ocean/5 p-4">
-                <div className="font-heading uppercase tracking-tight text-ocean">{noticeBoard?.title || `${regatta.name} Official Notice Board`}</div>
-                <p className="mt-1 text-sm text-muted-foreground">Official notices for this competition only. Club-wide notices remain on the main club board.</p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="font-heading uppercase tracking-tight text-ocean">{noticeBoard?.title || `${regatta.name} Official Notice Board`}</div>
+                    <p className="mt-1 text-sm text-muted-foreground">Official notices for this competition only. Club-wide notices remain on the main club board.</p>
+                  </div>
+                  {noticeBoard && <ResultsSubscription
+                    subscriptionType="notice_board"
+                    targetId={noticeBoard.id}
+                    targetName={noticeBoard.title || `${regatta.name} Official Notice Board`}
+                    buttonLabel="Subscribe to this ONB"
+                    dialogTitle={`Subscribe to ${regatta.name} notices`}
+                    description={<>We'll email you whenever a new notice is published to the <strong className="text-foreground">{noticeBoard.title || `${regatta.name} Official Notice Board`}</strong>. No Sailscore account is needed.</>}
+                  />}
+                </div>
               </div>
               {noticeBoard ? <NoticeBoard clubId={club.id} boardId={noticeBoard.id} embedded /> : (
                 <p className="text-sm text-muted-foreground">The competition notice board is unavailable.</p>
