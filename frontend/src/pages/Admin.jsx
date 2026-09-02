@@ -124,10 +124,8 @@ function ClubNoticeToggle({ clubId }) {
     setBusy(true);
     setEnabled(v);
     try {
-      const current = await api.getClubs();
-      const club = (current || []).find((x) => x.id === clubId);
       await api.updateClubSettings(clubId, {
-        race_day_notices: club?.race_day_notices !== false,
+        race_day_notices: v,
         official_notice_board: onbEnabled,
       });
       toast.success(v ? "Race-day notices enabled" : "Race-day notices disabled");
@@ -562,7 +560,7 @@ function RegattasTab({ clubId }) {
   const [regattas, setRegattas] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", year: CURRENT_YEAR, start_date: "", end_date: "", host_club: "", status: "" });
+  const [form, setForm] = useState({ name: "", year: CURRENT_YEAR, competition_type: "regatta", championship_scope: "", start_date: "", end_date: "", host_club: "", status: "", description: "" });
   const [busy, setBusy] = useState(false);
   const [thumbFor, setThumbFor] = useState(null);
   const thumbRef = useRef(null);
@@ -576,10 +574,17 @@ function RegattasTab({ clubId }) {
     if (!form.name) return toast.error("Regatta name required");
     setBusy(true);
     try {
-      const payload = { ...form, year: Number(form.year), status: form.status || undefined, ...(clubId ? { club_id: clubId } : {}) };
+      const payload = {
+        ...form,
+        year: Number(form.year),
+        status: form.status || undefined,
+        competition_type: form.competition_type || "regatta",
+        championship_scope: form.competition_type === "championship" ? (form.championship_scope || undefined) : undefined,
+        ...(clubId ? { club_id: clubId } : {}),
+      };
       if (editing) await api.updateRegatta(editing, payload);
       else await api.createRegatta(payload);
-      toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", year: yearFilter, start_date: "", end_date: "", host_club: "", status: "" });
+      toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", year: yearFilter, competition_type: "regatta", championship_scope: "", start_date: "", end_date: "", host_club: "", status: "", description: "" });
       reloadYears(); load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Could not save regatta");
@@ -630,12 +635,36 @@ function RegattasTab({ clubId }) {
             <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
         </div>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", year: yearFilter, start_date: "", end_date: "", host_club: "", status: "" }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-regatta-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add regatta</Button></DialogTrigger>
-          <DialogContent>
-            <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} regatta</DialogTitle></DialogHeader>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", year: yearFilter, competition_type: "regatta", championship_scope: "", start_date: "", end_date: "", host_club: "", status: "", description: "" }); } }}>
+          <DialogTrigger asChild><Button data-testid="add-regatta-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add competition</Button></DialogTrigger>
+          <DialogContent className="max-h-[85vh] overflow-y-auto">
+            <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} competition</DialogTitle></DialogHeader>
             <div className="space-y-3">
-              <div className="space-y-1.5"><Label>Regatta name</Label><Input data-testid="regatta-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. 2026 Regatta" /></div>
+              <div className="space-y-1.5"><Label>Competition name</Label><Input data-testid="regatta-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. 2026 Regatta" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label>Type</Label>
+                  <Select value={form.competition_type || "regatta"} onValueChange={(v) => setForm({ ...form, competition_type: v, championship_scope: v === "regatta" ? "" : form.championship_scope })}>
+                    <SelectTrigger data-testid="regatta-type-input"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="regatta">Regatta</SelectItem>
+                      <SelectItem value="championship">Championship</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Regatta = a specific racing occasion · Championship = a competition over a period</p>
+                </div>
+                {form.competition_type === "championship" ? (
+                  <div className="space-y-1.5"><Label>Championship scope</Label>
+                    <Select value={form.championship_scope || ""} onValueChange={(v) => setForm({ ...form, championship_scope: v === "__none__" ? "" : v })}>
+                      <SelectTrigger data-testid="regatta-scope-input"><SelectValue placeholder="Select scope" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="club">Club</SelectItem>
+                        <SelectItem value="class">Class</SelectItem>
+                        <SelectItem value="open">Open / Other</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : <div className="space-y-1.5"><Label className="text-muted-foreground">Championship scope</Label><div className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">Only for championships</div></div>}
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5"><Label>Year</Label><Input type="number" min="2000" max="2100" data-testid="regatta-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
                 <div className="space-y-1.5"><Label>Host club</Label><Input value={form.host_club} onChange={(e) => setForm({ ...form, host_club: e.target.value })} placeholder="e.g. Medway Yacht Club" /></div>
@@ -652,14 +681,18 @@ function RegattasTab({ clubId }) {
                     <SelectItem value="Complete">Complete</SelectItem>
                   </SelectContent>
                 </Select></div>
+              <div className="space-y-1.5"><Label>Description / notices <span className="text-muted-foreground normal-case text-xs">(optional)</span></Label>
+                <textarea data-testid="regatta-description-input" value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={3}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  placeholder="e.g. Three days of racing across all fleets…" /></div>
             </div>
             <DialogFooter><Button onClick={save} disabled={busy} data-testid="save-regatta-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
-      <p className="text-sm text-muted-foreground mb-4">A regatta groups series across classes. Add the club's series to it from the Series tab — the regatta page then shows each class's results separately.</p>
+      <p className="text-sm text-muted-foreground mb-4">A competition groups series across classes — either a regatta (a specific racing occasion) or a championship (a competition over a period). Add the club's series to it from the Series tab; the competition page then shows each class's results separately.</p>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Photo</TableHead><TableHead>Regatta</TableHead><TableHead>Year</TableHead><TableHead>Dates</TableHead><TableHead>Host</TableHead><TableHead>Status</TableHead><TableHead>Series</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Photo</TableHead><TableHead>Competition</TableHead><TableHead>Type</TableHead><TableHead>Year</TableHead><TableHead>Dates</TableHead><TableHead>Host</TableHead><TableHead>Status</TableHead><TableHead>Series</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{regattas.map((r) => (
             <TableRow key={r.id} data-testid={`regatta-row-${r.name}`}>
               <TableCell>
@@ -675,18 +708,21 @@ function RegattasTab({ clubId }) {
                 </div>
               </TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{r.name}</TableCell>
+              <TableCell>{r.competition_type === "championship"
+                ? <Badge className="gap-1 bg-amber-100 text-amber-700 border border-amber-300"><Trophy className="w-3 h-3" />Championship{r.championship_scope ? ` · ${r.championship_scope[0].toUpperCase()}${r.championship_scope.slice(1)}` : ""}</Badge>
+                : <Badge variant="outline" className="gap-1"><CalendarDays className="w-3 h-3" />Regatta</Badge>}</TableCell>
               <TableCell className="font-mono">{r.year || "—"}</TableCell>
               <TableCell className="text-xs text-muted-foreground">{r.date_label || "—"}</TableCell>
               <TableCell className="text-xs">{r.host_club || "—"}</TableCell>
               <TableCell>{r.status ? <Badge variant={r.status === "Complete" ? "default" : r.status === "Upcoming" ? "outline" : "secondary"}>{r.status}</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
               <TableCell className="text-xs text-muted-foreground">{r.series?.length || 0} series · {r.class_count || 0} classes · {r.race_count || 0} races</TableCell>
               <TableCell className="text-right whitespace-nowrap">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(r.id); setForm({ name: r.name, year: r.year, start_date: r.start_date || "", end_date: r.end_date || "", host_club: r.host_club || "", status: r.status || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(r.id); setForm({ name: r.name, year: r.year, competition_type: r.competition_type || "regatta", championship_scope: r.championship_scope || "", start_date: r.start_date || "", end_date: r.end_date || "", host_club: r.host_club || "", status: r.status || "", description: r.description || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" onClick={() => del(r)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>
           ))}
-            {!regattas.length && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">No regattas for this year yet.</TableCell></TableRow>}
+            {!regattas.length && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No competitions for this year yet.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>
@@ -883,15 +919,15 @@ function SeriesTab({ classes, clubId }) {
                   <SelectTrigger data-testid="series-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
-              <div className="space-y-1.5"><Label>Regatta <span className="text-muted-foreground normal-case text-xs">(optional)</span></Label>
+              <div className="space-y-1.5"><Label>Competition <span className="text-muted-foreground normal-case text-xs">(optional — regatta or championship)</span></Label>
                 <Select value={form.regatta_id || "__none__"} onValueChange={(v) => setForm({ ...form, regatta_id: v === "__none__" ? "" : v })}>
-                  <SelectTrigger data-testid="series-regatta-input"><SelectValue placeholder="Not part of a regatta" /></SelectTrigger>
+                  <SelectTrigger data-testid="series-regatta-input"><SelectValue placeholder="Not part of a competition" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__none__">Not part of a regatta</SelectItem>
-                    {regattas.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} · {r.year}</SelectItem>)}
+                    <SelectItem value="__none__">Not part of a competition</SelectItem>
+                    {regattas.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} · {r.year}{r.competition_type === "championship" ? " (Championship)" : ""}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <p className="text-[11px] text-muted-foreground">Series belonging to a regatta appear on the regatta page (per class) instead of the club's championship list.</p>
+                <p className="text-[11px] text-muted-foreground">Series belonging to a competition appear on its page (per class) instead of the club's championship list.</p>
               </div>
               <div className="space-y-1.5"><Label>Scoring system</Label>
                 <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>

@@ -982,17 +982,28 @@ class SeriesInput(BaseModel):
 
 
 class RegattaInput(BaseModel):
-    """A regatta / open-meeting: a racing occasion that groups series across
-    one or more classes. The regatta itself holds no races or results —
-    participating series reference it via their ``regatta_id``."""
+    """A competition: a racing occasion that groups series across one or more
+    classes. Two kinds exist — a **regatta** (a specific racing occasion, e.g.
+    the club regatta or an open meeting) and a **championship** (a competition
+    built from races/events over a period, e.g. the club championship or a
+    class championship). Championships carry an optional scope. The
+    competition itself holds no races or results — participating series
+    reference it via their ``regatta_id`` (kept for backwards compatibility;
+    the collection and URLs still say "regatta")."""
     name: str
     year: int
-    # Optional presentation metadata for the regatta cards/page.
+    # Competition type: "regatta" (default, backwards-compatible) or
+    # "championship".
+    competition_type: Optional[str] = None
+    # For championships: "club" / "class" / "open". Irrelevant for regattas.
+    championship_scope: Optional[str] = None
+    # Optional presentation metadata for the cards/page.
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     host_club: Optional[str] = None
     status: Optional[str] = None  # "upcoming" / "in_progress" / "complete"
     date_label: Optional[str] = None
+    description: Optional[str] = None
     club_id: Optional[str] = None  # webmaster only: which club the regatta belongs to
 
 
@@ -3547,6 +3558,10 @@ async def get_regattas(request: Request, year: Optional[int] = None, club_id: Op
         regatta["status"] = regatta.get("status") or _regatta_status(regatta, regatta["race_count"])
         regatta["date_label"] = regatta.get("date_label") or _regatta_date_label(regatta)
         regatta["host_club"] = regatta.get("host_club") or regatta.get("club_name")
+        # Competition type: existing regattas default to "regatta" so nothing
+        # already in the system changes meaning (see CompetitionType).
+        regatta["competition_type"] = (regatta.get("competition_type") or "regatta").lower()
+        regatta["championship_scope"] = regatta.get("championship_scope") or None
         regatta["series"] = [{"id": s.get("id"), "class_id": s.get("class_id"),
                                "name": s.get("name", ""),
                                "class_name": next((c.get("name") for c in classes if c.get("id") == s.get("class_id")), "Class"),
@@ -3584,6 +3599,9 @@ async def create_regatta(data: RegattaInput, request: Request, user: dict = Depe
         raise HTTPException(status_code=400, detail="A club is required")
     doc = data.model_dump()
     doc.pop("club_id", None)
+    doc["competition_type"] = (doc.get("competition_type") or "regatta").lower()
+    if doc.get("competition_type") == "regatta":
+        doc["championship_scope"] = None
     doc["id"] = new_id()
     doc["club_id"] = club_id
     doc["created_at"] = now_iso()
@@ -3606,6 +3624,10 @@ async def update_regatta(regatta_id: str, data: RegattaInput, request: Request,
         raise HTTPException(status_code=404, detail="Regatta not found")
     update = data.model_dump()
     update.pop("club_id", None)
+    if update.get("competition_type"):
+        update["competition_type"] = update["competition_type"].lower()
+    if update.get("competition_type") == "regatta":
+        update["championship_scope"] = None
     await db.regattas.update_one({"id": regatta_id}, {"$set": update})
     await _log_audit(request=request, user=user, action="REGATTA_UPDATED",
                      description=f"Updated regatta {data.name}",
@@ -6455,7 +6477,6 @@ async def fleet_profile(fleet_id: str):
             "club_name": s["club_name"], "club_slug": s.get("club_slug"), "year": s["year"],
             "boat_id": member.get("id"),
             "overall": ov_row,
-            "qualified": bool(ov_row and ov_row.get("rank") == 1),
             "stats": stats, "standings_preview": preview,
             "race_history": history[-12:][::-1], "upcoming": upcoming[:6],
             "boat_info": {

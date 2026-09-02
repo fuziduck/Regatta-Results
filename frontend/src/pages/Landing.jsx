@@ -322,20 +322,27 @@ export default function Landing() {
     api.getSeries({ year, club_id: clubId }).then(setClubSeries).catch(() => setClubSeries([]));
   }, [clubId, year]);
 
+  // Competitions split by type: regattas (specific racing occasions) vs
+  // championship competitions (competitions built over a period). Both live
+  // in the regattas collection; the competition_type field tells them apart.
+  const regattaComps = regattas.filter((r) => (r.competition_type || "regatta") !== "championship");
+  const championshipComps = regattas.filter((r) => (r.competition_type || "regatta") === "championship");
+
   // Hide the Championship/Regattas toggle when the club only has one kind of
   // racing for the shown year, and default to the kind it actually has.
-  const hasRegattas = regattas.length > 0;
-  const hasChampionships = clubSeries.some((s) => !s.regatta_id);
+  const hasRegattas = regattaComps.length > 0;
+  const hasChampionships = clubSeries.some((s) => !s.regatta_id) || championshipComps.length > 0;
   const showViewToggle = hasRegattas && hasChampionships;
   useEffect(() => {
     if (hasRegattas && !hasChampionships) setView("regattas");
     else if (!hasRegattas && view === "regattas") setView("championship");
   }, [hasRegattas, hasChampionships]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Default the Regattas view to the first regatta of the year.
+  // Default the Regattas view to the first regatta (not championship) of the year.
   useEffect(() => {
-    if (regattas.length === 0) { setRegattaId(null); return; }
-    setRegattaId((prev) => (prev && regattas.some((r) => r.id === prev) ? prev : regattas[0].id));
+    const comps = regattas.filter((r) => (r.competition_type || "regatta") !== "championship");
+    if (comps.length === 0) { setRegattaId(null); return; }
+    setRegattaId((prev) => (prev && comps.some((r) => r.id === prev) ? prev : comps[0].id));
   }, [regattas]);
 
   // Per-class summary for the selected regatta (winner / races / boats),
@@ -543,13 +550,13 @@ export default function Landing() {
             </div>
           )}
 
-          {view === "regattas" && regattas.length > 0 && (
+          {view === "regattas" && regattaComps.length > 0 && (
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="regatta-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Regatta</span>
               </div>
               <div className="flex flex-wrap justify-center gap-2">
-                {regattas.map((r) => (
+                {regattaComps.map((r) => (
                   <button key={r.id} type="button" onClick={() => setRegattaId(r.id)} data-testid={`regatta-tab-${r.name}`}
                     className={`px-4 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${regattaId === r.id ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
                     {r.name}
@@ -615,6 +622,37 @@ export default function Landing() {
 
         {view === "championship" && (
           <div>
+            {championshipComps.length > 0 && (
+              <div className="mb-10" data-testid="championship-competitions">
+                <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Championship competitions</h2>
+                <p className="text-muted-foreground text-sm mb-4">Competitions scored over the season — each may span several series and classes.</p>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {championshipComps.map((c) => (
+                    <Link key={c.id} to={`/club/${club.slug}/regatta/${c.id}`}
+                      className="group rounded-2xl border border-border bg-card p-5 hover:border-ocean/40 hover:shadow-sm transition-all"
+                      data-testid={`championship-comp-${c.name}`}>
+                      {c.thumbnail && (
+                        <div className="mb-3 h-24 overflow-hidden rounded-xl border border-border">
+                          <img src={c.thumbnail} alt="" className="h-full w-full object-cover" />
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <Badge className="gap-1 bg-amber-100 text-amber-700 border border-amber-300">
+                          <Trophy className="w-3 h-3" />{c.championship_scope === "club" ? "Club Championship" : c.championship_scope === "class" ? "Class Championship" : c.championship_scope === "open" ? "Open Championship" : "Championship"}
+                        </Badge>
+                        <Badge variant="outline">{c.status || "Complete"}</Badge>
+                      </div>
+                      <div className="font-heading text-lg uppercase tracking-tight text-ocean group-hover:underline">{c.name}</div>
+                      <div className="mt-1 text-sm text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+                        {c.date_label && <span className="inline-flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" />{c.date_label}</span>}
+                        {c.host_club && <span className="inline-flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{c.host_club}</span>}
+                      </div>
+                      <div className="mt-2 text-xs text-muted-foreground">{c.class_count || 0} classes · {c.race_count || 0} races</div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="min-w-0">
               <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
                 <div>
@@ -660,7 +698,7 @@ export default function Landing() {
 
         {view === "regattas" && (
           <div data-testid="regatta-results">
-            {regattas.length === 0 ? (
+            {regattaComps.length === 0 ? (
               <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
                 <p className="font-heading text-xl uppercase tracking-tight">No regattas for {year}</p>
                 <p className="text-muted-foreground text-sm mt-1">Regattas and open meetings will appear here once set up.</p>

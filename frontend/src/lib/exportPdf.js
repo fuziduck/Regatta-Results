@@ -124,7 +124,7 @@ function drawPageFooter(doc, sponsors) {
   doc.text(`${SITE_NAME} · ${SITE_ATTRIBUTION}`, pageW / 2, attrY + 8, { align: "center" });
 }
 
-function header(doc, { clubName, className, title, year, icon }) {
+function header(doc, { clubName, className, title, year, icon, competitionLabel }) {
   const pageW = doc.internal.pageSize.getWidth();
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
@@ -135,7 +135,10 @@ function header(doc, { clubName, className, title, year, icon }) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(...MUTED);
-  doc.text(`${year} season · Scored under the RRS Low Point System`, 40, 74);
+  // Competition hierarchy line (e.g. "2026 MEDWAY YACHT CLUB REGATTA · Regatta")
+  // when the export comes from a competition page; the year line follows.
+  const extra = competitionLabel ? [competitionLabel] : [];
+  doc.text([...extra, `${year} season · Scored under the RRS Low Point System`], 40, 74);
   doc.setDrawColor(...OCEAN);
   doc.setLineWidth(1.2);
   doc.line(40, 82, pageW - 40, 82);
@@ -156,10 +159,10 @@ function header(doc, { clubName, className, title, year, icon }) {
   }
 }
 
-export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon, adverts }) {
+export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon, adverts, competitionLabel }) {
   if (!data || !data.standings?.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  header(doc, { clubName, className, title: `${seriesName} Series`, year, icon });
+  header(doc, { clubName, className, title: `${seriesName} Series`, year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
   const races = data.races || [];
@@ -226,10 +229,10 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
   doc.save(`${className}-${seriesName}-${year}-results.pdf`);
 }
 
-export function exportOverallPdf({ clubName, className, year, data, icon, adverts }) {
+export function exportOverallPdf({ clubName, className, year, data, icon, adverts, competitionLabel }) {
   if (!data || !data.standings?.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  header(doc, { clubName, className, title: "Overall Championship", year, icon });
+  header(doc, { clubName, className, title: "Overall Championship", year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
   autoTable(doc, {

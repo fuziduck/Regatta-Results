@@ -6,7 +6,7 @@ import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Anchor, ArrowLeft, ArrowRight, Award, CalendarDays, CheckCircle2, ChevronRight,
+  Anchor, ArrowLeft, ArrowRight, Award, CalendarDays, ChevronRight,
   Clock, Download, Flag, History, Info, Lock, Archive, LogIn, MapPin, Medal, Pencil,
   Percent, Sailboat, Search, Share2, Star, TrendingUp, Trophy, User, Users,
 } from "lucide-react";
@@ -249,11 +249,6 @@ export default function Boat() {
                 <div className="text-[10px] uppercase tracking-widest text-white/70 mt-1">Overall Position</div>
                 <div className="mt-2 font-heading uppercase tracking-wide text-white text-sm">{season.year} OVERALL</div>
                 <div className="text-[11px] text-white/70 mt-0.5">(After {stats.races_total ?? 0} race{stats.races_total === 1 ? "" : "s"})</div>
-                {season.qualified && (
-                  <Badge className="mt-2 gap-1 bg-emerald-500/90 text-white border-emerald-300">
-                    <CheckCircle2 className="w-3 h-3" /> Qualified
-                  </Badge>
-                )}
               </div>
             )}
           </div>

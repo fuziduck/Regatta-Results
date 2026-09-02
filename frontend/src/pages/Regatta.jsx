@@ -5,8 +5,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
-import { ArrowLeft, CalendarDays, MapPin, Trophy } from "lucide-react";
+import { exportSeriesPdf } from "@/lib/exportPdf";
+import { ArrowLeft, CalendarDays, Download, MapPin, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
+
+// Human label for a competition's type + championship scope, e.g.
+// "Class Championship" or "Regatta".
+function competitionLabel(regatta) {
+  if ((regatta.competition_type || "regatta") !== "championship") return "Regatta";
+  const scope = regatta.championship_scope;
+  if (scope === "club") return "Club Championship";
+  if (scope === "class") return "Class Championship";
+  if (scope === "open") return "Open Championship";
+  return "Championship";
+}
 
 export default function Regatta() {
   const { slug, regattaId } = useParams();
@@ -55,6 +67,26 @@ export default function Regatta() {
   }
 
   const seriesOf = (className) => (regatta.series || []).filter((s) => s.class_name === className);
+  const compLabel = competitionLabel(regatta);
+
+  // One series' results with its own PDF export header, so the competition
+  // hierarchy (Competition → Class → Series) is visible in the PDF too.
+  const SeriesResults = ({ s, className }) => (
+    <div className="mb-6">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{s.name !== regatta.name ? s.name : "Overall"}</div>
+        <Button size="sm" variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+          onClick={() => exportSeriesPdf({
+            clubName: club?.name || "", className, seriesName: s.name !== regatta.name ? s.name : regatta.name,
+            year: regatta.year, data: standings[s.id], icon: club?.icon,
+            competitionLabel: `${regatta.name} · ${compLabel}`,
+          })}>
+          <Download className="w-3.5 h-3.5" /> PDF
+        </Button>
+      </div>
+      <SeriesStandingsTable data={standings[s.id]} />
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -67,13 +99,27 @@ export default function Regatta() {
           </Link>
         </div>
       </header>
-      <main className="max-w-6xl mx-auto px-4 py-10">
-        <Badge variant="outline" className="mb-3">{regatta.status || "Complete"}</Badge>
+      <main className="max-w-6xl mx-auto px-4 py-8">
+        {regatta.thumbnail && (
+          <div className="relative -mx-4 sm:mx-0 sm:rounded-2xl overflow-hidden h-44 sm:h-60 mb-6 border border-border">
+            <img src={regatta.thumbnail} alt={`${regatta.name} photo`} className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent" />
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <Badge variant="outline">{regatta.status || "Complete"}</Badge>
+          {regatta.competition_type === "championship" ? (
+            <Badge className="gap-1 bg-amber-100 text-amber-700 border border-amber-300"><Trophy className="w-3 h-3" />{compLabel}</Badge>
+          ) : (
+            <Badge variant="secondary" className="gap-1"><CalendarDays className="w-3 h-3" />Regatta</Badge>
+          )}
+        </div>
         <h1 className="text-3xl sm:text-4xl font-heading uppercase tracking-tighter text-ocean">{regatta.name}</h1>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
           <span className="inline-flex items-center gap-1.5"><CalendarDays className="w-4 h-4" />{regatta.date_label || "Dates to be confirmed"}</span>
           {regatta.host_club && <span className="inline-flex items-center gap-1.5"><MapPin className="w-4 h-4" />{regatta.host_club}</span>}
         </div>
+        {regatta.description && <p className="mt-3 max-w-2xl text-sm text-muted-foreground">{regatta.description}</p>}
         <p className="mt-3 text-sm text-muted-foreground">{classNames.join(" · ")}</p>
 
         <Tabs value={tab} onValueChange={setTab} className="mt-8">
@@ -126,12 +172,7 @@ export default function Regatta() {
                   {classNames.map((cn) => (
                     <section key={cn}>
                       <h3 className="font-heading text-xl uppercase tracking-tight mb-3 flex items-center gap-2"><Trophy className="w-5 h-5 text-ocean" />{cn}</h3>
-                      {seriesOf(cn).map((s) => (
-                        <div key={s.id} className="mb-6">
-                          {s.name !== regatta.name && <div className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">{s.name}</div>}
-                          <SeriesStandingsTable data={standings[s.id]} />
-                        </div>
-                      ))}
+                      {seriesOf(cn).map((s) => <SeriesResults key={s.id} s={s} className={cn} />)}
                     </section>
                   ))}
                 </div>
@@ -140,7 +181,7 @@ export default function Regatta() {
                   {seriesOf(classFilter).map((s) => (
                     <section key={s.id}>
                       <h3 className="font-heading text-xl uppercase tracking-tight mb-3">{s.name !== regatta.name ? s.name : regatta.name}</h3>
-                      <SeriesStandingsTable data={standings[s.id]} />
+                      <SeriesResults s={s} className={classFilter} />
                     </section>
                   ))}
                 </div>
