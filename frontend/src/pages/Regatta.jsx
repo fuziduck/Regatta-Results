@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
-import { ArrowLeft, CalendarDays, Download, MapPin, Trophy } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
 
 // Human label for a competition's type + championship scope, e.g.
@@ -68,6 +68,13 @@ export default function Regatta() {
 
   const seriesOf = (className) => (regatta.series || []).filter((s) => s.class_name === className);
   const compLabel = competitionLabel(regatta);
+
+  // Medal chip styling for the 1st / 2nd / 3rd podium rows on the overview.
+  const PODIUM = [
+    { chip: "bg-amber-100 text-amber-600", label: "1st" },
+    { chip: "bg-slate-200 text-slate-500", label: "2nd" },
+    { chip: "bg-orange-100 text-orange-700", label: "3rd" },
+  ];
 
   // One series' results with its own PDF export header, so the competition
   // hierarchy (Competition → Class → Series) is visible in the PDF too.
@@ -131,18 +138,44 @@ export default function Regatta() {
 
           {tab === "overview" && (
             <div className="pt-6" data-testid="regatta-overview">
-              <p className="text-sm text-muted-foreground mb-5">Each class is summarised separately — there is no combined finishing order.</p>
+              <p className="text-sm text-muted-foreground mb-5">Each class is summarised separately — tap a class to see its full results.</p>
               <div className="grid gap-5 md:grid-cols-2">
                 {classNames.map((cn) => (
-                  <div key={cn} className="rounded-2xl border border-border bg-card p-5">
-                    <div className="font-heading text-lg uppercase tracking-tight flex items-center gap-2"><Trophy className="w-4 h-4 text-ocean" />{cn}</div>
-                    {seriesOf(cn).map((s) => (
-                      <div key={s.id} className="mt-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                        <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{s.name !== regatta.name ? s.name : "Overall"}</div>
-                        <div className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-sm">
-                          <span><span className="text-muted-foreground">Winner:</span> <strong>{s.winner || "—"}</strong></span>
-                          <span className="text-muted-foreground">{s.race_count} races</span>
-                          <span className="text-muted-foreground">{s.boat_count} boats</span>
+                  <div key={cn} role="button" tabIndex={0}
+                    onClick={() => { setClassFilter(cn); setTab("results"); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setClassFilter(cn); setTab("results"); } }}
+                    data-testid={`regatta-class-card-${cn}`}
+                    className="group cursor-pointer rounded-2xl border border-border bg-card p-5 transition-all hover:-translate-y-0.5 hover:border-ocean/50 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-heading text-lg uppercase tracking-tight flex items-center gap-2">
+                        <span className="grid h-8 w-8 place-items-center rounded-lg bg-ocean/10 text-ocean"><Trophy className="w-4 h-4" /></span>
+                        {cn}
+                      </div>
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground group-hover:text-ocean">
+                        View results <ArrowRight className="w-3.5 h-3.5" />
+                      </span>
+                    </div>
+                    {seriesOf(cn).map((s, si) => (
+                      <div key={s.id} className={`mt-3 rounded-xl border p-3 ${si % 2 === 0 ? "border-ocean/20 bg-ocean/5" : "border-amber-200 bg-amber-50"}`}>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{s.name !== regatta.name ? s.name : "Overall"}</div>
+                          <div className="text-xs text-muted-foreground">{s.race_count} races · {s.boat_count} boats</div>
+                        </div>
+                        <div className="mt-2 space-y-1.5">
+                          {(s.podium || []).map((p, i) => (
+                            <div key={i} className="flex items-center gap-2 text-sm">
+                              <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${PODIUM[i]?.chip || "bg-muted text-muted-foreground"}`} title={PODIUM[i]?.label}>
+                                <Medal className="w-3.5 h-3.5" />
+                              </span>
+                              <span className="w-5 font-mono text-xs text-muted-foreground">{p.rank}</span>
+                              <strong className="truncate">{p.boat_name}</strong>
+                              {p.sail_no && <span className="hidden sm:inline font-mono text-xs text-muted-foreground">{p.sail_no}</span>}
+                              <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">{p.net} pts</span>
+                            </div>
+                          ))}
+                          {(s.podium || []).length === 0 && (
+                            <div className="text-sm"><span className="text-muted-foreground">Winner:</span> <strong>{s.winner || "—"}</strong></div>
+                          )}
                         </div>
                       </div>
                     ))}

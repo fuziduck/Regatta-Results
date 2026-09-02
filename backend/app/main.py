@@ -3589,6 +3589,13 @@ async def get_regatta(regatta_id: str, request: Request, club_id: Optional[str] 
         rows = standings.get("standings") or []
         s["boat_count"] = len(rows)
         s["winner"] = rows[0].get("boat_name") if rows else None
+        # Podium (top three) for the overview cards — straight from the same
+        # live standings, never a separate calculation.
+        s["podium"] = [{
+            "rank": r.get("rank"), "boat_name": r.get("boat_name"),
+            "sail_no": r.get("sail_no"), "helm": r.get("helm"),
+            "total": r.get("total"), "net": r.get("net"),
+        } for r in rows[:3]]
     return regatta
 
 

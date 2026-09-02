@@ -264,6 +264,9 @@ export default function Landing() {
   const [view, setView] = useState("championship");
   const [regattaId, setRegattaId] = useState(null);
   const [regattaDetail, setRegattaDetail] = useState(null);
+  const [activeRegattaClass, setActiveRegattaClass] = useState(null);
+  const [activeRegattaSeries, setActiveRegattaSeries] = useState(null);
+  const [regattaSeriesData, setRegattaSeriesData] = useState({});
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -361,6 +364,36 @@ export default function Landing() {
   }, [regattaDetail]);
   const seriesOf = (cn) => (regattaDetail?.series || []).filter((s) => s.class_name === cn);
 
+  // Regatta navigation mirrors the championship display: choose a class,
+  // then its series, then read the normal detailed standings table.
+  useEffect(() => {
+    if (!regattaDetail) {
+      setActiveRegattaClass(null);
+      setActiveRegattaSeries(null);
+      setRegattaSeriesData({});
+      return;
+    }
+    setActiveRegattaClass((prev) => (prev && regattaClasses.includes(prev) ? prev : regattaClasses[0] || null));
+    setRegattaSeriesData({});
+  }, [regattaDetail, regattaClasses]);
+
+  const activeRegattaSeriesList = seriesOf(activeRegattaClass);
+  useEffect(() => {
+    setActiveRegattaSeries((prev) => (
+      prev && activeRegattaSeriesList.some((s) => s.id === prev)
+        ? prev
+        : activeRegattaSeriesList[0]?.id || null
+    ));
+  }, [activeRegattaClass, regattaDetail]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (view !== "regattas" || !clubId || !activeRegattaSeries) return;
+    if (regattaSeriesData[activeRegattaSeries]) return;
+    api.seriesStandings(activeRegattaSeries, clubId)
+      .then((d) => setRegattaSeriesData((prev) => ({ ...prev, [activeRegattaSeries]: d })))
+      .catch(() => {});
+  }, [view, clubId, activeRegattaSeries, regattaSeriesData]);
+
   useEffect(() => { setActiveMini(null); }, [activeSeries]);
 
   useEffect(() => {
@@ -437,6 +470,13 @@ export default function Landing() {
   }
 
   const sideAdverts = pickAdverts(adverts, 3, roll);
+
+  // Hero background: the selected regatta's own photo when one is uploaded,
+  // otherwise the default sailing shot. Either way the blue hero-overlay is
+  // applied on top, so the two look consistent.
+  const selectedRegatta = regattaComps.find((r) => r.id === regattaId);
+  const heroPhoto = (view === "regattas" && selectedRegatta?.thumbnail) ||
+    "https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0YXR8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85";
   return (
     <div className="min-h-screen bg-background">
       <NotificationBanner items={notifications} />
@@ -465,8 +505,9 @@ export default function Landing() {
 
       <section className="relative">
         <img
-          src="https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0YXR8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85"
-          alt="racing" className="absolute inset-0 w-full h-full object-cover" />
+          src={heroPhoto}
+          alt={selectedRegatta ? `${selectedRegatta.name} photo` : "racing"}
+          className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
         <div className="relative max-w-6xl mx-auto px-4 py-6 md:py-8">
           <Badge className={`mb-3 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
@@ -475,9 +516,6 @@ export default function Landing() {
           <h1 className="text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
             {club.name} · {year === CURRENT_YEAR ? "live" : year} results & standings
           </h1>
-          <p className="text-white/80 mt-3 max-w-xl leading-relaxed">
-            Follow every fleet across the season. Provisional and confirmed results, series championships and race-day notices — all in one place.
-          </p>
           <div className="mt-4 flex flex-wrap items-end gap-2">
             <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]}
               labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
@@ -724,23 +762,66 @@ export default function Landing() {
                     </Button>
                   </Link>
                 </div>
-                <div className="grid gap-5 md:grid-cols-2">
-                  {regattaClasses.map((cn) => (
-                    <div key={cn} className="rounded-2xl border border-border bg-card p-5">
-                      <div className="font-heading text-lg uppercase tracking-tight flex items-center gap-2"><Trophy className="w-4 h-4 text-ocean" />{cn}</div>
-                      {seriesOf(cn).map((s) => (
-                        <div key={s.id} className="mt-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{s.name !== regattaDetail.name ? s.name : "Overall"}</div>
-                          <div className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-sm">
-                            <span><span className="text-muted-foreground">Winner:</span> <strong>{s.winner || "—"}</strong></span>
-                            <span className="text-muted-foreground">{s.race_count} races</span>
-                            <span className="text-muted-foreground">{s.boat_count} boats</span>
-                          </div>
-                        </div>
+
+                <div className="mb-5 flex flex-col items-center gap-1.5" data-testid="regatta-class-tabs">
+                  <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Class</span>
+                  <Tabs value={activeRegattaClass || undefined} onValueChange={setActiveRegattaClass}>
+                    <TabsList className="flex h-auto w-fit flex-wrap justify-center gap-2">
+                      {regattaClasses.map((cn) => (
+                        <TabsTrigger key={cn} value={cn}
+                          className="rounded-xl border border-ocean/30 bg-card px-5 py-2.5 font-heading uppercase tracking-wide text-ocean hover:bg-ocean/5 data-[state=active]:border-safety data-[state=active]:bg-safety data-[state=active]:text-white">
+                          <Trophy className="mr-1.5 inline h-4 w-4" />{cn}
+                        </TabsTrigger>
                       ))}
-                    </div>
-                  ))}
+                    </TabsList>
+                  </Tabs>
                 </div>
+
+                {activeRegattaClass && activeRegattaSeriesList.length > 0 && (
+                  <div className="mb-5 flex flex-col items-center gap-1.5" data-testid="regatta-series-tabs">
+                    <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Series</span>
+                    <Tabs value={activeRegattaSeries || undefined} onValueChange={setActiveRegattaSeries}>
+                      <TabsList className="flex h-auto w-fit flex-wrap justify-center gap-2">
+                        {activeRegattaSeriesList.map((s) => (
+                          <TabsTrigger key={s.id} value={s.id}
+                            className="rounded-xl border border-ocean/30 bg-card px-4 py-2 font-heading uppercase tracking-wide text-ocean hover:bg-ocean/5 data-[state=active]:border-safety data-[state=active]:bg-safety data-[state=active]:text-white">
+                            {s.name !== regattaDetail.name ? s.name : "Overall"}
+                          </TabsTrigger>
+                        ))}
+                      </TabsList>
+                    </Tabs>
+                  </div>
+                )}
+
+                {activeRegattaSeries && (
+                  <section className="rounded-2xl border border-border bg-card p-4 sm:p-6" data-testid="regatta-selected-results">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-heading text-xl uppercase tracking-tight text-ocean">{activeRegattaClass}</h3>
+                        <p className="text-sm text-muted-foreground">
+                          {activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)?.name !== regattaDetail.name
+                            ? activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)?.name
+                            : "Overall"}
+                          {" · "}{regattaDetail.date_label || regattaDetail.year}
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
+                        disabled={!regattaSeriesData[activeRegattaSeries]?.standings?.length}
+                        onClick={() => {
+                          const selected = activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries);
+                          exportSeriesPdf({
+                            clubName: club.name, className: activeRegattaClass,
+                            seriesName: selected?.name || regattaDetail.name,
+                            year: regattaDetail.year, data: regattaSeriesData[activeRegattaSeries],
+                            icon: club.icon, competitionLabel: `${regattaDetail.name} · Regatta`,
+                          });
+                        }}>
+                        <Download className="h-4 w-4" /> PDF
+                      </Button>
+                    </div>
+                    <SeriesStandingsTable data={regattaSeriesData[activeRegattaSeries]} />
+                  </section>
+                )}
               </div>
             )}
           </div>
