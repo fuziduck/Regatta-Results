@@ -576,7 +576,7 @@ function RegattasTab({ clubId }) {
     if (!form.name) return toast.error("Regatta name required");
     setBusy(true);
     try {
-      const payload = { ...form, year: Number(form.year), status: form.status || undefined };
+      const payload = { ...form, year: Number(form.year), status: form.status || undefined, ...(clubId ? { club_id: clubId } : {}) };
       if (editing) await api.updateRegatta(editing, payload);
       else await api.createRegatta(payload);
       toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", year: yearFilter, start_date: "", end_date: "", host_club: "", status: "" });
