@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { competitionTypeLabel } from "@/lib/competition";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
-import { ArrowLeft, ArrowRight, CalendarDays, Flag, LogIn, Sailboat, Trophy } from "lucide-react";
+import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, LogIn, Sailboat, Trophy } from "lucide-react";
 
 const DEFAULT_CLASS_COLOUR = "#0A369D";
 
@@ -75,12 +75,18 @@ export default function Class() {
   }, [classId, classKey, groupedView]);
 
   const grouped = useMemo(() => {
-    const result = new Map();
+    const byYear = new Map();
     (data?.series || []).forEach((item) => {
-      if (!result.has(item.year)) result.set(item.year, []);
-      result.get(item.year).push(item);
+      const year = item.year;
+      if (!byYear.has(year)) byYear.set(year, new Map());
+      const clubKey = item.club_id || item.club_name || "club";
+      const clubs = byYear.get(year);
+      if (!clubs.has(clubKey)) clubs.set(clubKey, { name: item.club_name || "Club results", items: [] });
+      clubs.get(clubKey).items.push(item);
     });
-    return [...result.entries()].sort((a, b) => Number(b[0]) - Number(a[0]));
+    return [...byYear.entries()]
+      .sort((a, b) => Number(b[0]) - Number(a[0]))
+      .map(([year, clubs]) => [year, [...clubs.values()].sort((a, b) => a.name.localeCompare(b.name))]);
   }, [data]);
 
   if (loading) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
@@ -127,10 +133,21 @@ export default function Class() {
       <main className="mx-auto max-w-6xl px-4 py-10">
         {!grouped.length ? (
           <div className="rounded-2xl border border-dashed border-border p-10 text-center"><Sailboat className="mx-auto h-8 w-8 text-ocean/50" /><p className="mt-3 font-heading text-xl uppercase">No championships or regattas yet</p><p className="mt-1 text-sm text-muted-foreground">Results for this class will appear here when a series is set up.</p></div>
-        ) : grouped.map(([year, items]) => (
+        ) : grouped.map(([year, clubs]) => (
           <section key={year} className="mb-10" data-testid={`class-year-${year}`}>
-            <div className="mb-4 flex items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.22em] text-safety">{year} season</p><h2 className="font-heading text-3xl uppercase tracking-tight text-ocean">Championships &amp; regattas</h2></div><Badge variant="outline">{items.length} {items.length === 1 ? "competition" : "competitions"}</Badge></div>
-            <div className="grid gap-4 md:grid-cols-2">{items.map((item) => <SeriesCard key={`${item.id}-${item.class_id}`} item={item} clubSlug={club.slug} />)}</div>
+            <div className="mb-5 flex items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.22em] text-safety">{year} season</p><h2 className="font-heading text-3xl uppercase tracking-tight text-ocean">Championships &amp; regattas</h2></div><Badge variant="outline">{clubs.reduce((count, clubGroup) => count + clubGroup.items.length, 0)} competitions</Badge></div>
+            <div className="space-y-7">
+              {clubs.map((clubGroup) => (
+                <section key={clubGroup.name} data-testid={`class-club-${year}-${clubGroup.name}`}>
+                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
+                    <Building2 className="h-4 w-4 text-safety" />
+                    <h3 className="font-heading text-xl uppercase tracking-tight text-foreground">{clubGroup.name}</h3>
+                    <span className="text-xs text-muted-foreground">{clubGroup.items.length} {clubGroup.items.length === 1 ? "competition" : "competitions"}</span>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">{clubGroup.items.map((item) => <SeriesCard key={`${item.id}-${item.class_id}`} item={item} clubSlug={club.slug} />)}</div>
+                </section>
+              ))}
+            </div>
           </section>
         ))}
       </main>

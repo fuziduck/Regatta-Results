@@ -60,7 +60,10 @@ function RaceTable({ rows, highlight }) {
             return (
               <tr key={`${h.series_id}-${h.race_number}-${i}`} className={i % 2 ? "bg-muted/40" : "bg-card"}>
                 <td className="py-2.5 px-3 whitespace-nowrap">{fmtDay(h.date)}</td>
-                <td className="py-2.5 px-3 font-semibold">{h.series_name}</td>
+                <td className="py-2.5 px-3 font-semibold">
+                  <div>{h.series_name}</div>
+                  {h.club_name && <div className="text-xs font-normal text-muted-foreground">{h.club_name}{h.class_name ? ` · ${h.class_name}` : ""}</div>}
+                </td>
                 <td className="py-2.5 px-3 text-muted-foreground">Race {h.race_number}</td>
                 <td className={cellCls(h.discarded)}>
                   {pos ? (
@@ -196,6 +199,7 @@ export default function Boat() {
 
   const TABS = [
     { key: "overview", label: "Overview", icon: <Info className="w-4 h-4" /> },
+    { key: "overall", label: "Overall", icon: <Trophy className="w-4 h-4" /> },
     { key: "results", label: "Results", icon: <Flag className="w-4 h-4" /> },
     { key: "series", label: "Series Standings", icon: <Trophy className="w-4 h-4" /> },
     { key: "history", label: "Race History", icon: <History className="w-4 h-4" /> },
@@ -288,6 +292,71 @@ export default function Boat() {
             </button>
           ))}
         </div>
+
+        {tab === "overall" && (
+          <div className="space-y-8" data-testid="boat-overall">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg md:text-xl uppercase tracking-tight">Overall boat results</h2>
+                <p className="text-sm text-muted-foreground mt-1">All published results for {profile.name}, across every club, class and fleet.</p>
+              </div>
+              <Badge variant="outline" className="border-ocean/30 text-ocean dark:text-ocean-light">{profile.career_overall?.fleets?.length || 0} fleets</Badge>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <StatCard icon={<Flag className="w-4 h-4" />} label="Races Sailed" value={profile.career_overall?.stats?.races_sailed ?? "–"} />
+              <StatCard icon={<Trophy className="w-4 h-4" />} label="Wins" value={profile.career_overall?.stats?.wins ?? "–"} />
+              <StatCard icon={<Medal className="w-4 h-4" />} label="Podiums" value={profile.career_overall?.stats?.podiums ?? "–"} />
+              <StatCard icon={<TrendingUp className="w-4 h-4" />} label="Average Position" value={profile.career_overall?.stats?.avg_position ?? "–"} />
+              <StatCard icon={<Percent className="w-4 h-4" />} label="Completion Rate" value={profile.career_overall?.stats?.completion_rate != null ? `${profile.career_overall.stats.completion_rate}%` : "–"} />
+              <StatCard icon={<Star className="w-4 h-4" />} label="Average Points" value={profile.career_overall?.stats?.avg_points ?? "–"} />
+            </div>
+
+            <section>
+              <h3 className="text-sm uppercase tracking-widest font-semibold mb-3">Fleet summary</h3>
+              {(!profile.career_overall?.fleets || profile.career_overall.fleets.length === 0) ? (
+                <p className="text-sm text-muted-foreground">No published results yet.</p>
+              ) : (
+                <div className="rounded-xl border border-border overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-ocean text-white text-left">
+                        <th className="py-2.5 px-3 font-semibold">Club</th>
+                        <th className="py-2.5 px-3 font-semibold">Class</th>
+                        <th className="py-2.5 px-3 font-semibold">Year</th>
+                        <th className="py-2.5 px-3 font-semibold text-center">Races</th>
+                        <th className="py-2.5 px-3 font-semibold text-center">Wins</th>
+                        <th className="py-2.5 px-3 font-semibold text-center">Podiums</th>
+                        <th className="py-2.5 px-3 font-semibold text-center">Avg Pos</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {profile.career_overall.fleets.map((f, i) => (
+                        <tr key={`${f.class_id}-${f.year}-${f.club_name}`} className={i % 2 ? "bg-muted/40" : "bg-card"}>
+                          <td className="py-2.5 px-3 font-semibold">{f.club_name}</td>
+                          <td className="py-2.5 px-3">{f.class_name}</td>
+                          <td className="py-2.5 px-3">{f.year}</td>
+                          <td className="py-2.5 px-3 text-center font-mono">{f.races}</td>
+                          <td className="py-2.5 px-3 text-center font-mono">{f.wins}</td>
+                          <td className="py-2.5 px-3 text-center font-mono">{f.podiums}</td>
+                          <td className="py-2.5 px-3 text-center font-mono">{f.avg_position ?? "–"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            <section>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h3 className="text-sm uppercase tracking-widest font-semibold">All race results</h3>
+                <span className="text-xs text-muted-foreground">Total points are shown cumulatively; Net excludes discarded races.</span>
+              </div>
+              <RaceTable rows={profile.career_overall?.race_history || []} />
+            </section>
+          </div>
+        )}
 
         {tab === "overview" && (
           <div className="space-y-10">

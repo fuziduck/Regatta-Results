@@ -948,6 +948,21 @@ function SeriesTab({ classes, clubId }) {
     }
     load();
   };
+  const reclassify = async (s, type) => {
+    const previous = s.series_type || "championship";
+    if (type === previous) return;
+    setSeries((items) => items.map((item) => item.id === s.id ? { ...item, series_type: type } : item));
+    try {
+      const updated = await api.updateSeriesType(s.id, type, s.version);
+      setSeries((items) => items.map((item) => item.id === s.id ? { ...item, ...updated } : item));
+      toast.success(`${s.name} reallocated as ${type === "club_championship" ? "Club Championship" : type === "regatta" ? "Regatta" : "Championship"}`);
+    } catch (e) {
+      setSeries((items) => items.map((item) => item.id === s.id ? { ...item, series_type: previous } : item));
+      if (e.response?.status === 409) toast.error("This series was changed by another user. Reload the series list and try again.");
+      else toast.error(e.response?.data?.detail || "Could not reallocate series");
+      load();
+    }
+  };
 
   return (
     <div>
@@ -980,16 +995,40 @@ function SeriesTab({ classes, clubId }) {
                   <SelectTrigger data-testid="series-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
-              <div className="space-y-1.5"><Label>Series type</Label>
-                <Select value={form.series_type || "championship"} onValueChange={(v) => setForm({ ...form, series_type: v })}>
-                  <SelectTrigger data-testid="series-type-input"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="championship">Championship</SelectItem>
-                    <SelectItem value="club_championship">Club Championship</SelectItem>
-                    <SelectItem value="regatta">Regatta</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-[11px] text-muted-foreground">Choose what this series is competing for. You can optionally link it to a named competition below.</p>
+              <div className="space-y-2" data-testid="series-type-field">
+                <div className="flex items-center justify-between gap-2">
+                  <Label>What type of racing is this series?</Label>
+                  <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Required</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" role="radiogroup" aria-label="Series type">
+                  {[
+                    { value: "championship", label: "Championship", description: "Class or open championship", icon: <Trophy className="w-4 h-4" /> },
+                    { value: "club_championship", label: "Club Championship", description: "Your club's championship", icon: <Building2 className="w-4 h-4" /> },
+                    { value: "regatta", label: "Regatta", description: "A specific racing occasion", icon: <CalendarDays className="w-4 h-4" /> },
+                  ].map((option) => {
+                    const selected = (form.series_type || "championship") === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        data-testid={`series-type-${option.value}`}
+                        onClick={() => setForm({ ...form, series_type: option.value })}
+                        className={`text-left rounded-xl border p-3 transition-all ${selected
+                          ? "border-ocean bg-ocean/10 text-ocean dark:text-ocean-light ring-2 ring-ocean/20"
+                          : "border-border bg-card hover:border-ocean/50 hover:bg-ocean/5"}`}
+                      >
+                        <span className="flex items-center gap-2 font-semibold text-sm">
+                          <span className={`grid place-items-center w-7 h-7 rounded-lg ${selected ? "bg-ocean text-white" : "bg-muted text-muted-foreground"}`}>{option.icon}</span>
+                          {option.label}
+                        </span>
+                        <span className="block text-[11px] leading-tight text-muted-foreground mt-2">{option.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-muted-foreground">Choose the purpose of this series. This does not change scoring; it controls how the results are labelled and grouped. You can optionally link it to a named competition below.</p>
               </div>
               <div className="space-y-1.5"><Label>Competition <span className="text-muted-foreground normal-case text-xs">(optional — named regatta or championship)</span></Label>
                 <Select value={form.regatta_id || "__none__"} onValueChange={(v) => setForm({ ...form, regatta_id: v === "__none__" ? "" : v })}>
@@ -1258,7 +1297,18 @@ function SeriesTab({ classes, clubId }) {
               <TableCell className="font-mono">{s.order}</TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
               <TableCell className="text-sm">{classes.find((c) => c.id === s.class_id)?.name || "Unknown class"}</TableCell>
-              <TableCell>{s.series_type === "club_championship" ? <Badge className="bg-amber-100 text-amber-800">Club Championship</Badge> : s.series_type === "regatta" ? <Badge className="bg-ocean/10 text-ocean border border-ocean/30">Regatta</Badge> : <Badge variant="outline">Championship</Badge>}</TableCell>
+              <TableCell>
+                <Select value={s.series_type || "championship"} onValueChange={(v) => reclassify(s, v)}>
+                  <SelectTrigger className="h-8 w-40" data-testid={`series-type-select-${s.name}`} aria-label={`Reallocate ${s.name}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="championship">Championship</SelectItem>
+                    <SelectItem value="club_championship">Club Championship</SelectItem>
+                    <SelectItem value="regatta">Regatta</SelectItem>
+                  </SelectContent>
+                </Select>
+              </TableCell>
               <TableCell>{s.regatta_id ? <Badge className="gap-1 bg-ocean/10 text-ocean border border-ocean/30"><CalendarDays className="w-3 h-3" />{(regattas.find((r) => r.id === s.regatta_id) || {}).name || "Competition"}</Badge> : <Badge variant="outline" className="text-muted-foreground">Standalone series</Badge>}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
               <TableCell>{s.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : s.scoring_mode === "py" ? <Badge className="bg-emerald-100 text-emerald-800">PY</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>

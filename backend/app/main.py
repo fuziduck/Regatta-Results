@@ -925,6 +925,17 @@ class MiniSplitInput(BaseModel):
     expected_version: Optional[int] = None
 
 
+class SeriesTypeInput(BaseModel):
+    """Metadata-only reclassification of an existing series.
+
+    This deliberately does not accept scoring, schedule, race, or membership
+    fields. It lets an administrator organise an old series without having to
+    resubmit (or accidentally overwrite) its results configuration.
+    """
+    series_type: Literal["championship", "club_championship", "regatta"]
+    expected_version: Optional[int] = None
+
+
 class SeriesInput(BaseModel):
     name: str
     class_id: str
@@ -3246,6 +3257,31 @@ async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(
     await _log_audit(request=None, user=user, action="SERIES_UPDATED",
                      description=f"Updated series {series.get('name')}",
                      resource_type="series", resource_id=series_id, club_id=cls.get("club_id"))
+    return await db.series.find_one({"id": series_id}, {"_id": 0})
+
+
+@api_router.put("/series/{series_id}/type")
+async def update_series_type(series_id: str, data: SeriesTypeInput,
+                             user: dict = Depends(require_admin)):
+    """Reclassify an existing series without editing its racing data.
+
+    Type is presentation/organisation metadata, so this narrow endpoint is
+    also available for locked and archived seasons. It never changes scoring,
+    discards, schedules, boats, races, or results; optimistic concurrency and
+    an audit entry protect the metadata change itself.
+    """
+    series = await _series_of_club(series_id, user)
+    expected = _expected_version(data)
+    result = await db.series.update_one(
+        _version_filter(series_id, expected),
+        {"$set": {"series_type": data.series_type}, "$inc": {"version": 1}},
+    )
+    if result.modified_count == 0:
+        _raise_stale(expected)
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=None, user=user, action="SERIES_TYPE_UPDATED",
+                     description=f"Reclassified series {series.get('name')} as {data.series_type}",
+                     resource_type="series", resource_id=series_id, club_id=club_id)
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
@@ -6555,6 +6591,10 @@ async def fleet_profile(fleet_id: str):
     DID_NOT_SAIL = {"DNC", "DNS"}
     today = _date.today().isoformat()
     member_by_cy = {(m.get("class_id"), m.get("year")): m for m in members}
+    # Keep a complete, de-duplicated career history for the boat-level
+    # Overall view.  Season pages intentionally expose only their recent
+    # rows, but the combined view must not silently lose older fleet results.
+    career_history = []
     seasons = []
     for s in series_out:
         cy = (s.get("class_id"), s.get("year"))
@@ -6599,10 +6639,13 @@ async def fleet_profile(fleet_id: str):
                 history.append({
                     "series_id": ss["series_id"], "series_name": ss["series_name"],
                     "race_number": m.get("race_number"), "date": m.get("date"),
+                    "class_name": s["class_name"], "club_name": s["club_name"],
+                    "year": s.get("year"),
                     "position": position, "code": None if position is not None else code,
                     "points": points, "discarded": discarded,
                 })
         history.sort(key=lambda h: (h.get("date") or "", h.get("series_name") or "", h.get("race_number") or 0))
+        career_history.extend(history)
         gross = 0.0
         net = 0.0
         for h in history:
@@ -6677,7 +6720,59 @@ async def fleet_profile(fleet_id: str):
             },
         })
     seasons.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
+
+    # Boat-level Overall: this is a career summary, not a new cross-class
+    # ranking.  Points and positions remain the values calculated by each
+    # fleet's existing series; they are simply presented together so an owner
+    # can see every published result for the physical boat in one place.
+    career_history.sort(key=lambda h: (h.get("date") or "", h.get("series_name") or "",
+                                       h.get("race_number") or 0), reverse=True)
+    seen_races = set()
+    combined_history = []
+    for h in career_history:
+        identity = (h.get("series_id"), h.get("race_number"))
+        if identity in seen_races:
+            continue
+        seen_races.add(identity)
+        combined_history.append(dict(h))
+    gross = 0.0
+    net = 0.0
+    for h in reversed(combined_history):
+        gross += float(h.get("points") or 0)
+        if not h.get("discarded"):
+            net += float(h.get("points") or 0)
+        h["total"] = round(gross, 1)
+        h["net"] = round(net, 1)
+    career_sailed = [h for h in combined_history if (h.get("code") or "") not in DID_NOT_SAIL]
+    career_finished = [h for h in career_sailed if h.get("position") is not None]
+    career_positions = [h["position"] for h in career_finished]
+    career_stats = {
+        "races_total": len(combined_history),
+        "races_sailed": len(career_sailed),
+        "wins": sum(1 for p in career_positions if p == 1),
+        "seconds": sum(1 for p in career_positions if p == 2),
+        "thirds": sum(1 for p in career_positions if p == 3),
+        "podiums": sum(1 for p in career_positions if p <= 3),
+        "avg_position": round(sum(career_positions) / len(career_positions), 1) if career_positions else None,
+        "completion_rate": round(100.0 * len(career_finished) / len(combined_history), 0) if combined_history else 0,
+        "avg_points": round(sum(float(h.get("points") or 0) for h in career_sailed) / len(career_sailed), 1) if career_sailed else None,
+        "best": min(career_positions) if career_positions else None,
+        "worst": max(career_positions) if career_positions else None,
+        "discards": sum(1 for h in combined_history if h.get("discarded")),
+    }
+    career_fleets = []
+    for season_item in seasons:
+        season_stats = season_item.get("stats") or {}
+        career_fleets.append({
+            "class_id": season_item.get("class_id"), "class_name": season_item.get("class_name"),
+            "club_name": season_item.get("club_name"), "club_slug": season_item.get("club_slug"),
+            "year": season_item.get("year"), "races": season_stats.get("races_sailed", 0),
+            "wins": season_stats.get("wins", 0), "podiums": season_stats.get("podiums", 0),
+            "avg_position": season_stats.get("avg_position"),
+        })
     return {"fleet_id": fleet_id, "name": primary.get("name"), "sail_no": primary.get("sail_no"),
+            "career_overall": {"stats": career_stats, "race_history": combined_history,
+                               "fleets": career_fleets},
             "boat": {"helm": primary.get("helm"),
                       "home_club": (clubs.get(primary.get("home_club_id")) or {}).get("name") or primary.get("home_club"),
                       "home_club_slug": (clubs.get(primary.get("home_club_id")) or {}).get("slug") or "",

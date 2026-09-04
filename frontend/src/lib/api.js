@@ -216,13 +216,20 @@ export const api = {
   // Shared boat registry: one physical boat may race at several clubs or in
   // several classes; search groups its records under a single fleet identity.
   fleetSearch: (q) => client.get("/fleet/search", { params: { q } }).then((r) => r.data),
-  fleetProfile: (id) => client.get(`/fleet/${id}`).then((r) => r.data),
+  // Fleet profiles include derived career totals. Bust the browser's GET cache
+  // so a newly published race (or a newly added overall projection) is shown
+  // immediately after the profile API changes.
+  fleetProfile: (id) => client.get(`/fleet/${id}`, { params: { _ts: Date.now() } }).then((r) => r.data),
   // Unified public search: clubs, classes, series and boats.
   siteSearch: (q) => client.get("/search", { params: { q } }).then((r) => r.data),
 
   getSeries: (params = {}) => client.get("/series", { params }).then((r) => r.data),
   createSeries: (d) => client.post("/series", d).then((r) => r.data),
   updateSeries: (id, d, v) => client.put(`/series/${id}`, withVer(d, v)).then((r) => r.data),
+  // Reclassify an existing series without resubmitting its scoring or race
+  // configuration. This narrow metadata update is also available for locked
+  // historical seasons.
+  updateSeriesType: (id, series_type, v) => client.put(`/series/${id}/type`, withVer({ series_type }, v)).then((r) => r.data),
   // Set which of the class's boats form part of this series (race officer or
   // club admin). Only member boats are scored: absent members DNC, boats not
   // listed are excluded from the series standings entirely.
