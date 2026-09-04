@@ -9,6 +9,7 @@ import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
+import { SERIES_TYPES } from "@/lib/competition";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
@@ -1001,11 +1002,8 @@ function SeriesTab({ classes, clubId }) {
                   <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Required</span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" role="radiogroup" aria-label="Series type">
-                  {[
-                    { value: "championship", label: "Championship", description: "Class or open championship", icon: <Trophy className="w-4 h-4" /> },
-                    { value: "club_championship", label: "Club Championship", description: "Your club's championship", icon: <Building2 className="w-4 h-4" /> },
-                    { value: "regatta", label: "Regatta", description: "A specific racing occasion", icon: <CalendarDays className="w-4 h-4" /> },
-                  ].map((option) => {
+                  {SERIES_TYPES.map((option) => {
+                    const icons = { championship: <Trophy className="w-4 h-4" />, club_championship: <Building2 className="w-4 h-4" />, regatta: <CalendarDays className="w-4 h-4" /> };
                     const selected = (form.series_type || "championship") === option.value;
                     return (
                       <button
@@ -1020,7 +1018,7 @@ function SeriesTab({ classes, clubId }) {
                           : "border-border bg-card hover:border-ocean/50 hover:bg-ocean/5"}`}
                       >
                         <span className="flex items-center gap-2 font-semibold text-sm">
-                          <span className={`grid place-items-center w-7 h-7 rounded-lg ${selected ? "bg-ocean text-white" : "bg-muted text-muted-foreground"}`}>{option.icon}</span>
+                          <span className={`grid place-items-center w-7 h-7 rounded-lg ${selected ? "bg-ocean text-white" : "bg-muted text-muted-foreground"}`}>{icons[option.value]}</span>
                           {option.label}
                         </span>
                         <span className="block text-[11px] leading-tight text-muted-foreground mt-2">{option.description}</span>
@@ -1288,7 +1286,7 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Type</TableHead><TableHead>Competition</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Type</TableHead><TableHead>Competition</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => {
             const cfg = scoringConfigFromSeries(s);
             const locked = s.lock_status === "locked" || s.lock_status === "archived";
@@ -1303,9 +1301,7 @@ function SeriesTab({ classes, clubId }) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="championship">Championship</SelectItem>
-                    <SelectItem value="club_championship">Club Championship</SelectItem>
-                    <SelectItem value="regatta">Regatta</SelectItem>
+                    {SERIES_TYPES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </TableCell>

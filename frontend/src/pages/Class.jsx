@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { competitionTypeLabel } from "@/lib/competition";
+import { competitionPath, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, LogIn, Sailboat, Trophy } from "lucide-react";
@@ -22,7 +22,7 @@ function ClassMark({ classData, size = "h-20 w-20" }) {
 }
 
 function CompetitionType({ competition }) {
-  const championship = competition?.competition_type === "championship";
+  const championship = competitionType(competition || {}) !== "regatta";
   return (
     <Badge className={`gap-1.5 rounded-full border ${championship ? "border-amber-300 bg-amber-100 text-amber-700" : "border-ocean/25 bg-ocean/10 text-ocean"}`}>
       {championship ? <Trophy className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />}
@@ -35,7 +35,7 @@ function SeriesCard({ item, clubSlug }) {
   const competition = item.competition;
   const itemClubSlug = item.club_slug || clubSlug;
   const href = competition && itemClubSlug
-    ? `/club/${itemClubSlug}/regatta/${competition.id}`
+    ? competitionPath({ ...competition, series_type: item.series_type }, itemClubSlug)
     : `/club/${itemClubSlug || ""}?class=${item.class_id || ""}&series=${item.id}${item.year ? `&year=${item.year}` : ""}`;
   return (
     <Link to={href} className="group block rounded-2xl border border-border bg-card p-3.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/45 hover:shadow-lg" data-testid={`class-series-${item.id}`}>

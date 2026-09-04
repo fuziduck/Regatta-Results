@@ -19,10 +19,10 @@ import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLe
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
-import { competitionImage, competitionStatusLabel, competitionTypeLabel } from "@/lib/competition";
+import { competitionImage, competitionPath, competitionStatusLabel, competitionType, competitionTypeLabel } from "@/lib/competition";
 
 function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
-  const isChampionship = (competition?.competition_type || "regatta") === "championship";
+  const isChampionship = competitionType(competition) !== "regatta";
   const typeLabel = competitionTypeLabel(competition);
   const cardClass = `group overflow-hidden rounded-[1.35rem] border bg-card shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-lg ${selected ? "border-safety ring-2 ring-safety/20" : "border-border"} ${compact ? "" : "h-full"}`;
   const body = (
@@ -61,7 +61,7 @@ function CompetitionCard({ competition, clubSlug, onSelect, selected = false, co
   );
 
   if (clubSlug) {
-    return <Link to={`/club/${clubSlug}/regatta/${competition.id}`} className={cardClass} data-testid={`${isChampionship ? "championship" : "regatta"}-card-${competition.name}`}>{body}</Link>;
+    return <Link to={competitionPath(competition, clubSlug)} className={cardClass} data-testid={`${isChampionship ? "championship" : "regatta"}-card-${competition.name}`}>{body}</Link>;
   }
   return <button type="button" onClick={onSelect} className={`${cardClass} w-full text-left`} data-testid={`${isChampionship ? "championship" : "regatta"}-card-${competition.name}`}>{body}</button>;
 }

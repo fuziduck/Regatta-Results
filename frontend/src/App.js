@@ -48,6 +48,7 @@ function App() {
             <Route path="/class/group/:classKey" element={<Class />} />
             <Route path="/class/:classId" element={<Class />} />
             <Route path="/club/:slug/regatta/:regattaId" element={<Regatta />} />
+            <Route path="/club/:slug/competition/:regattaId" element={<Regatta />} />
             <Route path="/club/:slug/notice-board" element={<NoticeBoardPage />} />
             <Route path="/boats" element={<Boats />} />
             <Route path="/boat/:fleetId" element={<Boat />} />

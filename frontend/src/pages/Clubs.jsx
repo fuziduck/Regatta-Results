@@ -28,9 +28,6 @@ function ClassIcon({ classData, size = "w-16 h-16" }) {
   );
 }
 
-function classGroupKey(classData) {
-  return `${classData?.name || ""}`.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
 
 function LatestResults({ latest }) {
   if (!latest) {
@@ -231,7 +228,7 @@ export default function Clubs() {
           classesLoading ? <p className="text-muted-foreground">Loading classes…</p> : allClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-testid="class-grid">
               {Object.values(allClasses.reduce((groups, classData) => {
-                const key = classData.scoring_mode === "one_design" ? classGroupKey(classData) : `class:${classData.id}`;
+                const key = classData.scoring_mode === "one_design" ? classData.class_group_key : `class:${classData.id}`;
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(classData);
                 return groups;
@@ -244,8 +241,8 @@ export default function Clubs() {
                   .filter(Boolean);
                 const href = isGrouped ? `/class/group/${encodeURIComponent(groupName)}` : `/class/${classData.id}`;
                 return (
-                  <Link key={isGrouped ? `group-${classGroupKey(classData)}` : classData.id} to={href}
-                    data-testid={`system-class-card-${classGroupKey(classData)}`}
+                  <Link key={isGrouped ? `group-${classData.class_group_key}` : classData.id} to={href}
+                    data-testid={`system-class-card-${classData.class_group_key || classData.id}`}
                     className="group flex items-center gap-4 rounded-2xl border border-border bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/45 hover:shadow-xl">
                     <ClassIcon classData={classData} />
                     <div className="min-w-0 flex-1">

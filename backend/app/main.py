@@ -38,6 +38,10 @@ from datetime import date as _date, datetime, timezone, timedelta
 
 from app.racing.export import normalize_series_export, result_export_lines
 from app.uk_club_names import match_club, _initials, _words
+from app.competition import (
+    normalize_series_type, normalize_competition_type,
+    normalize_championship_scope, series_type_for, class_group_key,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -2901,6 +2905,8 @@ async def get_classes(request: Request, club_id: Optional[str] = None):
     if club:
         q["club_id"] = club
     items = await db.classes.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
+    for item in items:
+        item["class_group_key"] = class_group_key(item.get("name")) if item.get("scoring_mode") == "one_design" else None
     return items
 
 
@@ -2928,7 +2934,7 @@ async def _class_directory_items(class_ids: list[str]):
         competition = competitions.get(s.get("regatta_id"))
         items.append({
             "id": s.get("id"), "name": s.get("name"), "class_id": s.get("class_id"), "class_name": class_data.get("name"),
-            "series_type": s.get("series_type") or (competition.get("competition_type") if competition else "championship"),
+            "series_type": series_type_for(s, competition),
             "class_icon": class_data.get("icon"), "year": s.get("year"),
             "planned_races": s.get("planned_races", 0), "race_count": race_count,
             "regatta_id": s.get("regatta_id"), "club_id": class_data.get("club_id"),
@@ -2960,14 +2966,15 @@ async def get_class_group_directory(class_key: str):
     """Public cross-club hub for a one-design class identity. Matching is
     case-insensitive and ignores punctuation/spaces in the display name, so
     separate club-owned Sonata records resolve to one shared fleet page."""
-    wanted = re.sub(r"[^a-z0-9]+", " ", class_key.lower()).strip()
+    wanted = class_group_key(class_key)
     classes = await db.classes.find({"scoring_mode": "one_design"}, {"_id": 0}).to_list(5000)
-    matching = [c for c in classes if re.sub(r"[^a-z0-9]+", " ", (c.get("name") or "").lower()).strip() == wanted]
+    matching = [c for c in classes if class_group_key(c.get("name")) == wanted]
     if not matching:
         raise HTTPException(status_code=404, detail="One-design class group not found")
     items = await _class_directory_items([c.get("id") for c in matching])
     return {
         "class": {"name": matching[0].get("name"), "scoring_mode": "one_design"},
+        "class_group_key": class_group_key(matching[0].get("name")),
         "classes": [{"id": c.get("id"), "name": c.get("name"), "club_id": c.get("club_id"), "icon": c.get("icon")}
                     for c in matching],
         "clubs": [_club_public(c) for c in (await db.clubs.find({"id": {"$in": list({c.get("club_id") for c in matching if c.get("club_id")})}}, {"_id": 0}).to_list(1000))],
@@ -3195,6 +3202,13 @@ async def get_series(request: Request, class_id: Optional[str] = None, year: Opt
     if year:
         q["year"] = year
     items = await db.series.find(q, {"_id": 0}).sort("order", 1).to_list(1000)
+    competition_ids = {item.get("regatta_id") for item in items if item.get("regatta_id")}
+    competitions = {}
+    if competition_ids and hasattr(db, "regattas"):
+        competitions = {item.get("id"): item for item in await db.regattas.find(
+            {"id": {"$in": list(competition_ids)}}, {"_id": 0}).to_list(1000)}
+    for item in items:
+        item["series_type"] = series_type_for(item, competitions.get(item.get("regatta_id")))
     return items
 
 
@@ -3203,7 +3217,14 @@ async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     doc.pop("expected_version", None)
-    doc["series_type"] = doc.get("series_type") or "championship"
+    doc["series_type"] = normalize_series_type(doc.get("series_type"))
+    if doc.get("regatta_id"):
+        competition = await db.regattas.find_one({"id": doc["regatta_id"]}, {"_id": 0})
+        if not competition:
+            raise HTTPException(status_code=400, detail="The selected competition does not exist")
+        if competition.get("club_id") != cls.get("club_id") and user.get("role") != "webmaster":
+            raise HTTPException(status_code=400, detail="The selected competition belongs to another club")
+        doc["series_type"] = series_type_for(doc, competition)
     # Series membership is managed exclusively via PUT /series/{id}/boats;
     # a fresh series starts with no explicit fleet (auto-detected).
     doc.pop("member_boat_ids", None)
@@ -3249,6 +3270,16 @@ async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(
     update.pop("member_boat_ids", None)
     if update.get("schedule") is None:
         update.pop("schedule", None)
+    linked_id = update.get("regatta_id", series.get("regatta_id"))
+    if linked_id:
+        competition = await db.regattas.find_one({"id": linked_id}, {"_id": 0})
+        if not competition:
+            raise HTTPException(status_code=400, detail="The selected competition does not exist")
+        if competition.get("club_id") != cls.get("club_id") and user.get("role") != "webmaster":
+            raise HTTPException(status_code=400, detail="The selected competition belongs to another club")
+        update["series_type"] = series_type_for(update, competition)
+    else:
+        update["series_type"] = normalize_series_type(update.get("series_type", series.get("series_type")))
     result = await db.series.update_one(_version_filter(series_id, expected),
                                         {"$set": update, "$inc": {"version": 1}})
     if result.modified_count == 0:
@@ -3272,9 +3303,21 @@ async def update_series_type(series_id: str, data: SeriesTypeInput,
     """
     series = await _series_of_club(series_id, user)
     expected = _expected_version(data)
+    requested = normalize_series_type(data.series_type)
+    parent = None
+    if series.get("regatta_id") and hasattr(db, "regattas"):
+        parent = await db.regattas.find_one({"id": series.get("regatta_id")}, {"_id": 0})
+    effective = series_type_for(series, parent)
+    if parent and requested != effective:
+        raise HTTPException(status_code=400,
+                            detail="This series is linked to a competition; change the competition type instead.")
+    if expected is not None and expected != series.get("version"):
+        _raise_stale(expected)
+    if requested == effective:
+        return series
     result = await db.series.update_one(
         _version_filter(series_id, expected),
-        {"$set": {"series_type": data.series_type}, "$inc": {"version": 1}},
+        {"$set": {"series_type": requested}, "$inc": {"version": 1}},
     )
     if result.modified_count == 0:
         _raise_stale(expected)
@@ -3716,7 +3759,7 @@ async def _competition_notice_board(competition: dict, *, create: bool = False) 
         "slug": re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") + "-notices",
         "status": "active", "board_type": "competition",
         "competition_id": competition.get("id"),
-        "competition_type": (competition.get("competition_type") or "regatta").lower(),
+        "competition_type": normalize_competition_type(competition.get("competition_type")),
         "championship_scope": competition.get("championship_scope"),
         "competition_name": name, "year": competition.get("year"),
         "created_at": now_iso(), "created_by": "system",
@@ -3757,10 +3800,11 @@ async def get_regattas(request: Request, year: Optional[int] = None, club_id: Op
         regatta["host_club"] = regatta.get("host_club") or regatta.get("club_name")
         # Competition type: existing regattas default to "regatta" so nothing
         # already in the system changes meaning (see CompetitionType).
-        regatta["competition_type"] = (regatta.get("competition_type") or "regatta").lower()
+        regatta["competition_type"] = normalize_competition_type(regatta.get("competition_type"))
         regatta["championship_scope"] = regatta.get("championship_scope") or None
         regatta["series"] = [{"id": s.get("id"), "class_id": s.get("class_id"),
                                "name": s.get("name", ""),
+                               "series_type": series_type_for(s, regatta),
                                "class_name": next((c.get("name") for c in classes if c.get("id") == s.get("class_id")), "Class"),
                                "race_count": sum(1 for r in races if r.get("series_id") == s.get("id") and r.get("status") == "published")}
                               for s in series]
@@ -3803,9 +3847,8 @@ async def create_regatta(data: RegattaInput, request: Request, user: dict = Depe
         raise HTTPException(status_code=400, detail="A club is required")
     doc = data.model_dump()
     doc.pop("club_id", None)
-    doc["competition_type"] = (doc.get("competition_type") or "regatta").lower()
-    if doc.get("competition_type") == "regatta":
-        doc["championship_scope"] = None
+    doc["competition_type"] = normalize_competition_type(doc.get("competition_type"))
+    doc["championship_scope"] = normalize_championship_scope(doc.get("championship_scope"), doc["competition_type"])
     doc["id"] = new_id()
     doc["club_id"] = club_id
     doc["created_at"] = now_iso()
@@ -3831,10 +3874,11 @@ async def update_regatta(regatta_id: str, data: RegattaInput, request: Request,
         raise HTTPException(status_code=404, detail="Regatta not found")
     update = data.model_dump()
     update.pop("club_id", None)
-    if update.get("competition_type"):
-        update["competition_type"] = update["competition_type"].lower()
-    if update.get("competition_type") == "regatta":
-        update["championship_scope"] = None
+    if update.get("competition_type") is not None:
+        update["competition_type"] = normalize_competition_type(update["competition_type"])
+        update["championship_scope"] = normalize_championship_scope(update.get("championship_scope"), update["competition_type"])
+    elif "championship_scope" in update:
+        update["championship_scope"] = normalize_championship_scope(update["championship_scope"], normalize_competition_type(regatta.get("competition_type")))
     await db.regattas.update_one({"id": regatta_id}, {"$set": update})
     await _log_audit(request=request, user=user, action="REGATTA_UPDATED",
                      description=f"Updated regatta {data.name}",
@@ -7961,7 +8005,7 @@ async def list_notice_targets(request: Request, club_id: Optional[str] = None,
             targets.append({
                 "id": board["id"], "title": board["title"], "kind": "competition",
                 "competition_id": competition.get("id"), "competition_name": competition.get("name"),
-                "competition_type": (competition.get("competition_type") or "regatta").lower(),
+                "competition_type": normalize_competition_type(competition.get("competition_type")),
                 "championship_scope": competition.get("championship_scope"),
                 "year": competition.get("year"),
             })
