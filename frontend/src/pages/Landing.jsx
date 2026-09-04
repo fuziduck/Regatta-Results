@@ -19,7 +19,7 @@ import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLe
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
-import { competitionImage, competitionPath, competitionStatusLabel, competitionType, competitionTypeLabel } from "@/lib/competition";
+import { competitionImage, competitionPath, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 
 function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
   const isChampionship = competitionType(competition) !== "regatta";
@@ -32,7 +32,7 @@ function CompetitionCard({ competition, clubSlug, onSelect, selected = false, co
         <div className="absolute inset-0 bg-ocean/20 mix-blend-multiply" />
         <div className="absolute inset-0 bg-gradient-to-t from-[#071d55]/85 via-[#0a369d]/15 to-transparent" />
         <div className="absolute left-3 top-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2">
-          <Badge className={`gap-1.5 rounded-full border px-3 py-1 text-xs shadow-sm ${isChampionship ? "border-amber-300 bg-amber-100 text-amber-700" : "border-white/60 bg-white/90 text-ocean"}`}>
+          <Badge className={`gap-1.5 rounded-full border px-3 py-1 text-xs shadow-sm ${competitionTagClass(competition)}`}>
             {isChampionship ? <Trophy className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />}
             {typeLabel}
           </Badge>
@@ -371,21 +371,26 @@ export default function Landing() {
     api.getSeries({ year, club_id: clubId }).then(setClubSeries).catch(() => setClubSeries([]));
   }, [clubId, year]);
 
-  // Competitions split by type: regattas (specific racing occasions) vs
-  // championship competitions (competitions built over a period). Both live
-  // in the regattas collection; the competition_type field tells them apart.
+  // Split the year's results into the three user-facing racing categories.
+  // Linked series belong to Regattas; standalone series retain their explicit
+  // Championship or Club Championship type.
   const regattaComps = regattas.filter((r) => (r.competition_type || "regatta") !== "championship");
   const championshipComps = regattas.filter((r) => (r.competition_type || "regatta") === "championship");
+  const clubChampionshipSeries = clubSeries.filter((s) => !s.regatta_id && competitionType(s) === "club_championship");
+  const championshipSeriesForClub = clubSeries.filter((s) => !s.regatta_id && competitionType(s) === "championship");
 
-  // Hide the Championship/Regattas toggle when the club only has one kind of
-  // racing for the shown year, and default to the kind it actually has.
-  const hasRegattas = regattaComps.length > 0;
-  const hasChampionships = clubSeries.some((s) => !s.regatta_id) || championshipComps.length > 0;
-  const showViewToggle = hasRegattas && hasChampionships;
+  const hasRegattas = clubSeries.some((s) => s.regatta_id) || regattaComps.length > 0;
+  const hasClubChampionships = clubChampionshipSeries.length > 0;
+  const hasChampionships = championshipSeriesForClub.length > 0 || championshipComps.length > 0;
+  const availableViews = [
+    hasClubChampionships && "club_championship",
+    hasChampionships && "championship",
+    hasRegattas && "regattas",
+  ].filter(Boolean);
+  const showViewToggle = availableViews.length > 1;
   useEffect(() => {
-    if (hasRegattas && !hasChampionships) setView("regattas");
-    else if (!hasRegattas && view === "regattas") setView("championship");
-  }, [hasRegattas, hasChampionships]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!availableViews.includes(view)) setView(availableViews[0] || "championship");
+  }, [hasClubChampionships, hasChampionships, hasRegattas]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Default the Regattas view to the first regatta (not championship) of the year.
   useEffect(() => {
@@ -466,7 +471,19 @@ export default function Landing() {
   // shows its standings in the results block — the nav model just sees the
   // full series list for that case.
   const championshipSeries = series.filter((s) => !s.regatta_id);
-  const displaySeries = championshipSeries.length > 0 ? championshipSeries : series;
+  const displaySeries = view === "club_championship"
+    ? championshipSeries.filter((s) => competitionType(s) === "club_championship")
+    : championshipSeries.filter((s) => competitionType(s) === "championship");
+  const categorySeries = view === "club_championship" ? clubChampionshipSeries : championshipSeriesForClub;
+  const categoryClassIds = new Set(categorySeries.map((s) => s.class_id).filter(Boolean));
+  const visibleClasses = view === "regattas" || categoryClassIds.size === 0
+    ? classes
+    : classes.filter((c) => categoryClassIds.has(c.id));
+
+  useEffect(() => {
+    if (view === "regattas" || !clubSeries.length || !visibleClasses.length) return;
+    if (!visibleClasses.some((c) => c.id === activeClass)) setActiveClass(visibleClasses[0].id);
+  }, [view, clubSeries, visibleClasses, activeClass]);
 
   // Navigation model for the year's series: a single-series year shows that
   // series directly (no redundant Overall tab, no "(excl.)" label); with
@@ -571,35 +588,43 @@ export default function Landing() {
 
           <BoatSearchBox />
 
-          {/* Browse the year's racing two ways: championships (class → series)
-              or regattas (racing occasions across classes). The toggle only
-              appears when the club has both — a club racing only one kind
-              shows its results directly. */}
+          {/* Choose one of the three racing categories. The selector is hidden
+              when there is only one category for the selected year. */}
           {showViewToggle && (
             <div className="mt-5 flex flex-wrap items-center justify-center gap-2" data-testid="results-view-toggle">
-              <button type="button" onClick={() => setView("championship")} data-testid="view-championship-btn"
-                className={`px-5 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${view === "championship" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
-                <Trophy className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Championship
-              </button>
-              <button type="button" onClick={() => setView("regattas")} data-testid="view-regattas-btn"
-                className={`px-5 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${view === "regattas" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
-                <CalendarDays className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Regattas
-              </button>
+              {availableViews.includes("club_championship") && (
+                <button type="button" onClick={() => setView("club_championship")} data-testid="view-club-championship-btn"
+                  className={`px-5 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${view === "club_championship" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
+                  <Trophy className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Club Championship
+                </button>
+              )}
+              {availableViews.includes("championship") && (
+                <button type="button" onClick={() => setView("championship")} data-testid="view-championship-btn"
+                  className={`px-5 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${view === "championship" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
+                  <Trophy className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Championship
+                </button>
+              )}
+              {availableViews.includes("regattas") && (
+                <button type="button" onClick={() => setView("regattas")} data-testid="view-regattas-btn"
+                  className={`px-5 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${view === "regattas" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
+                  <CalendarDays className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Regattas
+                </button>
+              )}
             </div>
           )}
 
-          {view === "championship" && classes.length > 0 && (
+          {view !== "regattas" && classes.length > 0 && (
             <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
-                {activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass} targetName={(classes.find((c) => c.id === activeClass) || {}).name || "this class"} />}
+                {activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass} targetName={(visibleClasses.find((c) => c.id === activeClass) || {}).name || "this class"} />}
               </div>
               <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
-                  {classes.map((c) => (
+                  {visibleClasses.map((c) => (
                     <TabsTrigger key={c.id} value={c.id}
                       data-testid={`class-tab-${c.name}`}
-                      className="px-5 py-2.5 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                      className="px-5 py-2.5 rounded-xl border border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
                       {c.name}
                     </TabsTrigger>
                   ))}
@@ -608,7 +633,7 @@ export default function Landing() {
             </div>
           )}
 
-          {view === "championship" && activeClass && championshipSeries.length > 0 && (
+          {view !== "regattas" && activeClass && displaySeries.length > 0 && (
             <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
@@ -618,13 +643,13 @@ export default function Landing() {
                 <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
                   {nav.showOverall && (
                     <TabsTrigger value="overall"
-                      className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                      className="px-4 py-2 rounded-xl border border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
                       Overall
                     </TabsTrigger>
                   )}
-                  {championshipSeries.map((s) => (
+                  {displaySeries.map((s) => (
                   <TabsTrigger key={s.id} value={s.id}
-                    className="px-4 py-2 rounded-xl border border-black/50 bg-white/60 text-black hover:bg-white/80 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
+                    className="px-4 py-2 rounded-xl border border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
                       {s.name}{nav.showExcl(s) && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
                     </TabsTrigger>
                   ))}
@@ -641,7 +666,7 @@ export default function Landing() {
               <div className="flex flex-wrap justify-center gap-2">
                 {regattaComps.map((r) => (
                   <button key={r.id} type="button" onClick={() => setRegattaId(r.id)} data-testid={`regatta-tab-${r.name}`}
-                    className={`px-4 py-2 rounded-xl border border-black/50 font-heading uppercase tracking-wide text-sm transition-colors ${regattaId === r.id ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80"}`}>
+                    className={`px-4 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${regattaId === r.id ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
                     {r.name}
                   </button>
                 ))}
@@ -703,7 +728,7 @@ export default function Landing() {
           </div>
         )}
 
-        {view === "championship" && (
+        {view !== "regattas" && (
           <div>
             {championshipComps.length > 0 && (
               <div className="mb-10" data-testid="championship-competitions">
@@ -744,7 +769,7 @@ export default function Landing() {
                   clubId={clubId}
                   year={year}
                   clubName={club.name}
-                  className={(classes.find((c) => c.id === activeClass) || {}).name}
+                  className={(visibleClasses.find((c) => c.id === activeClass) || {}).name}
                   clubIcon={club.icon}
                   series={displaySeries}
                   activeSeries={activeSeries}

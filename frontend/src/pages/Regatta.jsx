@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
-import { competitionImage, competitionStatusLabel } from "@/lib/competition";
+import { competitionImage, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
@@ -124,9 +124,9 @@ export default function Regatta() {
           <div className="absolute bottom-4 left-4 right-4 flex flex-wrap items-end justify-between gap-3 sm:bottom-5 sm:left-6 sm:right-6">
             <div className="flex flex-wrap gap-2">
               {regatta.competition_type === "championship" ? (
-                <Badge className="gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-3 py-1 text-xs font-bold text-amber-700 shadow-sm"><Trophy className="h-3.5 w-3.5" />{compLabel}</Badge>
+                <Badge className={`gap-1.5 rounded-full border px-3 py-1 text-xs font-bold shadow-sm ${competitionTagClass(regatta)}`}><Trophy className="h-3.5 w-3.5" />{compLabel}</Badge>
               ) : (
-                <Badge className="gap-1.5 rounded-full border border-white/60 bg-white/90 px-3 py-1 text-xs font-bold text-ocean shadow-sm"><CalendarDays className="h-3.5 w-3.5" />Regatta</Badge>
+                <Badge className={`gap-1.5 rounded-full border px-3 py-1 text-xs font-bold shadow-sm ${competitionTagClass(regatta)}`}><CalendarDays className="h-3.5 w-3.5" />Regatta</Badge>
               )}
               <Badge className="rounded-full border border-white/70 bg-white/90 px-3 py-1 text-xs font-bold text-foreground shadow-sm">{competitionStatusLabel(regatta)}</Badge>
             </div>

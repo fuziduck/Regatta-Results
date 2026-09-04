@@ -109,14 +109,14 @@ export default function Boat() {
   const [missing, setMissing] = useState(false);
   const [tab, setTab] = useState("overview");
   const [year, setYear] = useState(CURRENT_YEAR);
-  const [seasonIdx, setSeasonIdx] = useState(0);
+  const [seasonIdx, setSeasonIdx] = useState(null);
   // Active series expansion (SERIES STANDINGS tab): click a position to see
   // the full series table.
   const [active, setActive] = useState(null);
   const [seriesBusy, setSeriesBusy] = useState(false);
 
   useEffect(() => {
-    setLoading(true); setMissing(false); setProfile(null); setActive(null); setSeasonIdx(0);
+    setLoading(true); setMissing(false); setProfile(null); setActive(null); setSeasonIdx(null);
     api.fleetProfile(fleetId)
       .then((p) => setProfile(p))
       .catch(() => setMissing(true))
@@ -128,10 +128,23 @@ export default function Boat() {
   useEffect(() => {
     if (years.length && !years.includes(year)) setYear(years[0]);
   }, [years, year]);
-  useEffect(() => { setSeasonIdx(0); }, [year]);
+  const homeSeasonIdx = useMemo(() => {
+    const homeClub = profile?.boat?.home_club || profile?.records?.find((r) => r.home_club)?.home_club;
+    const homeSlug = profile?.boat?.home_club_slug;
+    const normalize = (value) => String(value || "").trim().toLocaleLowerCase();
+    const homeName = normalize(homeClub);
+    return seasons
+      .filter((s) => s.year === year)
+      .findIndex((s) => normalize(s.club_name) === homeName
+        || normalize(s.club_slug) === normalize(homeSlug));
+  }, [profile, seasons, year]);
+
+  const selectedSeasonIdx = seasonIdx == null ? (homeSeasonIdx >= 0 ? homeSeasonIdx : 0) : seasonIdx;
+
+  useEffect(() => { setSeasonIdx(null); }, [year]);
 
   const yearSeasons = seasons.filter((s) => s.year === year);
-  const season = yearSeasons[Math.min(seasonIdx, yearSeasons.length - 1)] || null;
+  const season = yearSeasons[Math.min(selectedSeasonIdx, yearSeasons.length - 1)] || null;
   const stats = season?.stats || {};
   const allHistory = useMemo(() => {
     const out = [];
@@ -273,7 +286,7 @@ export default function Boat() {
               <span className="text-[11px] uppercase tracking-widest font-semibold text-white/70">Fleet</span>
               {yearSeasons.map((s, i) => (
                 <button key={`${s.club_name}-${s.class_name}`} type="button" onClick={() => setSeasonIdx(i)}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold uppercase tracking-wide transition-colors ${seasonIdx === i ? "bg-white text-ocean" : "bg-white/10 text-white/80 hover:bg-white/20"}`}>
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold uppercase tracking-wide transition-colors ${selectedSeasonIdx === i ? "bg-white text-ocean" : "bg-white/10 text-white/80 hover:bg-white/20"}`}>
                   {s.club_name} · {s.class_name}
                 </button>
               ))}

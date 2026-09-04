@@ -50,6 +50,26 @@ export function competitionTypeLabel(competition) {
   return "Championship";
 }
 
+// Keep the visual meaning of a competition tag in one place. The labels are
+// deliberately distinct so club, class, and open championships are not
+// reduced to the same generic amber badge.
+export function competitionTagClass(competition) {
+  const label = competitionTypeLabel(competition);
+  if (label === "Regatta") {
+    return "border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-500/40 dark:bg-cyan-500/15 dark:text-cyan-200";
+  }
+  if (label === "Club Championship") {
+    return "border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200";
+  }
+  if (label === "Class Championship") {
+    return "border-violet-300 bg-violet-100 text-violet-800 dark:border-violet-500/40 dark:bg-violet-500/15 dark:text-violet-200";
+  }
+  if (label === "Open Championship") {
+    return "border-fuchsia-300 bg-fuchsia-100 text-fuchsia-800 dark:border-fuchsia-500/40 dark:bg-fuchsia-500/15 dark:text-fuchsia-200";
+  }
+  return "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200";
+}
+
 export function competitionStatusLabel(competition) {
   return competition?.status || "Complete";
 }

@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { competitionPath, competitionType, competitionTypeLabel } from "@/lib/competition";
+import { competitionPath, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, LogIn, Sailboat, Trophy } from "lucide-react";
@@ -24,7 +24,7 @@ function ClassMark({ classData, size = "h-20 w-20" }) {
 function CompetitionType({ competition }) {
   const championship = competitionType(competition || {}) !== "regatta";
   return (
-    <Badge className={`gap-1.5 rounded-full border ${championship ? "border-amber-300 bg-amber-100 text-amber-700" : "border-ocean/25 bg-ocean/10 text-ocean"}`}>
+    <Badge className={`gap-1.5 rounded-full border ${competitionTagClass(competition || {})}`}>
       {championship ? <Trophy className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />}
       {competitionTypeLabel(competition || {})}
     </Badge>
