@@ -19,6 +19,52 @@ import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLe
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
+import { competitionImage, competitionStatusLabel, competitionTypeLabel } from "@/lib/competition";
+
+function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
+  const isChampionship = (competition?.competition_type || "regatta") === "championship";
+  const typeLabel = competitionTypeLabel(competition);
+  const cardClass = `group overflow-hidden rounded-[1.35rem] border bg-card shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-lg ${selected ? "border-safety ring-2 ring-safety/20" : "border-border"} ${compact ? "" : "h-full"}`;
+  const body = (
+    <>
+      <div className={`${compact ? "h-28" : "h-36 sm:h-40"} relative overflow-hidden bg-ocean/10`}>
+        <img src={competitionImage(competition)} alt="" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" style={{ filter: "saturate(.9) contrast(1.04)" }} />
+        <div className="absolute inset-0 bg-ocean/20 mix-blend-multiply" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#071d55]/85 via-[#0a369d]/15 to-transparent" />
+        <div className="absolute left-3 top-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2">
+          <Badge className={`gap-1.5 rounded-full border px-3 py-1 text-xs shadow-sm ${isChampionship ? "border-amber-300 bg-amber-100 text-amber-700" : "border-white/60 bg-white/90 text-ocean"}`}>
+            {isChampionship ? <Trophy className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />}
+            {typeLabel}
+          </Badge>
+          <Badge className="rounded-full border border-white/70 bg-white/90 px-3 py-1 text-xs text-foreground shadow-sm">{competitionStatusLabel(competition)}</Badge>
+        </div>
+      </div>
+      <div className={`${compact ? "p-4" : "p-5"}`}>
+        <h3 className="font-heading text-xl uppercase leading-none tracking-tight text-ocean sm:text-2xl">{competition?.name}</h3>
+        <div className="mt-3 space-y-1.5 text-sm text-muted-foreground">
+          {competition?.date_label && <span className="flex items-start gap-2"><CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-ocean" />{competition.date_label}</span>}
+          {competition?.host_club && <span className="flex items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ocean" />{competition.host_club}</span>}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold text-foreground">
+          <span>{competition?.class_count || 0} {Number(competition?.class_count) === 1 ? "class" : "classes"}</span>
+          <span className="text-border">·</span>
+          <span>{competition?.race_count || 0} {Number(competition?.race_count) === 1 ? "race" : "races"}</span>
+        </div>
+        {(competition?.classes || []).length > 0 && (
+          <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{competition.classes.join(" · ")}</p>
+        )}
+        <div className="mt-5 inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-ocean group-hover:text-safety">
+          View {isChampionship ? "championship" : "event"} <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+        </div>
+      </div>
+    </>
+  );
+
+  if (clubSlug) {
+    return <Link to={`/club/${clubSlug}/regatta/${competition.id}`} className={cardClass} data-testid={`${isChampionship ? "championship" : "regatta"}-card-${competition.name}`}>{body}</Link>;
+  }
+  return <button type="button" onClick={onSelect} className={`${cardClass} w-full text-left`} data-testid={`${isChampionship ? "championship" : "regatta"}-card-${competition.name}`}>{body}</button>;
+}
 
 function NotificationBanner({ items }) {
   if (!items.length) return null;
@@ -475,8 +521,7 @@ export default function Landing() {
   // otherwise the default sailing shot. Either way the blue hero-overlay is
   // applied on top, so the two look consistent.
   const selectedRegatta = regattaComps.find((r) => r.id === regattaId);
-  const heroPhoto = (view === "regattas" && selectedRegatta?.thumbnail) ||
-    "https://images.unsplash.com/photo-1613578699399-82ae71be53a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxzYWlsYm9hdCUyMHJhY2luZyUyMHJlZ2F0YXR8ZW58MHx8fHwxNzg2MTI3MTgxfDA&ixlib=rb-4.1.0&q=85";
+  const heroPhoto = competitionImage(view === "regattas" ? selectedRegatta : null);
   return (
     <div className="min-h-screen bg-background">
       <NotificationBanner items={notifications} />
@@ -666,27 +711,7 @@ export default function Landing() {
                 <p className="text-muted-foreground text-sm mb-4">Competitions scored over the season — each may span several series and classes.</p>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {championshipComps.map((c) => (
-                    <Link key={c.id} to={`/club/${club.slug}/regatta/${c.id}`}
-                      className="group rounded-2xl border border-border bg-card p-5 hover:border-ocean/40 hover:shadow-sm transition-all"
-                      data-testid={`championship-comp-${c.name}`}>
-                      {c.thumbnail && (
-                        <div className="mb-3 h-24 overflow-hidden rounded-xl border border-border">
-                          <img src={c.thumbnail} alt="" className="h-full w-full object-cover" />
-                        </div>
-                      )}
-                      <div className="flex flex-wrap items-center gap-2 mb-2">
-                        <Badge className="gap-1 bg-amber-100 text-amber-700 border border-amber-300">
-                          <Trophy className="w-3 h-3" />{c.championship_scope === "club" ? "Club Championship" : c.championship_scope === "class" ? "Class Championship" : c.championship_scope === "open" ? "Open Championship" : "Championship"}
-                        </Badge>
-                        <Badge variant="outline">{c.status || "Complete"}</Badge>
-                      </div>
-                      <div className="font-heading text-lg uppercase tracking-tight text-ocean group-hover:underline">{c.name}</div>
-                      <div className="mt-1 text-sm text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
-                        {c.date_label && <span className="inline-flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" />{c.date_label}</span>}
-                        {c.host_club && <span className="inline-flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{c.host_club}</span>}
-                      </div>
-                      <div className="mt-2 text-xs text-muted-foreground">{c.class_count || 0} classes · {c.race_count || 0} races</div>
-                    </Link>
+                    <CompetitionCard key={c.id} competition={c} clubSlug={club.slug} />
                   ))}
                 </div>
               </div>
@@ -741,9 +766,31 @@ export default function Landing() {
                 <p className="font-heading text-xl uppercase tracking-tight">No regattas for {year}</p>
                 <p className="text-muted-foreground text-sm mt-1">Regattas and open meetings will appear here once set up.</p>
               </div>
-            ) : !regattaDetail ? (
-              <p className="text-muted-foreground py-6">Loading regatta…</p>
             ) : (
+              <>
+                <section className="mb-8" data-testid="regatta-cards">
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h2 className="font-heading text-2xl uppercase tracking-tight text-ocean">Events &amp; regattas</h2>
+                      <p className="text-sm text-muted-foreground">Select a racing occasion to browse its classes and results.</p>
+                    </div>
+                    <Badge variant="outline" className="gap-1.5 border-ocean/30 text-ocean"><CalendarDays className="h-3.5 w-3.5" />{year}</Badge>
+                  </div>
+                  <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                    {regattaComps.map((competition) => (
+                      <CompetitionCard
+                        key={competition.id}
+                        competition={competition}
+                        clubSlug={club.slug}
+                        selected={competition.id === regattaId}
+                        compact
+                      />
+                    ))}
+                  </div>
+                </section>
+                {!regattaDetail ? (
+                  <p className="py-6 text-muted-foreground">Loading regatta…</p>
+                ) : (
               <div className="pt-5">
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
                   <div>
@@ -823,6 +870,8 @@ export default function Landing() {
                   </section>
                 )}
               </div>
+                )}
+              </>
             )}
           </div>
         )}

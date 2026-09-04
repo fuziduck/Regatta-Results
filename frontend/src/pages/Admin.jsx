@@ -560,7 +560,9 @@ function RegattasTab({ clubId }) {
   const [form, setForm] = useState({ name: "", year: CURRENT_YEAR, competition_type: "regatta", championship_scope: "", start_date: "", end_date: "", host_club: "", status: "", description: "" });
   const [busy, setBusy] = useState(false);
   const [thumbFor, setThumbFor] = useState(null);
-  const thumbRef = useRef(null);
+  // Keep one file input per competition. A single shared ref points at the
+  // last table row, which can silently upload the wrong competition's photo.
+  const thumbRefs = useRef({});
 
   const load = useCallback(() => {
     api.getRegattas({ year: yearFilter, ...(clubId ? { club_id: clubId } : {}) }).then(setRegattas).catch(() => {});
@@ -604,8 +606,8 @@ function RegattasTab({ clubId }) {
   const pickThumb = async (e, regatta) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 512 * 1024) {
-      toast.error("Photo must be 512 KB or smaller");
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Photo must be 2 MB or smaller");
       e.target.value = "";
       return;
     }
@@ -697,9 +699,9 @@ function RegattasTab({ clubId }) {
                   <div className="w-16 h-10 shrink-0 overflow-hidden rounded-md border border-border bg-ocean/10 grid place-items-center">
                     {r.thumbnail ? <img src={r.thumbnail} alt="" className="h-full w-full object-cover" /> : <ImagePlus className="w-4 h-4 text-ocean/50" />}
                   </div>
-                  <input ref={thumbRef} type="file" accept="image/*" className="hidden" data-testid={`regatta-thumb-file-${r.name}`} onChange={(e) => pickThumb(e, r)} />
+                  <input ref={(el) => { if (el) thumbRefs.current[r.id] = el; }} type="file" accept="image/*" className="hidden" data-testid={`regatta-thumb-file-${r.name}`} onChange={(e) => pickThumb(e, r)} />
                   <Button size="sm" variant="outline" className="h-8" disabled={thumbFor === r.id}
-                    onClick={() => thumbRef.current?.click()} data-testid={`regatta-thumb-${r.name}`}>
+                    onClick={() => thumbRefs.current[r.id]?.click()} data-testid={`regatta-thumb-${r.name}`}>
                     <Upload className="w-3.5 h-3.5" /> {thumbFor === r.id ? "…" : r.thumbnail ? "Change" : "Photo"}
                   </Button>
                 </div>

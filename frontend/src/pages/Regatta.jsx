@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
+import { competitionImage, competitionStatusLabel } from "@/lib/competition";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
@@ -116,19 +117,23 @@ export default function Regatta() {
         </div>
       </header>
       <main className="max-w-6xl mx-auto px-4 py-8">
-        {regatta.thumbnail && (
-          <div className="relative -mx-4 sm:mx-0 sm:rounded-2xl overflow-hidden h-44 sm:h-60 mb-6 border border-border">
-            <img src={regatta.thumbnail} alt={`${regatta.name} photo`} className="absolute inset-0 w-full h-full object-cover" />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent" />
+        <div className="relative -mx-4 mb-6 h-48 overflow-hidden border border-border bg-ocean/10 sm:mx-0 sm:h-72 sm:rounded-[1.5rem]">
+          <img src={competitionImage(regatta)} alt={`${regatta.name} photo`} className="absolute inset-0 h-full w-full object-cover" style={{ filter: "saturate(.9) contrast(1.04)" }} />
+          <div className="absolute inset-0 bg-ocean/25 mix-blend-multiply" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#071d55]/85 via-[#0a369d]/10 to-transparent" />
+          <div className="absolute bottom-4 left-4 right-4 flex flex-wrap items-end justify-between gap-3 sm:bottom-5 sm:left-6 sm:right-6">
+            <div className="flex flex-wrap gap-2">
+              {regatta.competition_type === "championship" ? (
+                <Badge className="gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-3 py-1 text-xs font-bold text-amber-700 shadow-sm"><Trophy className="h-3.5 w-3.5" />{compLabel}</Badge>
+              ) : (
+                <Badge className="gap-1.5 rounded-full border border-white/60 bg-white/90 px-3 py-1 text-xs font-bold text-ocean shadow-sm"><CalendarDays className="h-3.5 w-3.5" />Regatta</Badge>
+              )}
+              <Badge className="rounded-full border border-white/70 bg-white/90 px-3 py-1 text-xs font-bold text-foreground shadow-sm">{competitionStatusLabel(regatta)}</Badge>
+            </div>
+            <span className="rounded-full bg-black/35 px-3 py-1 text-xs font-semibold tracking-wide text-white backdrop-blur-sm">
+              {regatta.class_count || classNames.length} {Number(regatta.class_count || classNames.length) === 1 ? "class" : "classes"} · {regatta.race_count || 0} {Number(regatta.race_count) === 1 ? "race" : "races"}
+            </span>
           </div>
-        )}
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <Badge variant="outline">{regatta.status || "Complete"}</Badge>
-          {regatta.competition_type === "championship" ? (
-            <Badge className="gap-1 bg-amber-100 text-amber-700 border border-amber-300"><Trophy className="w-3 h-3" />{compLabel}</Badge>
-          ) : (
-            <Badge variant="secondary" className="gap-1"><CalendarDays className="w-3 h-3" />Regatta</Badge>
-          )}
         </div>
         <h1 className="text-3xl sm:text-4xl font-heading uppercase tracking-tighter text-ocean">{regatta.name}</h1>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
