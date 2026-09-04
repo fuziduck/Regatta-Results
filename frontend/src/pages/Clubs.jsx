@@ -8,13 +8,28 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import HeaderMenu from "@/components/HeaderMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, ChevronRight, LogIn, Sailboat, Search, Trophy } from "lucide-react";
+import { CalendarDays, ChevronRight, LogIn, Sailboat, Search, SlidersHorizontal, Trophy } from "lucide-react";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import Logo from "@/components/Logo";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
   return <ClubBadge club={club} size={size} textSize="text-3xl" />;
+}
+
+function ClassIcon({ classData, size = "w-16 h-16" }) {
+  if (classData?.icon) {
+    return <img src={classData.icon} alt="" className={`${size} shrink-0 rounded-2xl object-cover shadow-lg bg-white`} />;
+  }
+  return (
+    <span className={`${size} rounded-2xl grid place-items-center bg-ocean text-white shadow-lg shrink-0`}>
+      <Sailboat className="h-8 w-8" />
+    </span>
+  );
+}
+
+function classGroupKey(classData) {
+  return `${classData?.name || ""}`.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function LatestResults({ latest }) {
@@ -61,7 +76,11 @@ export default function Clubs() {
   const setYear = (y) => setSearchParams(y === CURRENT_YEAR ? {} : { year: String(y) });
   const future = year > CURRENT_YEAR;
   const [directory, setDirectory] = useState([]);
+  const [allClasses, setAllClasses] = useState([]);
+  const [systemClubs, setSystemClubs] = useState([]);
+  const [directoryMode, setDirectoryMode] = useState("clubs");
   const [loading, setLoading] = useState(true);
+  const [classesLoading, setClassesLoading] = useState(true);
   const [seasons, setSeasons] = useState([]);
   const { adverts, roll } = useAdverts();
   const sideAdverts = pickAdverts(adverts, 3, roll);
@@ -106,6 +125,12 @@ export default function Clubs() {
       setLoading(true);
       api.getClubDirectory(year === CURRENT_YEAR ? undefined : year)
         .then(setDirectory).catch(() => {}).finally(() => setLoading(false));
+      setClassesLoading(true);
+      api.getClasses()
+        .then((items) => setAllClasses(items || []))
+        .catch(() => setAllClasses([]))
+        .finally(() => setClassesLoading(false));
+      api.getClubs().then((items) => setSystemClubs(items || [])).catch(() => setSystemClubs([]));
     };
     refresh();
     const t = setInterval(refresh, 30000);
@@ -181,12 +206,61 @@ export default function Clubs() {
       </section>
 
       <main className="max-w-6xl mx-auto px-4 py-10">
-        <div className="mb-6">
-          <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">{year === CURRENT_YEAR ? "Clubs on the system" : future ? `Clubs racing in ${year}` : `Clubs that raced in ${year}`}</h2>
-          <p className="text-muted-foreground text-sm">Tap a club to see its classes and latest results.</p>
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">{directoryMode === "classes" ? "Classes on the system" : year === CURRENT_YEAR ? "Clubs on the system" : future ? `Clubs racing in ${year}` : `Clubs that raced in ${year}`}</h2>
+            <p className="text-muted-foreground text-sm">{directoryMode === "classes" ? "Choose a fleet to see its championships, series and regattas." : "Tap a club to see its classes and latest results."}</p>
+          </div>
+          <label className="flex w-full items-center gap-2 sm:w-auto" htmlFor="system-directory-filter">
+            <SlidersHorizontal className="h-4 w-4 shrink-0 text-ocean" />
+            <span className="sr-only">Browse clubs or classes on the system</span>
+            <select
+              id="system-directory-filter"
+              data-testid="system-directory-filter"
+              value={directoryMode}
+              onChange={(e) => setDirectoryMode(e.target.value)}
+              className="h-10 w-full rounded-lg border border-ocean/30 bg-card px-3 text-sm font-semibold text-foreground shadow-sm outline-none focus:ring-2 focus:ring-ocean sm:w-56"
+            >
+              <option value="clubs">Clubs on the system</option>
+              <option value="classes">Classes on the system</option>
+            </select>
+          </label>
         </div>
 
-        {loading ? (
+        {directoryMode === "classes" ? (
+          classesLoading ? <p className="text-muted-foreground">Loading classes…</p> : allClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-testid="class-grid">
+              {Object.values(allClasses.reduce((groups, classData) => {
+                const key = classData.scoring_mode === "one_design" ? classGroupKey(classData) : `class:${classData.id}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(classData);
+                return groups;
+              }, {})).sort((a, b) => (a[0].name || "").localeCompare(b[0].name || "")).map((classGroup) => {
+                const classData = classGroup[0];
+                const isGrouped = classData.scoring_mode === "one_design";
+                const groupName = classData.name;
+                const owningClubs = classGroup
+                  .map((item) => systemClubs.find((club) => club.id === item.club_id)?.name)
+                  .filter(Boolean);
+                const href = isGrouped ? `/class/group/${encodeURIComponent(groupName)}` : `/class/${classData.id}`;
+                return (
+                  <Link key={isGrouped ? `group-${classGroupKey(classData)}` : classData.id} to={href}
+                    data-testid={`system-class-card-${classGroupKey(classData)}`}
+                    className="group flex items-center gap-4 rounded-2xl border border-border bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/45 hover:shadow-xl">
+                    <ClassIcon classData={classData} />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-heading text-2xl uppercase tracking-tight leading-none group-hover:text-ocean">{groupName}</div>
+                      {isGrouped ? (
+                        <div className="mt-1 text-xs text-muted-foreground">One-design fleet · {classGroup.length} clubs</div>
+                      ) : owningClubs[0] && <div className="mt-1 text-xs text-muted-foreground">{owningClubs[0]}</div>}
+                      <div className="mt-3 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-ocean group-hover:text-safety">View all racing history <ChevronRight className="h-3.5 w-3.5" /></div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )
+        ) : loading ? (
           <p className="text-muted-foreground">Loading clubs…</p>
         ) : directory.length === 0 ? (
           year === CURRENT_YEAR ? (
@@ -233,7 +307,10 @@ export default function Clubs() {
                         className="group/class block rounded-xl bg-muted/40 border border-border/60 p-3 hover:border-ocean/50 hover:bg-muted/60 transition-colors"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <div className="font-heading uppercase tracking-tight text-sm group-hover/class:text-ocean transition-colors">{c.name}</div>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <ClassIcon classData={c} size="w-9 h-9" />
+                            <div className="font-heading uppercase tracking-tight text-sm group-hover/class:text-ocean transition-colors">{c.name}</div>
+                          </div>
                           <div className="flex items-center gap-1.5 shrink-0">
                             {c.latest?.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50 dark:text-indigo-300 dark:border-indigo-500/40 dark:bg-indigo-500/15">IRC</Badge>}
                             {c.latest?.scoring_mode === "py" && <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-300 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-500/40 dark:bg-emerald-500/15">PY</Badge>}

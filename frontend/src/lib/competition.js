@@ -9,7 +9,11 @@ export function competitionImage(competition) {
 }
 
 export function competitionTypeLabel(competition) {
-  if ((competition?.competition_type || "regatta") !== "championship") return "Regatta";
+  // A series may carry its own category even when it is not linked to a
+  // named Competition. Keep the legacy competition_type fields working too.
+  const type = competition?.series_type || competition?.competition_type || "regatta";
+  if (type === "regatta") return "Regatta";
+  if (type === "club_championship") return "Club Championship";
   const scope = competition?.championship_scope;
   if (scope === "club") return "Club Championship";
   if (scope === "class") return "Class Championship";

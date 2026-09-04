@@ -101,6 +101,53 @@ function ClubIconField({ clubId }) {
 // hidden entirely — clubs that don't use them (e.g. casual one-race days)
 // skip the extra form. Race admins may change their own club; the webmaster
 // may change any club's.
+function ClassIconUpload({ classData, onUpdated }) {
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 512 * 1024) {
+      toast.error("Boat icon must be 512 KB or smaller");
+      e.target.value = "";
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.uploadClassIcon(classData.id, file);
+      toast.success("Boat icon updated");
+      onUpdated?.(updated);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not upload boat icon");
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+  const remove = async () => {
+    setBusy(true);
+    try {
+      const updated = await api.deleteClassIcon(classData.id);
+      toast.success("Boat icon removed");
+      onUpdated?.(updated);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not remove boat icon");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {classData.icon ? <img src={classData.icon} alt="" className="h-9 w-9 rounded-lg object-cover bg-white" /> : <Sailboat className="h-5 w-5 text-ocean/50" />}
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" data-testid={`class-icon-file-${classData.name}`} onChange={pick} />
+      <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={busy} onClick={() => fileRef.current?.click()} data-testid={`class-icon-upload-${classData.name}`}>
+        <Upload className="h-3.5 w-3.5" /> {busy ? "…" : classData.icon ? "Change" : "Upload"}
+      </Button>
+      {classData.icon && <Button size="sm" variant="ghost" className="h-8 text-destructive" disabled={busy} onClick={remove} data-testid={`class-icon-remove-${classData.name}`}><ImageOff className="h-3.5 w-3.5" /></Button>}
+    </div>
+  );
+}
+
 function ClubNoticeToggle({ clubId }) {
   const [enabled, setEnabled] = useState(true);
   const [onbEnabled, setOnbEnabled] = useState(true);
@@ -237,14 +284,14 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
 
 /* ---------------- Classes ---------------- */
 function ClassesTab({ classes, reload, clubId }) {
-  const [form, setForm] = useState({ name: "", default_start_time: "10:30" });
+  const [form, setForm] = useState({ name: "", default_start_time: "10:30", scoring_mode: "one_design" });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
   const save = async () => {
     if (!form.name) return toast.error("Name required");
     if (editing) await api.updateClass(editing, form); else await api.createClass({ ...form, club_id: clubId });
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30" }); reload();
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); reload();
   };
   const del = async (id) => { await api.deleteClass(id); toast.success("Deleted"); reload(); };
 
@@ -252,26 +299,29 @@ function ClassesTab({ classes, reload, clubId }) {
     <div>
       <div className="flex justify-between items-center mb-4">
         <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30" }); } }}>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); } }}>
           <DialogTrigger asChild><Button data-testid="add-class-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add class</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} class</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Class name</Label><Input data-testid="class-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dragon" /></div>
               <div className="space-y-1.5"><Label>Default start time</Label><Input type="time" data-testid="class-time-input" value={form.default_start_time} onChange={(e) => setForm({ ...form, default_start_time: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Scoring system</Label><Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}><SelectTrigger data-testid="class-scoring-input"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="one_design">One-design</SelectItem><SelectItem value="irc">IRC</SelectItem><SelectItem value="py">PY</SelectItem></SelectContent></Select></div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-class-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Scoring</TableHead><TableHead>Boat icon</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{classes.map((c) => (
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
+              <TableCell>{c.scoring_mode === "irc" ? "IRC" : c.scoring_mode === "py" ? "PY" : "One-design"}</TableCell>
+              <TableCell><ClassIconUpload classData={c} onUpdated={reload} /></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
@@ -772,7 +822,7 @@ function SeriesTab({ classes, clubId }) {
   };
   const [regattas, setRegattas] = useState([]);
   useEffect(() => { api.getRegattas({ ...(clubId ? { club_id: clubId } : {}) }).then(setRegattas).catch(() => {}); }, [clubId]);
-  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
+  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", series_type: "championship", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
   const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
   const [schedStart, setSchedStart] = useState("2026-08-08");
@@ -841,6 +891,7 @@ function SeriesTab({ classes, clubId }) {
     const convention = cfg.a5_convention;
     const payload = {
       ...form, regatta_id: form.regatta_id || null,
+      series_type: form.series_type || "championship",
       discards: Number(form.discards), order: Number(form.order),
       year: Number(form.year), planned_races: Number(form.planned_races),
       schedule: form.schedule || [],
@@ -929,7 +980,18 @@ function SeriesTab({ classes, clubId }) {
                   <SelectTrigger data-testid="series-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
-              <div className="space-y-1.5"><Label>Competition <span className="text-muted-foreground normal-case text-xs">(optional — regatta or championship)</span></Label>
+              <div className="space-y-1.5"><Label>Series type</Label>
+                <Select value={form.series_type || "championship"} onValueChange={(v) => setForm({ ...form, series_type: v })}>
+                  <SelectTrigger data-testid="series-type-input"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="championship">Championship</SelectItem>
+                    <SelectItem value="club_championship">Club Championship</SelectItem>
+                    <SelectItem value="regatta">Regatta</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Choose what this series is competing for. You can optionally link it to a named competition below.</p>
+              </div>
+              <div className="space-y-1.5"><Label>Competition <span className="text-muted-foreground normal-case text-xs">(optional — named regatta or championship)</span></Label>
                 <Select value={form.regatta_id || "__none__"} onValueChange={(v) => setForm({ ...form, regatta_id: v === "__none__" ? "" : v })}>
                   <SelectTrigger data-testid="series-regatta-input"><SelectValue placeholder="Not part of a competition" /></SelectTrigger>
                   <SelectContent>
@@ -1187,7 +1249,7 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Regatta</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Type</TableHead><TableHead>Competition</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => {
             const cfg = scoringConfigFromSeries(s);
             const locked = s.lock_status === "locked" || s.lock_status === "archived";
@@ -1196,6 +1258,7 @@ function SeriesTab({ classes, clubId }) {
               <TableCell className="font-mono">{s.order}</TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
               <TableCell className="text-sm">{classes.find((c) => c.id === s.class_id)?.name || "Unknown class"}</TableCell>
+              <TableCell>{s.series_type === "club_championship" ? <Badge className="bg-amber-100 text-amber-800">Club Championship</Badge> : s.series_type === "regatta" ? <Badge className="bg-ocean/10 text-ocean border border-ocean/30">Regatta</Badge> : <Badge variant="outline">Championship</Badge>}</TableCell>
               <TableCell>{s.regatta_id ? <Badge className="gap-1 bg-ocean/10 text-ocean border border-ocean/30"><CalendarDays className="w-3 h-3" />{(regattas.find((r) => r.id === s.regatta_id) || {}).name || "Competition"}</Badge> : <Badge variant="outline" className="text-muted-foreground">Standalone series</Badge>}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
               <TableCell>{s.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : s.scoring_mode === "py" ? <Badge className="bg-emerald-100 text-emerald-800">PY</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
@@ -1215,7 +1278,7 @@ function SeriesTab({ classes, clubId }) {
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
                 <Button size="icon" variant="ghost" disabled={locked} title="Boats in this series" data-testid={`series-boats-${s.name}`} onClick={() => setBoatsSeries(s)}><Users className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", series_type: s.series_type || "championship", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
                   <>
@@ -1231,7 +1294,7 @@ function SeriesTab({ classes, clubId }) {
               </TableCell>
             </TableRow>
           );})}
-            {!series.length && <TableRow><TableCell colSpan={13} className="text-center text-muted-foreground py-6">No series for this year. Try another year or class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={14} className="text-center text-muted-foreground py-6">No series for this year. Try another year or class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
 

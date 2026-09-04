@@ -935,6 +935,11 @@ class SeriesInput(BaseModel):
     # boat, so a fleet can race IRC one series and PY the next. Races without
     # a series (legacy) fall back to the class's legacy scoring_mode.
     scoring_mode: Literal["one_design", "irc", "py"] = "one_design"
+    # What this series is competing for. This is separate from regatta_id:
+    # the latter links the series to a named competition, while this field
+    # preserves the series' own category. Missing on legacy records means the
+    # existing series behaves as a championship.
+    series_type: Optional[Literal["championship", "club_championship", "regatta"]] = None
     discards: int = 0
     included_in_overall: bool = True
     order: int = 0
@@ -2367,13 +2372,23 @@ async def clubs_directory(year: Optional[int] = None):
         class_info = []
         for c in classes:
             latest = None
-            q = {"class_id": c["id"], "status": "published", "abandoned": {"$ne": True}}
+            # Deleted series retain their races for audit/backups, but those
+            # orphaned races must not keep appearing in the public club summary.
+            series_query = {"class_id": c["id"]}
             if year:
-                q["year"] = year
+                series_query["year"] = year
+            live_series = await db.series.find(series_query, {"_id": 0, "id": 1}).to_list(2000)
+            live_series_ids = [s["id"] for s in live_series if s.get("id")]
             # NB: chained .sort() calls REPLACE each other in PyMongo ("only
             # the last sort has any effect"), so both keys must go in one list.
-            races = await db.races.find(q, {"_id": 0})\
-                .sort([("date", -1), ("race_number", -1)]).limit(1).to_list(1)
+            races = []
+            if live_series_ids:
+                q = {"class_id": c["id"], "series_id": {"$in": live_series_ids},
+                     "status": "published", "abandoned": {"$ne": True}}
+                if year:
+                    q["year"] = year
+                races = await db.races.find(q, {"_id": 0})\
+                    .sort([("date", -1), ("race_number", -1)]).limit(1).to_list(1)
             if races:
                 r = races[0]
                 finished = sorted(
@@ -2449,7 +2464,7 @@ async def clubs_directory(year: Optional[int] = None):
                 planned_series = [{"id": s.get("id", ""), "name": s.get("name", ""),
                                    "planned_races": s.get("planned_races", 0),
                                    "first_date": _series_first_date(s)} for s in series]
-            class_info.append({"id": c["id"], "name": c["name"],
+            class_info.append({"id": c["id"], "name": c["name"], "icon": c.get("icon"),
                                "scoring_mode": c.get("scoring_mode", "one_design"),
                                "latest": latest, "planned_series": planned_series})
         if year and not any(ci["latest"] or ci["planned_series"] for ci in class_info):
@@ -2878,6 +2893,77 @@ async def get_classes(request: Request, club_id: Optional[str] = None):
     return items
 
 
+async def _class_directory_items(class_ids: list[str]):
+    """Build the public competition projection for one or more class records.
+    This is deliberately a read-only view over existing series, races and
+    competitions; grouping one-design fleets never copies or rewrites results.
+    """
+    if not class_ids:
+        return []
+    class_docs = await db.classes.find({"id": {"$in": class_ids}}, {"_id": 0}).to_list(2000)
+    class_by_id = {c.get("id"): c for c in class_docs}
+    club_ids = {c.get("club_id") for c in class_docs if c.get("club_id")}
+    clubs = {c.get("id"): c for c in await db.clubs.find({"id": {"$in": list(club_ids)}}, {"_id": 0}).to_list(1000)}
+    series_docs = await db.series.find({"class_id": {"$in": class_ids}}, {"_id": 0}).sort([("year", -1), ("order", 1)]).to_list(5000)
+    regatta_ids = {s.get("regatta_id") for s in series_docs if s.get("regatta_id")}
+    competitions = {}
+    if regatta_ids and hasattr(db, "regattas"):
+        competitions = {r.get("id"): r for r in await db.regattas.find({"id": {"$in": list(regatta_ids)}}, {"_id": 0}).to_list(2000)}
+    items = []
+    for s in series_docs:
+        class_data = class_by_id.get(s.get("class_id"), {})
+        club = clubs.get(class_data.get("club_id"), {})
+        race_count = await db.races.count_documents({"series_id": s.get("id"), "status": "published"})
+        competition = competitions.get(s.get("regatta_id"))
+        items.append({
+            "id": s.get("id"), "name": s.get("name"), "class_id": s.get("class_id"), "class_name": class_data.get("name"),
+            "series_type": s.get("series_type") or (competition.get("competition_type") if competition else "championship"),
+            "class_icon": class_data.get("icon"), "year": s.get("year"),
+            "planned_races": s.get("planned_races", 0), "race_count": race_count,
+            "regatta_id": s.get("regatta_id"), "club_id": class_data.get("club_id"),
+            "club_name": club.get("name"), "club_slug": club.get("slug"),
+            "competition": ({
+                "id": competition.get("id"), "name": competition.get("name"),
+                "year": competition.get("year"), "competition_type": competition.get("competition_type") or "regatta",
+                "championship_scope": competition.get("championship_scope"),
+                "start_date": competition.get("start_date"), "end_date": competition.get("end_date"),
+                "date_label": competition.get("date_label"), "host_club": competition.get("host_club"),
+            } if competition else None),
+        })
+    return items
+
+
+@api_router.get("/classes/{class_id}/directory")
+async def get_class_directory(class_id: str):
+    """Public class hub for a single club's class."""
+    cls = await db.classes.find_one({"id": class_id}, {"_id": 0})
+    if not cls:
+        raise HTTPException(status_code=404, detail="Class not found")
+    club = await db.clubs.find_one({"id": cls.get("club_id")}, {"_id": 0})
+    items = await _class_directory_items([class_id])
+    return {"class": cls, "club": _club_public(club or {}), "series": items}
+
+
+@api_router.get("/classes/group/{class_key}/directory")
+async def get_class_group_directory(class_key: str):
+    """Public cross-club hub for a one-design class identity. Matching is
+    case-insensitive and ignores punctuation/spaces in the display name, so
+    separate club-owned Sonata records resolve to one shared fleet page."""
+    wanted = re.sub(r"[^a-z0-9]+", " ", class_key.lower()).strip()
+    classes = await db.classes.find({"scoring_mode": "one_design"}, {"_id": 0}).to_list(5000)
+    matching = [c for c in classes if re.sub(r"[^a-z0-9]+", " ", (c.get("name") or "").lower()).strip() == wanted]
+    if not matching:
+        raise HTTPException(status_code=404, detail="One-design class group not found")
+    items = await _class_directory_items([c.get("id") for c in matching])
+    return {
+        "class": {"name": matching[0].get("name"), "scoring_mode": "one_design"},
+        "classes": [{"id": c.get("id"), "name": c.get("name"), "club_id": c.get("club_id"), "icon": c.get("icon")}
+                    for c in matching],
+        "clubs": [_club_public(c) for c in (await db.clubs.find({"id": {"$in": list({c.get("club_id") for c in matching if c.get("club_id")})}}, {"_id": 0}).to_list(1000))],
+        "series": items,
+    }
+
+
 @api_router.post("/classes")
 async def create_class(data: ClassInput, user: dict = Depends(require_admin)):
     club_id = data.club_id or user.get("club_id")
@@ -2914,6 +3000,36 @@ async def delete_class(class_id: str, user: dict = Depends(require_admin)):
                      description=f"Deleted class {cls.get('name')}",
                      resource_type="class", resource_id=class_id, club_id=cls.get("club_id"))
     return {"ok": True}
+
+
+@api_router.put("/classes/{class_id}/icon")
+async def upload_class_icon(class_id: str, user: dict = Depends(require_admin), file: UploadFile = File(...)):
+    """Set a class's boat icon. The image belongs to the class, not a boat
+    entry, and is limited to a small validated raster image. Club admins can
+    edit only their own classes; webmasters can edit any class."""
+    cls = await _class_of_club(class_id, user)
+    data = await file.read()
+    if len(data) > 512 * 1024:
+        raise HTTPException(status_code=400, detail="Boat icon must be 512 KB or smaller")
+    ctype = _detect_image_type(data)
+    if not ctype:
+        raise HTTPException(status_code=400, detail="Upload must be a PNG, JPEG, GIF or WebP image")
+    icon = f"data:{ctype};base64,{base64.b64encode(data).decode()}"
+    await db.classes.update_one({"id": class_id}, {"$set": {"icon": icon}})
+    await _log_audit(request=None, user=user, action="CLASS_ICON_UPDATED",
+                     description=f"Updated boat icon for class {cls.get('name')}",
+                     resource_type="class", resource_id=class_id, club_id=cls.get("club_id"))
+    return await db.classes.find_one({"id": class_id}, {"_id": 0})
+
+
+@api_router.delete("/classes/{class_id}/icon")
+async def delete_class_icon(class_id: str, user: dict = Depends(require_admin)):
+    cls = await _class_of_club(class_id, user)
+    await db.classes.update_one({"id": class_id}, {"$unset": {"icon": ""}})
+    await _log_audit(request=None, user=user, action="CLASS_ICON_DELETED",
+                     description=f"Removed boat icon for class {cls.get('name')}",
+                     resource_type="class", resource_id=class_id, club_id=cls.get("club_id"))
+    return await db.classes.find_one({"id": class_id}, {"_id": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -3076,6 +3192,7 @@ async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
     doc = data.model_dump()
     doc.pop("expected_version", None)
+    doc["series_type"] = doc.get("series_type") or "championship"
     # Series membership is managed exclusively via PUT /series/{id}/boats;
     # a fresh series starts with no explicit fleet (auto-detected).
     doc.pop("member_boat_ids", None)
@@ -3114,6 +3231,8 @@ async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(
     expected = _expected_version(data)
     update = data.model_dump()
     update.pop("expected_version", None)
+    if update.get("series_type") is None:
+        update.pop("series_type", None)
     # Series membership is managed exclusively via PUT /series/{id}/boats —
     # never clobber the stored fleet when the admin edits other series fields.
     update.pop("member_boat_ids", None)

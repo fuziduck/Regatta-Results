@@ -197,9 +197,17 @@ export const api = {
   deleteClubIcon: (id) => client.delete(`/clubs/${id}/icon`).then((r) => r.data),
 
   getClasses: (params = {}) => client.get("/classes", { params }).then((r) => r.data),
+  getClassDirectory: (id) => client.get(`/classes/${id}/directory`).then((r) => r.data),
+  getClassGroupDirectory: (name) => client.get(`/classes/group/${encodeURIComponent(name)}/directory`).then((r) => r.data),
   createClass: (d) => client.post("/classes", d).then((r) => r.data),
   updateClass: (id, d) => client.put(`/classes/${id}`, d).then((r) => r.data),
   deleteClass: (id) => client.delete(`/classes/${id}`).then((r) => r.data),
+  uploadClassIcon: (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return client.put(`/classes/${id}/icon`, fd).then((r) => r.data);
+  },
+  deleteClassIcon: (id) => client.delete(`/classes/${id}/icon`).then((r) => r.data),
 
   getBoats: (params = {}) => client.get("/boats", { params }).then((r) => r.data),
   createBoat: (d) => client.post("/boats", d).then((r) => r.data),
