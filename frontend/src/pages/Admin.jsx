@@ -689,7 +689,7 @@ function RegattasTab({ clubId }) {
           </DialogContent>
         </Dialog>
       </div>
-      <p className="text-sm text-muted-foreground mb-4">A competition groups series across classes — either a regatta (a specific racing occasion) or a championship (a competition over a period). Add the club's series to it from the Series tab; the competition page then shows each class's results separately.</p>
+      <p className="text-sm text-muted-foreground mb-4">A competition groups series across classes — either a regatta (a specific racing occasion) or a championship (a competition over a period). Add the club's series to it from the Series tab; standalone series remain visible there and in Historic Results.</p>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
         <Table><TableHeader><TableRow className="bg-muted"><TableHead>Photo</TableHead><TableHead>Competition</TableHead><TableHead>Type</TableHead><TableHead>Year</TableHead><TableHead>Dates</TableHead><TableHead>Host</TableHead><TableHead>Status</TableHead><TableHead>Series</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{regattas.map((r) => (
@@ -730,9 +730,9 @@ function RegattasTab({ clubId }) {
 
 function SeriesTab({ classes, clubId }) {
   const [classFilter, setClassFilter] = useState("");
-  const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
+  const [yearFilter, setYearFilter] = useState("all");
   const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
-  const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
+  const yearChoices = ["all", ...withSeasonYears(YEAR_OPTIONS, seasonYears)];
   const [series, setSeries] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -813,15 +813,23 @@ function SeriesTab({ classes, clubId }) {
     setForm((f) => ({ ...f, mini_series_groups: groups }));
   };
 
-  useEffect(() => { if (!classFilter && classes[0]) setClassFilter(classes[0].id); }, [classes]); // eslint-disable-line
+  // Start with all classes visible so a series cannot disappear simply because
+  // it belongs to a different fleet. The class filter remains available for
+  // focused editing and scoring work.
+  useEffect(() => { if (!classFilter && classes.length) setClassFilter("all"); }, [classes]); // eslint-disable-line
   // Reset filters only when the club actually changes — not on first mount,
   // or the reset would clobber the auto-selected first class above.
   const firstRun = useRef(true);
   useEffect(() => {
     if (firstRun.current) { firstRun.current = false; return; }
-    setClassFilter(""); setYearFilter(CURRENT_YEAR); setSeries([]);
+    setClassFilter(""); setYearFilter("all"); setSeries([]);
   }, [clubId]);
-  const load = useCallback(() => { if (classFilter) api.getSeries({ class_id: classFilter, year: yearFilter, ...(clubId ? { club_id: clubId } : {}) }).then(setSeries); }, [classFilter, yearFilter, clubId]);
+  const load = useCallback(() => {
+    if (!classFilter) return;
+    const params = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...(clubId ? { club_id: clubId } : {}) };
+    if (classFilter !== "all") params.class_id = classFilter;
+    api.getSeries(params).then(setSeries);
+  }, [classFilter, yearFilter, clubId]);
   useEffect(() => { load(); }, [load]);
 
   const save = async () => {
@@ -862,7 +870,7 @@ function SeriesTab({ classes, clubId }) {
       load();
       return;
     }
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank(), class_id: classFilter });
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || "") });
     reloadYears(); load();
   };
   const genSchedule = async () => {
@@ -897,18 +905,21 @@ function SeriesTab({ classes, clubId }) {
           <Label className="text-sm">Class</Label>
           <Select value={classFilter} onValueChange={setClassFilter}>
             <SelectTrigger className="w-40" data-testid="series-class-filter"><SelectValue placeholder="Class" /></SelectTrigger>
-            <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+            <SelectContent>
+              <SelectItem value="all">All classes</SelectItem>
+              {classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
           </Select>
         </div>
         <div className="flex items-center gap-2">
           <Label className="text-sm">Year</Label>
-          <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(Number(v))}>
-            <SelectTrigger className="w-28" data-testid="series-year-filter"><SelectValue /></SelectTrigger>
-            <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+          <Select value={String(yearFilter)} onValueChange={(v) => setYearFilter(v === "all" ? "all" : Number(v))}>
+            <SelectTrigger className="w-32" data-testid="series-year-filter"><SelectValue /></SelectTrigger>
+            <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y === "all" ? "All years" : y}</SelectItem>)}</SelectContent>
           </Select>
         </div>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank(), class_id: classFilter, order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || "") }); } }}>
+          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || ""), order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
           <DialogContent className="max-h-[85vh] overflow-y-auto">
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} series</DialogTitle></DialogHeader>
             <div className="space-y-3">
@@ -1176,7 +1187,7 @@ function SeriesTab({ classes, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Regatta</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Regatta</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead>              <TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => {
             const cfg = scoringConfigFromSeries(s);
             const locked = s.lock_status === "locked" || s.lock_status === "archived";
@@ -1184,7 +1195,8 @@ function SeriesTab({ classes, clubId }) {
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
-              <TableCell>{s.regatta_id ? <Badge className="gap-1 bg-ocean/10 text-ocean border border-ocean/30"><CalendarDays className="w-3 h-3" />{(regattas.find((r) => r.id === s.regatta_id) || {}).name || "Regatta"}</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
+              <TableCell className="text-sm">{classes.find((c) => c.id === s.class_id)?.name || "Unknown class"}</TableCell>
+              <TableCell>{s.regatta_id ? <Badge className="gap-1 bg-ocean/10 text-ocean border border-ocean/30"><CalendarDays className="w-3 h-3" />{(regattas.find((r) => r.id === s.regatta_id) || {}).name || "Competition"}</Badge> : <Badge variant="outline" className="text-muted-foreground">Standalone series</Badge>}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
               <TableCell>{s.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : s.scoring_mode === "py" ? <Badge className="bg-emerald-100 text-emerald-800">PY</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
               <TableCell className="font-mono">{s.discards}</TableCell>
@@ -1219,7 +1231,7 @@ function SeriesTab({ classes, clubId }) {
               </TableCell>
             </TableRow>
           );})}
-            {!series.length && <TableRow><TableCell colSpan={12} className="text-center text-muted-foreground py-6">No series yet for this class.</TableCell></TableRow>}
+            {!series.length && <TableRow><TableCell colSpan={13} className="text-center text-muted-foreground py-6">No series for this year. Try another year or class.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
 
@@ -1406,10 +1418,10 @@ function NoticeManagementTab({ clubId }) {
 }
 
 function HistoricTab({ classes, rrsCodes, clubId }) {
-  const [classId, setClassId] = useState("");
-  const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
+  const [classId, setClassId] = useState("all");
+  const [yearFilter, setYearFilter] = useState("all");
   const { seasonYears } = useSeasonYears(clubId);
-  const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
+  const yearChoices = ["all", ...withSeasonYears(YEAR_OPTIONS, seasonYears)];
   const [seriesList, setSeriesList] = useState([]);
   const [seriesId, setSeriesId] = useState("");
   const [races, setRaces] = useState([]);
@@ -1454,19 +1466,23 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
     await change(boatId, payload);
   };
 
-  useEffect(() => { if (!classId && classes[0]) setClassId(classes[0].id); }, [classes]); // eslint-disable-line
+  useEffect(() => { if (!classId && classes.length) setClassId("all"); }, [classes]); // eslint-disable-line
   // Reset filters only when the club actually changes — not on first mount,
   // or the reset would clobber the auto-selected first class above.
   const firstRun = useRef(true);
   useEffect(() => {
     if (firstRun.current) { firstRun.current = false; return; }
-    setClassId(""); setSeriesId(""); setRace(null); setYearFilter(CURRENT_YEAR);
+    setClassId(""); setSeriesId(""); setRace(null); setYearFilter("all");
   }, [clubId]);
   useEffect(() => {
     if (classId) {
       const cparams = clubId ? { club_id: clubId } : {};
-      api.getSeries({ class_id: classId, year: yearFilter, ...cparams }).then(setSeriesList);
-      api.getBoats({ class_id: classId, ...cparams }).then((bs) => { const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m); });
+      const seriesParams = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...cparams };
+      if (classId !== "all") seriesParams.class_id = classId;
+      api.getSeries(seriesParams).then(setSeriesList);
+      const boatParams = { ...cparams };
+      if (classId !== "all") boatParams.class_id = classId;
+      api.getBoats(boatParams).then((bs) => { const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m); });
     }
   }, [classId, yearFilter, clubId]);
   useEffect(() => { if (seriesId) api.getRaces({ series_id: seriesId, ...(clubId ? { club_id: clubId } : {}) }).then(setRaces); }, [seriesId, clubId]);
@@ -1506,11 +1522,14 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
       <div className="flex flex-wrap gap-3 mb-4">
         <Select value={classId} onValueChange={(v) => { setClassId(v); setSeriesId(""); setRace(null); }}>
           <SelectTrigger className="w-40" data-testid="hist-class"><SelectValue placeholder="Class" /></SelectTrigger>
-          <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+          <SelectContent>
+            <SelectItem value="all">All classes</SelectItem>
+            {classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+          </SelectContent>
         </Select>
-        <Select value={String(yearFilter)} onValueChange={(v) => { setYearFilter(Number(v)); setSeriesId(""); setRace(null); }}>
-          <SelectTrigger className="w-28" data-testid="hist-year"><SelectValue /></SelectTrigger>
-          <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+        <Select value={String(yearFilter)} onValueChange={(v) => { setYearFilter(v === "all" ? "all" : Number(v)); setSeriesId(""); setRace(null); }}>
+          <SelectTrigger className="w-32" data-testid="hist-year"><SelectValue /></SelectTrigger>
+          <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y === "all" ? "All years" : y}</SelectItem>)}</SelectContent>
         </Select>
         <Select value={seriesId} onValueChange={(v) => { setSeriesId(v); setRace(null); }}>
           <SelectTrigger className="w-48" data-testid="hist-series"><SelectValue placeholder="Series" /></SelectTrigger>
@@ -1594,7 +1613,9 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
                     : lockDialog === "archive" ? "Season archived — results are now permanent"
                     : "Season opened for correction — fix the results, then re-lock");
                   setLockDialog(null);
-                  api.getSeries({ class_id: classId, year: yearFilter, ...(clubId ? { club_id: clubId } : {}) }).then(setSeriesList);
+                  const refreshParams = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...(clubId ? { club_id: clubId } : {}) };
+                  if (classId !== "all") refreshParams.class_id = classId;
+                  api.getSeries(refreshParams).then(setSeriesList);
                 } catch (e) {
                   if (e.response?.status === 409) toast.error("This season was changed by another user. Reload the series list before locking or unlocking again.");
                   else toast.error(e.response?.data?.detail || "Could not update season lock");
