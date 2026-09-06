@@ -826,7 +826,12 @@ function SeriesTab({ classes, clubId }) {
   const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", series_type: "championship", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
   const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
-  const [schedStart, setSchedStart] = useState("2026-08-08");
+  // Schedule auto-fill start: default to today's local date, not a stale
+  // hard-coded day (toISOString would shift the date for timezones east of UTC).
+  const [schedStart, setSchedStart] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
   const [autoSize, setAutoSize] = useState(5);
   const patchCfg = (patch) => setForm((f) => ({ ...f, scoring_config: { ...f.scoring_config, ...patch } }));
   const patchCfgNested = (key, patch) => setForm((f) => ({ ...f, scoring_config: { ...f.scoring_config, [key]: { ...f.scoring_config[key], ...patch } } }));
