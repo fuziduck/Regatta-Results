@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
-import { competitionImage, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
+import { competitionImage, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
@@ -128,7 +128,7 @@ export default function Regatta() {
               ) : (
                 <Badge className={`gap-1.5 rounded-full border px-3 py-1 text-xs font-bold shadow-sm ${competitionTagClass(regatta)}`}><CalendarDays className="h-3.5 w-3.5" />Regatta</Badge>
               )}
-              <Badge className="rounded-full border border-white/70 bg-white/90 px-3 py-1 text-xs font-bold text-foreground shadow-sm">{competitionStatusLabel(regatta)}</Badge>
+              <Badge className={`rounded-full border px-3 py-1 text-xs font-bold shadow-sm ${competitionStatusClass()}`}>{competitionStatusLabel(regatta)}</Badge>
             </div>
             <span className="rounded-full bg-black/35 px-3 py-1 text-xs font-semibold tracking-wide text-white backdrop-blur-sm">
               {regatta.class_count || classNames.length} {Number(regatta.class_count || classNames.length) === 1 ? "class" : "classes"} · {regatta.race_count || 0} {Number(regatta.race_count) === 1 ? "race" : "races"}

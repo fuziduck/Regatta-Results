@@ -74,6 +74,12 @@ export function competitionStatusLabel(competition) {
   return competition?.status || "Complete";
 }
 
+// Status badges sit on photo backgrounds, so they need a near-white pill and
+// dark text to stay readable at rest in both themes.
+export function competitionStatusClass() {
+  return "border-white/80 bg-white/95 text-slate-900";
+}
+
 export function pluraliseCount(value, singular, plural = `${singular}s`) {
   const count = Number(value) || 0;
   return `${count} ${count === 1 ? singular : plural}`;

@@ -19,7 +19,7 @@ import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLe
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
-import { competitionImage, competitionPath, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
+import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 
 function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
   const isChampionship = competitionType(competition) !== "regatta";
@@ -36,7 +36,7 @@ function CompetitionCard({ competition, clubSlug, onSelect, selected = false, co
             {isChampionship ? <Trophy className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />}
             {typeLabel}
           </Badge>
-          <Badge className="rounded-full border border-white/70 bg-white/90 px-3 py-1 text-xs text-foreground shadow-sm">{competitionStatusLabel(competition)}</Badge>
+          <Badge className={`rounded-full border px-3 py-1 text-xs font-semibold shadow-sm ${competitionStatusClass()}`}>{competitionStatusLabel(competition)}</Badge>
         </div>
       </div>
       <div className={`${compact ? "p-4" : "p-5"}`}>
