@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { SAILSCORE_EVENTS, trackEvent } from "@/lib/analytics";
 import { Anchor, CalendarDays, Layers, Sailboat, Search, X, ArrowRight } from "lucide-react";
 
 const TYPES = [
@@ -108,6 +109,9 @@ export default function BoatSearchBox() {
   const [type, setType] = useState("all");
   const inputRef = useRef(null);
   const boxRef = useRef(null);
+  // One logical search per distinct term, even as typing fires incremental
+  // API calls. The term itself never reaches analytics — only the type.
+  const trackedQueryRef = useRef("");
 
   useEffect(() => {
     const term = q.trim();
@@ -119,7 +123,18 @@ export default function BoatSearchBox() {
     setBusy(true);
     const t = setTimeout(() => {
       api.siteSearch(term)
-        .then((r) => { setData(r || { clubs: [], classes: [], series: [], boats: [] }); setSearched(true); setOpen(true); })
+        .then((r) => {
+          const payload = r || { clubs: [], classes: [], series: [], boats: [] };
+          setData(payload); setSearched(true); setOpen(true);
+          if (trackedQueryRef.current !== term) {
+            trackedQueryRef.current = term;
+            // Coarse outcome only — the query text is PII-risky and stays local.
+            trackEvent(SAILSCORE_EVENTS.SEARCH, {
+              search_type: "site",
+              result_count: payload.boats.length + payload.clubs.length + payload.series.length + payload.classes.length,
+            });
+          }
+        })
         .catch(() => { setData({ clubs: [], classes: [], series: [], boats: [] }); setSearched(true); setOpen(true); })
         .finally(() => setBusy(false));
     }, 300);

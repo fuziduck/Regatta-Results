@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { SAILSCORE_EVENTS, trackEvent } from "@/lib/analytics";
 import ThemeToggle from "@/components/ThemeToggle";
 import OfficialsLink from "@/components/OfficialsLink";
 import { Sailboat, Search, X } from "lucide-react";
@@ -12,6 +13,10 @@ export default function Boats() {
   const [busy, setBusy] = useState(false);
   const [searched, setSearched] = useState(false);
   const inputRef = useRef(null);
+  // Remember which term was already tracked: typing more characters fires
+  // incremental API calls, but a character-by-character refinement of the
+  // same query is one logical search — never tracked twice.
+  const trackedQueryRef = useRef("");
 
   useEffect(() => {
     const term = q.trim();
@@ -23,7 +28,15 @@ export default function Boats() {
     setBusy(true);
     const t = setTimeout(() => {
       api.fleetSearch(term)
-        .then((r) => { setResults(r || []); setSearched(true); })
+        .then((r) => {
+          setResults(r || []); setSearched(true);
+          if (trackedQueryRef.current !== term) {
+            trackedQueryRef.current = term;
+            // The query itself is never sent — only the search type and how
+            // many sailing entities it matched.
+            trackEvent(SAILSCORE_EVENTS.SEARCH, { search_type: "boat", result_count: (r || []).length });
+          }
+        })
         .catch(() => { setResults([]); setSearched(true); })
         .finally(() => setBusy(false));
     }, 300);

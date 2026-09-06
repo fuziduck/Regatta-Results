@@ -1,11 +1,13 @@
+import { useEffect, useRef } from "react";
+
 // Plausible Analytics utility — the ONLY analytics platform on SailScore.
 //
 // The tracking script itself lives in public/index.html (deferred, loaded from
 // our own Plausible instance). It records page views automatically, including
 // client-side route changes (pushState/popstate), so React Router navigation
-// needs no extra wiring. This module exists for the next step: custom
+// needs no extra wiring. This module is the ONLY way app code fires custom
 // Sailscore events (see SAILSCORE_EVENTS) that the page-view script cannot
-// know about.
+// know about — no page calls window.plausible directly.
 //
 // Privacy guarantees (why this stays lean):
 //   - Plausible is cookie-free and sets no identifiers; nothing here reads or
@@ -25,10 +27,18 @@
 export const PLAUSIBLE_DOMAIN = "sailscore.co.uk";
 export const PLAUSIBLE_SCRIPT_URL = "https://analytics.sailscore.co.uk/js/script.js";
 
-// Custom events we intend to measure (create them in the Plausible dashboard
-// as goals before they show up). Fire them with trackEvent / usePlausible.
-// Nothing is wired into the UI yet — page-view tracking is the only active
-// reporting — but the names are fixed here so call sites stay consistent.
+// Custom Sailscore events (create them in the Plausible dashboard as goals
+// before they show up). Fire them with trackEvent / useTrackView / usePlausible
+// — never with window.plausible directly. Wiring per event:
+//   view_regatta        Regatta.jsx (dedicated competition page)
+//   view_results        Regatta.jsx Results tab; Landing overall standings
+//   view_series         Landing series tabs (both racing categories)
+//   view_boat           Boat.jsx (career profile page)
+//   view_class          Class.jsx directory page; Landing class results view
+//   download_results_pdf  Regatta.jsx + Landing regatta/overall PDF buttons
+//   download_series_pdf   Landing series PDF button
+//   search              BoatSearchBox (site search) + Boats.jsx (boat search)
+//   login               Login.jsx, after a session is actually established
 export const SAILSCORE_EVENTS = Object.freeze({
   VIEW_REGATTA: "view_regatta",
   VIEW_RESULTS: "view_results",
@@ -49,6 +59,9 @@ const FORBIDDEN_TOKENS = [
   "email", "token", "password", "passcode", "secret", "auth", "authorization",
   "username", "user", "userid", "ip", "phone", "dob", "surname",
   "session", "cookie", "credential",
+  // People on the race card are private: helm/skipper/crew/owner keys must
+  // never reach analytics even though boat names themselves are fine.
+  "helm", "skipper", "crew", "owner",
 ];
 const FORBIDDEN_KEYS = new Set([
   "name", "first_name", "last_name", "full_name", "fullname",
@@ -100,17 +113,58 @@ function plausible() {
  * @param {string} name        Event name, ideally from SAILSCORE_EVENTS.
  * @param {object} [props]     Coarse, non-identifying props (e.g. { club_slug, class_name }).
  * @param {object} [options]   Plausible send options ({ props, callback }).
+ * @returns {boolean} true when the event was actually dispatched.
  */
 export function trackEvent(name, props, options = {}) {
-  if (!name || typeof name !== "string") return;
+  if (!name || typeof name !== "string") return false;
   const fn = plausible();
-  if (!fn) return;
+  if (!fn) return false;
   try {
     const safeProps = sanitizeProps(props);
     fn(name, safeProps ? { props: safeProps, ...options } : options);
+    return true;
   } catch {
     /* analytics must never break the app */
+    return false;
   }
+}
+
+// --- View-event dedupe -----------------------------------------------------
+//
+// A view_* event must fire once per LOGICAL view, not once per render: a
+// React component can rerender five times and still record exactly one
+// view_regatta. useTrackView arms an identity (e.g. a regatta id) and keeps
+// it in ACTIVE_VIEWS for as long as that identity stays on screen; the guard
+// is released when the identity changes or the component unmounts, so coming
+// back to the same page later — a genuine second view — is recorded again.
+const ACTIVE_VIEWS = new Map();
+
+/**
+ * Track a view-style event once per identity. Returns true when it fired.
+ * The identity (and the query string used as the search identity) never
+ * leaves this module — it exists purely for dedupe, only props are sent.
+ */
+export function trackViewEvent(name, identityKey, props) {
+  if (identityKey === null || identityKey === undefined || identityKey === "") return false;
+  const key = `${name}:${String(identityKey)}`;
+  if (ACTIVE_VIEWS.has(key)) return false;
+  // Only consume the guard when the event really went out, so a view shown
+  // before the (deferred) script loads can still be recorded on a later
+  // display of the same identity.
+  if (!trackEvent(name, props)) return false;
+  ACTIVE_VIEWS.set(key, true);
+  return true;
+}
+
+/** Release a view identity (called by useTrackView's cleanup). */
+export function clearViewEvent(name, identityKey) {
+  if (identityKey === null || identityKey === undefined || identityKey === "") return;
+  ACTIVE_VIEWS.delete(`${name}:${String(identityKey)}`);
+}
+
+/** Test/ops helper: forget every armed view identity. */
+export function resetTrackedViews() {
+  ACTIVE_VIEWS.clear();
 }
 
 // Dev convenience: every call logs to the console so events are visible while
@@ -130,6 +184,32 @@ export function trackEventDebug(name, props, options) {
  */
 export function usePlausible() {
   return trackEvent;
+}
+
+/**
+ * Track a view-style event once per logical view. The event fires when
+ * `identityKey` first becomes truthy (e.g. the regatta payload has loaded) and
+ * again whenever it CHANGES to a different view — never on rerenders, prop
+ * updates or tab switches that keep the same identity on screen. Returning to
+ * the same identity after navigating away is a genuine second view.
+ *
+ * Usage:  useTrackView(SAILSCORE_EVENTS.VIEW_REGATTA, regatta ? regattaId : null,
+ *                       { regatta_id: regattaId, regatta_name: regatta?.name });
+ *
+ * Props are read through a ref at fire time, so passing a fresh object literal
+ * every render is safe and does not re-trigger the effect.
+ *
+ * @param {string} name         Event name from SAILSCORE_EVENTS.
+ * @param {*}      identityKey  Falsy disables tracking; changes mark new views.
+ * @param {object} [props]      Coarse, non-identifying props.
+ */
+export function useTrackView(name, identityKey, props) {
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  useEffect(() => {
+    if (!trackViewEvent(name, identityKey, propsRef.current)) return undefined;
+    return () => clearViewEvent(name, identityKey);
+  }, [name, identityKey]);
 }
 
 /**

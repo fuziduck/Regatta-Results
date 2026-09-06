@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
+import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { competitionImage, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
@@ -68,6 +69,22 @@ export default function Regatta() {
     });
   }, [tab, regatta, club, standings]);
 
+  // Analytics — coarse, non-identifying props only (sailing data, never
+  // people). useTrackView fires once per logical view, so rerenders never
+  // duplicate events.
+  useTrackView(SAILSCORE_EVENTS.VIEW_REGATTA, regatta ? `${club?.slug || ""}:${regattaId}` : null, {
+    regatta_id: regattaId,
+    regatta_name: regatta?.name,
+    club: club?.slug,
+  });
+  // The Results tab is a separate logical view from the overview.
+  useTrackView(SAILSCORE_EVENTS.VIEW_RESULTS, tab === "results" && regatta && club ? `${club.id}:${regattaId}` : null, {
+    regatta_id: regattaId,
+    regatta_name: regatta?.name,
+    class_name: tab === "results" && classFilter !== "all" ? classFilter : undefined,
+    club: club?.slug,
+  });
+
   if (!regatta) {
     return (
       <div className="min-h-screen bg-background grid place-items-center text-muted-foreground">
@@ -93,11 +110,21 @@ export default function Regatta() {
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{s.name !== regatta.name ? s.name : "Overall"}</div>
         <Button size="sm" variant="outline" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"
-          onClick={() => exportSeriesPdf({
-            clubName: club?.name || "", className, seriesName: s.name !== regatta.name ? s.name : regatta.name,
-            year: regatta.year, data: standings[s.id], icon: club?.icon,
-            competitionLabel: `${regatta.name} · ${compLabel}`,
-          })}>
+          onClick={() => {
+            exportSeriesPdf({
+              clubName: club?.name || "", className, seriesName: s.name !== regatta.name ? s.name : regatta.name,
+              year: regatta.year, data: standings[s.id], icon: club?.icon,
+              competitionLabel: `${regatta.name} · ${compLabel}`,
+            });
+            trackEvent(SAILSCORE_EVENTS.DOWNLOAD_RESULTS_PDF, {
+              regatta_id: regattaId,
+              regatta_name: regatta.name,
+              series_id: s.id,
+              series_name: s.name !== regatta.name ? s.name : "Overall",
+              class_name: className,
+              club: club?.slug,
+            });
+          }}>
           <Download className="w-3.5 h-3.5" /> PDF
         </Button>
       </div>

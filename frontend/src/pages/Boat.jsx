@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import { CURRENT_YEAR } from "@/lib/helpers";
+import { SAILSCORE_EVENTS, useTrackView } from "@/lib/analytics";
 import ResultsSubscription from "@/components/ResultsSubscription";
 import OfficialsLink from "@/components/OfficialsLink";
 import { SITE_TAGLINE } from "@/lib/siteConfig";
@@ -123,6 +124,16 @@ export default function Boat() {
       .catch(() => setMissing(true))
       .finally(() => setLoading(false));
   }, [fleetId]);
+
+  // Analytics — coarse sailing data only (boat/class/club names are result
+  // data; helm/owner details are PII and are blocked by the analytics guard).
+  // Fires once per logical view; switching boats is a new view.
+  useTrackView(SAILSCORE_EVENTS.VIEW_BOAT, profile ? fleetId : null, {
+    boat_id: profile?.records?.[0]?.boat_id || fleetId,
+    boat_name: profile?.name,
+    class_name: profile?.records?.[0]?.class_name || profile?.boat?.class_name,
+    club: profile?.boat?.home_club_slug || profile?.records?.[0]?.club_slug,
+  });
 
   const seasons = useMemo(() => profile?.seasons || [], [profile]);
   const years = useMemo(() => [...new Set(seasons.map((s) => s.year))].sort((a, b) => b - a), [seasons]);

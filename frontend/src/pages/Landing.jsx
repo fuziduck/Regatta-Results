@@ -14,6 +14,7 @@ import HeaderMenu from "@/components/HeaderMenu";
 import OfficialsLink from "@/components/OfficialsLink";
 import CopyLinkButton from "@/components/CopyLinkButton";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
+import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
 import { LifeBuoy, Clock, Flag, FlagOff, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
@@ -218,7 +219,12 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
             <Button variant="outline" size="sm" data-testid="export-overall-pdf"
               className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
               disabled={!overall?.standings?.length}
-              onClick={() => exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon, adverts })}>
+              onClick={() => {
+                exportOverallPdf({ clubName, className, year, data: overall, icon: clubIcon, adverts });
+                trackEvent(SAILSCORE_EVENTS.DOWNLOAD_RESULTS_PDF, {
+                  class_name: className, club: clubName, view: "overall",
+                });
+              }}>>
               <Download className="w-4 h-4" /> PDF
             </Button>
           </div>
@@ -268,7 +274,15 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
           <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
             disabled={!miniData?.standings?.length}
-            onClick={() => exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon, adverts })}>
+            onClick={() => {
+              exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon, adverts });
+              trackEvent(SAILSCORE_EVENTS.DOWNLOAD_SERIES_PDF, {
+                series_id: active.id,
+                series_name: active.name,
+                class_name: className,
+                club: clubName,
+              });
+            }}>
             <Download className="w-4 h-4" /> PDF
           </Button>
         </div>
@@ -518,6 +532,53 @@ export default function Landing() {
   // Future years only appear once this club has set up a series for them.
   // Future years are data-driven: any year a club has set a series up for.
   const futureYears = seasons.filter((y) => y > CURRENT_YEAR);
+
+  // Analytics — coarse, non-identifying props only (sailing data, never
+  // people). useTrackView fires once per logical view, so rerenders and
+  // state refetches never duplicate events; changing identity records a new
+  // view. Props read through refs at fire time (see useTrackView).
+  const activeClassObj = (visibleClasses.find((c) => c.id === activeClass) || {});
+  const activeSeriesObj = series.find((s) => s.id === activeSeries) || null;
+  const selectedRegattaObj = regattas.find((r) => r.id === regattaId) || null;
+  useTrackView(SAILSCORE_EVENTS.VIEW_CLASS, view !== "regattas" && activeClass ? `${club?.slug || ""}:${activeClass}:${year}` : null, {
+    class_id: activeClass || undefined,
+    class_name: activeClassObj.name,
+    club: club?.slug,
+    year: typeof year === "number" ? year : undefined,
+  });
+  useTrackView(SAILSCORE_EVENTS.VIEW_SERIES, view !== "regattas" && activeSeries && activeSeries !== "overall" ? `${club?.slug || ""}:${activeSeries}:${year}` : null, {
+    series_id: activeSeries !== "overall" ? activeSeries : undefined,
+    series_name: activeSeriesObj?.name,
+    class_id: activeClass || undefined,
+    class_name: activeClassObj.name,
+    club: club?.slug,
+    regatta_id: activeSeriesObj?.regatta_id || undefined,
+  });
+  useTrackView(SAILSCORE_EVENTS.VIEW_RESULTS, view !== "regattas" && activeClass && activeSeries === "overall" && overall?.standings?.length ? `${club?.slug || ""}:${activeClass}:overall:${year}` : null, {
+    class_id: activeClass || undefined,
+    class_name: activeClassObj.name,
+    club: club?.slug,
+    year: typeof year === "number" ? year : undefined,
+  });
+  useTrackView(SAILSCORE_EVENTS.VIEW_REGATTA, view === "regattas" && regattaId && regattaDetail ? `${club?.slug || ""}:${regattaId}` : null, {
+    regatta_id: regattaId || undefined,
+    regatta_name: regattaDetail?.name,
+    club: club?.slug,
+  });
+  useTrackView(SAILSCORE_EVENTS.VIEW_RESULTS, view === "regattas" && activeRegattaSeries && regattaSeriesData[activeRegattaSeries]?.standings ? `regatta-series:${club?.slug || ""}:${activeRegattaSeries}` : null, {
+    regatta_id: regattaId || undefined,
+    regatta_name: regattaDetail?.name,
+    series_id: activeRegattaSeries || undefined,
+    series_name: (activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries) || {}).name,
+    class_name: activeRegattaClass || undefined,
+    club: club?.slug,
+  });
+  useTrackView(SAILSCORE_EVENTS.VIEW_RESULTS, view === "regattas" && activeRegattaClass && !activeRegattaSeries ? `regatta-class:${club?.slug || ""}:${regattaId}:${activeRegattaClass}` : null, {
+    regatta_id: regattaId || undefined,
+    regatta_name: regattaDetail?.name,
+    class_name: activeRegattaClass || undefined,
+    club: club?.slug,
+  });
 
   if (loadingClub) {
     return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
@@ -883,6 +944,14 @@ export default function Landing() {
                             seriesName: selected?.name || regattaDetail.name,
                             year: regattaDetail.year, data: regattaSeriesData[activeRegattaSeries],
                             icon: club.icon, competitionLabel: `${regattaDetail.name} · Regatta`,
+                          });
+                          trackEvent(SAILSCORE_EVENTS.DOWNLOAD_RESULTS_PDF, {
+                            regatta_id: regattaId,
+                            regatta_name: regattaDetail.name,
+                            series_id: activeRegattaSeries,
+                            series_name: selected?.name || "Overall",
+                            class_name: activeRegattaClass,
+                            club: club.slug,
                           });
                         }}>
                         <Download className="h-4 w-4" /> PDF

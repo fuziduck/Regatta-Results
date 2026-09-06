@@ -8,6 +8,7 @@ import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
 import OfficialsLink from "@/components/OfficialsLink";
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, Sailboat, Trophy } from "lucide-react";
+import { SAILSCORE_EVENTS, useTrackView } from "@/lib/analytics";
 
 const DEFAULT_CLASS_COLOUR = "#0A369D";
 
@@ -89,6 +90,20 @@ export default function Class() {
       .sort((a, b) => Number(b[0]) - Number(a[0]))
       .map(([year, clubs]) => [year, [...clubs.values()].sort((a, b) => a.name.localeCompare(b.name))]);
   }, [data]);
+
+  // Analytics — coarse, non-identifying props only. Fires once per logical
+  // view of this class (per club when the page spans several clubs). Must sit
+  // above the early returns below (hooks cannot be conditional); the null
+  // identity while loading/loading-failed simply disables tracking.
+  useTrackView(
+    SAILSCORE_EVENTS.VIEW_CLASS,
+    data ? (groupedView ? data.class?.id : (data.clubs?.length ? data.clubs.map((c) => c.id).sort().join(":") : data.club?.id)) : null,
+    {
+      class_id: data?.class?.id,
+      class_name: data?.class?.name,
+      club: groupedView || data?.clubs?.length ? undefined : data?.club?.slug,
+    },
+  );
 
   if (loading) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
   if (missing || !data) {

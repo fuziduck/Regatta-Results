@@ -3,6 +3,7 @@ import { useNavigate, Link, useSearchParams, useLocation } from "react-router-do
 import { useAuth } from "@/context/AuthContext";
 import ThemeToggle from "@/components/ThemeToggle";
 import { api, formatApiError } from "@/lib/api";
+import { SAILSCORE_EVENTS, trackEvent } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -119,6 +120,9 @@ export default function Login() {
         return;
       }
       toast.success(r.role === "webmaster" ? "Signed in as Webmaster" : `Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
+      // A successful sign-in happened. Only the coarse role category is sent —
+      // never the username, email, passcode, tokens or any identifier.
+      trackEvent(SAILSCORE_EVENTS.LOGIN, { role: r.role });
       navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Login failed");
@@ -134,6 +138,7 @@ export default function Login() {
     try {
       const r = await login2fa(otpMethod, otpCode.trim());
       toast.success(r.role === "webmaster" ? "Signed in as Webmaster" : `Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
+      trackEvent(SAILSCORE_EVENTS.LOGIN, { role: r.role });
       navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Invalid verification code");

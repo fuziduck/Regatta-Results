@@ -16,7 +16,11 @@ import {
   SAILSCORE_EVENTS,
   trackEvent,
   trackEventDebug,
+  trackViewEvent,
+  clearViewEvent,
+  resetTrackedViews,
   usePlausible,
+  useTrackView,
   __setPlausibleForTests,
 } from "@/lib/analytics";
 
@@ -28,6 +32,7 @@ const stubPlausible = () => {
 
 afterEach(() => {
   __setPlausibleForTests(null);
+  resetTrackedViews();
 });
 
 describe("analytics constants", () => {
@@ -101,6 +106,38 @@ describe("trackEvent PII guard", () => {
     expect(calls[0][1].props).toEqual({ club_slug: "myc" });
   });
 
+  it("drops people keys (helm, skipper, crew, owner) but keeps boat/class/club names", () => {
+    const calls = stubPlausible();
+    trackEvent(SAILSCORE_EVENTS.VIEW_BOAT, {
+      boat_name: "Watersong",
+      class_name: "Sonata",
+      club: "myc",
+      helm: "Jane Doe",
+      skipper: "Jane Doe",
+      crew_names: ["A", "B"],
+      owner_email: "jane@example.org",
+    });
+    expect(calls[0][1].props).toEqual({
+      boat_name: "Watersong",
+      class_name: "Sonata",
+      club: "myc",
+    });
+  });
+
+  it("keeps the coarse role prop on login events but nothing identifying", () => {
+    const calls = stubPlausible();
+    trackEvent(SAILSCORE_EVENTS.LOGIN, {
+      role: "admin",
+      username: "officer1",
+      user_id: "u-123",
+      session_id: "sess-abc",
+      // Club names are sailing data, not PII, so the guard keeps them —
+      // but Login.jsx deliberately sends only `role` on login events.
+      club_name: "Medway Yacht Club",
+    });
+    expect(calls[0][1].props).toEqual({ role: "admin", club_name: "Medway Yacht Club" });
+  });
+
   it("drops values that look like email addresses regardless of key", () => {
     const calls = stubPlausible();
     trackEvent(SAILSCORE_EVENTS.SEARCH, { query: "jane@example.org" });
@@ -132,6 +169,145 @@ describe("trackEvent PII guard", () => {
     const callback = jest.fn();
     trackEvent(SAILSCORE_EVENTS.SEARCH, { q: "sonata" }, { callback });
     expect(calls[0][1]).toEqual({ props: { q: "sonata" }, callback });
+  });
+});
+
+describe("every SAILSCORE_EVENT can be tracked", () => {
+  it("fires each event name with coarse props", () => {
+    const calls = stubPlausible();
+    const samples = {
+      [SAILSCORE_EVENTS.VIEW_REGATTA]: { regatta_id: "r1", regatta_name: "Spring Open", club: "myc" },
+      [SAILSCORE_EVENTS.VIEW_RESULTS]: { regatta_id: "r1", class_name: "Sonata" },
+      [SAILSCORE_EVENTS.VIEW_SERIES]: { series_id: "s1", series_name: "Saturday Series", club: "myc" },
+      [SAILSCORE_EVENTS.VIEW_BOAT]: { boat_id: "b1", boat_name: "Watersong", class_name: "Sonata" },
+      [SAILSCORE_EVENTS.VIEW_CLASS]: { class_id: "c1", class_name: "Sonata", club: "myc" },
+      [SAILSCORE_EVENTS.DOWNLOAD_RESULTS_PDF]: { regatta_id: "r1", series_id: "s1" },
+      [SAILSCORE_EVENTS.DOWNLOAD_SERIES_PDF]: { series_id: "s1", club: "myc" },
+      [SAILSCORE_EVENTS.SEARCH]: { search_type: "boat", result_count: 3 },
+      [SAILSCORE_EVENTS.LOGIN]: { role: "officer" },
+    };
+    for (const [name, props] of Object.entries(samples)) {
+      expect(trackEvent(name, props)).toBe(true);
+    }
+    expect(calls.map((c) => c[0])).toEqual(Object.keys(samples));
+    calls.forEach(([, opts], i) => {
+      expect(opts.props).toEqual(samples[calls[i][0]]);
+    });
+  });
+});
+
+describe("trackViewEvent dedupe", () => {
+  it("fires once per identity, even when called repeatedly (rerenders)", () => {
+    const calls = stubPlausible();
+    const props = () => ({ regatta_id: "r1", regatta_name: "Spring Open" });
+    expect(trackViewEvent(SAILSCORE_EVENTS.VIEW_REGATTA, "r1", props())).toBe(true);
+    // Five more renders of the same logical view:
+    for (let i = 0; i < 5; i += 1) {
+      expect(trackViewEvent(SAILSCORE_EVENTS.VIEW_REGATTA, "r1", props())).toBe(false);
+    }
+    expect(calls).toHaveLength(1);
+  });
+
+  it("keeps separate identities and event names independent", () => {
+    const calls = stubPlausible();
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_REGATTA, "r1");
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_REGATTA, "r2");
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_BOAT, "r1");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("re-fires after the view identity is cleared (a genuine second view)", () => {
+    const calls = stubPlausible();
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_BOAT, "b1");
+    clearViewEvent(SAILSCORE_EVENTS.VIEW_BOAT, "b1");
+    expect(trackViewEvent(SAILSCORE_EVENTS.VIEW_BOAT, "b1")).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not consume the guard when the script is unavailable, so the view can still be recorded later", () => {
+    __setPlausibleForTests(null);
+    expect(trackViewEvent(SAILSCORE_EVENTS.VIEW_RESULTS, "r1")).toBe(false);
+    const calls = stubPlausible();
+    expect(trackViewEvent(SAILSCORE_EVENTS.VIEW_RESULTS, "r1")).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("ignores empty identities", () => {
+    const calls = stubPlausible();
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_SERIES, null);
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_SERIES, undefined);
+    trackViewEvent(SAILSCORE_EVENTS.VIEW_SERIES, "");
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("useTrackView hook", () => {
+  function renderTrackView(name, identityKey, props) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    let latestProps = props;
+    const setLatestProps = (p) => { latestProps = p; };
+    function Probe() {
+      useTrackView(name, identityKey, latestProps);
+      return null;
+    }
+    act(() => root.render(<Probe />));
+    return {
+      rerender(nextProps) {
+        if (nextProps) setLatestProps(nextProps);
+        act(() => root.render(<Probe />));
+      },
+      unmount() {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("fires once and survives rerenders with fresh prop objects", () => {
+    const calls = stubPlausible();
+    const view = renderTrackView(SAILSCORE_EVENTS.VIEW_REGATTA, "r1", { regatta_id: "r1" });
+    // Rerenders pass new object literals, as React code naturally would.
+    view.rerender({ regatta_id: "r1" });
+    view.rerender({ regatta_id: "r1" });
+    view.unmount();
+    expect(calls).toEqual([["view_regatta", { props: { regatta_id: "r1" } }]]);
+  });
+
+  it("records a new view when the identity changes", () => {
+    const calls = stubPlausible();
+    const view = renderTrackView(SAILSCORE_EVENTS.VIEW_BOAT, "b1", { boat_id: "b1" });
+    view.rerender();
+    const second = renderTrackView(SAILSCORE_EVENTS.VIEW_BOAT, "b2", { boat_id: "b2" });
+    second.unmount();
+    view.unmount();
+    expect(calls.map((c) => c[1].props.boat_id)).toEqual(["b1", "b2"]);
+  });
+
+  it("re-fires when the same component returns to the same identity after unmount", () => {
+    const calls = stubPlausible();
+    const first = renderTrackView(SAILSCORE_EVENTS.VIEW_CLASS, "c1", { class_id: "c1" });
+    first.unmount();
+    const second = renderTrackView(SAILSCORE_EVENTS.VIEW_CLASS, "c1", { class_id: "c1" });
+    second.unmount();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not fire while the identity is null (page still loading)", () => {
+    const calls = stubPlausible();
+    const view = renderTrackView(SAILSCORE_EVENTS.VIEW_SERIES, null, { series_id: "s1" });
+    view.rerender();
+    view.unmount();
+    expect(calls).toEqual([]);
+  });
+
+  it("does not fire when the script is missing, and never throws", () => {
+    __setPlausibleForTests(null);
+    const view = renderTrackView(SAILSCORE_EVENTS.VIEW_RESULTS, "r1", { regatta_id: "r1" });
+    view.rerender();
+    view.unmount();
+    expect(() => {}).not.toThrow();
   });
 });
 
