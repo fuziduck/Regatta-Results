@@ -235,6 +235,10 @@ export const api = {
   // listed are excluded from the series standings entirely.
   updateSeriesBoats: (id, boat_ids, v) => client.put(`/series/${id}/boats`, withVer({ boat_ids }, v)).then((r) => r.data),
   deleteSeries: (id, v) => client.delete(`/series/${id}`, { params: verQuery(v) }).then((r) => r.data),
+  // Duplicate series: detection groups (same class, name, year) and the
+  // audited merge of one duplicate into its sibling.
+  getSeriesDuplicates: (params = {}) => client.get("/series/duplicates", { params }).then((r) => r.data),
+  mergeSeries: (id, targetId, v) => client.post(`/series/${id}/merge-into/${targetId}`, withVer({ confirm: true, reason: "Duplicate series merged" }, v)).then((r) => r.data),
   // Regattas: racing occasions that group series across classes. A series
   // joins a regatta via its regatta_id field (set from the series form).
   getRegattas: (params = {}) => client.get("/regattas", { params }).then((r) => r.data),

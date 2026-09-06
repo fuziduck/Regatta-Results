@@ -28,7 +28,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays, AlertTriangle } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -780,11 +780,17 @@ function RegattasTab({ clubId }) {
 }
 
 function SeriesTab({ classes, clubId }) {
-  const [classFilter, setClassFilter] = useState("");
+  // "all" from the start: every load shows all classes, so a series cannot
+  // disappear simply because it belongs to a different fleet. The class
+  // filter remains available for focused editing and scoring work.
+  const [classFilter, setClassFilter] = useState("all");
   const [yearFilter, setYearFilter] = useState("all");
   const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
   const yearChoices = ["all", ...withSeasonYears(YEAR_OPTIONS, seasonYears)];
   const [series, setSeries] = useState([]);
+  // Duplicate series groups (same class, name, year) returned by the backend
+  // scan — each carries its members' race/snapshot counts for the merge card.
+  const [duplicates, setDuplicates] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [lockDialog, setLockDialog] = useState(null); // {mode: "lock"|"unlock", series}
@@ -869,22 +875,19 @@ function SeriesTab({ classes, clubId }) {
     setForm((f) => ({ ...f, mini_series_groups: groups }));
   };
 
-  // Start with all classes visible so a series cannot disappear simply because
-  // it belongs to a different fleet. The class filter remains available for
-  // focused editing and scoring work.
-  useEffect(() => { if (!classFilter && classes.length) setClassFilter("all"); }, [classes]); // eslint-disable-line
-  // Reset filters only when the club actually changes — not on first mount,
-  // or the reset would clobber the auto-selected first class above.
-  const firstRun = useRef(true);
+  // Reset filters when the club changes so stale series never bleed across
+  // clubs; the "all" default reapplies immediately via the new value below.
   useEffect(() => {
-    if (firstRun.current) { firstRun.current = false; return; }
-    setClassFilter(""); setYearFilter("all"); setSeries([]);
+    setClassFilter("all"); setYearFilter("all"); setSeries([]);
   }, [clubId]);
   const load = useCallback(() => {
     if (!classFilter) return;
     const params = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...(clubId ? { club_id: clubId } : {}) };
     if (classFilter !== "all") params.class_id = classFilter;
     api.getSeries(params).then(setSeries);
+    // Duplicate scan is club-wide (not filtered) — a duplicate is only visible
+    // as a problem when both rows are seen together.
+    api.getSeriesDuplicates(clubId ? { club_id: clubId } : {}).then(setDuplicates).catch(() => setDuplicates([]));
   }, [classFilter, yearFilter, clubId]);
   useEffect(() => { load(); }, [load]);
 
@@ -967,6 +970,25 @@ function SeriesTab({ classes, clubId }) {
       if (e.response?.status === 409) toast.error("This series was changed by another user. Reload the series list and try again.");
       else toast.error(e.response?.data?.detail || "Could not reallocate series");
       load();
+    }
+  };
+
+  // Fold one duplicate series into its sibling. Both stay listed until the
+  // officer confirms; the merge keeps the target's name/scoring and moves
+  // the duplicate's races, results and snapshots across.
+  const mergeDuplicate = async (group, source, target) => {
+    if (!window.confirm(
+      `Merge “${source.name}” (${source.year}) into “${target.name}” (${target.year}) for ${classes.find((c) => c.id === group.class_id)?.name || "this class"}?\n\n` +
+      `${source.race_count} race(s) and ${source.snapshot_count} snapshot(s) move to the surviving series; the duplicate is deleted.\n` +
+      (group.race_number_overlap ? "WARNING: both series have results for the same race number — the merge will be refused until the overlapping races are resolved." : "No race numbers overlap, so all results are preserved."))) return;
+    try {
+      await api.mergeSeries(source.id, target.id, source.version);
+      toast.success("Duplicate series merged");
+      setDuplicates((items) => items.filter((g) => g !== group));
+      load();
+    } catch (e) {
+      if (e.response?.status === 409) toast.error("This season is locked — unlock it before merging.");
+      else toast.error(e.response?.data?.detail || "Could not merge series");
     }
   };
 
@@ -1290,6 +1312,41 @@ function SeriesTab({ classes, clubId }) {
           </DialogContent>
         </Dialog>
       </div>
+      {/* Duplicate series: two series sharing class + name + year would split
+          the fleet across two standings tables. Offer the merge here. */}
+      {!!duplicates.length && (
+        <div className="mb-4 rounded-xl border border-amber-400/60 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2" data-testid="series-duplicates-card">
+          {duplicates.map((group) => (
+            <div key={`${group.class_id}-${group.name}-${group.year}`} className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="flex items-center gap-1.5 font-semibold text-amber-800 dark:text-amber-200"><AlertTriangle className="w-4 h-4" /> Duplicate series</span>
+              <span className="text-muted-foreground">
+                {classes.find((c) => c.id === group.class_id)?.name || "Unknown class"} · “{group.name}” · {group.year} exists {group.members.length}×
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {group.members.map((m) => (
+                  <Badge key={m.id} variant="outline" className="font-mono text-[11px]">
+                    {m.id.slice(0, 8)} · {m.race_count} race{m.race_count === 1 ? "" : "s"} ({m.published} pub) · {m.lock_status}
+                  </Badge>
+                ))}
+              </div>
+              {!group.race_number_overlap && (
+                <Button size="sm" variant="outline" className="h-7 border-amber-500/60 text-amber-800 dark:text-amber-200"
+                  data-testid={`merge-dup-${group.name}-${group.year}`}
+                  onClick={() => {
+                    // Keep the copy with the most data; merge the other into it.
+                    const [keep, drop] = [...group.members].sort((a, b) => (b.race_count - a.race_count) || (b.snapshot_count - a.snapshot_count));
+                    mergeDuplicate(group, drop, keep);
+                  }}>
+                  Merge duplicates
+                </Button>
+              )}
+              {group.race_number_overlap && (
+                <span className="text-[11px] text-amber-800 dark:text-amber-200">Both have results for the same race number — resolve the overlap before merging.</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
         <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Type</TableHead><TableHead>Competition</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => {

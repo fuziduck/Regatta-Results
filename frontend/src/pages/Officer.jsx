@@ -2158,7 +2158,7 @@ export default function Officer() {
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold leading-none">{s.name}</div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        {classes[s.class_id]?.name || "Class"} · {n > 0 ? `${n} boat${n === 1 ? "" : "s"} scored` : "fleet auto-detected"}
+                        {classes[s.class_id]?.name || "Class"} · {s.year || ""} · {n > 0 ? `${n} boat${n === 1 ? "" : "s"} scored` : "fleet auto-detected"}
                       </div>
                     </div>
                     <Button variant="outline" size="sm" className="gap-1.5 border-ocean/40 text-ocean hover:bg-ocean hover:text-white"

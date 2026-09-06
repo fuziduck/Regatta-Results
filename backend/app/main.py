@@ -940,6 +940,15 @@ class SeriesTypeInput(BaseModel):
     expected_version: Optional[int] = None
 
 
+class SeriesMergeInput(BaseModel):
+    """Merge a duplicate series into another. The target keeps its own name,
+    class, scoring and configuration — only the duplicate's races, snapshots
+    and membership move across."""
+    confirm: bool = False
+    reason: str = ""
+    expected_version: Optional[int] = None
+
+
 class SeriesInput(BaseModel):
     name: str
     class_id: str
@@ -3230,6 +3239,15 @@ async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     doc.pop("member_boat_ids", None)
     if doc.get("schedule") is None:
         doc["schedule"] = []
+    # Duplicate guard: one competition per (class, name, year). A second
+    # series with the same identity would split the fleet across two parallel
+    # standings — refuse it at the door instead of leaving it to a cleanup.
+    dup = await db.series.find_one(
+        {"class_id": data.class_id, "name": (data.name or "").strip(), "year": data.year},
+        {"_id": 0, "id": 1})
+    if dup:
+        raise HTTPException(status_code=409,
+                            detail=f"A series named “{(data.name or '').strip()}” already exists for this class in {data.year}. Edit the existing series instead of creating a duplicate.")
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     doc["version"] = 1
@@ -3691,6 +3709,127 @@ async def merge_mini_series(series_id: str, group_index: int,
                      description=f"Reverted mini series “{group.get('name')}” back to a single race (R{base})",
                      resource_type="series", resource_id=series_id, club_id=club_id)
     return {"series": fresh, "race": slot}
+
+
+# ---------------------------------------------------------------------------
+# Series duplicates: detection and merge
+# ---------------------------------------------------------------------------
+# Two series with the same (class, name, year) cannot both be the season's
+# competition — one of them is a duplicate, typically created by a second
+# import or a stray seed. Duplicates are detected and merged here so races,
+# results, snapshots and fleet membership are never silently split across two
+# parallel standings tables.
+
+
+async def _duplicate_series_groups(club_id: str):
+    """Return lists of series docs (id + identity fields only) that share the
+    same (class_id, name, year) within one club. A group of one is not a
+    duplicate and is not returned."""
+    class_ids = await _club_class_ids(club_id)
+    if not class_ids:
+        return []
+    docs = await db.series.find({"class_id": {"$in": class_ids}}, {"_id": 0})\
+        .to_list(5000)
+    seen = {}
+    for s in docs:
+        seen.setdefault((s.get("class_id"), (s.get("name") or "").strip(), s.get("year")), []).append(s)
+    return [g for g in seen.values() if len(g) > 1]
+
+
+def _same_series_identity(a: dict, b: dict) -> bool:
+    """True when two series docs are the same (class, name, year) competition."""
+    return (a.get("class_id") == b.get("class_id")
+            and (a.get("name") or "").strip() == (b.get("name") or "").strip()
+            and a.get("year") == b.get("year"))
+
+
+@api_router.get("/series/duplicates")
+async def get_series_duplicates(request: Request):
+    """Duplicate series groups for a club, enriched with the counts an admin
+    needs to judge a merge: races (by status), snapshots, membership size and
+    the race_number overlap that makes a blind merge unsafe."""
+    club_id = await _resolve_club_id(request, request.query_params.get("club_id"), honor_param=True)
+    if not club_id:
+        raise HTTPException(status_code=400, detail="club_id is required")
+    groups = await _duplicate_series_groups(club_id)
+    out = []
+    for group in groups:
+        members = []
+        for s in group:
+            races = await db.races.find({"series_id": s.get("id")}, {"_id": 0, "status": 1, "race_number": 1}).to_list(2000)
+            members.append({
+                "id": s.get("id"), "name": s.get("name"), "class_id": s.get("class_id"),
+                "year": s.get("year"), "lock_status": s.get("lock_status") or "open",
+                "version": s.get("version", 1),
+                "race_count": len(races),
+                "published": sum(1 for r in races if r.get("status") == "published"),
+                "snapshot_count": await db.season_snapshots.count_documents({"series_id": s.get("id")}),
+                "members": len(s.get("member_boat_ids") or []),
+                "race_numbers": sorted(r.get("race_number") for r in races if r.get("race_number") is not None),
+            })
+        nums = [set(m["race_numbers"]) for m in members]
+        out.append({
+            "class_id": members[0]["class_id"],
+            "name": members[0]["name"],
+            "year": members[0]["year"],
+            "race_number_overlap": bool(nums[0] & nums[1]) if len(nums) == 2 else True,
+            "members": members,
+        })
+    return out
+
+
+@api_router.post("/series/{series_id}/merge-into/{target_id}")
+async def merge_series(series_id: str, target_id: str, data: SeriesMergeInput,
+                       request: Request, user: dict = Depends(require_admin)):
+    """Fold a duplicate series into its sibling. Every race, result, snapshot
+    and explicit fleet membership moves to the target with its data intact;
+    the source series is deleted. Guarded like every other scoring mutation:
+    the target season must not be locked, either series must be outside the
+    locked/archived states, race numbers must not collide, and the whole
+    operation is audited."""
+    if not data.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation is required to merge series")
+    if not (data.reason or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required when merging series")
+    source = await _series_of_club(series_id, user)
+    target = await _series_of_club(target_id, user)
+    if series_id == target_id:
+        raise HTTPException(status_code=400, detail="A series cannot be merged into itself")
+    if not _same_series_identity(source, target):
+        raise HTTPException(status_code=400,
+                            detail="Only series with the same class, name and year can be merged")
+    for s in (source, target):
+        if s.get("lock_status") in NOT_EDITABLE:
+            raise HTTPException(status_code=409,
+                                detail="Season results are locked — the series cannot be merged. Use the administrator correction process to amend the season.")
+    await _ensure_series_not_locked(series_id,
+                                    detail="Season results are locked — the series cannot be merged. Use the administrator correction process to amend the season.")
+    src_nums = [r.get("race_number") for r in await db.races.find(
+        {"series_id": series_id}, {"_id": 0, "race_number": 1}).to_list(2000)
+        if r.get("race_number") is not None]
+    tgt_nums = {r.get("race_number") for r in await db.races.find(
+        {"series_id": target_id}, {"_id": 0, "race_number": 1}).to_list(2000)}
+    if src_nums and tgt_nums.intersection(src_nums):
+        raise HTTPException(status_code=400,
+                            detail="Both series already have results for the same race number — a merge would corrupt the scoring. Resolve the overlapping races first.")
+    # Atomic ownership move — the unique (series_id, race_number) race index
+    # cannot be violated because the overlap was rejected above.
+    await db.races.update_many({"series_id": series_id}, {"$set": {"series_id": target_id}})
+    await db.season_snapshots.update_many({"series_id": series_id}, {"$set": {"series_id": target_id}})
+    # Move explicit fleet membership without duplicates.
+    moved = set(source.get("member_boat_ids") or [])
+    if moved:
+        merged = list(dict.fromkeys(list(target.get("member_boat_ids") or []) + sorted(moved)))
+        await db.series.update_one({"id": target_id}, {"$set": {"member_boat_ids": merged}})
+    result = await db.series.delete_one(_version_filter(series_id, _expected_version(data)))
+    if result.deleted_count == 0:
+        _raise_stale(_expected_version(data))
+    club_id = await _class_club_id(target.get("class_id"))
+    await _log_audit(request=request, user=user, action="SERIES_MERGED",
+                     description=(f"Merged duplicate series “{source.get('name')}” ({series_id}) into “{target.get('name')}” ({target_id}) — "
+                                  f"reason: {(data.reason or '').strip()}"),
+                     resource_type="series", resource_id=target_id, club_id=club_id)
+    return await db.series.find_one({"id": target_id}, {"_id": 0})
 
 
 @api_router.delete("/series/{series_id}")
@@ -9194,7 +9333,13 @@ async def _ensure_db_constraints():
                    # uniqueness when mini_group_id is null (i.e., non-mini races).
                    ([("series_id", 1), ("race_number", 1)],
                     {"unique": True, "partialFilterExpression": {"mini_group_id": {"$exists": False}}})],
-        db.series: [([("id", 1)], {"unique": True})],
+        db.series: [([("id", 1)], {"unique": True}),
+                    # One competition per (class, name, year) — duplicates would
+                    # split a fleet across two parallel standings tables.
+                    # Sparsity keeps pre-backfill legacy docs (or imports that
+                    # bypass the API) insertable rather than hard-failing.
+                    ([("class_id", 1), ("name", 1), ("year", 1)],
+                     {"unique": True, "sparse": True})],
         db.boats: [([("id", 1)], {"unique": True}),
                    ([("fleet_key", 1)], {})],
         db.classes: [([("id", 1)], {"unique": True})],
