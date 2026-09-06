@@ -816,30 +816,27 @@ function ScrollHintWrap({ children }) {
     const s = scroller();
     if (s) s.scrollBy({ left: dir * Math.round(s.clientWidth * 0.7), behavior: "smooth" });
   };
-  const btn = "absolute top-1/2 -translate-y-1/2 grid place-items-center w-8 h-8 rounded-full bg-background border shadow-md text-foreground/80 hover:text-foreground";
+  const btn = "absolute top-[22px] -translate-y-1/2 grid place-items-center w-9 h-9 rounded-full bg-ocean text-white border border-ocean shadow-lg hover:bg-ocean/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean/50";
   return (
     <div className="relative">
-      {/* Sticky strips sit FIRST (their natural position is the container top)
-          so they can pin at the viewport's vertical middle for the whole
-          scroll of a tall table — sticky never floats above its natural
-          position, so placing them after the table would hide them. */}
+      <div ref={ref}>{children}</div>
+      {/* Arrows sit embedded in the header/title row (top-[22px] centres on
+          the 43px header) — the header is on screen whenever the user is
+          acting on the table, unlike the vertical middle of a table taller
+          than the viewport. Gradients still span the full height to signal
+          hidden columns. */}
       {state.left && (
         <>
           <div className="pointer-events-none absolute inset-y-0 left-0 w-10 z-10 bg-gradient-to-r from-background to-transparent" />
-          <div className="sticky top-1/2 z-20 h-0">
-            <button aria-label="Scroll table left" className={`${btn} left-1`} onClick={() => nudge(-1)}><ChevronLeft className="w-4 h-4" /></button>
-          </div>
+          <button aria-label="Scroll table left" className={`${btn} left-2`} onClick={() => nudge(-1)}><ChevronLeft className="w-5 h-5" /></button>
         </>
       )}
       {state.right && (
         <>
           <div className="pointer-events-none absolute inset-y-0 right-0 w-10 z-10 bg-gradient-to-r from-transparent to-background" />
-          <div className="sticky top-1/2 z-20 h-0">
-            <button aria-label="Scroll table right" className={`${btn} right-1`} onClick={() => nudge(1)}><ChevronRight className="w-4 h-4" /></button>
-          </div>
+          <button aria-label="Scroll table right" className={`${btn} right-2`} onClick={() => nudge(1)}><ChevronRight className="w-5 h-5" /></button>
         </>
       )}
-      <div ref={ref}>{children}</div>
     </div>
   );
 }
