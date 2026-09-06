@@ -137,8 +137,9 @@ export default function Clubs() {
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, [year]);
 
-  // Future years only appear once a club has set up a series for them.
-  // Future years are data-driven: any year a club has set a series up for.
+  // Past/future years are data-driven: any year the system (or, on club
+  // pages, that club) has seasons for. The switcher sorts and de-dupes.
+  const pastYears = seasons.filter((y) => y < CURRENT_YEAR);
   const futureYears = seasons.filter((y) => y > CURRENT_YEAR);
 
   return (
@@ -178,13 +179,13 @@ export default function Clubs() {
               </h1>
               <p className="text-white/80 mt-3 max-w-xl leading-relaxed">
                 {year === CURRENT_YEAR
-                  ? "Pick your club to follow every fleet across the season — results, series championships and race-day notices."
+                  ? "Pick your club to see its classes, results and race-day notices."
                   : future
                     ? `See what's already set up for ${year} — pick a club to view its upcoming season.`
                     : `Every club that raced in ${year} — pick a club to see its full season.`}
               </p>
-              <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]} className="mt-4" />
-              <BoatSearchBox />
+              <BoatSearchBox className="mt-5" />
+              <YearSwitcher grouped value={year} onChange={setYear} years={[...new Set([...pastYears, CURRENT_YEAR - 1, ...futureYears])]} className="mt-5" />
             </div>
             {sideAdverts.length > 0 && (
               <div className="flex flex-col gap-3 shrink-0" data-testid="hero-adverts">

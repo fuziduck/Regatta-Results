@@ -1,5 +1,7 @@
 import { CURRENT_YEAR, MAX_YEAR } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Check, ChevronDown } from "lucide-react";
 
 function YearPill({ year, value, onChange }) {
   const active = year === value;
@@ -21,14 +23,39 @@ function YearPill({ year, value, onChange }) {
   );
 }
 
+// Inline pills per group before older years collapse into a "More" dropdown,
+// so a long history can never stretch the hero into a wall of pills.
+const PILL_BUDGET = 2;
+
 function YearGroup({ label, years, value, onChange }) {
   if (!years.length) return null;
+  // Newest first: the seasons a user is likeliest to pick stay as pills.
+  const sorted = [...years].sort((a, b) => b - a);
+  const inline = sorted.slice(0, PILL_BUDGET);
+  const overflow = sorted.slice(PILL_BUDGET);
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-wrap items-center gap-2">
       <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">{label}</span>
-      <div className="flex flex-wrap gap-2">
-        {years.map((y) => <YearPill key={y} year={y} value={value} onChange={onChange} />)}
-      </div>
+      {inline.map((y) => <YearPill key={y} year={y} value={value} onChange={onChange} />)}
+      {overflow.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" size="sm" variant="outline" data-testid="year-more"
+              className="bg-white/10 text-white border-white/40 hover:bg-white/25 font-heading uppercase tracking-wide">
+              {overflow.includes(value) ? `More · ${value}` : "More"}
+              <ChevronDown className="w-3.5 h-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" data-testid="year-more-menu">
+            {overflow.map((y) => (
+              <DropdownMenuItem key={y} onClick={() => onChange(y)} data-testid={`year-item-${y}`}>
+                {y}
+                {value === y && <Check className="ml-auto w-4 h-4" />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }

@@ -529,8 +529,9 @@ export default function Landing() {
     if (!valid.includes(activeSeries)) setActiveSeries(nav.defaultTab);
   }, [series, displaySeries, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
 
-  // Future years only appear once this club has set up a series for them.
-  // Future years are data-driven: any year a club has set a series up for.
+  // Past/future years are data-driven: any year this club has seasons for.
+  // The switcher sorts and de-dupes; old years collapse into a More dropdown.
+  const pastYears = seasons.filter((y) => y < CURRENT_YEAR);
   const futureYears = seasons.filter((y) => y > CURRENT_YEAR);
 
   // Analytics — coarse, non-identifying props only (sailing data, never
@@ -636,15 +637,15 @@ export default function Landing() {
           <h1 className="text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
             {club.name} · {year === CURRENT_YEAR ? "live" : year} results & standings
           </h1>
-          <div className="mt-4 flex flex-wrap items-end gap-2">
-            <YearSwitcher grouped value={year} onChange={setYear} years={[CURRENT_YEAR - 1, ...futureYears]}
+          <BoatSearchBox />
+
+          <div className="mt-5 flex flex-wrap items-end gap-x-8 gap-y-4">
+            <YearSwitcher grouped value={year} onChange={setYear} years={[...new Set([...pastYears, CURRENT_YEAR - 1, ...futureYears])]}
               labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
             {club.official_notice_board !== false && <Link to={`/club/${club.slug}/notice-board`} className="self-end">
               <Button variant="outline" size="sm" className="gap-1.5 border-white/60 bg-white/10 text-white hover:bg-white hover:text-ocean" data-testid="notice-board-link">Official Notice Board</Button>
             </Link>}
           </div>
-
-          <BoatSearchBox />
 
           {/* Choose one of the three racing categories. The selector is hidden
               when there is only one category for the selected year. */}

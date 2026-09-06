@@ -5,8 +5,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
+const mockNavigate = jest.fn();
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...rest }) => <a href={to} {...rest}>{children}</a>,
+  useNavigate: () => mockNavigate,
 }));
 // react-scripts sets resetMocks:true, so implementations must be attached in
 // beforeEach, never in the factory.
@@ -56,6 +58,7 @@ afterEach(async () => {
   }
   document.body.innerHTML = "";
   mockApi.siteSearch.mockClear();
+  mockNavigate.mockClear();
 });
 
 const setNativeValue = (el, value) => {
@@ -67,6 +70,13 @@ const typeSearch = async (term) => {
   act(() => setNativeValue(container.querySelector('[data-testid="boat-search-input"]'), term));
   // Flush the 300ms debounce + the siteSearch promise.
   await act(async () => { await new Promise((r) => setTimeout(r, 350)); });
+};
+
+const input = () => container.querySelector('[data-testid="boat-search-input"]');
+const pressKey = (key, init = {}) => {
+  act(() => {
+    input().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+  });
 };
 
 describe("BoatSearchBox", () => {
@@ -113,5 +123,95 @@ describe("BoatSearchBox", () => {
     renderBox();
     await typeSearch("zzz");
     expect(container.querySelector('[data-testid="boat-search-empty"]')).not.toBeNull();
+  });
+
+  it("highlights the first row with ArrowDown and Enter navigates to it", async () => {
+    renderBox();
+    await typeSearch("wa");
+    pressKey("ArrowDown");
+    const first = container.querySelector('[data-testid="boat-result-f1"]');
+    expect(first.getAttribute("data-highlighted")).toBeDefined();
+    expect(input().getAttribute("aria-activedescendant")).toBe(first.id);
+    pressKey("Enter");
+    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1");
+    expect(container.querySelector('[data-testid="boat-search-dropdown"]')).toBeNull();
+  });
+
+  it("wraps the highlight across type groups with arrow keys", async () => {
+    renderBox();
+    await typeSearch("wa");
+    // Display order: 1 boat, 1 club, 1 series, 1 class = 4 rows; wrap both ways.
+    const ids = () => [...container.querySelectorAll('[data-testid="boat-search-results"] a')].map((a) => a.getAttribute("data-testid"));
+    pressKey("ArrowDown"); // from no highlight, opens at the first row (boat)
+    expect(container.querySelector('[data-testid="boat-result-f1"]').hasAttribute("data-highlighted")).toBe(true);
+    pressKey("ArrowUp"); // wraps backwards to the last row (class)
+    expect(ids()[3]).toBe("class-result-cl1");
+    expect(container.querySelector('[data-testid="class-result-cl1"]').hasAttribute("data-highlighted")).toBe(true);
+    pressKey("ArrowDown"); // wraps forwards back to the first row (boat)
+    expect(container.querySelector('[data-testid="boat-result-f1"]').hasAttribute("data-highlighted")).toBe(true);
+  });
+
+  it("Enter with no highlight follows the first result", async () => {
+    renderBox();
+    await typeSearch("wa");
+    pressKey("Enter");
+    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1");
+  });
+
+  it("hovering a row moves the keyboard highlight to it", async () => {
+    renderBox();
+    await typeSearch("wa");
+    act(() => {
+      container.querySelector('[data-testid="club-result-c1"]').dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="club-result-c1"]').hasAttribute("data-highlighted")).toBe(true);
+    pressKey("Enter");
+    expect(mockNavigate).toHaveBeenCalledWith("/club/medway-yacht-club");
+  });
+
+  it("first Escape closes the dropdown, second clears the query", async () => {
+    renderBox();
+    await typeSearch("wa");
+    expect(container.querySelector('[data-testid="boat-search-dropdown"]')).not.toBeNull();
+    pressKey("Escape");
+    expect(container.querySelector('[data-testid="boat-search-dropdown"]')).toBeNull();
+    expect(input().value).toBe("wa");
+    pressKey("Escape");
+    expect(input().value).toBe("");
+  });
+
+  it("a fresh query resets the highlight to nothing", async () => {
+    renderBox();
+    await typeSearch("wa");
+    pressKey("ArrowDown");
+    expect(container.querySelector('[data-testid="boat-result-f1"]').hasAttribute("data-highlighted")).toBe(true);
+    await typeSearch("so");
+    expect(input().getAttribute("aria-activedescendant")).toBeNull();
+    pressKey("Enter");
+    // New result set (the mock always returns the boat first) — Enter picks row 0.
+    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1");
+  });
+
+  it("/ and Cmd+K focus the search from anywhere on the page", () => {
+    renderBox();
+    input().blur();
+    const focusSpy = jest.spyOn(input(), "focus");
+    const selectSpy = jest.spyOn(input(), "select");
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true }));
+    });
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(focusSpy).toHaveBeenCalledTimes(2);
+    expect(selectSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("/ types a literal slash while typing in the input", () => {
+    renderBox();
+    input().focus();
+    const event = new KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true });
+    act(() => { input().dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
   });
 });
