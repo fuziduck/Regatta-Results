@@ -7,6 +7,7 @@ Club sailing race-results and Official Notice Board application.
 - **Frontend:** React, Tailwind, shadcn/ui, React Router, TanStack React Query.
 - **Backend:** FastAPI, Motor/PyMongo, MongoDB.
 - **Authentication:** HttpOnly JWT session cookies, individual club users, Webmaster role, server-side club scoping.
+- **Analytics:** Plausible (self-hosted at `analytics.sailscore.co.uk`, site `sailscore.co.uk`) — cookie-free, PII-free page views; custom-event helper in `frontend/src/lib/analytics.js`.
 
 ## Local development
 
