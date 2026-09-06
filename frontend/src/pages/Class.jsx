@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { competitionPath, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
-import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, LogIn, Sailboat, Trophy } from "lucide-react";
+import OfficialsLink from "@/components/OfficialsLink";
+import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, Sailboat, Trophy } from "lucide-react";
 
 const DEFAULT_CLASS_COLOUR = "#0A369D";
 
@@ -109,7 +110,7 @@ export default function Class() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <Link to="/login"><Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white"><LogIn className="h-4 w-4" /> Officials</Button></Link>
+            <OfficialsLink />
           </div>
         </div>
       </header>

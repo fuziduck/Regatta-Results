@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import ThemeToggle from "@/components/ThemeToggle";
-import { Button } from "@/components/ui/button";
-import { LogIn, Sailboat, Search, X } from "lucide-react";
+import OfficialsLink from "@/components/OfficialsLink";
+import { Sailboat, Search, X } from "lucide-react";
 import Logo from "@/components/Logo";
 
 export default function Boats() {
@@ -39,11 +39,7 @@ export default function Boats() {
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <Link to="/login">
-              <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
-                <LogIn className="w-4 h-4" /> Officials
-              </Button>
-            </Link>
+            <OfficialsLink />
           </div>
         </div>
       </header>

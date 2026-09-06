@@ -11,11 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import HeaderMenu from "@/components/HeaderMenu";
+import OfficialsLink from "@/components/OfficialsLink";
 import CopyLinkButton from "@/components/CopyLinkButton";
 import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
-import { LifeBuoy, Clock, Flag, FlagOff, LogIn, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
+import { LifeBuoy, Clock, Flag, FlagOff, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
@@ -556,11 +557,7 @@ export default function Landing() {
                 <ArrowLeft className="w-4 h-4" /> All clubs
               </Button>
             </Link>
-            <Link to={`/login?club=${club.slug}`}>
-              <Button variant="outline" size="sm" data-testid="officials-login-btn" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
-                <LogIn className="w-4 h-4" /> Officials
-              </Button>
-            </Link>
+            <OfficialsLink />
           </div>
         </div>
       </header>

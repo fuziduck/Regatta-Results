@@ -8,8 +8,9 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import HeaderMenu from "@/components/HeaderMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, ChevronRight, LogIn, Sailboat, Search, SlidersHorizontal, Trophy } from "lucide-react";
+import { CalendarDays, ChevronRight, Sailboat, Search, SlidersHorizontal, Trophy } from "lucide-react";
 import BoatSearchBox from "@/components/BoatSearchBox";
+import OfficialsLink from "@/components/OfficialsLink";
 import Logo from "@/components/Logo";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 
@@ -156,11 +157,7 @@ export default function Clubs() {
                 <Search className="w-4 h-4" /> Boats
               </Button>
             </Link>
-            <Link to="/login">
-              <Button variant="outline" size="sm" data-testid="officials-login-btn" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
-                <LogIn className="w-4 h-4" /> Officials
-              </Button>
-            </Link>
+            <OfficialsLink />
           </div>
         </div>
       </header>

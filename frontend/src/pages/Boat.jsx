@@ -7,12 +7,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Anchor, ArrowLeft, ArrowRight, Award, CalendarDays, ChevronRight,
-  Clock, Download, Flag, History, Info, Lock, Archive, LogIn, MapPin, Medal, Pencil,
+  Clock, Download, Flag, History, Info, Lock, Archive, MapPin, Medal, Pencil,
   Percent, Sailboat, Search, Share2, Star, TrendingUp, Trophy, User, Users,
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import { CURRENT_YEAR } from "@/lib/helpers";
 import ResultsSubscription from "@/components/ResultsSubscription";
+import OfficialsLink from "@/components/OfficialsLink";
 import { SITE_TAGLINE } from "@/lib/siteConfig";
 
 const ordinal = (n) => {
@@ -182,11 +183,7 @@ export default function Boat() {
         <div className="flex items-center gap-2">
           <ThemeToggle />
           {profile && <ResultsSubscription subscriptionType="boat" targetId={profile.records?.[0]?.boat_id || fleetId} targetName={`${profile.name} (Sail No. ${profile.sail_no})`} buttonLabel="Subscribe" />}
-          <Link to="/login">
-            <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white">
-              <LogIn className="w-4 h-4" /> Officials
-            </Button>
-          </Link>
+          <OfficialsLink />
         </div>
       </div>
     </header>
