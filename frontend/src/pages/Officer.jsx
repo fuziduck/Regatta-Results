@@ -1842,7 +1842,11 @@ export default function Officer() {
     return (
       <div className="min-h-screen bg-background">
         <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
-        <div className="lg:grid lg:grid-cols-2 lg:gap-4 lg:items-start lg:px-4">
+        {/* Same-day races fill one column per race once the screen is wide
+            enough — 2 up on large, 3 on xl, 4 on 2xl — so three or more
+            classes racing together still fit without the consoles getting
+            cramped. Small screens show the selected race only. */}
+        <div className="lg:grid lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 lg:gap-4 lg:items-start lg:px-4">
           {sameDayRaces.map((dayRace) => {
             const otherDayRaces = sameDayRaces
               .filter((r) => r.id !== dayRace.id)
