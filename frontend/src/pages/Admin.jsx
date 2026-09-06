@@ -28,7 +28,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays, AlertTriangle } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -779,6 +779,71 @@ function RegattasTab({ clubId }) {
   );
 }
 
+function ScrollHintWrap({ children }) {
+  const ref = useRef(null);
+  const [state, setState] = useState({ left: false, right: false });
+  // The scroll container is usually the wrapper itself, but shadcn's Table
+  // renders its own inner overflow-auto div — resolve whichever really scrolls.
+  const scroller = () => {
+    const el = ref.current;
+    if (!el) return null;
+    if (el.scrollWidth > el.clientWidth + 2) return el;
+    const inner = el.querySelector("table")?.parentElement;
+    return inner && inner.scrollWidth > inner.clientWidth + 2 ? inner : null;
+  };
+  const update = useCallback(() => {
+    const s = scroller();
+    setState(!s ? { left: false, right: false } : {
+      left: s.scrollLeft > 2,
+      right: s.scrollLeft + s.clientWidth < s.scrollWidth - 2,
+    });
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    update();
+    // Capture phase: scroll doesn't bubble, but capture catches it from any
+    // descendant scroller — including the one Table renders later.
+    el.addEventListener("scroll", update, { capture: true, passive: true });
+    // Watch the content too: loading rows changes scrollWidth without
+    // resizing the wrapper, so observing the wrapper alone misses it.
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => { el.removeEventListener("scroll", update, { capture: true }); ro.disconnect(); };
+  }, [update]);
+  const nudge = (dir) => {
+    const s = scroller();
+    if (s) s.scrollBy({ left: dir * Math.round(s.clientWidth * 0.7), behavior: "smooth" });
+  };
+  const btn = "absolute top-1/2 -translate-y-1/2 grid place-items-center w-8 h-8 rounded-full bg-background border shadow-md text-foreground/80 hover:text-foreground";
+  return (
+    <div className="relative">
+      {/* Sticky strips sit FIRST (their natural position is the container top)
+          so they can pin at the viewport's vertical middle for the whole
+          scroll of a tall table — sticky never floats above its natural
+          position, so placing them after the table would hide them. */}
+      {state.left && (
+        <>
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-10 z-10 bg-gradient-to-r from-background to-transparent" />
+          <div className="sticky top-1/2 z-20 h-0">
+            <button aria-label="Scroll table left" className={`${btn} left-1`} onClick={() => nudge(-1)}><ChevronLeft className="w-4 h-4" /></button>
+          </div>
+        </>
+      )}
+      {state.right && (
+        <>
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-10 z-10 bg-gradient-to-r from-transparent to-background" />
+          <div className="sticky top-1/2 z-20 h-0">
+            <button aria-label="Scroll table right" className={`${btn} right-1`} onClick={() => nudge(1)}><ChevronRight className="w-4 h-4" /></button>
+          </div>
+        </>
+      )}
+      <div ref={ref}>{children}</div>
+    </div>
+  );
+}
+
 function SeriesTab({ classes, clubId }) {
   // "all" from the start: every load shows all classes, so a series cannot
   // disappear simply because it belongs to a different fleet. The class
@@ -1347,7 +1412,8 @@ function SeriesTab({ classes, clubId }) {
           ))}
         </div>
       )}
-      <div className="rounded-xl border overflow-hidden overflow-x-auto">
+      <div className="rounded-xl border overflow-hidden">
+        <ScrollHintWrap>
         <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Type</TableHead><TableHead>Competition</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{series.map((s) => {
             const cfg = scoringConfigFromSeries(s);
@@ -1404,6 +1470,7 @@ function SeriesTab({ classes, clubId }) {
           );})}
             {!series.length && <TableRow><TableCell colSpan={14} className="text-center text-muted-foreground py-6">No series for this year. Try another year or class.</TableCell></TableRow>}
           </TableBody></Table>
+        </ScrollHintWrap>
       </div>
 
       {/* Lock / unlock confirmation (admin-only, reason recorded in audit) */}
