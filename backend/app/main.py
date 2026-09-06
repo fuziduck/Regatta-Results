@@ -3483,6 +3483,7 @@ async def split_into_mini_series(series_id: str, data: MiniSplitInput,
             doc = {
                 "id": new_id(), "date": base_date, "class_id": series["class_id"],
                 "series_id": series_id, "year": year, "race_number": rn,
+                "club_id": cls.get("club_id"),
                 "start_time": (base_race or {}).get("start_time") or cls.get("default_start_time", "10:30"),
                 "start_tz_offset_minutes": None, "actual_start": None, "course": "",
                 "special_rules": "", "life_jackets": False, "status": "setup",
@@ -3572,6 +3573,7 @@ async def add_mini_series_race(series_id: str, group_index: int,
     doc = {
         "id": new_id(), "date": base_date, "class_id": series["class_id"],
         "series_id": series_id, "year": year, "race_number": base,
+        "club_id": cls.get("club_id"),
         "start_time": data.start_time or cls.get("default_start_time", "10:30"),
         "start_tz_offset_minutes": None, "actual_start": None, "course": "",
         "special_rules": "", "life_jackets": False, "status": "setup",
@@ -4165,6 +4167,7 @@ async def create_race(data: RaceCreateInput, user: dict = Depends(require_office
         "series_id": data.series_id,
         "year": year,
         "race_number": data.race_number,
+        "club_id": cls.get("club_id"),
         "start_time": data.start_time or cls.get("default_start_time", "10:30"),
         "start_tz_offset_minutes": data.start_tz_offset_minutes,
         "actual_start": None,
@@ -9280,6 +9283,34 @@ async def _backfill_versions():
             logger.warning("VERSION BACKFILL FAILED (%s): %s", coll.name, exc)
 
 
+async def _backfill_race_club_ids():
+    """Stamp club_id on every race that predates the field (it was derived
+    lazily via race → series → class). Club-scoped surfaces filter through
+    class_id, so this is denormalisation for future direct queries — but any
+    surface that does filter on races.club_id silently returns nothing for
+    legacy races until it is present. Resolves the owner from the class doc,
+    falling back to the series doc. Idempotent and cheap."""
+    try:
+        classes = {c["id"]: c.get("club_id") for c in
+                   await db.classes.find({}, {"_id": 0, "id": 1, "club_id": 1}).to_list(5000)}
+        series = {s["id"]: s for s in
+                  await db.series.find({}, {"_id": 0, "id": 1, "class_id": 1}).to_list(5000)}
+        races = await db.races.find({"club_id": {"$exists": False}},
+                                    {"_id": 0, "id": 1, "class_id": 1, "series_id": 1}).to_list(20000)
+        for r in races:
+            club_id = classes.get(r.get("class_id"))
+            if not club_id:
+                ser = series.get(r.get("series_id")) or {}
+                club_id = classes.get(ser.get("class_id"))
+            if club_id:
+                await db.races.update_one({"id": r["id"], "club_id": {"$exists": False}},
+                                          {"$set": {"club_id": club_id}})
+        if races:
+            logger.info("RACE CLUB_ID BACKFILL: stamped %d legacy races", len(races))
+    except Exception as exc:
+        logger.warning("RACE CLUB_ID BACKFILL FAILED: %s", exc)
+
+
 async def _backfill_fleet_identities():
     """Give every boat a fleet identity so the shared-boat registry works for
     boats created before this feature. Records are linked only when the match
@@ -9385,6 +9416,7 @@ async def startup():
     try:
         await _backfill_versions()
         await _ensure_db_constraints()
+        await _backfill_race_club_ids()
         await _backfill_fleet_identities()
     except Exception as exc:
         logger.warning("DB CONSTRAINT SETUP FAILED: %s", exc)
