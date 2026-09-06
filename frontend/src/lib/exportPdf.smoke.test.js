@@ -116,3 +116,30 @@ test("exportSeriesPdf renders a valid PDF with the real libraries", () => {
   expect(txt).toContain("SailScore");
   expect(txt).toContain("admin@sailscore.co.uk");
 });
+
+// Regression: with a competition/identity line the header has two meta text
+// lines, and the divider rule must move below the last line instead of being
+// drawn at its fixed position — which cut straight through the scoring text.
+test("two-line header draws no rule through the meta text", () => {
+  pdfBytes = null;
+  exportSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    seriesName: "2026 Regatta",
+    year: 2026,
+    data: data(),
+    icon: null,
+    adverts: [],
+    competitionLabel: "MYC REGATTA · Regatta",
+  });
+  const txt = Buffer.from(pdfBytes).toString("latin1");
+  // Meta baselines: 74 (first line) and 74 + 11.5 (second line). Collect the
+  // y of every stroked line on page 1 and assert none falls inside the text
+  // band (between the first baseline and just under the second).
+  const ruleYs = [...txt.matchAll(/40\. ([\d.]+) m/g)].map((m) => parseFloat(m[1]));
+  expect(ruleYs.length).toBeGreaterThan(0);
+  const throughText = ruleYs.filter((y) => y > 70 && y < 88);
+  expect(throughText).toEqual([]);
+  // And the header rule now sits below the second baseline.
+  expect(ruleYs.some((y) => y > 85.5 && y < 100)).toBe(true);
+});

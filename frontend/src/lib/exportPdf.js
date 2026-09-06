@@ -124,6 +124,10 @@ function drawPageFooter(doc, sponsors) {
   doc.text(`${SITE_NAME} · ${SITE_ATTRIBUTION}`, pageW / 2, attrY + 8, { align: "center" });
 }
 
+// Draws the shared page header and returns the y where body content may
+// start. The divider rule sits one leading below the LAST meta line, so a
+// two-line header (competition page / boat identity) never has the rule
+// struck through its second line, as a fixed position did.
 function header(doc, { clubName, className, title, year, icon, competitionLabel }) {
   const pageW = doc.internal.pageSize.getWidth();
   doc.setFont("helvetica", "bold");
@@ -137,11 +141,15 @@ function header(doc, { clubName, className, title, year, icon, competitionLabel 
   doc.setTextColor(...MUTED);
   // Competition hierarchy line (e.g. "2026 MEDWAY YACHT CLUB REGATTA · Regatta")
   // when the export comes from a competition page; the year line follows.
-  const extra = competitionLabel ? [competitionLabel] : [];
-  doc.text([...extra, `${year} season · Scored under the RRS Low Point System`], 40, 74);
+  const metaLines = [competitionLabel, `${year} season · Scored under the RRS Low Point System`].filter(Boolean);
+  const metaBaseline = 74;
+  const metaLeading = 10 * 1.15; // jsPDF's default line height for 10pt text
+  doc.text(metaLines, 40, metaBaseline);
+  const ruleY = metaBaseline + (metaLines.length - 1) * metaLeading + 8;
   doc.setDrawColor(...OCEAN);
   doc.setLineWidth(1.2);
-  doc.line(40, 82, pageW - 40, 82);
+  doc.line(40, ruleY, pageW - 40, ruleY);
+  return ruleY + 12;
 
   // Home club logo, top-right. jsPDF embeds PNG/JPEG only; anything else
   // (or a missing icon) is skipped without breaking the export.
@@ -162,7 +170,7 @@ function header(doc, { clubName, className, title, year, icon, competitionLabel 
 export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon, adverts, competitionLabel }) {
   if (!data || !data.standings?.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  header(doc, { clubName, className, title: `${seriesName} Series`, year, icon, competitionLabel });
+  const contentTop = header(doc, { clubName, className, title: `${seriesName} Series`, year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
   const races = data.races || [];
@@ -175,10 +183,10 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
   });
 
   autoTable(doc, {
-    startY: 94,
+    startY: contentTop,
     // The bottom margin reserves the footer band (sponsors + attribution) so
     // it never overlaps the results, on one page or many.
-    margin: { top: 94, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
+    margin: { top: contentTop, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
     head: [["#", "Boat", "Club", ...cols, "Total", "Net"]],
     // Race columns carry the raw score objects (not formatted strings) so the
     // cell hook below can style them from structured data — discarded DNCs,
@@ -229,15 +237,99 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
   doc.save(`${className}-${seriesName}-${year}-results.pdf`);
 }
 
+// The boat profile page as a PDF: identity + per-season summary + the full
+// race history across every club/class/season the boat has competed in.
+export function exportBoatProfilePdf({ clubName, boat, seasons, history }) {
+  if (!boat || (!seasons?.length && !history?.length)) return;
+  const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+  const years = (seasons || []).map((s) => s.year).filter(Boolean);
+  const yearSpan = years.length ? `${Math.min(...years)}–${Math.max(...years)}` : "";
+  const contentTop = header(doc, {
+    clubName: clubName || boat.home_club || SITE_NAME,
+    className: boat.class_name || "Boat",
+    title: `${boat.name} — Boat Profile`,
+    year: yearSpan,
+    // The header's sub-title line: identity instead of a competition label.
+    competitionLabel: `Sail No. ${boat.sail_no || "—"}${boat.helm ? ` · Helm: ${boat.helm}` : ""}${boat.home_club ? ` · Home club: ${boat.home_club}` : ""}`,
+  });
+  let cursorY = contentTop;
+
+  if (seasons?.length) {
+    autoTable(doc, {
+      startY: cursorY,
+      margin: { left: 40, right: 40, bottom: FOOTER_BAND_HEIGHT + 40 },
+      head: [["Season", "Club", "Class", "Position", "Races", "Wins", "Podiums", "Avg pos"]],
+      body: seasons.map((s) => [
+        s.year,
+        s.club_name || "—",
+        s.class_name || "—",
+        s.overall?.rank != null ? `${s.overall.rank}${s.overall.entries ? ` / ${s.overall.entries}` : ""}` : "—",
+        s.stats?.races_sailed ?? "—",
+        s.stats?.wins ?? "—",
+        s.stats?.podiums ?? "—",
+        s.stats?.avg_position ?? "—",
+      ]),
+      theme: "striped",
+      headStyles: { fillColor: OCEAN, fontSize: 8.5, halign: "center" },
+      styles: { fontSize: 8.5, cellPadding: 4, valign: "middle" },
+      columnStyles: {
+        0: { cellWidth: 50, halign: "center", fontStyle: "bold" },
+        3: { halign: "center" }, 4: { halign: "center" },
+        5: { halign: "center" }, 6: { halign: "center" }, 7: { halign: "center" },
+      },
+      didDrawPage: (d) => { if (d.doc) drawPageFooter(d.doc, []); },
+    });
+    cursorY = doc.lastAutoTable.finalY + 24;
+  }
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 40, right: 40, bottom: FOOTER_BAND_HEIGHT + 40 },
+    head: [["Date", "Event / Series", "Race", "Pos", "Points", "Total", "Net"]],
+    body: (history || []).map((h) => [
+      h.date || "—",
+      h.series_name + (h.club_name ? `\n${h.club_name}${h.class_name ? ` · ${h.class_name}` : ""}` : ""),
+      `R${h.race_number}`,
+      h.position != null ? (h.discarded ? `(${h.position})` : String(h.position)) : (h.code || "—"),
+      h.points != null ? (h.discarded ? `(${h.points})` : String(h.points)) : "—",
+      h.total ?? "—",
+      h.net ?? "—",
+    ]),
+    theme: "striped",
+    headStyles: { fillColor: OCEAN, fontSize: 8.5, halign: "center" },
+    styles: { fontSize: 8.5, cellPadding: 3.5, valign: "middle" },
+    columnStyles: {
+      0: { cellWidth: 62 },
+      2: { cellWidth: 40, halign: "center" },
+      3: { cellWidth: 40, halign: "center", fontStyle: "bold" },
+      4: { cellWidth: 44, halign: "center" },
+      5: { cellWidth: 44, halign: "center" },
+      6: { cellWidth: 44, halign: "center", fontStyle: "bold", textColor: OCEAN },
+    },
+    didParseCell: (d) => {
+      // Discarded scores render muted and struck-through, like the on-screen table.
+      if (d.section !== "body" || d.column.index < 3 || d.column.index > 5) return;
+      if (String(d.cell.raw || "").startsWith("(")) {
+        d.cell.styles.textColor = MUTED;
+        d.cell.styles.fontStyle = "italic";
+      }
+    },
+    didDrawPage: (d) => { if (d.doc) drawPageFooter(d.doc, []); },
+  });
+
+  const safe = (v) => String(v || "boat").replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  doc.save(`${safe(boat.name)}-${safe(boat.sail_no)}-profile.pdf`);
+}
+
 export function exportOverallPdf({ clubName, className, year, data, icon, adverts, competitionLabel }) {
   if (!data || !data.standings?.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  header(doc, { clubName, className, title: "Overall Championship", year, icon, competitionLabel });
+  const contentTop = header(doc, { clubName, className, title: "Overall Championship", year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
   autoTable(doc, {
-    startY: 94,
-    margin: { top: 94, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
+    startY: contentTop,
+    margin: { top: contentTop, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
     head: [["Pos", "Boat", "Club", ...data.series_names, "Total", "Net"]],
     body: data.standings.map((row) => [
       `${row.rank} / ${row.entries ?? data.entries ?? "–"}`,

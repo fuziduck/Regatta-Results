@@ -14,6 +14,7 @@ import Logo from "@/components/Logo";
 import { CURRENT_YEAR } from "@/lib/helpers";
 import { SAILSCORE_EVENTS, useTrackView } from "@/lib/analytics";
 import ResultsSubscription from "@/components/ResultsSubscription";
+import { exportBoatProfilePdf } from "@/lib/exportPdf";
 import OfficialsLink from "@/components/OfficialsLink";
 import { SITE_TAGLINE } from "@/lib/siteConfig";
 
@@ -241,7 +242,13 @@ export default function Boat() {
               <Button variant="ghost" size="sm" className="gap-1.5 text-white/80 hover:bg-white/10 hover:text-white" onClick={shareLink}>
                 <Share2 className="w-4 h-4" /> Share
               </Button>
-              <Button variant="ghost" size="sm" className="gap-1.5 text-white/80 hover:bg-white/10 hover:text-white">
+              <Button variant="ghost" size="sm" className="gap-1.5 text-white/80 hover:bg-white/10 hover:text-white"
+                onClick={() => exportBoatProfilePdf({ clubName: season?.club_name || club?.club_name, boat: {
+                  name: profile.name, sail_no: profile.sail_no,
+                  class_name: season?.class_name || club?.class_name,
+                  helm: season?.boat_info?.helm || profile.boat?.helm,
+                  home_club: season?.boat_info?.home_club || profile.boat?.home_club,
+                }, seasons: profile.seasons || [], history: allHistory })}>
                 <Download className="w-4 h-4" /> PDF
               </Button>
             </div>
