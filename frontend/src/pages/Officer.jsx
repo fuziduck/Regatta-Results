@@ -747,10 +747,9 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             <table className="w-full text-sm">
               <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th><th className="w-28">Elapsed</th><th className="w-44">Code / Penalty (RRS)</th></tr></thead>
               <tbody data-testid="adjust-table">
-                {[...race.results].sort((a, b) => {
-                  if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
-                  if (a.code === "FINISHED") return -1; if (b.code === "FINISHED") return 1; return 0;
-                }).map((r) => {
+                {/* Stable order (sign-on order): rows must not jump while the
+                    officer steps through boats updating positions. */}
+                {race.results.map((r) => {
                   const b = boats[r.boat_id] || {};
                   const isManual = r.code === "DPI" || r.code === "RDG";
                   return (
