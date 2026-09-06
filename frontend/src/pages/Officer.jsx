@@ -1681,8 +1681,9 @@ export default function Officer() {
   const [selected, setSelected] = useState(null);
   const [rrsCodes, setRrsCodes] = useState([]);
   // Published races list: newest first by default (most recent race at the
-  // top), switchable to oldest first.
+  // top), switchable to oldest first. One series group expanded at a time.
   const [publishedOrder, setPublishedOrder] = useState("desc");
+  const [publishedOpen, setPublishedOpen] = useState(null);
   // Mini-series batch entry mode
   const [batchMode, setBatchMode] = useState(false);
   const [batchGroup, setBatchGroup] = useState(null);
@@ -1699,10 +1700,13 @@ export default function Officer() {
 
   const loadRaces = useCallback(async () => {
     const params = clubId ? { club_id: clubId } : {};
+    // All years: the Published list spans past seasons, and a series missing
+    // from this map would look unlocked — its races could be recalled even
+    // though the season is locked.
     const [rs, cs, ss] = await Promise.all([
       api.getRaces(params),
       api.getClasses(params),
-      api.getSeries({ year: CURRENT_YEAR, ...params }),
+      api.getSeries(params),
     ]);
     setRaces(rs);
     const cm = {}; cs.forEach((c) => (cm[c.id] = c)); setClasses(cm);
@@ -1832,6 +1836,27 @@ export default function Officer() {
     const kb = `${b.date || ""}|${String(b.race_number || 0).padStart(4, "0")}`;
     return publishedOrder === "desc" ? (ka < kb ? 1 : ka > kb ? -1 : 0) : (ka < kb ? -1 : ka > kb ? 1 : 0);
   });
+  // Group the published archive by the series its races belong to — one
+  // collapsible block per series so a season's worth of results stays
+  // scannable. Groups sort by their most recent race; races within a group
+  // follow the same Newest/Oldest choice.
+  const publishedGroups = [];
+  const groupBySeries = new Map();
+  for (const r of sortedDone) {
+    if (!groupBySeries.has(r.series_id)) {
+      const sr = series[r.series_id];
+      const group = {
+        seriesId: r.series_id,
+        className: classes[r.class_id]?.name || "Class",
+        seriesName: sr?.name || "Series",
+        year: r.year,
+        races: [],
+      };
+      groupBySeries.set(r.series_id, group);
+      publishedGroups.push(group);
+    }
+    groupBySeries.get(r.series_id).races.push(r);
+  }
 
   const RaceRow = ({ r }) => {
     // A mini-series race opens the batch scoring page for its whole group
@@ -1860,6 +1885,24 @@ export default function Officer() {
     </button>
     );
   };
+
+  // Collapsible per-series block in the Published list: the header shows the
+  // class · series (and year when it spans past seasons) plus its race count;
+  // expanding reveals the same recallable race rows as before.
+  const PublishedSeriesGroup = ({ group, open, onToggle, renderRace }) => (
+    <div className="rounded-xl border border-border bg-card overflow-hidden" data-testid={`published-group-${group.seriesId}`}>
+      <button type="button" onClick={onToggle} data-testid={`published-group-toggle-${group.seriesId}`}
+        className="w-full flex items-center gap-3 p-4 text-left hover:bg-muted/50 transition-colors">
+        <div className="w-9 h-9 rounded-lg bg-ocean/10 grid place-items-center text-ocean"><Layers className="w-4 h-4" /></div>
+        <div className="flex-1">
+          <div className="font-semibold leading-none">{group.className} · {group.seriesName}{group.year ? ` · ${group.year}` : ""}</div>
+          <div className="text-xs text-muted-foreground mt-1">{group.races.length} published race{group.races.length === 1 ? "" : "s"}</div>
+        </div>
+        <span className="text-muted-foreground">{open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</span>
+      </button>
+      {open && <div className="p-2 pt-0 space-y-2">{group.races.map(renderRace)}</div>}
+    </div>
+  );
 
   // ── Mini-series batch entry ───────────────────────────────────────
   // Collect all mini-series groups from in-progress races so the officer
@@ -2023,7 +2066,13 @@ export default function Officer() {
                 </Select>
               </div>
             </div>
-            <div className="space-y-3">{sortedDone.map((r) => <RaceRow key={r.id} r={r} />)}</div>
+            <div className="space-y-2">
+              {publishedGroups.map((g) => (
+                <PublishedSeriesGroup key={`${g.seriesId}-${g.year || ""}`} group={g} open={publishedOpen === `${g.seriesId}-${g.year || ""}`}
+                  onToggle={() => setPublishedOpen((k) => (k === `${g.seriesId}-${g.year || ""}` ? null : `${g.seriesId}-${g.year || ""}`))}
+                  renderRace={(r) => <RaceRow key={r.id} r={r} />} />
+              ))}
+            </div>
           </>
         )}
 
