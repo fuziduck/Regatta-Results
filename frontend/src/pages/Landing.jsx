@@ -2,11 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CURRENT_YEAR, MAX_YEAR, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, CURRENT_YEAR, MAX_YEAR } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
@@ -17,10 +16,11 @@ import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
-import { LifeBuoy, Clock, Flag, FlagOff, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
+import { LifeBuoy, Clock, Flag, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
+import PublishedRaces from "@/components/PublishedRaces";
 import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 
 function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
@@ -87,99 +87,10 @@ function NotificationBanner({ items }) {
   );
 }
 
-function PublishedRaces({ seriesId, classId, clubId, scoringMode = "one_design" }) {
-  const [races, setRaces] = useState([]);
-  const [boats, setBoats] = useState({});
-
-  useEffect(() => {
-    api.getRaces({ series_id: seriesId, status: "published", club_id: clubId }).then(setRaces);
-    api.getBoats({ class_id: classId, club_id: clubId }).then((bs) => {
-      const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m);
-    });
-  }, [seriesId, classId, clubId]);
-
-  if (!races.length) return null;
-  const sorted = [...races].sort((a, b) => (a.date < b.date ? 1 : -1));
-
-  return (
-    <Accordion type="single" collapsible className="mt-6" data-testid="published-races-accordion">
-      {sorted.map((race) => {
-        const rows = [...race.results].sort((a, b) => {
-          if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
-          if (a.code === "FINISHED") return -1;
-          if (b.code === "FINISHED") return 1;
-          return 0;
-        });
-        return (
-          <AccordionItem key={race.id} value={race.id} className="border rounded-xl mb-3 px-4 bg-card">
-            <AccordionTrigger className="hover:no-underline" data-testid={`race-folder-${race.id}`}>
-              <div className="flex items-center gap-3 text-left">
-                <div className={`w-10 h-10 rounded-lg grid place-items-center font-heading text-lg ${race.abandoned ? "bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400" : "bg-ocean/10 text-ocean"}`}>
-                  {race.abandoned ? <FlagOff className="w-5 h-5" /> : `R${race.race_number}`}
-                </div>
-                <div>
-                  <div className="font-semibold flex items-center gap-2">Race {race.race_number}
-                    {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
-                  </div>
-                  <div className="text-xs text-muted-foreground">{fmtDate(race.date)}</div>
-                </div>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              {race.abandoned ? (
-                <div className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 p-4 text-sm text-red-700 dark:text-red-300 flex items-start gap-2" data-testid={`race-abandoned-${race.id}`}>
-                  <FlagOff className="w-4 h-4 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="font-semibold">Race abandoned</div>
-                    <p className="text-xs mt-0.5">This race was abandoned on the day and does not count towards the series — the series is scored as if this weekend never took place.</p>
-                  </div>
-                </div>
-              ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-muted-foreground border-b">
-                      <th className="py-2 w-10">Pos</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
-                      {scoringMode !== "one_design" && <><th>{scoringMode === "py" ? "PY" : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r) => {
-                      const b = boats[r.boat_id] || {};
-                      return (
-                        <tr key={r.boat_id} className="border-b last:border-0">
-                          <td className="py-2 font-heading text-base">{r.code === "FINISHED" ? r.position : "–"}</td>
-                          <td className={shouldWrapBoatName(b.name) ? "max-w-52" : ""}>
-                            <span className={`font-semibold ${shouldWrapBoatName(b.name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"}`}>{wrapBoatName(b.name)}</span>{" "}
-                            <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>
-                          </td>
-                          <td className="text-muted-foreground whitespace-nowrap">{b.home_club || "—"}</td>
-                          <td className="text-muted-foreground">{b.helm}</td>
-                          <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[r.code] || ""} text-[10px]`}>{r.code}</Badge></td>
-                          {scoringMode !== "one_design" && <>
-                            <td className="text-muted-foreground">{scoringMode === "py" ? (b.py ? Math.round(b.py) : "—") : (b.boat_type || "—")}</td>
-                            <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(elapsedSecondsOf(r.finish_time, race)) : "—"}</td>
-                            <td className="text-right font-mono text-xs">{r.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(r.finish_time, race, scoringMode === "py" ? b.py : b.tcc, scoringMode)) : "—"}</td>
-                          </>}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              )}
-            </AccordionContent>
-          </AccordionItem>
-        );
-      })}
-    </Accordion>
-  );
-}
-
 // Presentational: renders the standings content for the class/series chosen
 // in the hero. All fetching lives in the Landing page so the selector tabs can
 // sit in the banner.
-function ClassResults({ classId, clubId, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData, adverts }) {
+function ClassResults({ classId, clubId, clubSlug, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData, adverts }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
   // Shareable permalink for the results currently shown. The class/series
@@ -288,7 +199,7 @@ function ClassResults({ classId, clubId, year, clubName, className, clubIcon, se
         </div>
       </div>
       <SeriesStandingsTable data={miniData} onOpenMini={setActiveMini} />
-      <PublishedRaces seriesId={active.id} classId={classId} clubId={clubId} scoringMode={active.scoring_mode || "one_design"} />
+      <PublishedRaces seriesId={active.id} series={active} classId={classId} clubId={clubId} clubSlug={clubSlug} scoringMode={active.scoring_mode || "one_design"} />
     </div>
   );
 }
@@ -826,6 +737,7 @@ export default function Landing() {
                 <ClassResults
                   classId={activeClass}
                   clubId={clubId}
+                  clubSlug={club.slug}
                   year={year}
                   clubName={club.name}
                   className={(visibleClasses.find((c) => c.id === activeClass) || {}).name}
@@ -959,6 +871,15 @@ export default function Landing() {
                       </Button>
                     </div>
                     <SeriesStandingsTable data={regattaSeriesData[activeRegattaSeries]} />
+                    <PublishedRaces
+                      seriesId={activeRegattaSeries}
+                      series={activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)}
+                      classId={activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)?.class_id}
+                      clubId={clubId}
+                      clubSlug={club.slug}
+                      scoringMode={activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)?.scoring_mode || "one_design"}
+                      testId={`published-races-${activeRegattaSeries}`}
+                    />
                   </section>
                 )}
               </div>

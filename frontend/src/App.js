@@ -8,6 +8,7 @@ import Clubs from "@/pages/Clubs";
 import Landing from "@/pages/Landing";
 import Class from "@/pages/Class";
 import Regatta from "@/pages/Regatta";
+import Race from "@/pages/Race";
 import Boats from "@/pages/Boats";
 import Boat from "@/pages/Boat";
 import Login from "@/pages/Login";
@@ -47,6 +48,7 @@ function App() {
             <Route path="/club/:slug" element={<Landing />} />
             <Route path="/class/group/:classKey" element={<Class />} />
             <Route path="/class/:classId" element={<Class />} />
+            <Route path="/club/:slug/race/:raceId" element={<Race />} />
             <Route path="/club/:slug/regatta/:regattaId" element={<Regatta />} />
             <Route path="/club/:slug/competition/:regattaId" element={<Regatta />} />
             <Route path="/club/:slug/notice-board" element={<NoticeBoardPage />} />

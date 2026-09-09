@@ -12,6 +12,7 @@ import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } 
 import { fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
 import ResultsSubscription from "@/components/ResultsSubscription";
+import PublishedRaces from "@/components/PublishedRaces";
 
 // Human label for a competition's type + championship scope, e.g.
 // "Class Championship" or "Regatta".
@@ -129,6 +130,15 @@ export default function Regatta() {
         </Button>
       </div>
       <SeriesStandingsTable data={standings[s.id]} />
+      <PublishedRaces
+        seriesId={s.id}
+        series={s}
+        classId={s.class_id}
+        clubId={club?.id}
+        clubSlug={club?.slug}
+        scoringMode={s.scoring_mode || "one_design"}
+        testId={`published-races-${s.id}`}
+      />
     </div>
   );
 

@@ -3918,6 +3918,34 @@ async def _competition_notice_board(competition: dict, *, create: bool = False) 
     return doc
 
 
+async def _series_for_regatta(regatta):
+    """Return the series belonging to a competition, including legacy links.
+
+    A few imported records retain an old competition id after the competition
+    document was recreated. For those records, recover the relationship only
+    when year, owning club, and the series-name prefix all agree. This is a
+    read-only compatibility projection; it never rewrites series or results.
+    """
+    regatta_id = regatta.get("id")
+    series = await db.series.find({"regatta_id": regatta_id}, {"_id": 0}).to_list(1000)
+    if series:
+        return series
+
+    club_id = regatta.get("club_id")
+    name = (regatta.get("name") or "").strip().casefold()
+    if not club_id or not name:
+        return []
+    candidates = await db.series.find({"year": regatta.get("year"), "regatta_id": {"$exists": True}}, {"_id": 0}).to_list(5000)
+    class_ids = {s.get("class_id") for s in candidates if s.get("class_id")}
+    classes = await db.classes.find({"id": {"$in": list(class_ids)}}, {"_id": 0, "id": 1, "club_id": 1}).to_list(5000) if class_ids else []
+    class_clubs = {c.get("id"): c.get("club_id") for c in classes}
+    prefix = f"{name} "
+    return [s for s in candidates
+            if class_clubs.get(s.get("class_id")) == club_id
+            and ((s.get("name") or "").strip().casefold() == name
+                 or (s.get("name") or "").strip().casefold().startswith(prefix))]
+
+
 @api_router.get("/regattas")
 async def get_regattas(request: Request, year: Optional[int] = None, club_id: Optional[str] = None):
     """Regatta cards for a club (optionally a year). Read-only projection:
@@ -3929,7 +3957,7 @@ async def get_regattas(request: Request, year: Optional[int] = None, club_id: Op
         q["club_id"] = club
     docs = await db.regattas.find(q, {"_id": 0}).sort([("year", -1), ("start_date", 1)]).to_list(1000) if hasattr(db, "regattas") else []
     for regatta in docs:
-        series = await db.series.find({"regatta_id": regatta.get("id")}, {"_id": 0}).to_list(1000)
+        series = await _series_for_regatta(regatta)
         class_ids = {s.get("class_id") for s in series if s.get("class_id")}
         classes = await db.classes.find({"id": {"$in": list(class_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000) if class_ids else []
         races = await db.races.find({"series_id": {"$in": [s.get("id") for s in series]}}, {"_id": 0, "series_id": 1, "status": 1}).to_list(5000)
@@ -3945,7 +3973,10 @@ async def get_regattas(request: Request, year: Optional[int] = None, club_id: Op
         regatta["championship_scope"] = regatta.get("championship_scope") or None
         regatta["series"] = [{"id": s.get("id"), "class_id": s.get("class_id"),
                                "name": s.get("name", ""),
+                               "scoring_mode": s.get("scoring_mode", "one_design"),
                                "series_type": series_type_for(s, regatta),
+                               "planned_races": s.get("planned_races", 0),
+                               "schedule": s.get("schedule", []),
                                "class_name": next((c.get("name") for c in classes if c.get("id") == s.get("class_id")), "Class"),
                                "race_count": sum(1 for r in races if r.get("series_id") == s.get("id") and r.get("status") == "published")}
                               for s in series]
@@ -3961,7 +3992,7 @@ async def get_regatta(regatta_id: str, request: Request, club_id: Optional[str] 
     # Per-class summary for the regatta overview: series leader (winner),
     # boats entered and races sailed — computed from the live standings so
     # the regatta page never duplicates or rewrites race data.
-    series_docs = await db.series.find({"regatta_id": regatta_id}, {"_id": 0}).to_list(1000)
+    series_docs = await _series_for_regatta(regatta)
     for s in regatta.get("series", []):
         series_doc = next((x for x in series_docs if x.get("id") == s["id"]), None)
         if not series_doc:
@@ -4111,6 +4142,13 @@ async def get_races(request: Request, status: Optional[str] = None, class_id: Op
     if date:
         q["date"] = date
     items = await db.races.find(q, {"_id": 0}).sort("date", -1).to_list(2000)
+    if not user:
+        # The public schedule needs metadata for planned/postponed/cancelled
+        # slots, but unpublished results must never leak through this endpoint.
+        items = [item if item.get("status") == "published" else {
+            k: v for k, v in item.items()
+            if k not in {"results", "entries_count", "actual_start", "version", "published_at", "publication_event_id"}
+        } for item in items]
     return items
 
 
@@ -4123,6 +4161,8 @@ async def get_race(race_id: str, request: Request):
     # race (which would expose unpublished results and notices). 404 (not
     # 403) so the existence of another club's race is never revealed.
     user = await get_current_user(request)
+    if not user and race.get("status") != "published":
+        raise HTTPException(status_code=404, detail="Race not found")
     if user and user.get("role") != "webmaster":
         if user.get("club_id") != await _class_club_id(race.get("class_id")):
             raise HTTPException(status_code=404, detail="Race not found")
