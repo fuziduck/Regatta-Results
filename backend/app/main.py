@@ -469,9 +469,15 @@ async def get_current_user(request: Request):
     tv = payload.get("tv")
     if int(tv if tv is not None else -1) != int(user.get("token_version") or 0):
         return None  # token predates a passcode reset / role change / deactivation
-    return {"role": user.get("role"), "club_id": user.get("club_id"),
-            "user_id": user["id"], "username": user.get("username"),
-            "name": user.get("name")}
+    result = {"role": user.get("role"), "club_id": user.get("club_id"),
+              "user_id": user["id"], "username": user.get("username"),
+              "name": user.get("name")}
+    # First-login forced password change: carry the flag through so /auth/me
+    # (page refresh, session restore) keeps prompting until the passcode is
+    # actually changed.
+    if user.get("must_change_passcode"):
+        result["must_change_passcode"] = True
+    return result
 
 
 async def require_admin(request: Request) -> dict:
