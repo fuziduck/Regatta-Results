@@ -9,6 +9,7 @@ export function AuthProvider({ children }) {
   const [clubName, setClubName] = useState(null);
   const [username, setUsername] = useState(null);
   const [userName, setUserName] = useState(null);
+  const [mustChangePasscode, setMustChangePasscode] = useState(false);
 
   // The session token lives in an HttpOnly cookie the browser attaches
   // automatically — we just ask the server who we are. No localStorage.
@@ -19,6 +20,7 @@ export function AuthProvider({ children }) {
       setClubName(d.club_name || null);
       setUsername(d.username || null);
       setUserName(d.name || null);
+      setMustChangePasscode(!!d.must_change_passcode);
     }).catch(() => {
       setRole(null);
     });
@@ -32,6 +34,7 @@ export function AuthProvider({ children }) {
     setClubName(data.club_name || null);
     setUsername(data.username || null);
     setUserName(data.name || null);
+    setMustChangePasscode(!!data.must_change_passcode);
   };
 
   const login = async (r, username_, passcode, club_id) => {
@@ -50,6 +53,8 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  const clearMustChangePasscode = () => setMustChangePasscode(false);
+
   const logout = () => {
     api.logout().catch(() => {});
     setRole(null);
@@ -57,10 +62,11 @@ export function AuthProvider({ children }) {
     setClubName(null);
     setUsername(null);
     setUserName(null);
+    setMustChangePasscode(false);
   };
 
   return (
-    <AuthContext.Provider value={{ role, clubId, clubName, username, userName, login, login2fa, logout, updateSession }}>
+    <AuthContext.Provider value={{ role, clubId, clubName, username, userName, mustChangePasscode, clearMustChangePasscode, login, login2fa, logout, updateSession }}>
       {children}
     </AuthContext.Provider>
   );

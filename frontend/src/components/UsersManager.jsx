@@ -48,8 +48,6 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
     e.preventDefault();
     if (!username.trim()) return toast.error("Email address is required");
     if (!EMAIL_RE.test(username.trim())) return toast.error("Username must be a valid email address");
-    const policy = passcodeError(passcode);
-    if (policy) return toast.error(policy);
     setBusy(true);
     try {
       await api.createUser({
@@ -57,9 +55,8 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
         role: newRole,
         username: username.trim(),
         name: name.trim(),
-        passcode,
       });
-      toast.success(`Created login '${username.trim()}'`);
+      toast.success(`Created login '${username.trim()}' — a temporary password has been emailed`);
       setUsername(""); setName(""); setPasscode("");
       load();
     } catch (err) {
@@ -158,15 +155,11 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
             <option value="admin">Race Admin</option>
           </select>
         </div>
-        <div className="space-y-1.5">
-          <Label>Passcode</Label>
-          <Input value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="6+ chars, number & special char" className="h-11" type="password" />
-        </div>
         <Button type="submit" disabled={busy} className="h-11 gap-2 bg-ocean hover:bg-ocean-dark" data-testid="add-user-btn">
           <UserPlus className="w-4 h-4" /> Add login
         </Button>
       </form>
-      <p className="px-5 pb-3 -mt-1 text-xs text-muted-foreground">{PASSCODE_HINT}</p>
+      <p className="px-5 pb-3 -mt-1 text-xs text-muted-foreground">A temporary password will be emailed to the new user. They will be prompted to change it on first login.</p>
 
       <div className="divide-y divide-border">
         {users.length === 0 && (

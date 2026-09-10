@@ -8,12 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { ShieldCheck, ArrowLeft, Globe, ChevronDown, Mail, Smartphone } from "lucide-react";
+import { ShieldCheck, ArrowLeft, Globe, ChevronDown, Mail, Smartphone, KeyRound } from "lucide-react";
+import { passcodeError, PASSCODE_HINT } from "@/lib/helpers";
 import Logo from "@/components/Logo";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 export default function Login() {
-  const { login, login2fa } = useAuth();
+  const { login, login2fa, updateSession, clearMustChangePasscode } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -34,6 +35,10 @@ export default function Login() {
   const [otpMethod, setOtpMethod] = useState("totp"); // "totp" | "email"
   const [otpCode, setOtpCode] = useState("");
   const [otpSent, setOtpSent] = useState(false);
+  // First-login forced password change
+  const [forceChangeStep, setForceChangeStep] = useState(false);
+  const [forceNewPass, setForceNewPass] = useState("");
+  const [forceConfirmPass, setForceConfirmPass] = useState("");
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -119,9 +124,15 @@ export default function Login() {
         setOtpSent(false);
         return;
       }
+      // First-login forced password change: show inline dialog instead of navigating away.
+      if (r.must_change_passcode) {
+        setForceChangeStep(true);
+        setForceNewPass("");
+        setForceConfirmPass("");
+        toast.info("Welcome! Please change your temporary password to continue.");
+        return;
+      }
       toast.success(r.role === "webmaster" ? "Signed in as Webmaster" : `Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
-      // A successful sign-in happened. Only the coarse role category is sent —
-      // never the username, email, passcode, tokens or any identifier.
       trackEvent(SAILSCORE_EVENTS.LOGIN, { role: r.role });
       navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
     } catch (err) {
@@ -137,6 +148,13 @@ export default function Login() {
     setLoading(true);
     try {
       const r = await login2fa(otpMethod, otpCode.trim());
+      if (r.must_change_passcode) {
+        setForceChangeStep(true);
+        setForceNewPass("");
+        setForceConfirmPass("");
+        toast.info("Welcome! Please change your temporary password to continue.");
+        return;
+      }
       toast.success(r.role === "webmaster" ? "Signed in as Webmaster" : `Signed in to ${r.club_name} as ${r.role === "admin" ? "Race Admin" : "Race Officer"}`);
       trackEvent(SAILSCORE_EVENTS.LOGIN, { role: r.role });
       navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
@@ -322,6 +340,68 @@ export default function Login() {
               </Link>
             </div>
           </form>
+          )}
+
+          {forceChangeStep && (
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!forceNewPass || forceNewPass !== forceConfirmPass) return;
+              const policyErr = passcodeError(forceNewPass);
+              if (policyErr) { toast.error(policyErr); return; }
+              setLoading(true);
+              try {
+                const r = await api.changePasscode(passcode, forceNewPass);
+                updateSession(r);
+                clearMustChangePasscode();
+                toast.success("Password changed successfully!");
+                trackEvent(SAILSCORE_EVENTS.LOGIN, { role: r.role });
+                navigate(canReturnTo(returnTo, r.role) ? returnTo : roleDefault(r.role));
+              } catch (err) {
+                toast.error(formatApiError(err.response?.data?.detail) || "Could not change password");
+              } finally {
+                setLoading(false);
+              }
+            }} className="mt-4 space-y-4">
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+                <div className="flex items-center gap-2 font-semibold">
+                  <KeyRound className="w-4 h-4" />
+                  Change your password
+                </div>
+                <p className="text-xs mt-1">You signed in with a temporary password. Please set a new one to continue.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="force-new-pass">New password</Label>
+                <Input
+                  id="force-new-pass"
+                  type="password"
+                  data-testid="force-new-pass-input"
+                  value={forceNewPass}
+                  onChange={(e) => setForceNewPass(e.target.value)}
+                  placeholder="Enter a new password"
+                  autoFocus
+                  className="h-12 text-base"
+                />
+                <p className="text-xs text-muted-foreground">{PASSCODE_HINT}</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="force-confirm-pass">Confirm password</Label>
+                <Input
+                  id="force-confirm-pass"
+                  type="password"
+                  data-testid="force-confirm-pass-input"
+                  value={forceConfirmPass}
+                  onChange={(e) => setForceConfirmPass(e.target.value)}
+                  placeholder="Re-enter your new password"
+                  className="h-12 text-base"
+                />
+                {forceConfirmPass && forceNewPass !== forceConfirmPass && (
+                  <p className="text-xs text-red-600">Passwords do not match</p>
+                )}
+              </div>
+              <Button type="submit" data-testid="force-change-submit" disabled={loading || !forceNewPass || !forceConfirmPass || forceNewPass !== forceConfirmPass} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
+                {loading ? "Saving…" : "Set new password & continue"}
+              </Button>
+            </form>
           )}
         </div>
         <p className="mt-6 text-center text-sm text-white/80">SailScore — Connecting sailing, one club at a time.</p>

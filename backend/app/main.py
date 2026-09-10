@@ -1224,6 +1224,25 @@ def validate_password_policy(passcode: str) -> Optional[str]:
     return None
 
 
+def generate_temp_password() -> str:
+    """Generate a random temporary password that satisfies the password policy:
+    at least 6 chars, one digit, one special character."""
+    # Guarantee at least one of each required category
+    specials = "!@#$%^&*()-_+=?"
+    temp = [
+        secrets.choice(secrets.ascii_letters),
+        secrets.choice(secrets.digits),
+        secrets.choice(specials),
+    ]
+    # Fill the rest randomly from the full pool (12 chars total)
+    pool = secrets.ascii_letters + secrets.digits + specials
+    temp += [secrets.choice(pool) for _ in range(9)]
+    # Shuffle so required chars aren't always in the first 3 positions
+    temp_list = list(temp)
+    secrets.SystemRandom().shuffle(temp_list)
+    return "".join(temp_list)
+
+
 # In-memory login throttle: key -> recent attempt timestamps. Only timestamps
 # inside the sliding window are ever kept, so the map stays bounded. The
 # per-account lockout is the real protection, the per-IP limit just slows mass
@@ -1442,8 +1461,11 @@ async def login(data: LoginInput, request: Request):
                                   "role": "webmaster", "club_id": None},
                          "AUTH_LOGIN_SUCCESS", description="Webmaster signed in")
         logger.info("LOGIN OK user=%s role=webmaster ip=%s", u.get("username"), ip)
-        response = JSONResponse({"role": "webmaster", "club_id": None, "club_name": None,
-                                 "username": u.get("username"), "name": u.get("name")})
+        resp_body = {"role": "webmaster", "club_id": None, "club_name": None,
+                     "username": u.get("username"), "name": u.get("name")}
+        if u.get("must_change_passcode"):
+            resp_body["must_change_passcode"] = True
+        response = JSONResponse(resp_body)
         response.set_cookie(value=token, **_session_cookie_kwargs())
         return response
     # Club staff: the account is looked up by username inside the chosen club;
@@ -1501,9 +1523,12 @@ async def login(data: LoginInput, request: Request):
                      "AUTH_LOGIN_SUCCESS",
                      description=f"{u.get('username')} signed in to {club.get('name')}")
     logger.info("LOGIN OK user=%s role=%s club=%s ip=%s", u.get("username"), role, club["id"], ip)
-    response = JSONResponse({"role": role, "club_id": club["id"],
-                             "club_name": club.get("name"), "username": u.get("username"),
-                             "name": u.get("name")})
+    resp_body = {"role": role, "club_id": club["id"],
+                 "club_name": club.get("name"), "username": u.get("username"),
+                 "name": u.get("name")}
+    if u.get("must_change_passcode"):
+        resp_body["must_change_passcode"] = True
+    response = JSONResponse(resp_body)
     response.set_cookie(value=token, **_session_cookie_kwargs())
     return response
 
@@ -1582,8 +1607,11 @@ async def login_2fa(data: Login2faInput, request: Request):
                      description=f"{u.get('username')} signed in (second factor verified)")
     logger.info("LOGIN OK user=%s role=%s club=%s 2fa=%s ip=%s",
                 u.get("username"), role, club_id, method, ip)
-    response = JSONResponse({"role": role, "club_id": club_id, "club_name": club_name,
-                             "username": u.get("username"), "name": u.get("name")})
+    resp_body = {"role": role, "club_id": club_id, "club_name": club_name,
+                 "username": u.get("username"), "name": u.get("name")}
+    if u.get("must_change_passcode"):
+        resp_body["must_change_passcode"] = True
+    response = JSONResponse(resp_body)
     response.set_cookie(value=token, **_session_cookie_kwargs())
     response.delete_cookie(PENDING2FA_COOKIE, path="/")
     return response
@@ -1892,6 +1920,50 @@ async def _send_reset_email(to_email: str, reset_link: str, cfg: dict) -> bool:
         return False
 
 
+async def _send_welcome_email(to_email: str, username: str, temp_password: str, role: str, club_name: str, cfg: dict) -> bool:
+    """Send a welcome email with temporary login credentials to a newly created user."""
+    if not cfg.get("smtp_host"):
+        return False
+    role_label = "Race Admin" if role == "admin" else "Race Officer"
+    msg = EmailMessage()
+    msg["Subject"] = f"SailScore — your {role_label} login is ready"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = to_email
+    msg.set_content(
+        f"You have been set up as a {role_label} for {club_name} on SailScore.\n\n"
+        f"Username: {username}\n"
+        f"Temporary password: {temp_password}\n\n"
+        f"Log in at the SailScore website using these credentials. "
+        f"You will be prompted to change your password on first login.\n\n"
+        f"If you did not expect this email, please contact your club administrator.\n"
+    )
+    msg.add_alternative(
+        f"<p>You have been set up as a <strong>{role_label}</strong> for "
+        f"<strong>{html_lib.escape(club_name)}</strong> on SailScore.</p>"
+        f"<table style=\"border-collapse:collapse;margin:16px 0\">"
+        f"<tr><td style=\"padding:4px 12px;color:#666\">Username</td>"
+        f"<td style=\"padding:4px 12px;font-weight:bold\">{html_lib.escape(username)}</td></tr>"
+        f"<tr><td style=\"padding:4px 12px;color:#666\">Temporary password</td>"
+        f"<td style=\"padding:4px 12px;font-weight:bold;font-family:monospace\">"
+        f"{html_lib.escape(temp_password)}</td></tr>"
+        f"</table>"
+        f"<p>Log in at the SailScore website using these credentials. "
+        f"You will be prompted to change your password on first login.</p>"
+        f"<p style=\"color:#666;font-size:12px\">If you did not expect this email, "
+        f"please contact your club administrator.</p>",
+        subtype="html")
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as s:
+            s.starttls()
+            if cfg.get("smtp_user"):
+                s.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            s.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("WELCOME EMAIL SEND FAILED to=%s error=%s", to_email, exc)
+        return False
+
+
 @api_router.post("/auth/forgot")
 async def forgot_password(data: ForgotInput, request: Request):
     """Request a passcode reset link. Always answers with the same generic
@@ -1983,7 +2055,7 @@ async def reset_password(data: ResetPasswordInput, request: Request):
         "passcode_hash": hash_passcode(new),
         "token_version": new_tv,
         "last_passcode_change": now_iso(),
-    }, "$unset": {"reset_token_hash": "", "reset_token_expires": ""}})
+    }, "$unset": {"reset_token_hash": "", "reset_token_expires": "", "must_change_passcode": ""}})
     logger.info("PASSWORD RESET OK user=%s ip=%s", user.get("username"), ip)
     await _log_audit(request, None, "PASSWORD_RESET_COMPLETED",
                      description=f"Passcode reset completed for {user.get('username')}",
@@ -2038,7 +2110,7 @@ async def change_passcode(data: ChangePasscodeInput, request: Request):
         "passcode_hash": hash_passcode(new),
         "token_version": new_tv,
         "last_passcode_change": now_iso(),
-    }})
+    }, "$unset": {"must_change_passcode": ""}})
     logger.info("PASSCODE CHANGE user=%s role=%s ip=%s", doc.get("username"), doc.get("role"), ip)
     await _log_audit(request, user, "PASSCODE_CHANGE",
                      description=f"Passcode changed for {doc.get('username')}",
@@ -2065,9 +2137,12 @@ async def me(request: Request):
     if user.get("club_id"):
         club = await db.clubs.find_one({"id": user["club_id"]}, {"_id": 0, "name": 1})
         club_name = (club or {}).get("name")
-    return {"role": user.get("role"), "club_id": user.get("club_id"),
-            "club_name": club_name, "username": user.get("username"),
-            "name": user.get("name")}
+    result = {"role": user.get("role"), "club_id": user.get("club_id"),
+              "club_name": club_name, "username": user.get("username"),
+              "name": user.get("name")}
+    if user.get("must_change_passcode"):
+        result["must_change_passcode"] = True
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2110,10 +2185,19 @@ async def create_user(data: UserInput, request: Request, user: dict = Depends(re
         raise HTTPException(status_code=400, detail="club_id is required")
     _ensure_club(user, club_id)
     username = data.username.strip().lower()
-    passcode = data.passcode.strip()
-    policy_err = validate_password_policy(passcode)
-    if policy_err:
-        raise HTTPException(status_code=400, detail=policy_err)
+    # If no passcode provided, generate a temporary one that the user must
+    # change on first login.
+    temp_password = None
+    if data.passcode and data.passcode.strip():
+        passcode = data.passcode.strip()
+        policy_err = validate_password_policy(passcode)
+        if policy_err:
+            raise HTTPException(status_code=400, detail=policy_err)
+        must_change = False
+    else:
+        passcode = generate_temp_password()
+        temp_password = passcode
+        must_change = True
     if await db.users.find_one({"club_id": club_id, "username": username}, {"_id": 0}):
         raise HTTPException(status_code=400, detail=f"Username '{username}' already exists for this club")
     doc = {
@@ -2122,16 +2206,26 @@ async def create_user(data: UserInput, request: Request, user: dict = Depends(re
         "passcode_hash": hash_passcode(passcode),
         "active": True, "created_by": user.get("user_id") or "webmaster",
         "created_at": now_iso(), "failed_attempts": 0, "token_version": 0,
+        "must_change_passcode": must_change,
     }
     await db.users.insert_one(doc)
     doc.pop("_id", None)
-    logger.info("USER CREATE id=%s username=%s role=%s club=%s by=%s",
-                doc["id"], username, data.role, club_id, user.get("username"))
+    logger.info("USER CREATE id=%s username=%s role=%s club=%s by=%s must_change=%s",
+                doc["id"], username, data.role, club_id, user.get("username"), must_change)
     await _log_audit(request=request, user=user, action="USER_CREATED",
                      description=f"Created login {username} ({data.role})",
                      resource_type="user", resource_id=doc["id"],
                      target_user_id=doc["id"], target_username=username,
                      club_id=club_id)
+    # Send welcome email with temporary credentials (best-effort).
+    if temp_password:
+        club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1})
+        club_name = (club or {}).get("name", "your club")
+        cfg = await _get_email_settings()
+        email_sent = await _send_welcome_email(username, username, temp_password,
+                                                data.role, club_name, cfg)
+        if not email_sent:
+            logger.warning("WELCOME EMAIL FAILED user=%s club=%s", username, club_id)
     return _user_public(doc)
 
 
