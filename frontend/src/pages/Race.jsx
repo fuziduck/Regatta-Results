@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, CalendarDays, ChevronRight, Clock3, MapPin, Users } from "lucide-react";
+import Breadcrumbs from "@/components/Breadcrumbs";
 import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 
 const PODIUM_ROW = {
@@ -42,10 +43,6 @@ function resultOrder(a, b) {
   if (aFinished) return -1;
   if (bFinished) return 1;
   return (Number(a.position) || Number.MAX_SAFE_INTEGER) - (Number(b.position) || Number.MAX_SAFE_INTEGER);
-}
-
-function displayTime(value, hasTiming) {
-  return hasTiming ? fmtSeconds(value) : "Not applicable";
 }
 
 export default function Race() {
@@ -133,6 +130,7 @@ export default function Race() {
 
       <main className="mx-auto max-w-6xl px-4 py-7 sm:py-10">
         <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7" data-testid="race-header">
+          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Club", href: `/club/${slug}` }, { label: series?.name || "Series" }, { label: `Race ${race.race_number}` }]} className="mb-4" />
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-safety">{regatta?.name || series?.name || "Race results"}</p>
@@ -157,11 +155,11 @@ export default function Race() {
         <section className="mt-7" data-testid="race-results-table">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
             <div><h2 className="font-heading text-2xl uppercase tracking-tight text-ocean">Race results</h2><p className="text-sm text-muted-foreground">Sorted by finishing position · {classInfo?.name || "Fleet results"}</p></div>
-            <span className="text-xs text-muted-foreground">{hasTiming ? "Elapsed and corrected times shown" : "Corrected time not applicable to one-design racing"}</span>
+
           </div>
           <div className="overflow-hidden rounded-xl border border-border">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[48rem] text-sm">
+              <table className={`w-full text-sm ${hasTiming ? "min-w-[48rem]" : "min-w-[32rem]"}`}>
                 <thead>
                   <tr className="bg-ocean text-left text-white">
                     <th className="sticky left-0 z-20 bg-ocean px-3 py-2.5">Pos</th>
@@ -170,8 +168,8 @@ export default function Race() {
                     <th className="px-3 py-2.5">Class</th>
                     <th className="hidden px-3 py-2.5 md:table-cell">Helm</th>
                     <th className="hidden px-3 py-2.5 lg:table-cell">Crew</th>
-                    <th className="px-3 py-2.5 text-right">Elapsed</th>
-                    <th className="px-3 py-2.5 text-right">Corrected</th>
+                    {hasTiming && <th className="px-3 py-2.5 text-right">Elapsed</th>}
+                    {hasTiming && <th className="px-3 py-2.5 text-right">Corrected</th>}
                     <th className="px-3 py-2.5 text-right">Points</th>
                   </tr>
                 </thead>
@@ -198,8 +196,8 @@ export default function Race() {
                         <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{classInfo?.name || "—"}</td>
                         <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">{boat.helm || "—"}</td>
                         <td className="hidden px-3 py-2.5 text-muted-foreground lg:table-cell">{crew}</td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsed) : "—"}</td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? displayTime(corrected, hasTiming) : "—"}</td>
+                        {hasTiming && <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsed) : "—"}</td>}
+                        {hasTiming && <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(corrected) : "—"}</td>}
                         <td className="px-3 py-2.5 text-right font-mono font-bold text-ocean">
                           <span>{result.points ?? "—"}</span>
                           {resultCode && <Badge variant="outline" className={`ml-1 align-middle text-[10px] ${CODE_COLORS[resultCode] || ""}`}>{resultCode}</Badge>}

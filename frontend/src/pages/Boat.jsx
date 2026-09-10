@@ -17,6 +17,7 @@ import ResultsSubscription from "@/components/ResultsSubscription";
 import { exportBoatProfilePdf } from "@/lib/exportPdf";
 import OfficialsLink from "@/components/OfficialsLink";
 import { SITE_TAGLINE } from "@/lib/siteConfig";
+import Breadcrumbs from "@/components/Breadcrumbs";
 
 const ordinal = (n) => {
   if (n == null || n === "") return "–";
@@ -235,9 +236,7 @@ export default function Boat() {
       <section className="bg-ocean-dark">
         <div className="max-w-6xl mx-auto px-4 py-8">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Link to="/boats" className="inline-flex items-center gap-1.5 text-white/70 hover:text-white text-sm font-semibold transition-colors" data-testid="back-to-boat-search">
-              <ArrowLeft className="w-4 h-4" /> Back to search results
-            </Link>
+            <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Boats", href: "/boats" }, { label: profile.name }]} className="text-white/70 [&_a]:text-white/80 [&_span]:text-white" />
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="sm" className="gap-1.5 text-white/80 hover:bg-white/10 hover:text-white" onClick={shareLink}>
                 <Share2 className="w-4 h-4" /> Share

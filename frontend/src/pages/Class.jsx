@@ -9,6 +9,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import OfficialsLink from "@/components/OfficialsLink";
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, Sailboat, Trophy } from "lucide-react";
 import { SAILSCORE_EVENTS, useTrackView } from "@/lib/analytics";
+import Breadcrumbs from "@/components/Breadcrumbs";
 
 const DEFAULT_CLASS_COLOUR = "#0A369D";
 
@@ -133,7 +134,7 @@ export default function Class() {
       <section className="relative overflow-hidden bg-ocean-dark text-white">
         <div className="absolute -right-16 -top-24 h-72 w-72 rounded-full bg-safety/20 blur-3xl" />
         <div className="relative mx-auto max-w-6xl px-4 py-10 sm:py-14">
-          <Link to="/" className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-white/75 hover:text-white"><ArrowLeft className="h-4 w-4" /> Back to all classes</Link>
+          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: classData.name || "Class" }]} className="mb-4 text-white/70 [&_a]:text-white/80 [&_span]:text-white" />
           <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">
             <ClassMark classData={classData} />
             <div>

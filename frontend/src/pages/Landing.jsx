@@ -21,7 +21,9 @@ import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
 import PublishedRaces from "@/components/PublishedRaces";
+import UpcomingRaces from "@/components/UpcomingRaces";
 import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
+import Breadcrumbs from "@/components/Breadcrumbs";
 
 function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
   const isChampionship = competitionType(competition) !== "regatta";
@@ -198,6 +200,43 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
           </Button>
         </div>
       </div>
+      {/* Series statistics */}
+      {miniData && miniData.standings?.length > 0 && (() => {
+        const races = miniData.races || [];
+        const planned = active.planned_races || 0;
+        const completed = races.length;
+        const remaining = Math.max(0, planned - completed);
+        const boats = miniData.standings.length;
+        const leader = miniData.standings[0];
+        const second = miniData.standings[1];
+        const wins = miniData.standings.reduce((sum, s) => sum + (s.scores || []).filter((sc) => sc.points === 1).length, 0);
+        const podiums = miniData.standings.reduce((sum, s) => sum + (s.scores || []).filter((sc) => sc.points >= 1 && sc.points <= 3).length, 0);
+        const gap = leader && second ? (second.net != null && leader.net != null ? second.net - leader.net : null) : null;
+        return (
+          <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="series-stats">
+            <div className="rounded-xl border border-border bg-card p-3 text-center">
+              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Races</div>
+              <div className="font-heading text-2xl text-ocean">{completed}{remaining > 0 && <span className="text-sm text-muted-foreground"> / {planned}</span>}</div>
+              <div className="text-[10px] text-muted-foreground">{completed} sailed · {remaining} remaining</div>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-3 text-center">
+              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Boats</div>
+              <div className="font-heading text-2xl text-ocean">{boats}</div>
+              <div className="text-[10px] text-muted-foreground">competing</div>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-3 text-center">
+              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Leader</div>
+              <div className="font-heading text-lg text-ocean truncate" title={leader?.boat_name}>{leader?.boat_name || "—"}</div>
+              <div className="text-[10px] text-muted-foreground">{leader?.net != null ? `${leader.net} pts` : ""}{gap != null ? ` · +${gap}` : ""}</div>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-3 text-center">
+              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Podiums</div>
+              <div className="font-heading text-2xl text-ocean">{podiums}</div>
+              <div className="text-[10px] text-muted-foreground">{wins} win{wins === 1 ? "" : "s"} across fleet</div>
+            </div>
+          </div>
+        );
+      })()}
       <SeriesStandingsTable data={miniData} onOpenMini={setActiveMini} />
       <PublishedRaces seriesId={active.id} series={active} classId={classId} clubId={clubId} clubSlug={clubSlug} scoringMode={active.scoring_mode || "one_design"} />
     </div>
@@ -542,6 +581,7 @@ export default function Landing() {
           className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
         <div className="relative max-w-6xl mx-auto px-4 py-6 md:py-8">
+          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: club.name }]} className="mb-3 text-white/70 [&_a]:text-white/80 [&_span]:text-white" />
           <Badge className={`mb-3 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
             {year} Season
           </Badge>
@@ -697,6 +737,8 @@ export default function Landing() {
             </div>
           </div>
         )}
+
+        <UpcomingRaces clubId={clubId} clubSlug={club.slug} year={year} />
 
         {view !== "regattas" && (
           <div>

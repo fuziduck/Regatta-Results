@@ -8,9 +8,10 @@ import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { competitionImage, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
-import { ArrowLeft, ArrowRight, CalendarDays, Download, MapPin, Medal, Trophy } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarDays, Download, Flag, MapPin, Medal, Trophy, Users, Sailboat } from "lucide-react";
 import { fmtDate } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
+import Breadcrumbs from "@/components/Breadcrumbs";
 import ResultsSubscription from "@/components/ResultsSubscription";
 import PublishedRaces from "@/components/PublishedRaces";
 
@@ -172,6 +173,7 @@ export default function Regatta() {
             </span>
           </div>
         </div>
+        <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: club?.name || "Club", href: `/club/${slug}` }, { label: regatta.name }]} className="mb-4" />
         <h1 className="text-3xl sm:text-4xl font-heading uppercase tracking-tighter text-ocean">{regatta.name}</h1>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
           <span className="inline-flex items-center gap-1.5"><CalendarDays className="w-4 h-4" />{regatta.date_label || "Dates to be confirmed"}</span>
@@ -189,6 +191,21 @@ export default function Regatta() {
 
           {tab === "overview" && (
             <div className="pt-6" data-testid="regatta-overview">
+              {/* Statistics summary */}
+              <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { icon: <Flag className="w-4 h-4" />, label: "Races", value: regatta.race_count || 0 },
+                  { icon: <Sailboat className="w-4 h-4" />, label: "Classes", value: regatta.class_count || classNames.length },
+                  { icon: <Users className="w-4 h-4" />, label: "Boats", value: regatta.series?.reduce((sum, s) => sum + (s.boat_count || 0), 0) || "—" },
+                  { icon: <Trophy className="w-4 h-4" />, label: "Winners", value: regatta.series?.filter((s) => s.winner).length || 0 },
+                ].map(({ icon, label, value }) => (
+                  <div key={label} className="rounded-xl border border-border bg-card p-3 text-center">
+                    <div className="flex items-center justify-center gap-1.5 text-ocean mb-1">{icon}<span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">{label}</span></div>
+                    <div className="font-heading text-2xl text-ocean">{value}</div>
+                  </div>
+                ))}
+              </div>
+
               <p className="text-sm text-muted-foreground mb-5">Each class is summarised separately — tap a class to see its full results.</p>
               <div className="grid gap-5 md:grid-cols-2">
                 {classNames.map((cn) => (

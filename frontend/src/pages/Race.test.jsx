@@ -75,7 +75,11 @@ test("renders complete race metadata, sorted results, and parent links", async (
   expect(rows[0].textContent).toContain("GBR 1");
   expect(rows[1].textContent).toContain("GBR 2");
   expect(rows[2].textContent).toContain("DNC");
-  expect(rows[0].textContent).toContain("Not applicable");
+  // One-design: elapsed and corrected columns should be hidden
+  const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
+  expect(headers).not.toContain("Elapsed");
+  expect(headers).not.toContain("Corrected");
+  expect(headers).toContain("Points");
   expect(rows[0].className).toContain("bg-amber-100");
   expect(rows[1].className).toContain("bg-slate-100");
 });
