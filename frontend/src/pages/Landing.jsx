@@ -738,8 +738,6 @@ export default function Landing() {
           </div>
         )}
 
-        <UpcomingRaces clubId={clubId} clubSlug={club.slug} year={year} />
-
         {view !== "regattas" && (
           <div>
             {championshipComps.length > 0 && (
@@ -930,6 +928,8 @@ export default function Landing() {
             )}
           </div>
         )}
+
+        <UpcomingRaces clubId={clubId} clubSlug={club.slug} year={year} />
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
