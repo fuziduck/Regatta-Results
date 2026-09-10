@@ -14,6 +14,7 @@ import html as html_lib
 import time
 import hashlib
 import secrets
+import string
 import shutil
 import smtplib
 import tempfile
@@ -1230,12 +1231,12 @@ def generate_temp_password() -> str:
     # Guarantee at least one of each required category
     specials = "!@#$%^&*()-_+=?"
     temp = [
-        secrets.choice(secrets.ascii_letters),
-        secrets.choice(secrets.digits),
+        secrets.choice(string.ascii_letters),
+        secrets.choice(string.digits),
         secrets.choice(specials),
     ]
     # Fill the rest randomly from the full pool (12 chars total)
-    pool = secrets.ascii_letters + secrets.digits + specials
+    pool = string.ascii_letters + string.digits + specials
     temp += [secrets.choice(pool) for _ in range(9)]
     # Shuffle so required chars aren't always in the first 3 positions
     temp_list = list(temp)
