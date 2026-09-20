@@ -78,8 +78,8 @@ const renderPage = (extraProps = {}) => {
 };
 
 const races = [
-  { id: "r1", race_number: 1, mini_group_label: "R1A", date: "2026-05-02", start_time: "10:30", class_id: "cl1", status: "published", version: 2, results: [{ boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T10:45:00Z" }, { boat_id: "b2", code: "FINISHED", position: 2, finish_time: "2026-05-02T10:46:00Z" }] },
-  { id: "r2", race_number: 2, mini_group_label: "R1B", date: "2026-05-02", start_time: "11:30", class_id: "cl1", status: "setup", version: 1, results: [{ boat_id: "b1", code: "DNC", position: null, finish_time: null }, { boat_id: "b2", code: "DNC", position: null, finish_time: null }] },
+  { id: "r1", race_number: 1, mini_group_label: "R1A", date: "2026-05-02", year: 2026, start_time: "10:30", class_id: "cl1", status: "published", version: 2, results: [{ boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T10:45:00Z" }, { boat_id: "b2", code: "FINISHED", position: 2, finish_time: "2026-05-02T10:46:00Z" }] },
+  { id: "r2", race_number: 2, mini_group_label: "R1B", date: "2026-05-02", year: 2026, start_time: "11:30", class_id: "cl1", status: "setup", version: 1, results: [{ boat_id: "b1", code: "DNC", position: null, finish_time: null }, { boat_id: "b2", code: "DNC", position: null, finish_time: null }] },
 ];
 
 beforeEach(() => {
@@ -192,6 +192,28 @@ describe("Mini series scoring page", () => {
     // Fleet chips seeded from race 1's racing boats (both boats) with a count.
     expect(container.querySelector('[data-testid="fleet-boat-1"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="fleet-boat-2"]')).not.toBeNull();
+    expect(container.textContent).toContain("2 of 2 boats");
+  });
+
+  it("lists each boat once, from this season, in the fleet sign-on", async () => {
+    // A class holds one boat record per season, so an unscoped fetch also
+    // returns last season's duplicate of every boat — names the sign-on list
+    // must not double up with, since no race here can reference them.
+    mockApi.getRaces.mockResolvedValue([
+      { id: "r1", race_number: 1, class_id: "cl1", year: 2026 },
+      { id: "r2", race_number: 2, class_id: "cl1", year: 2026 },
+    ]);
+    mockApi.getBoats.mockImplementation(async ({ year }) => (
+      year
+        ? [{ id: "b1", name: "Bluebell", sail_no: "1" }, { id: "b2", name: "Screwloose", sail_no: "2" }]
+        : [{ id: "b1", name: "Bluebell", sail_no: "1" }, { id: "b2", name: "Screwloose", sail_no: "2" },
+           { id: "old-b1", name: "Bluebell", sail_no: "1" }, { id: "old-b2", name: "Screwloose", sail_no: "2" }]));
+
+    renderPage();
+    await act(async () => {});
+
+    const chips = [...container.querySelectorAll('[data-testid^="fleet-boat-"]')].map((b) => b.textContent);
+    expect(chips).toEqual(["Bluebell 1", "Screwloose 2"]);
     expect(container.textContent).toContain("2 of 2 boats");
   });
 

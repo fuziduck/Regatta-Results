@@ -325,6 +325,35 @@ class TestFleetProfile:
         summer = next(s for s in prof["series"] if s["series_name"] == "Summer Series")
         assert summer["net"] == 5.0  # DNC (3) + 2nd (2)
 
+    def test_duty_result_keeps_its_code_like_a_dnc(self):
+        """An OOD boat was on duty — on the bank, not on the start line — so
+        its row shows the code with the duty score, exactly as a DNC row shows
+        DNC, instead of an invented finishing place. A boat that sailed and did
+        not finish still gets a place derived from its score."""
+        db = self._db()
+        server.db = db
+        db.series.items.append({"id": "s3", "name": "Summer Series", "class_id": "c1",
+                                "year": 2026, "scoring_mode": "one_design", "discards": 0,
+                                "included_in_overall": True, "order": 0, "lock_status": None})
+        db.boats.items.append(_boat("b3", "Screwloose", "8410", "c1", 2026, fleet_id="F3"))
+        for number, date, code in ((1, "2026-07-25", "OOD"), (2, "2026-08-01", "DNF")):
+            db.races.items.append({
+                "id": f"r{number}", "series_id": "s3", "class_id": "c1", "year": 2026,
+                "race_number": number, "date": date, "status": "published",
+                "entries_count": 2,
+                "results": [{"boat_id": "b1", "code": code, "position": None,
+                             "finish_time": None, "penalty_points": 0},
+                            {"boat_id": "b3", "code": "FINISHED", "position": 1,
+                             "finish_time": f"{date}T10:00:00Z", "penalty_points": 0}]})
+
+        season = next(s for s in asyncio.run(server.fleet_profile("F1"))["seasons"]
+                      if s["year"] == 2026 and s["club_name"] == "Medway YC")
+        rows = {h["race_number"]: h for h in season["race_history"]
+                if h["series_name"] == "Summer Series"}
+        assert rows[1]["code"] == "OOD" and rows[1]["position"] is None
+        assert rows[1]["points"] == 3.0  # duty average over the series
+        assert rows[2]["code"] is None and rows[2]["position"] == 2
+
     def test_locked_season_served_from_snapshot(self):
         snapshot = {"id": "snap1", "series_id": "s1", "status": server.LOCK_LOCKED,
                     "version": 1, "locked_at": "2026-09-01T00:00:00+00:00",

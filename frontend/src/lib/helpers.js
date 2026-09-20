@@ -45,10 +45,16 @@ export function fmtElapsed(ms) {
 }
 
 // Best known race start instant (mirrors the backend _race_start_time):
-// the start gun, else the scheduled class start on the race date.
+// the start gun, else the scheduled class start on the race date. The single
+// owner of that rule — the elapsed clock, the typed-time entry and the
+// corrected-time helpers all measure from the instant this returns.
 export function raceStart(race) {
   if (!race) return null;
-  if (race.actual_start) return race.actual_start;
+  if (race.actual_start) {
+    // A gun that will not parse falls back to the scheduled start rather than
+    // leaving the race with no reference at all.
+    if (!Number.isNaN(Date.parse(race.actual_start))) return race.actual_start;
+  }
   if (race.date && race.start_time) {
     // Scheduled start is timezone-less club time. Finish times are captured
     // from the officer's device as UTC, so anchor the scheduled start to the
@@ -67,6 +73,38 @@ export function raceStart(race) {
   return null;
 }
 
+// How the timer's number reads at a glance: the running race time is the one
+// the officer acts on, so it is the brightest; amber marks a number that is NOT
+// the official race time; dim means there is nothing to time from yet.
+const RACE_CLOCK_TONE = {
+  running: "text-safety animate-pulse",
+  waiting: "text-white",
+  unstarted: "text-amber-300",
+  idle: "text-white/40",
+};
+
+// The officer's race clock in the four states it can honestly be in. The number
+// means something different in each, so the label, the note under it and how it
+// reads are all decided here rather than by a chain of ternaries in the console:
+//   none      no start recorded at all — nothing to measure from
+//   before    the start is still ahead: count down to it (never a minus sign)
+//   gun       the gun is fired and the race is running — the official clock
+//   scheduled no gun, so this is time since the PLANNED start, not the race
+// ms is always a positive magnitude — `state` says which way it is running.
+export function raceClock(race, now) {
+  const start = raceStart(race);
+  if (!start) return { state: "none", label: "Race timer", tone: RACE_CLOCK_TONE.idle, ms: null,
+                       note: "No start set — press Start race, or type the actual start" };
+  const at = Date.parse(start);
+  const gun = race.actual_start ? Date.parse(race.actual_start) : null;
+  if (now < at) return { state: "before", label: "Starts in", tone: RACE_CLOCK_TONE.waiting, ms: at - now,
+                         note: `Starts at ${fmtClock(at)}` };
+  if (gun != null) return { state: "gun", label: "Race timer", tone: RACE_CLOCK_TONE.running, ms: now - at,
+                            note: `Started ${fmtClock(gun)}` };
+  return { state: "scheduled", label: "Since planned start", tone: RACE_CLOCK_TONE.unstarted, ms: now - at,
+           note: `Not started — timing from the planned ${race.start_time}` };
+}
+
 // Whole-second elapsed time of a recorded finish vs the race start (null if
 // either is missing). Used to prefill the editable elapsed-time input.
 export function elapsedSecondsOf(finishTime, race) {
@@ -74,6 +112,25 @@ export function elapsedSecondsOf(finishTime, race) {
   if (!finishTime || !start) return null;
   const e = Date.parse(finishTime) - Date.parse(start);
   return Number.isFinite(e) && e >= 0 ? Math.round(e / 1000) : null;
+}
+
+// Officer-typed finish time of day (HH:MM[:SS]) on the race date -> ISO
+// instant. The typed time is the device's wall clock, matching the
+// finish-button convention, so elapsed maths stays consistent with the start.
+export function clockToIso(dateStr, value) {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec((value || "").trim());
+  if (!m || !dateStr) return null;
+  const d = new Date(`${dateStr}T${m[1].padStart(2, "0")}:${m[2]}:${m[3] || "00"}`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// A recorded finish time as the HH:MM:SS a native time input expects (device-local).
+export function clockValueOf(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map((n) => String(n).padStart(2, "0")).join(":");
 }
 
 // Corrected time in seconds for a handicap class — mirrors the backend
@@ -123,12 +180,23 @@ export const CODE_COLORS = {
   RET: "bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40",
   DSQ: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
   DNE: "bg-red-200 text-red-900 border-red-400 dark:bg-red-500/25 dark:text-red-300 dark:border-red-500/60",
+  DGM: "bg-red-200 text-red-900 border-red-400 dark:bg-red-500/25 dark:text-red-300 dark:border-red-500/60",
   DPI: `bg-red-100 text-red-800 border-red-300 ${DARK}`,
   RDG: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/40",
   OOD: "bg-teal-100 text-teal-800 border-teal-300 dark:bg-teal-500/15 dark:text-teal-300 dark:border-teal-500/40",
 };
 
 export const CURRENT_YEAR = new Date().getFullYear();
+
+// Officer console: FINISHED leads the quick-code menus, and in the open menu it
+// says what picking it does — release the boat from a penalty back to an
+// ordinary finish. The closed select keeps showing the bare code.
+// `official` is the Appendix A wording of that code (from /rrs-codes), so a
+// menu explains DNE/DGM/ZFP where the officer picks it instead of leaving a
+// bare abbreviation to be looked up.
+export function outcomeLabel(code, official) {
+  return code === "FINISHED" ? "FINISHED — clear penalty" : (official || code);
+}
 
 // Boat-name wrapping threshold for results tables. Names longer than this
 // many characters wrap onto a second line at a space so a long name cannot

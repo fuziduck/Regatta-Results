@@ -5,6 +5,10 @@ import {
   miniGroupForRace,
   miniSeriesNote,
   raceLabel,
+  clockToIso,
+  clockValueOf,
+  raceClock,
+  outcomeLabel,
 } from "./helpers";
 
 describe("shouldWrapBoatName (14-character threshold on the name itself)", () => {
@@ -180,5 +184,70 @@ describe("miniSeriesNote (officer-facing note on a mini-series race)", () => {
   it("returns null for a non-mini-series race", () => {
     expect(miniSeriesNote(null)).toBeNull();
     expect(miniSeriesNote(undefined)).toBeNull();
+  });
+});
+
+describe("clockToIso / clockValueOf (officer-typed finish times)", () => {
+  it("anchors a typed time of day to the race date in the device's own clock", () => {
+    // Same convention as a finish-button tap, so elapsed maths agrees with the start.
+    expect(clockToIso("2026-05-02", "13:45:00")).toBe(new Date("2026-05-02T13:45:00").toISOString());
+    expect(clockToIso("2026-05-02", "9:05")).toBe(new Date("2026-05-02T09:05:00").toISOString());
+  });
+
+  it("refuses input it cannot read rather than inventing a time", () => {
+    expect(clockToIso("2026-05-02", "")).toBeNull();
+    expect(clockToIso("2026-05-02", "half two")).toBeNull();
+    expect(clockToIso("", "13:45")).toBeNull();
+  });
+
+  it("round-trips a recorded finish back into a time input value", () => {
+    expect(clockValueOf(clockToIso("2026-05-02", "13:45:07"))).toBe("13:45:07");
+    expect(clockValueOf(null)).toBe("");
+    expect(clockValueOf("not-a-date")).toBe("");
+  });
+});
+
+describe("raceClock (the officer's race clock)", () => {
+  const at = (h, m, s = 0) => Date.parse(`2026-05-02T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}Z`);
+  const race = { date: "2026-05-02", start_time: "10:00", start_tz_offset_minutes: 0 };
+  const MIN = 60 * 1000;
+
+  it("says so when no start is recorded — there is nothing to measure from", () => {
+    expect(raceClock({}, at(10, 0))).toMatchObject({ state: "none", ms: null });
+  });
+
+  it("counts down to a start that is still ahead, never with a minus sign", () => {
+    expect(raceClock(race, at(9, 30))).toMatchObject({ state: "before", label: "Starts in", ms: 30 * MIN });
+  });
+
+  it("runs from the gun once it has been fired", () => {
+    const clock = raceClock({ ...race, actual_start: "2026-05-02T10:00:00Z" }, at(10, 25, 46));
+    expect(clock).toMatchObject({ state: "gun", label: "Race timer", ms: 25 * MIN + 46000 });
+    // fmtClock is device-local, so the note is asserted by shape, not by hour.
+    expect(clock.note).toMatch(/^Started \d\d:\d\d:\d\d$/);
+  });
+
+  it("calls a gun-less number what it is: time since the planned start", () => {
+    const clock = raceClock(race, at(10, 25, 46));
+    expect(clock).toMatchObject({ state: "scheduled", label: "Since planned start", ms: 25 * MIN + 46000 });
+    expect(clock.note).toContain("Not started");
+  });
+
+  it("tones every state, so the console never falls back to an unstyled number", () => {
+    const states = [
+      raceClock({}, at(10, 0)),
+      raceClock(race, at(9, 30)),
+      raceClock({ ...race, actual_start: "2026-05-02T10:00:00Z" }, at(10, 25)),
+      raceClock(race, at(10, 25)),
+    ];
+    expect(states.map((c) => c.state)).toEqual(["none", "before", "gun", "scheduled"]);
+    states.forEach((c) => expect(c.tone).toMatch(/^text-/));
+  });
+});
+
+describe("outcomeLabel", () => {
+  it("says what picking FINISHED does, and leaves every other code alone", () => {
+    expect(outcomeLabel("FINISHED")).toBe("FINISHED — clear penalty");
+    expect(outcomeLabel("DNF")).toBe("DNF");
   });
 });

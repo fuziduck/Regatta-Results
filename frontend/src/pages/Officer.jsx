@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
@@ -6,9 +6,11 @@ import ClubPicker from "@/components/ClubPicker";
 import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel } from "@/lib/helpers";
 import { SeriesStandingsTable } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
+import { RaceTimeEntry } from "@/components/RaceTimeEntry";
+import RaceTimer from "@/components/RaceTimer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Clock, Play, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText, Users } from "lucide-react";
+import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText, Users } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -31,8 +33,25 @@ const STATUS_BADGE = {
 // scored without leaving the mini-series scoring screen. FINISHED is scored
 // by tapping the finish button; DNC by toggling the boat off; DPI/RDG need
 // the committee decision panel in the full race console (points are never
-// inferred), so they stay out of the quick codes.
-const BATCH_OUTCOME_CODES = ["DNF", "OCS", "UFD", "BFD", "ZFP", "SCP", "NSC", "RET", "DSQ", "DNE", "TLE", "OOD"];
+// inferred), so they stay out of the quick codes. Every other code is there,
+// including the non-excludable DNE and DGM.
+const BATCH_OUTCOME_CODES = ["DNF", "OCS", "UFD", "BFD", "ZFP", "SCP", "NSC", "RET", "DSQ", "DNE", "DGM", "TLE", "OOD"];
+
+// How the officer keys handicap finish times: tapped live as boats cross
+// the line, typed as a finishing time of day, or typed as an elapsed
+// duration. However the time arrives, the fleet is re-sequenced by
+// corrected time; one-design races always score by tap order.
+const TIME_ENTRY_MODES = [
+  { id: "live", label: "Live taps" },
+  { id: "clock", label: "Finish times" },
+  { id: "elapsed", label: "Elapsed times" },
+];
+const TIME_ENTRY_HINTS = {
+  live: "Big tap = finish time captured now, measured from the start at the top. Score DNF, DSQ, OCS… from the boat's menu.",
+  clock: "Type each boat's finishing time of day — re-sequenced by corrected time from the start at the top.",
+  elapsed: "Type each boat's elapsed time (hours : minutes : seconds) — needs no start time.",
+};
+const TIME_ENTRY_KEY = "sailscore-time-entry";
 
 function useNow(intervalMs = 250) {
   const [now, setNow] = useState(() => Date.now());
@@ -41,18 +60,6 @@ function useNow(intervalMs = 250) {
     return () => clearInterval(t);
   }, [intervalMs]);
   return now;
-}
-
-function startRefMs(race) {
-  // Timer reference: the actual gun if fired, otherwise today's scheduled start.
-  if (!race) return null;
-  if (race.actual_start) {
-    const ms = Date.parse(race.actual_start);
-    if (!Number.isNaN(ms)) return ms;
-  }
-  if (!race.date || !race.start_time) return null;
-  const d = new Date(`${race.date}T${race.start_time}:00`);
-  return Number.isNaN(d.getTime()) ? null : d.getTime();
 }
 
 function TopBar({ clubName, onSwitchClub, clubSlug }) {
@@ -317,6 +324,16 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // recent race's results in this series, "alpha" = boat name, "sail" = sail
   // number. Applies to the boats-racing chips and the big finish buttons.
   const [boatOrder, setBoatOrder] = useState("last");
+  // Remembered per device: an officer who scores by typed times should not
+  // have to re-select that for every race.
+  const [timeEntryMode, setTimeEntryMode] = useState(() => {
+    const stored = window.localStorage.getItem(TIME_ENTRY_KEY);
+    return TIME_ENTRY_MODES.some((m) => m.id === stored) ? stored : "live";
+  });
+  const chooseTimeEntry = (id) => {
+    setTimeEntryMode(id);
+    window.localStorage.setItem(TIME_ENTRY_KEY, id);
+  };
   const [lastOrder, setLastOrder] = useState([]);
   const [notif, setNotif] = useState({ course: "", special_rules: "", life_jackets: false, start_time: "" });
   const now = useNow();
@@ -325,6 +342,12 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const [panelBoat, setPanelBoat] = useState(null);
   const emptyDecision = { penalty_points: "", reason: "", decision_maker: "", date: "", notes: "" };
   const [decision, setDecision] = useState(emptyDecision);
+  // A picked-but-unrecorded DPI/RDG. Those codes cannot apply on the spot —
+  // the committee's points have to be entered — so the choice is held here and
+  // the row shows it as pending until it is saved or another code replaces it.
+  // Without it the select snapped back to the previous code, so the officer's
+  // click looked ignored (and the row still read OCS).
+  const [pendingCode, setPendingCode] = useState(null); // { boatId, code }
   const [validateMsg, setValidateMsg] = useState(null);
   // When the race cannot be fetched (deleted/renumbered elsewhere), show a
   // clear error with a way back instead of hanging on "Loading race…" forever.
@@ -332,10 +355,29 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // Series membership editor: which of the class's boats form part of this
   // series (drives the DNC scoring engine).
   const [boatsOpen, setBoatsOpen] = useState(false);
+  // Typed time entry fires one commit per row, often faster than a round trip,
+  // and each of our own writes bumps the race version — so a request built from
+  // the version on screen comes back 409 ("changed by another user") and the
+  // entry is silently lost. Finish/elapsed commits therefore run one at a time,
+  // each sending the version the last refresh stored.
+  const latestVersion = useRef(null);
+  const commitQueue = useRef(Promise.resolve());
+  const queueCommit = (send) => {
+    const run = commitQueue.current.then(async () => {
+      const updated = await send(latestVersion.current);
+      if (updated?.version) latestVersion.current = Math.max(latestVersion.current ?? 0, updated.version);
+      return updated;
+    });
+    commitQueue.current = run.catch(() => {});
+    return run;
+  };
 
   const refresh = useCallback(async () => {
     try {
       const r = await api.getRace(raceId);
+      // Versions only ever increase: take the newest we have seen so a slower
+      // refresh cannot put an older version back.
+      latestVersion.current = Math.max(latestVersion.current ?? 0, r.version);
       setRace(r);
       setLoadError(null);
       setNotif({ course: r.course || "", special_rules: r.special_rules || "", life_jackets: !!r.life_jackets, start_time: r.start_time || "" });
@@ -416,10 +458,10 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const scoringMode = series?.scoring_mode || meta.scoring_mode || "one_design";
   const isOneDesign = scoringMode === "one_design";
   const showTiming = !isOneDesign;
-  const startRef = startRefMs(race);
-  const elapsed = startRef ? now - startRef : null;
-  // The race clock: before the start it counts down (negative, "To start");
-  // once the start has passed it counts up (positive, "Elapsed").
+  // The instant every time on this race is measured from (gun, else scheduled
+  // start) — helpers.raceStart owns that rule, helpers.raceClock the readout.
+  const startAt = Date.parse(raceStart(race));
+  const hasStart = !Number.isNaN(startAt);
   // When the series has an explicit membership list (officer/admin managed
   // via "Series boats"), only member boats belong to it. Boats not signed on
   // for the series are hidden from the race-day boat list and can't be
@@ -485,37 +527,73 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   };
   const clearAll = () =>
     runMutation(() => api.selectBoats(raceId, [], version), "Selection cleared — every boat scores DNC");
+  // A handicap finish carries its own instant: a tap captures "now", a typed
+  // entry passes the officer's time.
+  const finishAt = (boatId, when) =>
+    queueCommit((v) => runMutation(() => api.recordFinish(raceId, boatId, when, v), `${boats[boatId]?.name} finished`));
+  // In a one-design race the finishing order is the officer's, so the next
+  // place is simply the one after the last boat placed.
+  const nextPlace = () => finished.reduce((max, r) => Math.max(max, Number(r.position) || 0), 0) + 1;
   const finish = (boatId) => {
     if (!isOneDesign) {
-      return runMutation(() => api.recordFinish(raceId, boatId, new Date().toISOString(), version), `${boats[boatId]?.name} finished`);
+      return finishAt(boatId, new Date().toISOString());
     }
-    const nextPosition = finished.reduce((max, r) => Math.max(max, Number(r.position) || 0), 0) + 1;
+    const nextPosition = nextPlace();
     return runMutation(
       () => api.adjustResult(raceId, boatId, { code: "FINISHED", position: nextPosition }, version),
       `${boats[boatId]?.name} recorded ${nextPosition}${nextPosition === 1 ? "st" : nextPosition === 2 ? "nd" : nextPosition === 3 ? "rd" : "th"}`
     );
   };
   const undo = (boatId) => runMutation(() => api.undoFinish(raceId, boatId, version));
+  // Release a boat from a code back to an ordinary finish: the penalty fields
+  // go with it (the server drops the committee points and decision record). A
+  // boat with a recorded time is re-placed from that time; in a one-design race
+  // — where places are the officer's order — it takes the next free one, the
+  // same place a tap would give it, and can be moved from the Pos field after.
+  const clearToFinish = (boatId) => {
+    const entry = race.results.find((r) => r.boat_id === boatId);
+    const patch = { code: "FINISHED" };
+    if (isOneDesign && !entry?.finish_time) patch.position = nextPlace();
+    return runMutation(
+      () => api.adjustResult(raceId, boatId, patch, version),
+      `${boats[boatId]?.name} restored to a normal finish`
+    );
+  };
+  // Load a boat's DPI/RDG decision into the panel — the one place the decision
+  // form is filled, whether the code was just picked or an existing decision is
+  // being re-opened. `code` says which decision record (dpi_* / rdg_*) to read.
+  const openDecision = (boatId, code) => {
+    const entry = race.results.find((r) => r.boat_id === boatId);
+    const prefix = code.toLowerCase();
+    setDecision({
+      penalty_points: entry?.penalty_points ?? "",
+      reason: entry?.[`${prefix}_reason`] || "",
+      decision_maker: entry?.[`${prefix}_decision_maker`] || "",
+      date: entry?.[`${prefix}_date`] || "",
+      notes: entry?.[`${prefix}_notes`] || "",
+    });
+    setPendingCode({ boatId, code });
+    setPanelBoat(boatId);
+  };
+  const closeDecision = () => { setPanelBoat(null); setPendingCode(null); };
   const changeCode = async (boatId, code) => {
+    if (code === "FINISHED") {
+      closeDecision();
+      return clearToFinish(boatId);
+    }
     if (code === "DPI" || code === "RDG") {
       // The committee's decision (points + basis) is recorded together — the
       // engine will not infer a DPI/RDG score.
-      const entry = race.results.find((r) => r.boat_id === boatId);
-      setDecision({
-        penalty_points: entry?.penalty_points ?? "",
-        reason: entry?.[`${code.toLowerCase()}_reason`] || "",
-        decision_maker: entry?.[`${code.toLowerCase()}_decision_maker`] || "",
-        date: entry?.[`${code.toLowerCase()}_date`] || "",
-        notes: entry?.[`${code.toLowerCase()}_notes`] || "",
-      });
-      setPanelBoat(boatId);
+      openDecision(boatId, code);
       return;
     }
-    setPanelBoat(null);
+    closeDecision();
     return runMutation(() => api.adjustResult(raceId, boatId, { code }, version));
   };
   const saveDecision = async (r) => {
-    const code = r.code;
+    // A row showing a pending code is saving that code; otherwise the panel is
+    // editing the decision already recorded on the result.
+    const code = pendingCode?.boatId === r.boat_id ? pendingCode.code : r.code;
     const pts = Number(decision.penalty_points);
     if (Number.isNaN(pts) || decision.penalty_points === "") {
       return toast.error(`${code} requires the committee-entered points — the system will not guess a score`);
@@ -529,7 +607,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     const res = await runMutation(
       () => api.adjustResult(raceId, r.boat_id, payload, version),
       code === "DPI" ? "Discretionary penalty recorded" : "Redress decision recorded");
-    if (res) setPanelBoat(null);
+    if (res) closeDecision();
   };
   const checkResults = async () => {
     try {
@@ -547,7 +625,8 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     }
   };
   const changePos = (boatId, position) => runMutation(() => api.adjustResult(raceId, boatId, { position: Number(position) }, version));
-  const changeElapsed = (boatId, seconds) => runMutation(() => api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }, version));
+  const changeElapsed = (boatId, seconds) =>
+    queueCommit((v) => runMutation(() => api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }, v)));
   const setStatus = (s) => runMutation(
     () => api.setStatus(raceId, s, version),
     s === "published" ? "Results published to landing page!" :
@@ -560,6 +639,11 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   );
   const remove = () => runMutation(() => api.deleteRace(raceId, version), "Race deleted").then((r) => { if (r) onBack(); });
   const gun = () => runMutation(() => api.startRace(raceId, new Date().toISOString(), version), "Race started — timer running");
+  // Typed start (the gun fired before the page was open, or it was mis-tapped):
+  // everything measured from the start — live taps, typed finish times, the
+  // elapsed clock — is re-timed against it. Elapsed entry measures from the
+  // start rather than from the finish, so that mode needs no start editor.
+  const setStart = (iso) => queueCommit((v) => runMutation(() => api.startRace(raceId, iso, v), `Start set to ${clockValueOf(iso)}`));
   const clearGun = () => runMutation(() => api.startRace(raceId, null, version), "Timer reset to scheduled start");
   const applyToDay = async () => {
     const selected = racing.map((r) => r.boat_id);
@@ -585,7 +669,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
           <Button variant="ghost" size="sm" onClick={onBack} data-testid="console-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
           <div className="flex-1">
             <div className="font-heading text-lg uppercase tracking-tight leading-none">{meta.class_name} · {meta.series_name}</div>
-            <div className="text-xs text-muted-foreground">{race.mini_group_label || `Race ${race.race_number}`} · {fmtDate(race.date)}{showTiming && ` · Start ${race.start_time}`}</div>
+            <div className="text-xs text-muted-foreground">{race.mini_group_label || `Race ${race.race_number}`} · {fmtDate(race.date)}{showTiming && race.start_time && ` · Start ${race.start_time}`}</div>
           </div>
           <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
           {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300" data-testid="abandoned-badge">Abandoned</Badge>}
@@ -623,46 +707,11 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             <FlagOff className="w-4 h-4 shrink-0" /> This race is abandoned — it is excluded from the series scoring, so the series has one fewer race scored and its discards may reduce. Use “Restore race” below to count it again.
           </section>
         )}
-        {/* Live timing — the clock & elapsed timer only matter while the race is
-            being run; once it has finished and been published they're removed. */}
+        {/* Live timing — the race timer only matters while the race is being
+            run; once it has finished and been published it's removed. */}
         {showTiming && race.status !== "published" && (
-        <section className="rounded-2xl overflow-hidden bg-ocean-dark text-white relative" data-testid="timing-strip">
-          <div className="absolute inset-0 bg-gradient-to-br from-ocean-dark via-ocean to-ocean-light opacity-90" />
-          <div className="relative p-4 sm:p-5 flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-4">
-              <div className="text-center">
-                <div className="flex items-center gap-1 text-[10px] uppercase tracking-widest text-white/60"><Clock className="w-3.5 h-3.5" /> Clock</div>
-                <div className="font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none mt-1">{fmtClock(now)}</div>
-              </div>
-              <div className="w-px h-10 bg-white/20" />
-              <div className="text-center">
-                <div className="text-[10px] uppercase tracking-widest text-white/60">{elapsed == null ? "To start" : elapsed >= 0 ? "Elapsed" : "To start"}</div>
-                {(() => {
-                  if (elapsed == null) {
-                    return <div className="font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none text-white/40 mt-1">--:--</div>;
-                  }
-                  const live = race.actual_start || elapsed >= 0;
-                  const cls = live ? (race.actual_start ? "text-safety" : "text-white") : "text-amber-300";
-                  return <div className={`font-mono text-3xl sm:text-4xl font-bold tabular-nums leading-none mt-1 ${cls} ${race.actual_start ? "animate-pulse" : ""}`}>{fmtElapsed(elapsed)}</div>;
-                })()}
-                <div className="text-[10px] text-white/60 mt-0.5">
-                  {race.actual_start ? `Gun ${fmtClock(Date.parse(race.actual_start))}` : `Scheduled ${race.start_time}`}
-                </div>
-              </div>
-            </div>
-            <div className="flex-1" />
-            <div className="flex items-center gap-2">
-              {race.actual_start && (
-                <Button size="sm" variant="outline" className="border-white/30 text-white hover:bg-white/10" onClick={clearGun} data-testid="clear-gun-btn">
-                  <RotateCcw className="w-4 h-4" /> Reset
-                </Button>
-              )}
-              <Button className="gap-2 bg-safety hover:bg-safety-dark text-white" onClick={gun} data-testid="start-gun-btn" disabled={race.status === "published"}>
-                <Play className="w-4 h-4" /> {race.actual_start ? "Re-start" : "Start race"}
-              </Button>
-            </div>
-          </div>
-        </section>
+          <RaceTimer race={race} now={now} showStartEditor={timeEntryMode !== "elapsed"}
+            onSetStart={setStart} onClearStart={clearGun} onStart={gun} />
         )}
 
         {/* Race day notice — collapsible, hidden entirely when the club has
@@ -707,6 +756,19 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         <section>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
             <h3 className="font-heading uppercase tracking-tight flex items-center gap-2">{isOneDesign ? <ListChecks className="w-5 h-5 text-safety" /> : <Timer className="w-5 h-5 text-safety" />} {isOneDesign ? "Record finishing order" : "Record finishes"}</h3>
+            {showTiming && (
+              <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5" data-testid="time-entry-mode">
+                {TIME_ENTRY_MODES.map((m) => (
+                  <button key={m.id} type="button" data-testid={`time-entry-mode-${m.id}`} onClick={() => chooseTimeEntry(m.id)}
+                    className={`px-3 py-1.5 rounded-md font-heading uppercase tracking-wide text-xs transition-colors ${timeEntryMode === m.id ? "bg-safety text-white" : "text-muted-foreground hover:text-foreground"}`}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <p className="text-sm text-muted-foreground">{isOneDesign ? "Tap boats in the order they finish. Use the provisional table below to correct the order if needed." : TIME_ENTRY_HINTS[timeEntryMode]} {toFinish.length} still racing.</p>
             <div className="flex items-center gap-1.5">
               <Label className="text-xs text-muted-foreground">Order</Label>
               <Select value={boatOrder} onValueChange={setBoatOrder}>
@@ -719,7 +781,11 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
               </Select>
             </div>
           </div>
-          <p className="text-sm text-muted-foreground mb-3">{isOneDesign ? "Tap boats in the order they finish. Use the provisional table below to correct the order if needed." : "Big tap = finish time captured now — or score a non-finish outcome (DNF, DSQ, OCS…) from the menu."} {toFinish.length} still racing.</p>
+          {showTiming && timeEntryMode !== "live" ? (
+            <RaceTimeEntry mode={timeEntryMode} rows={orderBoatIds(racing)} boats={boats} race={race}
+              codes={rrsCodes} hasStart={hasStart}
+              onClock={finishAt} onElapsed={changeElapsed} onCode={changeCode} />
+          ) : (
           <div className={`grid gap-2 sm:gap-3 ${crowded ? "grid-cols-3 sm:grid-cols-4 lg:grid-cols-5" : "grid-cols-2 sm:grid-cols-3"}`} data-testid="finish-grid">
             {!boatsReady && <div className="col-span-full text-sm text-muted-foreground py-4">Loading boats…</div>}
             {boatsReady && toFinish.map((r) => {
@@ -734,9 +800,9 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                   <div className={`bg-black/15 px-2 py-1.5 ${crowded ? "" : ""}`}>
                     <Select value={r.code === "DNS" ? "" : r.code} onValueChange={(v) => v && changeCode(r.boat_id, v)}>
                       <SelectTrigger className="h-7 w-full bg-white/10 text-white border-white/25 data-[placeholder]:text-white/70 text-xs" data-testid={`finish-code-${b.sail_no}`}>
-                        <SelectValue placeholder="Code…" />
+                        <SelectValue placeholder="Code…">{r.code}</SelectValue>
                       </SelectTrigger>
-                      <SelectContent>{BATCH_OUTCOME_CODES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                      <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{outcomeLabel(c.code, c.label)}</SelectItem>)}</SelectContent>
                     </Select>
                   </div>
                 </div>
@@ -744,19 +810,26 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             })}
             {boatsReady && toFinish.length === 0 && <div className="col-span-full text-sm text-muted-foreground py-4">All racing boats have finished, or none selected yet.</div>}
           </div>
+          )}
 
           {finished.length > 0 && (
             <div className="mt-5 rounded-xl border border-border bg-card divide-y" data-testid="finished-list">
               {finished.map((r) => {
                 const b = boats[r.boat_id] || {};
+                // The finish time of day, and how long it took from the start.
+                const elapsed = showTiming && r.finish_time && hasStart ? Date.parse(r.finish_time) - startAt : null;
                 return (
                   <div key={r.boat_id} className="flex items-center gap-3 p-3">
                     <div className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-800 grid place-items-center font-heading text-lg">{r.position}</div>
-                    <div className="flex-1"><div className="font-semibold leading-none">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></div>
-                      {showTiming && <div className="font-mono text-xs text-muted-foreground mt-0.5">{fmtTime(r.finish_time)}{(() => {
-                        const e = startRef ? Date.parse(r.finish_time) - startRef : null;
-                        return e != null && e >= 0 ? <span className="text-ocean font-bold"> · +{fmtElapsed(e)}</span> : null;
-                      })()}</div>}</div>
+                    <div className="flex-1">
+                      <div className="font-semibold leading-none">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></div>
+                      {showTiming && (
+                        <div className="font-mono text-xs text-muted-foreground mt-0.5">
+                          {fmtTime(r.finish_time)}
+                          {elapsed != null && elapsed >= 0 && <span className="text-ocean font-bold"> · elapsed {fmtElapsed(elapsed)}</span>}
+                        </div>
+                      )}
+                    </div>
                     <Button size="sm" variant="outline" data-testid={`undo-btn-${b.sail_no}`} onClick={() => undo(r.boat_id)}><Undo2 className="w-4 h-4" /></Button>
                   </div>
                 );
@@ -784,45 +857,44 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                     officer steps through boats updating positions. */}
                 {race.results.map((r) => {
                   const b = boats[r.boat_id] || {};
-                  const isManual = r.code === "DPI" || r.code === "RDG";
+                  // `stored`: the result already carries a committee decision.
+                  // `shown`: what this row displays now — the decided code as
+                  // soon as it is picked, so choosing DPI/RDG is never silently
+                  // swallowed while its points are being entered.
+                  const stored = r.code === "DPI" || r.code === "RDG";
+                  const pending = pendingCode?.boatId === r.boat_id ? pendingCode.code : null;
+                  const shown = pending || r.code;
+                  // A picked code that is not on the result yet.
+                  const unsaved = pending != null && pending !== r.code;
                   return (
                     <Fragment key={r.boat_id}>
                     <tr className="border-b last:border-0">
                       <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
                       <td>
-                        {r.code === "FINISHED"
+                        {shown === "FINISHED"
                           ? <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />
-                          : <Badge variant="outline" className={CODE_COLORS[r.code]}>{r.code}</Badge>}
+                          : <Badge variant="outline" className={CODE_COLORS[shown]} data-testid={`pos-badge-${b.sail_no}`}>{shown}</Badge>}
                       </td>
                       {showTiming && <td>
-                        {r.code === "FINISHED"
+                        {shown === "FINISHED"
                           ? <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => changeElapsed(r.boat_id, secs)} data-testid={`elapsed-input-${b.sail_no}`} className="[&_input]:w-12" />
                           : <span className="text-muted-foreground">—</span>}
                       </td>}
                       <td>
                         <div className="flex items-center gap-1.5">
-                          <Select value={r.code} onValueChange={(v) => changeCode(r.boat_id, v)}>
-                            <SelectTrigger className="h-8" data-testid={`code-select-${b.sail_no}`}><SelectValue /></SelectTrigger>
-                            <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{c.code}</SelectItem>)}</SelectContent>
+                          <Select value={shown} onValueChange={(v) => changeCode(r.boat_id, v)}>
+                            <SelectTrigger className="h-8" data-testid={`code-select-${b.sail_no}`}><SelectValue>{shown}</SelectValue></SelectTrigger>
+                            <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{outcomeLabel(c.code, c.label)}</SelectItem>)}</SelectContent>
                           </Select>
-                          {isManual && (
+                          {(stored || pending) && (
                             <Button size="icon" variant="ghost" className="h-8 w-8 text-ocean" title="Record / edit the committee decision"
                               data-testid={`decision-btn-${b.sail_no}`}
-                              onClick={() => {
-                                setDecision({
-                                  penalty_points: r.penalty_points ?? "",
-                                  reason: r[`${r.code.toLowerCase()}_reason`] || "",
-                                  decision_maker: r[`${r.code.toLowerCase()}_decision_maker`] || "",
-                                  date: r[`${r.code.toLowerCase()}_date`] || "",
-                                  notes: r[`${r.code.toLowerCase()}_notes`] || "",
-                                });
-                                setPanelBoat(panelBoat === r.boat_id ? null : r.boat_id);
-                              }}>
+                              onClick={() => (panelBoat === r.boat_id ? closeDecision() : openDecision(r.boat_id, shown))}>
                               <Pencil className="w-3.5 h-3.5" />
                             </Button>
                           )}
                         </div>
-                        {isManual && r.penalty_points != null && r.penalty_points !== "" && (
+                        {stored && r.penalty_points != null && r.penalty_points !== "" && (
                           <div className="text-[11px] text-muted-foreground mt-0.5">
                             {r.penalty_points} pts{r[`${r.code.toLowerCase()}_decision_maker`] ? ` · ${r[`${r.code.toLowerCase()}_decision_maker`]}` : ""}
                           </div>
@@ -840,7 +912,12 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                             <div className="col-span-full space-y-1"><Label className="text-[10px] uppercase">Notes</Label><Input className="h-8" value={decision.notes} onChange={(e) => setDecision({ ...decision, notes: e.target.value })} data-testid={`decision-notes-${b.sail_no}`} /></div>
                           </div>
                           <div className="flex items-center justify-between mt-2">
-                            <p className="text-[11px] text-muted-foreground">{r.code === "DPI" ? "Discretionary penalty — imposed by the committee; the score is recorded, never inferred." : "Redress granted — the boat's score is adjusted without changing other boats' positions unless the committee directed it."}</p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {shown === "DPI"
+                                ? "Discretionary penalty — imposed by the committee; the score is recorded, never inferred."
+                                : "Redress granted — the boat's score is adjusted without changing other boats' positions unless the committee directed it (RRS A6.2)."}
+                              {unsaved && <span className="text-amber-700 dark:text-amber-300"> Not recorded yet — enter the points and save to apply {shown} to this boat.</span>}
+                            </p>
                             <Button size="sm" className="bg-ocean hover:bg-ocean-dark h-8" data-testid={`decision-save-${b.sail_no}`} onClick={() => saveDecision(r)}>Save decision</Button>
                           </div>
                         </td>
@@ -975,11 +1052,20 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
     }
     groupRaces.sort((a, b) => a.race_number - b.race_number);
     setRaces(groupRaces);
+    // One boat record per class per season, so an unscoped fetch returns last
+    // season's duplicate of every boat — doubling the sign-on list with rows
+    // no race here can reference. Scope to this group's season, as the Series
+    // boats dialog does.
     const classIds = [...new Set(groupRaces.map((r) => r.class_id))];
+    const year = groupRaces[0]?.year;
     const bm = {};
     for (const cid of classIds) {
       try {
-        const bs = await api.getBoats({ class_id: cid });
+        const bs = await api.getBoats({
+          class_id: cid,
+          ...(year ? { year } : {}),
+          ...(clubId ? { club_id: clubId } : {}),
+        });
         bs.forEach((b) => (bm[b.id] = b));
       } catch {}
     }
@@ -1928,7 +2014,7 @@ export default function Officer() {
       <div className="w-11 h-11 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading text-lg">{raceLabel(r, sr)}</div>
       <div className="flex-1">
         <div className="font-semibold leading-none">{classes[r.class_id]?.name} · {series[r.series_id]?.name}</div>
-        <div className="text-xs text-muted-foreground mt-1">{fmtDate(r.date)} · Start {r.start_time}</div>
+        <div className="text-xs text-muted-foreground mt-1">{fmtDate(r.date)}{r.start_time ? ` · Start ${r.start_time}` : ""}</div>
         <MiniNote item={r} />
       </div>
       <Badge className={STATUS_BADGE[r.status]}>{r.status}</Badge>
@@ -2061,7 +2147,7 @@ export default function Officer() {
                       <div className="w-10 h-10 rounded-lg bg-safety/15 grid place-items-center text-safety font-heading">{raceLabel(item, series[item.series_id])}</div>
                       <div className="flex-1">
                         <div className="font-semibold leading-none">{item.class_name} · {item.series_name}</div>
-                        <div className="text-xs text-muted-foreground mt-1">Start {item.start_time}</div>
+                        <div className="text-xs text-muted-foreground mt-1">{item.start_time ? `Start ${item.start_time}` : "No start time set"}</div>
                         <MiniNote item={item} />
                       </div>
                       <Badge className={item.status === "scheduled" ? "bg-ocean/10 text-ocean" : STATUS_BADGE[item.status]}>

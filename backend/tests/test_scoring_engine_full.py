@@ -54,7 +54,7 @@ class TestEveryCodeScores:
 
     def test_non_finish_codes_score_series_plus_1_default(self):
         # A5.2 default: every DNC-family code scores series entries + 1.
-        for code in ("DNC", "DNS", "OCS", "UFD", "BFD", "NSC", "DNF", "RET", "DSQ", "DNE"):
+        for code in ("DNC", "DNS", "OCS", "UFD", "BFD", "NSC", "DNF", "RET", "DSQ", "DNE", "DGM"):
             assert server.result_points(_res(code), 10, 8) == 11.0, code
 
     def test_dnc_always_series_plus_1(self):
@@ -86,6 +86,36 @@ class TestEveryCodeScores:
         # default TLE method "finishers_plus_1": one more than the boats that
         # finished the race, regardless of the A5 base
         assert server.result_points(_res("TLE"), 10, 8, finishers=6) == 7.0
+
+
+# RRS 2025-2028 Appendix A10, verbatim, plus the three codes this app adds
+# because A10 defines no abbreviation for them (FINISHED = scored by her
+# finishing place, rule A4; TLE and OOD are series/SI conventions). A code
+# missing here is a code no officer can score a boat with.
+A10_ABBREVIATIONS = {"DNC", "DNS", "OCS", "ZFP", "UFD", "BFD", "SCP", "NSC",
+                     "DNF", "RET", "DSQ", "DNE", "DGM", "RDG", "DPI"}
+APP_CONVENTIONS = {"FINISHED", "TLE", "OOD"}
+
+
+class TestCodeCatalogue:
+    def test_offers_every_appendix_a10_abbreviation(self):
+        codes = {c["code"] for c in server.RRS_CODES}
+        assert A10_ABBREVIATIONS <= codes, A10_ABBREVIATIONS - codes
+        assert codes == A10_ABBREVIATIONS | APP_CONVENTIONS
+
+    def test_offers_finished_first_so_a_code_can_be_taken_back(self):
+        assert server.RRS_CODES[0]["code"] == "FINISHED"
+
+    def test_rule_90_3_b_scores_are_never_excludable(self):
+        # A10 words DNE and DGM ". . . not excludable under rule 90.3(b)":
+        # A2.1 lets every other score be discarded.
+        assert server.NON_DISCARDABLE == {"DNE", "DGM"}
+
+    def test_a_disqualification_takes_a_finishing_place_away(self):
+        # A6.1: if a boat is disqualified or scored NSC, each boat with a worse
+        # finishing place moves up one. DSQ/DNE/DGM must trigger that.
+        for code in ("DSQ", "DNE", "DGM", "NSC"):
+            assert code in server.POST_FINISH_RETIRE_CODES, code
 
 
 # ---------------------------------------------------------------------------

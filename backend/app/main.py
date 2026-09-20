@@ -1135,32 +1135,38 @@ class LockSeriesInput(BaseModel):
     expected_version: Optional[int] = None
 
 
-# RRS Appendix A10 scoring abbreviations (2025-2028).
+# RRS Appendix A10 scoring abbreviations (2025-2028), worded as A10 words them.
+# Three entries are this app's own, because A10 defines no abbreviation for
+# them: FINISHED (a boat scored by her finishing place — rule A4), TLE (a
+# series/SI time-limit convention) and OOD (a club duty convention).
 RRS_CODES = [
     {"code": "FINISHED", "label": "Finished (use position)"},
-    {"code": "DNC", "label": "DNC — Did not come to starting area"},
-    {"code": "DNS", "label": "DNS — Did not start"},
-    {"code": "OCS", "label": "OCS — On course side at start"},
+    {"code": "DNC", "label": "DNC — Did not start, did not come to the starting area"},
+    {"code": "DNS", "label": "DNS — Did not start (other than DNC and OCS)"},
+    {"code": "OCS", "label": "OCS — Did not start; on the course side at her starting signal, or broke rule 30.1"},
     {"code": "UFD", "label": "UFD — Disqualification under rule 30.3"},
     {"code": "BFD", "label": "BFD — Disqualification under rule 30.4"},
-    {"code": "ZFP", "label": "ZFP — Z flag penalty (rule 30.2, scored per the series penalty rule)"},
-    {"code": "SCP", "label": "SCP — Scoring penalty taken (rule 44.3)"},
+    {"code": "ZFP", "label": "ZFP — 20% penalty under rule 30.2 (scored per the series penalty rule)"},
+    {"code": "SCP", "label": "SCP — Took a Scoring Penalty under rule 44.3(a)"},
     {"code": "NSC", "label": "NSC — Did not sail the course"},
     {"code": "DNF", "label": "DNF — Did not finish"},
     {"code": "RET", "label": "RET — Retired"},
     {"code": "DSQ", "label": "DSQ — Disqualified"},
-    {"code": "DNE", "label": "DNE — Disqualification not excludable"},
-    {"code": "DPI", "label": "DPI — Discretionary penalty imposed (manual points)"},
-    {"code": "RDG", "label": "RDG — Redress given (manual points)"},
+    {"code": "DNE", "label": "DNE — Disqualification (other than DGM) not excludable under rule 90.3(b)"},
+    {"code": "DGM", "label": "DGM — Disqualification for gross misconduct, not excludable under rule 90.3(b)"},
+    {"code": "DPI", "label": "DPI — Discretionary penalty imposed (committee-entered points)"},
+    {"code": "RDG", "label": "RDG — Redress given (committee-entered points)"},
     {"code": "TLE", "label": "TLE — Time limit expired (scored per the series TLE rule)"},
     {"code": "OOD", "label": "OOD — Officer of the Day duty (average of own scores across the series, incl. DNC)"},
 ]
-# Rule A2.1: only DNE may not be excluded from a series score.
-NON_DISCARDABLE = {"DNE"}
+# Both rule 90.3(b) abbreviations — DNE and DGM — carry a score that may not
+# be excluded from a series score (RRS A2.1 excludes every other score).
+NON_DISCARDABLE = {"DNE", "DGM"}
 FINISH_CODES = {"FINISHED"}
-# Codes that mean the boat did not finish (or never started): scoring them on a
-# boat that had finished triggers RRS A6.1 (boats behind move up one place).
-POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "NSC", "OOD", "TLE"}
+# Codes that mean the boat did not finish, never started or was disqualified:
+# scoring them on a boat that had finished triggers RRS A6.1 (each boat with a
+# worse finishing place moves up one place).
+POST_FINISH_RETIRE_CODES = {"DNC", "DNS", "OCS", "UFD", "BFD", "DNF", "RET", "DSQ", "DNE", "DGM", "NSC", "OOD", "TLE"}
 # Duty codes: the boat did not race — it did its club duty (Officer of the
 # Day, rescue boat, crew) — and scores the average of its own points across
 # every race in the series before discards, DNC included (see
@@ -1179,6 +1185,12 @@ PENALTY_CODES = {"SCP", "ZFP"}
 # Manual-points codes: the race committee / protest committee decides the
 # resulting score (DPI — discretionary penalty; RDG — redress granted).
 MANUAL_POINT_CODES = {"DPI", "RDG"}
+# The committee-decision record carried on a result by those two codes. It
+# belongs to the decision, so releasing the boat from the code drops it — a
+# normal finish must not keep a penalty's justification attached (the audit
+# log keeps the history).
+DECISION_FIELDS = ("dpi_reason", "dpi_decision_maker", "dpi_date", "dpi_notes",
+                   "rdg_reason", "rdg_decision_maker", "rdg_date", "rdg_notes")
 # Version of this scoring engine. Every locked-season snapshot records the
 # engine version that produced it, so a future rewrite can never be mistaken
 # for the rules that actually applied to a historical season.
@@ -4381,6 +4393,15 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
     expected = _expected_version(data)
     selected = set(data.boat_ids)
     results = race["results"]
+    # A boat signed on that has no line in this race yet — the class gained her
+    # after the race was created, or a mini-series sub-race was seeded from an
+    # older fleet — still races: give her the line the selection asks for.
+    missing = selected - {r["boat_id"] for r in results}
+    if missing:
+        boats = await db.boats.find({"id": {"$in": list(missing)}, "class_id": race.get("class_id")},
+                                    {"_id": 0}).to_list(500)
+        results.extend({"boat_id": b["id"], "code": "DNS", "finish_time": None,
+                        "position": None, "penalty_points": 0} for b in boats)
     previously_finished = {r["boat_id"] for r in results if r.get("code") == "FINISHED"}
     for r in results:
         if r["boat_id"] in selected:
@@ -4477,6 +4498,8 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
         # can never leak into a later finishing-place score.
         if prev_code in MANUAL_POINT_CODES and data.code not in MANUAL_POINT_CODES:
             target["penalty_points"] = 0
+            for field in DECISION_FIELDS:
+                target.pop(field, None)
     # DPI/RDG are decisions, never inferences: the resulting score must be
     # entered by the committee on THIS request rather than guessed. The stored
     # penalty_points default of 0 must never satisfy the requirement — a
@@ -4486,8 +4509,7 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
         raise HTTPException(status_code=400,
                             detail=f"{new_code} requires the resulting points entered by the committee "
                                    "(penalty_points) — the system will not infer a score.")
-    for field in ("dpi_reason", "dpi_decision_maker", "dpi_date", "dpi_notes",
-                  "rdg_reason", "rdg_decision_maker", "rdg_date", "rdg_notes"):
+    for field in DECISION_FIELDS:
         value = getattr(data, field)
         if value is not None:
             target[field] = value
@@ -4518,6 +4540,14 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     # finisher scored as not finishing/retiring/DSQ) or an elapsed-time edit.
     resequence = data.elapsed_seconds is not None
     if data.code is not None and prev_code == "FINISHED" and data.code in POST_FINISH_RETIRE_CODES:
+        resequence = True
+    # ... and the same in reverse: a boat released from a code back to a normal
+    # finish re-enters the finishing order from its recorded time, so the boats
+    # it was taken out of order ahead of move down again. Handicap places are
+    # derived from corrected time; one-design places are the officer's order and
+    # are never re-derived from the clock.
+    if new_code == "FINISHED" and prev_code != "FINISHED" and target.get("finish_time") \
+            and await _race_scoring_mode(race) in ("irc", "py"):
         resequence = True
     if resequence:
         await _resequence_race(race)
@@ -5464,7 +5494,7 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
                 series rules impose that limit.
     TLE      -> the series' configured TLE rule (default: finishers + 1).
     DNC      -> series entries + 1 under every convention.
-    DNS/OCS/UFD/BFD/NSC/DNF/RET/DSQ/DNE -> the active A5 base: series
+    DNS/OCS/UFD/BFD/NSC/DNF/RET/DSQ/DNE/DGM -> the active A5 base: series
                 entries + 1 (A5.2 default), start-area entries + 1 (A5.3),
                 or finishers + 1 (RYA/Sailwave convention).
     OOD      -> duty average over the series (DNC included), filled in later
@@ -5506,8 +5536,8 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
         if method == "dnc":
             return float(series_entries + 1)
         return float(dnf)
-    # A5.2 (default): DNC, DNS, OCS, UFD, BFD, DNF, RET, DSQ, DNE and NSC all
-    # score one more than the number of boats entered in the series.
+    # A5.2 (default): DNC, DNS, OCS, UFD, BFD, DNF, RET, DSQ, DNE, DGM and NSC
+    # all score one more than the number of boats entered in the series.
     # A5.3 (SI option) / finishers convention: only DNC uses the series total;
     # the other codes use the active base (start-area or finishers).
     if code != "DNC" and cfg.get("a5_convention") in ("a5_3", "finishers"):
@@ -6916,6 +6946,11 @@ async def fleet_profile(fleet_id: str):
     # and upcoming scheduled races. Everything is derived from the same
     # standings the results pages show — nothing is recomputed or duplicated.
     DID_NOT_SAIL = {"DNC", "DNS"}
+    # Codes whose score is not a finishing position, so the history shows the
+    # code itself (as the series tables do) instead of an invented place: a
+    # boat that did not sail, and a boat on duty — an OOD boat is on the bank,
+    # not on the start line.
+    NO_POSITION_CODES = DID_NOT_SAIL | {"OOD"}
     today = _date.today().isoformat()
     member_by_cy = {(m.get("class_id"), m.get("year")): m for m in members}
     # Keep a complete, de-duplicated career history for the boat-level
@@ -6952,7 +6987,7 @@ async def fleet_profile(fleet_id: str):
                 rdoc = race_docs.get(int(m.get("race_number") or 0)) or {}
                 boat_res = next((x for x in (rdoc.get("results") or []) if x.get("boat_id") in ids), None)
                 position = (boat_res or {}).get("position")
-                if position is None and code not in DID_NOT_SAIL:
+                if position is None and code not in NO_POSITION_CODES:
                     # TLE / penalty / redress boats carry points but no stored
                     # position — rank them by points among those who raced.
                     raced_points = []
@@ -6960,7 +6995,7 @@ async def fleet_profile(fleet_id: str):
                         if r.get("boat_id") in ids:
                             continue
                         rs = r.get("scores") or []
-                        if i < len(rs) and (rs[i].get("code") or "DNC") not in DID_NOT_SAIL:
+                        if i < len(rs) and (rs[i].get("code") or "DNC") not in NO_POSITION_CODES:
                             raced_points.append(float(rs[i].get("points", 0)))
                     position = 1 + sum(1 for p in raced_points if p < points)
                 history.append({
