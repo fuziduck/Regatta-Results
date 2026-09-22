@@ -309,6 +309,7 @@ export default function Clubs() {
                           <div className="flex items-center gap-1.5 shrink-0">
                             {c.latest?.scoring_mode === "irc" && <Badge variant="outline" className="text-[10px] text-indigo-700 border-indigo-300 bg-indigo-50 dark:text-indigo-300 dark:border-indigo-500/40 dark:bg-indigo-500/15">IRC</Badge>}
                             {c.latest?.scoring_mode === "py" && <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-300 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-500/40 dark:bg-emerald-500/15">PY</Badge>}
+                            {c.latest?.scoring_mode === "ytc" && <Badge variant="outline" className="text-[10px] text-cyan-700 border-cyan-300 bg-cyan-50 dark:text-cyan-300 dark:border-cyan-500/40 dark:bg-cyan-500/15">YTC</Badge>}
                             {c.latest?.scoring_mode === "one_design" && <Badge variant="outline" className="text-[10px] text-slate-600 border-slate-300 bg-slate-50 dark:text-slate-300 dark:border-slate-500/40 dark:bg-slate-500/15">One Design</Badge>}
                             <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover/class:text-ocean group-hover/class:translate-x-0.5 transition-all" />
                           </div>

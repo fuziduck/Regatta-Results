@@ -284,6 +284,15 @@ def _standings(series, boats, races):
     return asyncio.run(server.compute_series_standings(series))
 
 
+def _mini_standings(series, boats, races, race_numbers, discards=0):
+    """One mini-series group's standings view, same stub as _standings."""
+    server.db = types.SimpleNamespace(
+        races=_Coll(races), boats=_Coll(boats),
+        classes=_Coll([{"id": "c1", "club_id": "club-1"}]), clubs=_Coll([]))
+    return asyncio.run(server.compute_series_standings(
+        series, race_numbers=race_numbers, discards=discards))
+
+
 class _Cursor:
     def __init__(self, items):
         self.items = items
@@ -603,6 +612,31 @@ class TestDutyRecalculation:
         by_id4 = {r["boat_id"]: r for r in st4["standings"]}
         assert by_id4["b1"]["scores"][2]["points"] == 1.3
 
+    def test_duty_average_is_the_series_not_the_mini_series_showing_it(self):
+        # A day split into a mini series (R1 -> R1A/R1B) with an OOD in R1A.
+        # The duty score is the boat's average over the WHOLE series, so the
+        # mini-series view must show the same number the series view does —
+        # not an average of the mini races alone (which here would be 4.0).
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", code="OOD"), _fin("b2", 1)], date="2026-05-01", id="r1a"),
+            _race(1, [_fin("b1", 4), _fin("b2", 1)], date="2026-05-01", id="r1b"),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(3, [_fin("b1", 2), _fin("b2", 1)]),
+        ]
+        series = {**self._series(), "mini_series": True,
+                  "mini_series_groups": [{"name": "Mini R1", "race_numbers": [1],
+                                          "discards": 0, "scoring": "additional"}]}
+        # (4 + 1 + 2) / 3 = 2.33, displayed to one decimal place.
+        full = {r["boat_id"]: r for r in _standings(series, boats, races)["standings"]}
+        mini = {r["boat_id"]: r for r in _mini_standings(series, boats, races, [1])["standings"]}
+        assert full["b1"]["scores"][0]["code"] == "OOD"
+        assert full["b1"]["scores"][0]["points"] == 2.3
+        assert mini["b1"]["scores"][0]["code"] == "OOD"
+        assert mini["b1"]["scores"][0]["points"] == 2.3
+        # The mini view still only scores its own races.
+        assert [s["points"] for s in mini["b1"]["scores"]] == [2.3, 4.0]
+
     def test_duty_applied_before_discard(self):
         # OOD average must feed the discard calculation: the duty race itself
         # is discardable and the net reflects it.
@@ -831,8 +865,9 @@ class TestSeasonLocking:
         r1 = next(r for r in snap["races"] if r["race_number"] == 1)
         b1 = next(e for e in r1["results"] if e["boat_id"] == "b1")
         assert b1["code"] == "FINISHED" and b1["points"] == 1.0
-        # ratings and NoR/SI settings captured
-        assert snap["ratings"]["b1"] == {"tcc": None, "py": None}
+        # ratings (all three certificates, so a locked season can still show
+        # IRC, PY or YTC corrected times) and NoR/SI settings captured
+        assert snap["ratings"]["b1"] == {"tcc": None, "py": None, "ytc": None}
         assert snap["nor_si_settings"]["planned_races"] == 6
 
     def test_locked_standings_served_from_snapshot_never_recomputed(self):

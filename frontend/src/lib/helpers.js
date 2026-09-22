@@ -133,9 +133,29 @@ export function clockValueOf(iso) {
     .map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-// Corrected time in seconds for a handicap class — mirrors the backend
-// _corrected_time_sec / _py_corrected_sec. "irc": elapsed x TCC; "py"
-// (Portsmouth Yardstick): elapsed x 1000 / PY. Both rounded to the nearest
+// The scoring modes a class or series can use: the display label, and the boat
+// rating the mode corrects by. Mirrors the backend's RATING_FIELD — IRC
+// corrects by TCC, while PY (Portsmouth Yardstick) and YTC (RYA Yacht Time
+// Correction) are separate yardstick certificates sharing one formula.
+export const SCORING_MODES = {
+  one_design: { label: "One-design" },
+  irc: { label: "IRC", rating: "tcc" },
+  py: { label: "PY", rating: "py", yardstick: true },
+  ytc: { label: "YTC", rating: "ytc", yardstick: true },
+};
+
+export const scoringModeLabel = (mode) => (SCORING_MODES[mode] || SCORING_MODES.one_design).label;
+
+// The rating on a boat record that a scoring mode corrects by; null for
+// one-design and for a boat that has no rating in that mode.
+export function boatRating(mode, boat) {
+  const field = (SCORING_MODES[mode] || {}).rating;
+  return field ? (boat || {})[field] ?? null : null;
+}
+
+// Corrected time in seconds for a handicap class — mirrors the backend's
+// _corrected_time_sec / _yardstick_corrected_sec: elapsed x TCC for IRC,
+// elapsed x 1000 / number for the yardstick modes. Rounded to the nearest
 // second, 0.5 up. Returns null when the elapsed time or rating is missing.
 export function correctedSecondsOf(finishTime, race, rating, mode = "irc") {
   // Use the exact elapsed (not the whole-second-rounded display value) so the
@@ -146,7 +166,7 @@ export function correctedSecondsOf(finishTime, race, rating, mode = "irc") {
   const e = Date.parse(finishTime) - Date.parse(start);
   if (!Number.isFinite(e) || e < 0) return null;
   const el = e / 1000;
-  if (mode === "py") return Math.round((el * 1000) / rating);
+  if (SCORING_MODES[mode]?.yardstick) return Math.round((el * 1000) / rating);
   return Math.round(el * rating);
 }
 

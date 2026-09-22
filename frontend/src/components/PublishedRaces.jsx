@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, scoringModeLabel, SCORING_MODES, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { FlagOff } from "lucide-react";
@@ -57,6 +57,9 @@ export default function PublishedRaces({
     });
     return () => { active = false; };
   }, [seriesId, classId, clubId]);
+
+  // Yardstick handicaps (PY, YTC) show the boat's number; IRC shows the design.
+  const yardstick = !!(SCORING_MODES[scoringMode] || {}).yardstick;
 
   const completed = useMemo(() => races.filter((race) => raceStatus(race) === "Completed"), [races]);
   const sorted = useMemo(() => [...completed].sort((a, b) => (a.date < b.date ? 1 : -1)), [completed]);
@@ -129,12 +132,13 @@ export default function PublishedRaces({
                       <thead>
                         <tr className="text-left text-muted-foreground border-b">
                           <th className="py-2 w-10">Pos</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
-                          {scoringMode !== "one_design" && <><th>{scoringMode === "py" ? "PY" : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
+                          {scoringMode !== "one_design" && <><th>{yardstick ? scoringModeLabel(scoringMode) : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((result) => {
                           const boat = boats[result.boat_id] || {};
+                          const rating = boatRating(scoringMode, boat);
                           return (
                             <tr key={result.boat_id} className="border-b last:border-0">
                               <td className="py-2 font-heading text-base">{result.code === "FINISHED" ? result.position : "–"}</td>
@@ -146,9 +150,9 @@ export default function PublishedRaces({
                               <td className="text-muted-foreground">{boat.helm}</td>
                               <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[result.code] || ""} text-[10px]`}>{result.code}</Badge></td>
                               {scoringMode !== "one_design" && <>
-                                <td className="text-muted-foreground">{scoringMode === "py" ? (boat.py ? Math.round(boat.py) : "—") : (boat.boat_type || "—")}</td>
+                                <td className="text-muted-foreground">{yardstick ? (rating ? Math.round(rating) : "—") : (boat.boat_type || "—")}</td>
                                 <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsedSecondsOf(result.finish_time, race)) : "—"}</td>
-                                <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(result.finish_time, race, scoringMode === "py" ? boat.py : boat.tcc, scoringMode)) : "—"}</td>
+                                <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(result.finish_time, race, rating, scoringMode)) : "—"}</td>
                               </>}
                             </tr>
                           );

@@ -502,7 +502,8 @@ export default function Boat() {
                 <dl className="divide-y divide-border text-sm">
                   {[["Boat Name", season?.boat_info?.name], ["Sail Number", season?.boat_info?.sail_no], ["Class", season?.class_name],
                     ["Home Club", season?.boat_info?.home_club], ["Owner / Helm", season?.boat_info?.helm],
-                    ["Design", season?.boat_info?.boat_type], ["Yardstick", season?.boat_info?.py], ["TCC", season?.boat_info?.tcc]]
+                    ["Design", season?.boat_info?.boat_type], ["Yardstick", season?.boat_info?.py],
+                    ["YTC", season?.boat_info?.ytc], ["TCC", season?.boat_info?.tcc]]
                     .map(([k, v]) => (
                       <div key={k} className="flex items-center justify-between gap-3 py-2">
                         <dt className="text-muted-foreground">{k}</dt>
@@ -684,7 +685,8 @@ export default function Boat() {
                 {[["Boat Name", season?.boat_info?.name || profile.name], ["Sail Number", season?.boat_info?.sail_no || profile.sail_no],
                   ["Class", season?.class_name || "—"], ["Home Club", season?.boat_info?.home_club || "—"],
                   ["Owner / Helm", season?.boat_info?.helm || "—"], ["Design", season?.boat_info?.boat_type || "—"],
-                  ["Yardstick", season?.boat_info?.py ?? "—"], ["TCC", season?.boat_info?.tcc ?? "—"]]
+                  ["Yardstick", season?.boat_info?.py ?? "—"], ["YTC", season?.boat_info?.ytc ?? "—"],
+                  ["TCC", season?.boat_info?.tcc ?? "—"]]
                   .map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between gap-3 py-2.5">
                       <dt className="text-muted-foreground">{k}</dt>

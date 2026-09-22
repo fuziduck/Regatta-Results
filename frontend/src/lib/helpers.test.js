@@ -9,6 +9,8 @@ import {
   clockValueOf,
   raceClock,
   outcomeLabel,
+  boatRating,
+  correctedSecondsOf,
 } from "./helpers";
 
 describe("shouldWrapBoatName (14-character threshold on the name itself)", () => {
@@ -249,5 +251,33 @@ describe("outcomeLabel", () => {
   it("says what picking FINISHED does, and leaves every other code alone", () => {
     expect(outcomeLabel("FINISHED")).toBe("FINISHED — clear penalty");
     expect(outcomeLabel("DNF")).toBe("DNF");
+  });
+});
+
+describe("handicap corrected time (IRC, PY and RYA YTC)", () => {
+  // 1800 s elapsed from a 10:00 start.
+  const race = { date: "2026-05-02", start_time: "10:00", start_tz_offset_minutes: 0 };
+  const finish = "2026-05-02T10:30:00Z";
+
+  it("corrects by TCC for IRC and by 1000 ÷ number for both yardstick modes", () => {
+    expect(correctedSecondsOf(finish, race, 1.015, "irc")).toBe(1827);
+    // 1800 x 1000 / 1013 = 1776.9 -> 1777
+    expect(correctedSecondsOf(finish, race, 1013, "py")).toBe(1777);
+    expect(correctedSecondsOf(finish, race, 1013, "ytc")).toBe(1777);
+  });
+
+  it("returns nothing when the rating or the elapsed time is missing", () => {
+    expect(correctedSecondsOf(finish, race, null, "ytc")).toBeNull();
+    expect(correctedSecondsOf(null, race, 1013, "ytc")).toBeNull();
+  });
+
+  it("reads each mode's own certificate off the boat record", () => {
+    const boat = { tcc: 1.015, py: 1013, ytc: 1020 };
+    expect(boatRating("irc", boat)).toBe(1.015);
+    expect(boatRating("py", boat)).toBe(1013);
+    expect(boatRating("ytc", boat)).toBe(1020);
+    // One-design is scored on finish order — it has no rating to correct by.
+    expect(boatRating("one_design", boat)).toBeNull();
+    expect(boatRating("ytc", {})).toBeNull();
   });
 });

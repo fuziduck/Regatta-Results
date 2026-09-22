@@ -858,9 +858,10 @@ class ClassInput(BaseModel):
     name: str
     default_start_time: str = "10:30"
     # Scoring system for the class: "one_design" (finish order), "irc"
-    # (corrected = elapsed x TCC, per IRC Rule 12.2) or "py" (Portsmouth
-    # Yardstick: corrected = elapsed x 1000 / PY).
-    scoring_mode: Literal["one_design", "irc", "py"] = "one_design"
+    # (corrected = elapsed x TCC, per IRC Rule 12.2) or a yardstick handicap
+    # (corrected = elapsed x 1000 / number) — "py" (Portsmouth Yardstick) or
+    # "ytc" (RYA Yacht Time Correction). See RATING_FIELD.
+    scoring_mode: Literal["one_design", "irc", "py", "ytc"] = "one_design"
     # Required when a webmaster creates a class (officer/admin default to
     # their own club).
     club_id: Optional[str] = None
@@ -882,9 +883,13 @@ class BoatInput(BaseModel):
     # one-design classes. Corrected time = elapsed x TCC.
     tcc: Optional[float] = None
     # RYA Portsmouth Yardstick number (e.g. 1013); None for one-design
-    # classes. Corrected time = elapsed x 1000 / PY. A boat may carry both
-    # TCC and PY and the class's scoring mode decides which is used.
+    # classes. Corrected time = elapsed x 1000 / PY.
     py: Optional[float] = None
+    # RYA Yacht Time Correction number, a separate certificate from PY with
+    # the same yardstick form: corrected time = elapsed x 1000 / YTC. A boat
+    # may carry any combination of TCC, PY and YTC; the class or series
+    # scoring mode decides which one is used.
+    ytc: Optional[float] = None
     # Boat make/model (used mainly for the cruiser fleet, e.g. "Bavaria 34").
     boat_type: Optional[str] = None
     # Home club label shown on results (defaults to the club that set up the
@@ -961,11 +966,12 @@ class SeriesInput(BaseModel):
     class_id: str
     year: int
     # Scoring system for THIS series: "one_design" (finish order), "irc"
-    # (corrected = elapsed x TCC) or "py" (Portsmouth: corrected =
-    # elapsed x 1000 / PY). The choice lives on the series, not the class or
-    # boat, so a fleet can race IRC one series and PY the next. Races without
-    # a series (legacy) fall back to the class's legacy scoring_mode.
-    scoring_mode: Literal["one_design", "irc", "py"] = "one_design"
+    # (corrected = elapsed x TCC), "py" (Portsmouth: elapsed x 1000 / PY) or
+    # "ytc" (RYA Yacht Time Correction: elapsed x 1000 / YTC). The choice
+    # lives on the series, not the class or boat, so a fleet can race IRC one
+    # series and a yardstick handicap the next. Races without a series
+    # (legacy) fall back to the class's legacy scoring_mode.
+    scoring_mode: Literal["one_design", "irc", "py", "ytc"] = "one_design"
     # What this series is competing for. This is separate from regatta_id:
     # the latter links the series to a named competition, while this field
     # preserves the series' own category. Missing on legacy records means the
@@ -4437,7 +4443,8 @@ async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(re
             r["code"] = "FINISHED"
             r["finish_time"] = data.finish_time or now_iso()
             r["position"] = None  # set by re-sequencing below
-    # Re-sequence all finishers: one-design by finish time, IRC by corrected time.
+    # Re-sequence all finishers: one-design by finish time, handicap classes by
+    # corrected time.
     await _resequence_race(race)
     result = await db.races.update_one(_version_filter(race_id, expected),
                                        {"$set": {"results": results}, "$inc": {"version": 1}})
@@ -4462,7 +4469,7 @@ async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(requ
             r["finish_time"] = None
             r["position"] = None
     # Re-sequence the remaining finishers per the class scoring mode (finish
-    # time for one-design, corrected time for IRC/PY handicap classes).
+    # time for one-design, corrected time for handicap classes).
     await _resequence_race(race)
     result = await db.races.update_one(_version_filter(race_id, expected),
                                        {"$set": {"results": results}, "$inc": {"version": 1}})
@@ -4547,7 +4554,7 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     # derived from corrected time; one-design places are the officer's order and
     # are never re-derived from the clock.
     if new_code == "FINISHED" and prev_code != "FINISHED" and target.get("finish_time") \
-            and await _race_scoring_mode(race) in ("irc", "py"):
+            and await _race_scoring_mode(race) in RATING_FIELD:
         resequence = True
     if resequence:
         await _resequence_race(race)
@@ -5640,14 +5647,34 @@ def _corrected_time_sec(finish_time, start_time, tcc):
     return round_half_up(el * tcc)
 
 
-def _py_corrected_sec(finish_time, start_time, py):
-    """Portsmouth Yardstick: corrected time = elapsed x 1000 / PY, rounded to
-    the nearest second with 0.5 seconds rounding up (same convention as IRC).
-    None if not computable."""
+def _yardstick_corrected_sec(finish_time, start_time, yardstick):
+    """Yardstick handicap: corrected time = elapsed x 1000 / number, rounded
+    to the nearest second with 0.5 seconds rounding up (same convention as
+    IRC). Both Portsmouth Yardstick ("py") and RYA Yacht Time Correction
+    ("ytc") publish yardstick-form numbers, so they share this formula. None
+    if not computable."""
     el = _elapsed_seconds(finish_time, start_time)
-    if el is None or not py:
+    if el is None or not yardstick:
         return None
-    return round_half_up(el * 1000.0 / py)
+    return round_half_up(el * 1000.0 / yardstick)
+
+
+# The handicap scoring modes and the boat rating each one corrects by. IRC uses
+# the boat's TCC; PY and YTC are two separate yardstick certificates. Anything
+# not listed here is not a handicap mode ("one_design" is scored on finish
+# order).
+RATING_FIELD = {"irc": "tcc", "py": "py", "ytc": "ytc"}
+
+
+def _corrected_seconds(mode, finish_time, start_time, rating):
+    """Corrected time in seconds for a handicap scoring mode (see
+    RATING_FIELD), or None when the mode is not a handicap or the elapsed time
+    or rating is missing."""
+    if mode == "irc":
+        return _corrected_time_sec(finish_time, start_time, rating)
+    if mode in RATING_FIELD:
+        return _yardstick_corrected_sec(finish_time, start_time, rating)
+    return None
 
 
 def _race_start_time(race, cls=None):
@@ -5693,8 +5720,8 @@ def _resequence_finished(results, scoring_mode="one_design", start_time=None, bo
     """Assign finishing places 1..n to finished boats.
 
     one_design: by recorded finish time.
-    irc: by corrected time (elapsed x TCC, rounded per IRC Rule 12.2).
-    py: by corrected time (elapsed x 1000 / PY, Portsmouth Yardstick).
+    Any handicap mode (see RATING_FIELD): by corrected time — IRC Rule 12.2
+    for "irc", yardstick (elapsed x 1000 / number) for "py" and "ytc".
     Handicap modes: boats with equal corrected time share a place, and RRS A7
     later splits the points of the tied places and the place immediately
     below. Boats whose corrected time cannot be computed (no rating / no start
@@ -5703,14 +5730,12 @@ def _resequence_finished(results, scoring_mode="one_design", start_time=None, bo
     finished = [r for r in results if r.get("code") == "FINISHED"]
     if not finished:
         return
-    if scoring_mode in ("irc", "py") and start_time:
+    if scoring_mode in RATING_FIELD and start_time:
         ratings = boat_ratings or {}
 
         def ct(r):
-            bid = r.get("boat_id")
-            if scoring_mode == "py":
-                return _py_corrected_sec(r.get("finish_time"), start_time, ratings.get(bid))
-            return _corrected_time_sec(r.get("finish_time"), start_time, ratings.get(bid))
+            return _corrected_seconds(scoring_mode, r.get("finish_time"), start_time,
+                                      ratings.get(r.get("boat_id")))
 
         pairs = [(r, ct(r)) for r in finished]
         pairs.sort(key=lambda rc: (rc[1] is None,
@@ -5755,14 +5780,15 @@ async def _race_scoring_mode(race, cls=None):
 async def _resequence_race(race):
     """Re-sequence a race's finished boats per the race's series scoring mode
     (legacy races fall back to the class mode). Fetches the class (scheduled
-    start) and boats (TCC or PY ratings) when the series is handicap-scored."""
+    start) and boats (their rating — see RATING_FIELD) when the series is
+    handicap-scored."""
     cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
     mode = await _race_scoring_mode(race, cls)
-    if mode not in ("irc", "py"):
+    if mode not in RATING_FIELD:
         _resequence_finished(race.get("results", []))
         return
     boats = await db.boats.find({"class_id": race.get("class_id")}, {"_id": 0}).to_list(2000)
-    key = "tcc" if mode == "irc" else "py"
+    key = RATING_FIELD[mode]
     ratings = {b["id"]: b.get(key) for b in boats}
     _resequence_finished(race.get("results", []), mode, _race_start_time(race, cls), ratings)
 
@@ -5977,7 +6003,11 @@ def _apply_duty_points(agg, entries_by_race, cfg=None):
     rounding precision is configurable (default 2 dp). This runs on every
     standings computation, so a duty score is always the average of the
     races scored to date — it is dynamically recalculated after every race
-    until the series is completed, before discards are applied."""
+    until the series is completed, before discards are applied.
+
+    `agg` must hold EVERY race of the series: it is the series average that is
+    wanted, so a caller displaying one mini series scores the whole series
+    first and slices the view out afterwards (see _series_scores)."""
     duty_cfg = (cfg or _default_scoring_config()).get("duty") or {}
     precision = int(duty_cfg.get("round", 2))
     if not duty_cfg.get("enabled", True):
@@ -5997,50 +6027,14 @@ def _apply_duty_points(agg, entries_by_race, cfg=None):
                     e["points"] = float(entries_by_race[i] + 1)
 
 
-async def _series_scores(series, race_numbers=None, fold_combined=False):
-    """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
-    per-race entry dicts, aligned to race_meta; cfg: the series' effective
-    scoring config; races: the published races scored. If race_numbers is
-    given (a set/list of the series' race numbers), only those races count.
+def _race_columns(races, boat_map, cfg, member_ids):
+    """Score every boat in every race: boat_id -> one entry per race, in the
+    order of `races`. Returns (agg, entries_by_race), where entries_by_race is
+    the series entry count each race was scored against — the DNC base the
+    duty fallback uses.
 
-    fold_combined: when True (the full-series view), mini series configured
-    with scoring "combined" are folded into single daily results — the
-    mini-series discards are applied, the counting races averaged, and each
-    group becomes ONE scoring unit (race_meta entry + agg entry) instead of
-    its individual races."""
-    races = await db.races.find({"series_id": series["id"], "status": "published",
-                                 "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
-    races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
-    if race_numbers is not None:
-        keep = {int(n) for n in race_numbers}
-        races = [r for r in races if int(r.get("race_number") or 0) in keep]
-    boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
-    member_ids = series.get("member_boat_ids") or []
-    if member_ids:
-        # Explicit series membership (officer/admin managed): exactly these
-        # boats form part of the series. Members absent from an individual
-        # race auto-score DNC as usual; boats not listed are excluded from the
-        # standings entirely — even if they appeared in a race — because they
-        # belong to a different series (e.g. a club signing a boat onto one
-        # series but not this one).
-        member_set = set(member_ids)
-        boats = [b for b in boats if b.get("id") in member_set]
-    else:
-        # Only boats that actually appear in at least one published race of
-        # this series are entered in it. Boats registered in the class that
-        # never raced the series must not clutter its standings (e.g. a
-        # one-off regatta whose fleet is a subset of the club's full class
-        # fleet). Boats absent from an individual race still auto-score DNC as
-        # usual; boats absent from the whole series simply do not belong to
-        # it. A series with no published races yet keeps its full fleet
-        # (all-zero rows) as before.
-        entered = {r.get("boat_id") for race in races
-                   for r in (race.get("results") or []) if r.get("boat_id")}
-        if races and entered:
-            boats = [b for b in boats if b.get("id") in entered]
-    boat_map = {b["id"]: b for b in boats}
-    cfg = _series_scoring_config(series)
-    race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
+    Every value here is per-race: nothing depends on which other races of the
+    series are being displayed, so a view can be taken as a slice of columns."""
     agg = {bid: [] for bid in boat_map}
     entries_by_race = []
     for race in races:
@@ -6087,7 +6081,67 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
                     per_boat[bid]["points"] = shared
         for bid, e in per_boat.items():
             agg[bid].append(e)
+    return agg, entries_by_race
+
+
+async def _series_scores(series, race_numbers=None, fold_combined=False):
+    """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
+    per-race entry dicts, aligned to race_meta; cfg: the series' effective
+    scoring config; races: the published races in view. If race_numbers is
+    given (a set/list of the series' race numbers), only those races are
+    returned.
+
+    The whole series is scored first and the view is sliced out of those
+    columns afterwards, so a duty (OOD) score — the boat's average over every
+    race of the series — is the same number wherever it appears: a
+    mini-series view shows the series' duty average, never one recomputed over
+    the mini series' own races.
+
+    fold_combined: when True (the full-series view), mini series configured
+    with scoring "combined" are folded into single daily results — the
+    mini-series discards are applied, the counting races averaged, and each
+    group becomes ONE scoring unit (race_meta entry + agg entry) instead of
+    its individual races."""
+    races = await db.races.find({"series_id": series["id"], "status": "published",
+                                 "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
+    races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
+    keep = None if race_numbers is None else {int(n) for n in race_numbers}
+    # A view shows a subset of the series' columns in the series' own order;
+    # view_idx records which, so the scored series can be sliced down to it.
+    view_idx = [i for i, r in enumerate(races)
+                if keep is None or int(r.get("race_number") or 0) in keep]
+    view_races = [races[i] for i in view_idx]
+    boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
+    member_ids = series.get("member_boat_ids") or []
+    if member_ids:
+        # Explicit series membership (officer/admin managed): exactly these
+        # boats form part of the series. Members absent from an individual
+        # race auto-score DNC as usual; boats not listed are excluded from the
+        # standings entirely — even if they appeared in a race — because they
+        # belong to a different series (e.g. a club signing a boat onto one
+        # series but not this one).
+        member_set = set(member_ids)
+        boats = [b for b in boats if b.get("id") in member_set]
+    else:
+        # Only boats that actually appear in at least one published race of
+        # the view are entered in it. Boats registered in the class that
+        # never raced the series must not clutter its standings (e.g. a
+        # one-off regatta whose fleet is a subset of the club's full class
+        # fleet). Boats absent from an individual race still auto-score DNC as
+        # usual; boats absent from the whole series simply do not belong to
+        # it. A series with no published races yet keeps its full fleet
+        # (all-zero rows) as before.
+        entered = {r.get("boat_id") for race in view_races
+                   for r in (race.get("results") or []) if r.get("boat_id")}
+        if view_races and entered:
+            boats = [b for b in boats if b.get("id") in entered]
+    boat_map = {b["id"]: b for b in boats}
+    cfg = _series_scoring_config(series)
+    agg, entries_by_race = _race_columns(races, boat_map, cfg, member_ids)
     _apply_duty_points(agg, entries_by_race, cfg)
+    agg = {bid: [entries[i] for i in view_idx] for bid, entries in agg.items()}
+    races = view_races
+    race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     if fold_combined:
         agg, race_meta = _fold_combined_mini_groups(series, agg, race_meta)
     return agg, boat_map, race_meta, cfg, races
@@ -6326,10 +6380,11 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
         # these copies, never the live boat records.
         "boats": {bid: {"name": b.get("name"), "sail_no": b.get("sail_no"),
                          "helm": b.get("helm"), "home_club": b.get("home_club"),
-                         "tcc": b.get("tcc"), "py": b.get("py"),
+                         "tcc": b.get("tcc"), "py": b.get("py"), "ytc": b.get("ytc"),
                          "boat_type": b.get("boat_type")}
                    for bid, b in boat_map.items()},
-        "ratings": {bid: {"tcc": b.get("tcc"), "py": b.get("py")} for bid, b in boat_map.items()},
+        "ratings": {bid: {key: b.get(key) for key in ("tcc", "py", "ytc")}
+                    for bid, b in boat_map.items()},
         # Scoring engine + rules versions that produced this result.
         "scoring_engine_version": SCORING_ENGINE_VERSION,
         "scoring_rules_version": cfg.get("rrs_edition", "RRS 2025-2028"),
@@ -7079,6 +7134,7 @@ async def fleet_profile(fleet_id: str):
                 "home_club": (clubs.get(member.get("home_club_id")) or {}).get("name") or member.get("home_club"),
                 "home_club_slug": (clubs.get(member.get("home_club_id")) or {}).get("slug") or "",
                 "boat_type": member.get("boat_type"), "py": member.get("py"), "tcc": member.get("tcc"),
+                "ytc": member.get("ytc"),
             },
         })
     seasons.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
@@ -7138,7 +7194,8 @@ async def fleet_profile(fleet_id: str):
             "boat": {"helm": primary.get("helm"),
                       "home_club": (clubs.get(primary.get("home_club_id")) or {}).get("name") or primary.get("home_club"),
                       "home_club_slug": (clubs.get(primary.get("home_club_id")) or {}).get("slug") or "",
-                      "boat_type": primary.get("boat_type"), "py": primary.get("py"), "tcc": primary.get("tcc")},
+                      "boat_type": primary.get("boat_type"), "py": primary.get("py"), "tcc": primary.get("tcc"),
+                      "ytc": primary.get("ytc")},
             "records": records, "series": series_out, "overall": overall, "seasons": seasons}
 
 

@@ -76,6 +76,33 @@ test("shows every scheduled slot in race-number order and links only completed r
   expect(rows[4].querySelector("a")).toBeNull();
 });
 
+test("a YTC series shows the YTC column and corrects by the boat's YTC number", async () => {
+  mockApi.getRaces.mockResolvedValue([{
+    id: "r1", race_number: 1, date: "2026-05-02", start_time: "10:00",
+    start_tz_offset_minutes: 0, status: "published",
+    results: [{ boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T10:30:00Z" }],
+  }]);
+  mockApi.getBoats.mockResolvedValue([{ id: "b1", name: "Blue Note", sail_no: "GBR 1", py: 1100, ytc: 1013 }]);
+
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root.render(
+      <PublishedRaces seriesId="series-1" series={{}} classId="class-1" clubId="club-1"
+        clubSlug="medway-yacht-club" scoringMode="ytc" />,
+    );
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  act(() => { container.querySelector('[data-testid="race-folder-r1"]').click(); });
+
+  const headers = [...container.querySelectorAll("th")].map((th) => th.textContent);
+  expect(headers).toContain("YTC");
+  const cells = [...container.querySelectorAll("tbody tr td")].map((td) => td.textContent);
+  expect(cells).toContain("1013");              // the YTC certificate, not the PY one
+  expect(cells).toContain("29:37");             // 1800 s x 1000 / 1013 = 1777 s corrected
+});
+
 test("uses the class default start time for planned races and preserves a race's start time", async () => {
   mockApi.getClasses.mockResolvedValue([{ id: "class-1", default_start_time: "09:45" }]);
   mockApi.getRaces.mockResolvedValue([

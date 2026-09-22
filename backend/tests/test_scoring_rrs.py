@@ -3,6 +3,7 @@
 RRS 2025-2028 Appendix A4/A5/A8 and rule 44.3(c). No database or network is
 used: these tests exercise the scoring math directly.
 """
+import copy
 import os
 import sys
 
@@ -411,44 +412,55 @@ class TestIrcCorrectedTime:
         assert server._corrected_time_sec(None, self.START, 1.015) is None
 
 
-# PY: Portsmouth Yardstick (corrected = elapsed x 1000 / PY)
+# Yardstick numbers: PY (Portsmouth Yardstick) and YTC (RYA Yacht Time
+# Correction), both corrected = elapsed x 1000 / number
 # ---------------------------------------------------------------------------
 
-class TestPyCorrectedTime:
+class TestYardstickCorrectedTime:
+    """PY and YTC are separate certificates on the same yardstick form."""
+
     START = "2026-05-02T10:00:00Z"
 
-    def test_elapsed_times_py(self):
+    def test_elapsed_times_the_number(self):
         # 1800 s elapsed x 1000 / 1013 = 1776.9... -> 1777 s
-        assert server._py_corrected_sec("2026-05-02T10:30:00Z", self.START, 1013) == 1777
+        for mode in ("py", "ytc"):
+            assert server._corrected_seconds(mode, "2026-05-02T10:30:00Z", self.START, 1013) == 1777
 
-    def test_lower_py_is_faster(self):
-        # Same elapsed time, faster boat (lower PY) gets the smaller corrected
-        # time.
-        assert server._py_corrected_sec("2026-05-02T10:30:00Z", self.START, 1000) == 1800
-        assert server._py_corrected_sec("2026-05-02T10:30:00Z", self.START, 1200) == 1500
+    def test_lower_number_is_faster(self):
+        # Same elapsed time, faster boat (lower number) gets the smaller
+        # corrected time.
+        for mode in ("py", "ytc"):
+            assert server._corrected_seconds(mode, "2026-05-02T10:30:00Z", self.START, 1000) == 1800
+            assert server._corrected_seconds(mode, "2026-05-02T10:30:00Z", self.START, 1200) == 1500
 
     def test_rounds_half_up(self):
         # 10 s x 1000 / 800 = 12.5 -> rounds up to 13
-        assert server._py_corrected_sec("2026-05-02T10:00:10Z", self.START, 800) == 13
         # 10 s x 1000 / 801 = 12.48... -> rounds down to 12
-        assert server._py_corrected_sec("2026-05-02T10:00:10Z", self.START, 801) == 12
+        for mode in ("py", "ytc"):
+            assert server._corrected_seconds(mode, "2026-05-02T10:00:10Z", self.START, 800) == 13
+            assert server._corrected_seconds(mode, "2026-05-02T10:00:10Z", self.START, 801) == 12
 
-    def test_missing_start_or_py_returns_none(self):
-        assert server._py_corrected_sec("2026-05-02T10:30:00Z", None, 1013) is None
-        assert server._py_corrected_sec("2026-05-02T10:30:00Z", self.START, None) is None
-        assert server._py_corrected_sec(None, self.START, 1013) is None
+    def test_missing_start_or_number_returns_none(self):
+        for mode in ("py", "ytc"):
+            assert server._corrected_seconds(mode, "2026-05-02T10:30:00Z", None, 1013) is None
+            assert server._corrected_seconds(mode, "2026-05-02T10:30:00Z", self.START, None) is None
+            assert server._corrected_seconds(mode, None, self.START, 1013) is None
+
+    def test_each_mode_reads_its_own_certificate(self):
+        assert server.RATING_FIELD == {"irc": "tcc", "py": "py", "ytc": "ytc"}
+        # Not a handicap mode -> no corrected time at all.
+        assert server._corrected_seconds("one_design", "2026-05-02T10:30:00Z", self.START, 1013) is None
 
 
-def _py_positions(results, start, pys):
-    """Run the PY re-sequencer and return {boat_id: position}."""
-    import copy
+def _positions(mode, results, start, ratings):
+    """Run the re-sequencer for a scoring mode and return {boat_id: position}."""
     rs = copy.deepcopy(results)
-    server._resequence_finished(rs, "py", start, pys)
+    server._resequence_finished(rs, mode, start, ratings)
     return {r["boat_id"]: r["position"] for r in rs if r["code"] == "FINISHED"}
 
 
-class TestPyResequence:
-    """Finishing places under PY are determined by corrected time."""
+class TestYardstickResequence:
+    """Places under PY and YTC come from corrected time, not finish order."""
 
     START = "2026-05-02T10:00:00Z"
 
@@ -458,10 +470,11 @@ class TestPyResequence:
             _finished("b2", "2026-05-02T10:29:30Z"),  # elapsed 1770
             _finished("b3", "2026-05-02T10:20:00Z"),  # elapsed 1200
         ]
-        pys = {"b1": 1100, "b2": 1100, "b3": 850}
-        pos = _py_positions(results, self.START, pys)
-        # corrected: b3 1412, b2 1609, b1 1636 -> order b3, b2, b1
-        assert pos["b3"] == 1 and pos["b2"] == 2 and pos["b1"] == 3
+        numbers = {"b1": 1100, "b2": 1100, "b3": 850}
+        for mode in ("py", "ytc"):
+            pos = _positions(mode, results, self.START, numbers)
+            # corrected: b3 1412, b2 1609, b1 1636 -> order b3, b2, b1
+            assert pos["b3"] == 1 and pos["b2"] == 2 and pos["b1"] == 3
 
     def test_equal_corrected_time_shares_place_and_next_jumps(self):
         results = [
@@ -469,42 +482,37 @@ class TestPyResequence:
             _finished("b2", "2026-05-02T10:36:00Z"),   # 2160 x 1000/1200 = 1800
             _finished("b3", "2026-05-02T10:40:00Z"),   # 2400 x 1000/1000 = 2400
         ]
-        pys = {"b1": 1000, "b2": 1200, "b3": 1000}
-        pos = _py_positions(results, self.START, pys)
-        # b1 and b2 tie for 1st; b3 is 3rd (place 2 is occupied by the tie)
-        assert pos["b1"] == 1 and pos["b2"] == 1 and pos["b3"] == 3
+        numbers = {"b1": 1000, "b2": 1200, "b3": 1000}
+        for mode in ("py", "ytc"):
+            pos = _positions(mode, results, self.START, numbers)
+            # b1 and b2 tie for 1st; b3 is 3rd (place 2 is occupied by the tie)
+            assert pos["b1"] == 1 and pos["b2"] == 1 and pos["b3"] == 3
 
-    def test_missing_py_falls_back_after_computable(self):
+    def test_missing_number_falls_back_after_computable(self):
         results = [
-            _finished("b1", "2026-05-02T10:30:00Z"),  # has PY
-            _finished("b2", "2026-05-02T10:20:00Z"),  # no PY
-            _finished("b3", "2026-05-02T10:10:00Z"),  # no PY
+            _finished("b1", "2026-05-02T10:30:00Z"),  # rated
+            _finished("b2", "2026-05-02T10:20:00Z"),  # no certificate
+            _finished("b3", "2026-05-02T10:10:00Z"),  # no certificate
         ]
-        pys = {"b1": 1000}
-        pos = _py_positions(results, self.START, pys)
-        assert pos["b1"] == 1 and pos["b3"] == 2 and pos["b2"] == 3
+        numbers = {"b1": 1000}
+        for mode in ("py", "ytc"):
+            pos = _positions(mode, results, self.START, numbers)
+            assert pos["b1"] == 1 and pos["b3"] == 2 and pos["b2"] == 3
 
     def test_no_start_time_falls_back_to_finish_order(self):
         results = [
             _finished("b1", "2026-05-02T10:30:00Z"),
             _finished("b2", "2026-05-02T10:20:00Z"),
         ]
-        pys = {"b1": 1000, "b2": 1200}
-        pos = _py_positions(results, None, pys)
-        assert pos["b1"] == 2 and pos["b2"] == 1  # plain finish-time order
+        numbers = {"b1": 1000, "b2": 1200}
+        for mode in ("py", "ytc"):
+            pos = _positions(mode, results, None, numbers)
+            assert pos["b1"] == 2 and pos["b2"] == 1  # plain finish-time order
 
 
 def _finished(bid, ft, tcc=None):
     return {"boat_id": bid, "code": "FINISHED", "finish_time": ft,
             "position": None, "penalty_points": 0, "tcc": tcc}
-
-
-def _irc_positions(results, start, tccs):
-    """Run the IRC re-sequencer and return {boat_id: position}."""
-    import copy
-    rs = copy.deepcopy(results)
-    server._resequence_finished(rs, "irc", start, tccs)
-    return {r["boat_id"]: r["position"] for r in rs if r["code"] == "FINISHED"}
 
 
 class TestIrcResequence:
@@ -520,7 +528,7 @@ class TestIrcResequence:
             _finished("b3", "2026-05-02T10:20:00Z"),  # elapsed 1200
         ]
         tccs = {"b1": 1.100, "b2": 1.100, "b3": 0.850}
-        pos = _irc_positions(results, self.START, tccs)
+        pos = _positions("irc", results, self.START, tccs)
         # corrected: b3 1020, b2 1947, b1 1980 -> order b3, b2, b1
         assert pos["b3"] == 1 and pos["b2"] == 2 and pos["b1"] == 3
 
@@ -531,7 +539,7 @@ class TestIrcResequence:
             _finished("b3", "2026-05-02T10:40:00Z"),   # 2400 x 1.000 = 2400
         ]
         tccs = {"b1": 1.000, "b2": 0.900, "b3": 1.000}
-        pos = _irc_positions(results, self.START, tccs)
+        pos = _positions("irc", results, self.START, tccs)
         # b1 and b2 tie for 1st; b3 is 3rd (place 2 is occupied by the tie)
         assert pos["b1"] == 1 and pos["b2"] == 1 and pos["b3"] == 3
 
@@ -542,7 +550,7 @@ class TestIrcResequence:
             _finished("b3", "2026-05-02T10:10:00Z"),  # no TCC
         ]
         tccs = {"b1": 1.000}
-        pos = _irc_positions(results, self.START, tccs)
+        pos = _positions("irc", results, self.START, tccs)
         # b1 computable -> 1st; b2/b3 fall back to finish time:
         # b3 (10:10) before b2 (10:20) -> 2nd, 3rd
         assert pos["b1"] == 1 and pos["b3"] == 2 and pos["b2"] == 3
@@ -553,7 +561,7 @@ class TestIrcResequence:
             _finished("b2", "2026-05-02T10:20:00Z"),
         ]
         tccs = {"b1": 1.0, "b2": 0.5}
-        pos = _irc_positions(results, None, tccs)
+        pos = _positions("irc", results, None, tccs)
         assert pos["b1"] == 2 and pos["b2"] == 1  # plain finish-time order
 
 
@@ -650,14 +658,14 @@ class TestScheduledStartFallback:
         # offset-less anchor made it negative and the results showed "—".
         start = server._race_start_time({**self.RACE, "start_tz_offset_minutes": 60}, self.CLS)
         assert server._elapsed_seconds("2026-08-21T21:06:30+00:00", start) == 390
-        assert server._py_corrected_sec("2026-08-21T21:06:30+00:00", start, 1104) == 353
+        assert server._yardstick_corrected_sec("2026-08-21T21:06:30+00:00", start, 1104) == 353
 
     def test_finish_before_start_is_unknown_not_negative(self):
         # A stray tap recorded before the start must not produce a negative
         # elapsed that outranks every real finisher.
         start = server._race_start_time({**self.RACE, "start_tz_offset_minutes": 60}, self.CLS)
         assert server._elapsed_seconds("2026-08-21T10:31:06+00:00", start) is None
-        assert server._py_corrected_sec("2026-08-21T10:31:06+00:00", start, 1104) is None
+        assert server._yardstick_corrected_sec("2026-08-21T10:31:06+00:00", start, 1104) is None
 
     def test_elapsed_ignores_offsets_in_epoch_terms(self):
         start = server._race_start_time({**self.RACE, "start_tz_offset_minutes": 60}, self.CLS)

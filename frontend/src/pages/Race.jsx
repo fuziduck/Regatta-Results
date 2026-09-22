@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, CalendarDays, ChevronRight, Clock3, MapPin, Users } from "lucide-react";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, scoringModeLabel, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 
 const PODIUM_ROW = {
   1: "bg-amber-100/80 dark:bg-amber-400/15",
@@ -144,7 +144,7 @@ export default function Race() {
             <div className="flex items-start gap-2"><Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Scheduled start</span><strong>{race.start_time || classInfo?.default_start_time || "To be confirmed"}</strong></span></div>
             <div className="flex items-start gap-2"><Users className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Entries</span><strong>{entries}</strong></span></div>
             <div className="flex items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Class / fleet</span><strong>{classInfo?.name || "—"}</strong></span></div>
-            <div><span className="block text-xs uppercase tracking-wider text-muted-foreground">Scoring</span><strong>{scoringMode === "one_design" ? "One design" : scoringMode.toUpperCase()}</strong></div>
+            <div><span className="block text-xs uppercase tracking-wider text-muted-foreground">Scoring</span><strong>{scoringModeLabel(scoringMode)}</strong></div>
           </div>
           <nav className="mt-6 flex flex-wrap gap-2 border-t border-border pt-4" aria-label="Race parents">
             <Link to={parentSeriesHref} className="text-sm font-semibold text-ocean hover:underline">View parent series</Link>
@@ -179,7 +179,7 @@ export default function Race() {
                     const position = result.code === "FINISHED" ? Number(result.position) : null;
                     const elapsed = result.code === "FINISHED" ? elapsedSecondsOf(result.finish_time, race) : null;
                     const corrected = result.code === "FINISHED" && hasTiming
-                      ? correctedSecondsOf(result.finish_time, race, scoringMode === "py" ? boat.py : boat.tcc, scoringMode)
+                      ? correctedSecondsOf(result.finish_time, race, boatRating(scoringMode, boat), scoringMode)
                       : null;
                     const crew = boat.crew || boat.crew_name || (Array.isArray(boat.crew_names) ? boat.crew_names.join(", ") : "—");
                     const resultCode = result.code && result.code !== "FINISHED" ? result.code : null;
