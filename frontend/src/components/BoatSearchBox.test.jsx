@@ -1,7 +1,7 @@
-// BoatSearchBox: the prominent site search embedded in the landing heroes.
-// Typing 2+ characters runs the unified search (boats, clubs, series,
-// classes) live and drops down grouped matches with type filter tabs, each
-// linking to its page.
+// BoatSearchBox: the site search, embedded open in a landing hero or opened
+// from the search icon in a page header. Typing 2+ characters runs the
+// unified search (boats, clubs, series, classes) live and drops down grouped
+// matches with type filter tabs, each linking to its page.
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -23,15 +23,17 @@ const mockApi = require("@/lib/api").api;
 
 let container;
 let root;
-const renderBox = () => {
+const renderBox = (props = {}) => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<BoatSearchBox />);
+    root.render(<BoatSearchBox {...props} />);
   });
   return container;
 };
+
+const click = (el) => act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 
 const empty = { clubs: [], classes: [], series: [], boats: [] };
 
@@ -213,5 +215,47 @@ describe("BoatSearchBox", () => {
     const event = new KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true });
     act(() => { input().dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  describe("header variant", () => {
+    const toggle = () => container.querySelector('[data-testid="site-search-toggle"]');
+    const openHeader = async (term) => {
+      click(toggle());
+      await act(async () => {});
+      await typeSearch(term);
+    };
+
+    it("hides the field behind a search icon until it is clicked", async () => {
+      renderBox({ variant: "header", className: "" });
+      expect(input()).toBeNull();
+      expect(toggle().getAttribute("aria-expanded")).toBe("false");
+
+      click(toggle());
+      await act(async () => {});
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+      expect(document.activeElement).toBe(input());
+    });
+
+    it("searches from the opened field and puts it away on Escape", async () => {
+      renderBox({ variant: "header", className: "" });
+      await openHeader("wa");
+      expect(mockApi.siteSearch).toHaveBeenCalledWith("wa");
+      expect(container.querySelector('[data-testid="boat-result-f1"]')).not.toBeNull();
+
+      // Escape closes the dropdown, then clears, and finally collapses the field.
+      pressKey("Escape");
+      pressKey("Escape");
+      pressKey("Escape");
+      expect(input()).toBeNull();
+    });
+
+    it("/ opens the header field and focuses it", async () => {
+      renderBox({ variant: "header", className: "" });
+      act(() => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true }));
+      });
+      await act(async () => {});
+      expect(document.activeElement).toBe(input());
+    });
   });
 });

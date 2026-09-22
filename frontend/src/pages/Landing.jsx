@@ -243,6 +243,19 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
   );
 }
 
+// The racing categories, with the icon each one is browsed by.
+const VIEW_LEVELS = {
+  club_championship: { label: "Club Championship", Icon: Trophy },
+  championship: { label: "Championship", Icon: Trophy },
+  regattas: { label: "Regattas", Icon: CalendarDays },
+};
+
+// The hero's tab strip: the siblings at the level being browsed. The same
+// trigger styling the rest of the page uses, on the hero photo.
+const HERO_CHIP = "px-5 py-2 rounded-xl border font-heading uppercase tracking-wide transition-colors";
+const HERO_CHIP_REST = "border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25";
+const HERO_CHIP_CURRENT = "border-safety bg-safety text-white";
+
 export default function Landing() {
   const { slug } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -278,6 +291,15 @@ export default function Landing() {
   const [activeRegattaClass, setActiveRegattaClass] = useState(null);
   const [activeRegattaSeries, setActiveRegattaSeries] = useState(null);
   const [regattaSeriesData, setRegattaSeriesData] = useState({});
+  // Progressive disclosure in the hero: the levels (category → class → series,
+  // or category → regatta → class → series) are revealed one at a time, and
+  // each committed level collapses to a chip, so the results stay hidden until
+  // the reader has clicked their way down to them. A deep link that names a
+  // class or series opens with every level already committed.
+  const [depth, setDepth] = useState(searchParams.get("class") || searchParams.get("series") ? Infinity : 0);
+  // Both above are the browse path: category → class → series (or regatta →
+  // class → series), with a breadcrumb going up and a tab strip for the
+  // siblings at the level being browsed.
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -552,18 +574,106 @@ export default function Landing() {
   // applied on top, so the two look consistent.
   const selectedRegatta = regattaComps.find((r) => r.id === regattaId);
   const heroPhoto = competitionImage(view === "regattas" ? selectedRegatta : null);
+
+  // The browse hierarchy as one sequence of levels. Only real choices appear:
+  // a level with a single option is already decided by the defaults above, so
+  // it never asks for a click. `depth` counts the levels the reader has
+  // committed to; the levels below that stay hidden, and so do the results.
+  const navLevels = [];
+  if (showViewToggle) {
+    navLevels.push({
+      key: "category", label: "Category", value: view, onPick: setView,
+      options: availableViews.map((v) => ({ value: v, ...VIEW_LEVELS[v], testId: `view-${v}-btn` })),
+    });
+  }
+  if (view === "regattas") {
+    if (regattaComps.length > 1) {
+      navLevels.push({
+        key: "regatta", label: "Regatta", value: regattaId, onPick: setRegattaId,
+        options: regattaComps.map((r) => ({ value: r.id, label: r.name, testId: `regatta-tab-${r.name}` })),
+      });
+    }
+    if (regattaClasses.length > 1) {
+      navLevels.push({
+        key: "class", label: "Class", value: activeRegattaClass, onPick: setActiveRegattaClass,
+        options: regattaClasses.map((n) => ({ value: n, label: n, Icon: Trophy, testId: `regatta-class-tab-${n}` })),
+      });
+    }
+    if (activeRegattaSeriesList.length > 1) {
+      navLevels.push({
+        key: "series", label: "Series", value: activeRegattaSeries, onPick: setActiveRegattaSeries,
+        options: activeRegattaSeriesList.map((s) => ({
+          value: s.id, label: s.name === regattaDetail?.name ? "Overall" : s.name,
+          testId: `regatta-series-tab-${s.name}`,
+        })),
+      });
+    }
+  } else {
+    if (visibleClasses.length > 1) {
+      navLevels.push({
+        key: "class", label: "Class", value: activeClass, onPick: setActiveClass,
+        options: visibleClasses.map((c) => ({ value: c.id, label: c.name, testId: `class-tab-${c.name}` })),
+        subscription: activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass}
+          targetName={activeClassObj.name || "this class"} />,
+      });
+    }
+    const seriesOptions = [
+      ...(nav.showOverall ? [{ value: "overall", label: "Overall", testId: "series-tab-Overall" }] : []),
+      ...displaySeries.map((s) => ({
+        value: s.id, testId: `series-tab-${s.name}`,
+        label: <>{s.name}{nav.showExcl(s) && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}</>,
+      })),
+    ];
+    if (seriesOptions.length > 1) {
+      navLevels.push({
+        key: "series", label: "Series", value: activeSeries, onPick: setActiveSeries, options: seriesOptions,
+        subscription: activeSeries !== "overall" && activeSeries && (
+          <ResultsSubscription subscriptionType="series" targetId={activeSeries}
+            targetName={activeSeriesObj?.name || "this series"} />),
+      });
+    }
+  }
+  const levelIndex = Math.min(depth, navLevels.length);
+  // The panel is always exactly one row: the level being chosen in, or — once
+  // every level is settled — the last one, so its siblings stay switchable.
+  // Settled levels are not repeated here; the breadcrumb above is the trail.
+  const browseLevel = navLevels[levelIndex] || navLevels[navLevels.length - 1] || null;
+  const browseSettled = levelIndex >= navLevels.length;
+  // Back steps the panel up one level, whichever level it is showing.
+  const browseShown = browseSettled ? navLevels.length - 1 : levelIndex;
+  // Breadcrumb trail: the club is the root of the browse hierarchy, each
+  // committed level is a crumb that steps back up to it, and the deepest
+  // choice is the page itself once there is nothing left to choose.
+  const crumbs = [
+    { label: "Home", href: "/" },
+    { label: club.name, onClick: () => setDepth(0) },
+  ];
+  navLevels.slice(0, levelIndex).forEach((level, i) => {
+    const chosen = level.options.find((o) => o.value === level.value);
+    const settled = levelIndex >= navLevels.length && i === levelIndex - 1;
+    crumbs.push({
+      label: chosen ? chosen.label : "—",
+      onClick: settled ? undefined : () => setDepth(i),
+    });
+  });
+  // The regatta detail carries the class levels, so the regatta results wait
+  // for it — otherwise they would flash before that level appears.
+  const showResults = levelIndex >= navLevels.length
+    && (view !== "regattas" || !!regattaDetail || regattaComps.length === 0);
   return (
     <div className="min-h-screen bg-background">
       <NotificationBanner items={notifications} />
 
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+        {/* relative: the header search panel hangs off this row. */}
+        <div className="relative max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <HeaderMenu title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} />
             <Link to="/"><Logo className="h-11 w-auto" /></Link>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
           </div>
           <div className="flex items-center gap-2">
+            <BoatSearchBox variant="header" className="" />
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs
@@ -581,14 +691,13 @@ export default function Landing() {
           className="absolute inset-0 w-full h-full object-cover" />
         <div className="absolute inset-0 hero-overlay" />
         <div className="relative max-w-6xl mx-auto px-4 py-6 md:py-8">
-          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: club.name }]} className="mb-3 text-white/70 [&_a]:text-white/80 [&_span]:text-white" />
+          <Breadcrumbs items={crumbs} className="mb-3 text-white/70 [&_a]:text-white/80 [&_button]:text-white/80 [&_span]:text-white" />
           <Badge className={`mb-3 uppercase tracking-widest ${year === CURRENT_YEAR ? "bg-safety text-white" : "bg-white/20 text-white border border-white/40"}`} data-testid="season-badge">
             {year} Season
           </Badge>
           <h1 className="text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter text-white leading-[0.95] max-w-3xl">
             {club.name} · {year === CURRENT_YEAR ? "live" : year} results & standings
           </h1>
-          <BoatSearchBox />
 
           <div className="mt-5 flex flex-wrap items-end gap-x-8 gap-y-4">
             <YearSwitcher grouped value={year} onChange={setYear} years={[...new Set([...pastYears, CURRENT_YEAR - 1, ...futureYears])]}
@@ -598,88 +707,34 @@ export default function Landing() {
             </Link>}
           </div>
 
-          {/* Choose one of the three racing categories. The selector is hidden
-              when there is only one category for the selected year. */}
-          {showViewToggle && (
-            <div className="mt-5 flex flex-wrap items-center justify-center gap-2" data-testid="results-view-toggle">
-              {availableViews.includes("club_championship") && (
-                <button type="button" onClick={() => setView("club_championship")} data-testid="view-club-championship-btn"
-                  className={`px-5 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${view === "club_championship" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
-                  <Trophy className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Club Championship
-                </button>
-              )}
-              {availableViews.includes("championship") && (
-                <button type="button" onClick={() => setView("championship")} data-testid="view-championship-btn"
-                  className={`px-5 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${view === "championship" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
-                  <Trophy className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Championship
-                </button>
-              )}
-              {availableViews.includes("regattas") && (
-                <button type="button" onClick={() => setView("regattas")} data-testid="view-regattas-btn"
-                  className={`px-5 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${view === "regattas" ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
-                  <CalendarDays className="w-4 h-4 inline -mt-0.5 mr-1.5" /> Regattas
-                </button>
-              )}
-            </div>
-          )}
-
-          {view !== "regattas" && classes.length > 0 && (
-            <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="class-tabs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Class</span>
-                {activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass} targetName={(visibleClasses.find((c) => c.id === activeClass) || {}).name || "this class"} />}
-              </div>
-              <Tabs value={activeClass || undefined} onValueChange={setActiveClass}>
-                <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
-                  {visibleClasses.map((c) => (
-                    <TabsTrigger key={c.id} value={c.id}
-                      data-testid={`class-tab-${c.name}`}
-                      className="px-5 py-2.5 rounded-xl border border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
-                      {c.name}
-                    </TabsTrigger>
+          {/* One row, the level being chosen in. Picking a choice opens the
+              next level, and Back reopens the one above, so the panel is the
+              same size however deep you go. */}
+          {browseLevel && (
+            <div className="mt-4 w-full max-w-3xl rounded-2xl border border-white/25 bg-white/10 px-4 py-3 backdrop-blur-sm"
+              data-testid="browse-nav">
+              <div data-testid={`nav-level-${browseLevel.key}`} className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="text-white/60 text-[11px] uppercase tracking-widest font-semibold sm:w-24 sm:shrink-0">
+                  {browseLevel.label}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  {browseLevel.options.map((option) => (
+                    <button key={option.value} type="button" data-testid={option.testId}
+                      aria-current={(browseSettled && option.value === browseLevel.value) || undefined}
+                      onClick={() => { browseLevel.onPick(option.value); setDepth(levelIndex + 1); }}
+                      className={`${HERO_CHIP} ${browseSettled && option.value === browseLevel.value ? HERO_CHIP_CURRENT : HERO_CHIP_REST}`}>
+                      {option.Icon && <option.Icon className="w-4 h-4 inline -mt-0.5 mr-1.5" />}{option.label}
+                    </button>
                   ))}
-                </TabsList>
-              </Tabs>
-            </div>
-          )}
-
-          {view !== "regattas" && activeClass && displaySeries.length > 0 && (
-            <div className="mt-4 flex flex-col items-center gap-1.5" data-testid="series-tabs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Series</span>
-                {activeSeries !== "overall" && activeSeries && <ResultsSubscription subscriptionType="series" targetId={activeSeries} targetName={(series.find((s) => s.id === activeSeries) || {}).name || "this series"} />}
-              </div>
-              <Tabs value={activeSeries} onValueChange={setActiveSeries}>
-                <TabsList className="flex flex-wrap h-auto gap-2 w-fit">
-                  {nav.showOverall && (
-                    <TabsTrigger value="overall"
-                      className="px-4 py-2 rounded-xl border border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
-                      Overall
-                    </TabsTrigger>
+                  {browseLevel.subscription}
+                  {browseShown > 0 && (
+                    <Button variant="ghost" size="sm" onClick={() => setDepth(browseShown - 1)}
+                      data-testid="nav-back"
+                      className="gap-1.5 border border-white/30 text-white/80 hover:bg-white/15 hover:text-white">
+                      <ArrowLeft className="w-3.5 h-3.5" /> Back
+                    </Button>
                   )}
-                  {displaySeries.map((s) => (
-                  <TabsTrigger key={s.id} value={s.id}
-                    className="px-4 py-2 rounded-xl border border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25 data-[state=active]:bg-safety data-[state=active]:text-white data-[state=active]:border-safety font-heading uppercase tracking-wide">
-                      {s.name}{nav.showExcl(s) && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            </div>
-          )}
-
-          {view === "regattas" && regattaComps.length > 0 && (
-            <div className="mt-5 flex flex-col items-center gap-1.5" data-testid="regatta-tabs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold">Regatta</span>
-              </div>
-              <div className="flex flex-wrap justify-center gap-2">
-                {regattaComps.map((r) => (
-                  <button key={r.id} type="button" onClick={() => setRegattaId(r.id)} data-testid={`regatta-tab-${r.name}`}
-                    className={`px-4 py-2 rounded-xl border border-black/50 dark:border-white/40 font-heading uppercase tracking-wide text-sm transition-colors ${regattaId === r.id ? "bg-safety text-white border-safety" : "bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"}`}>
-                    {r.name}
-                  </button>
-                ))}
+                </div>
               </div>
             </div>
           )}
@@ -738,7 +793,7 @@ export default function Landing() {
           </div>
         )}
 
-        {view !== "regattas" && (
+        {showResults && view !== "regattas" && (
           <div>
             {championshipComps.length > 0 && (
               <div className="mb-10" data-testid="championship-competitions">
@@ -795,7 +850,7 @@ export default function Landing() {
           </div>
         )}
 
-        {view === "regattas" && (
+        {showResults && view === "regattas" && (
           <div data-testid="regatta-results">
             {regattaComps.length === 0 ? (
               <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
@@ -846,36 +901,8 @@ export default function Landing() {
                   </Link>
                 </div>
 
-                <div className="mb-5 flex flex-col items-center gap-1.5" data-testid="regatta-class-tabs">
-                  <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Class</span>
-                  <Tabs value={activeRegattaClass || undefined} onValueChange={setActiveRegattaClass}>
-                    <TabsList className="flex h-auto w-fit flex-wrap justify-center gap-2">
-                      {regattaClasses.map((cn) => (
-                        <TabsTrigger key={cn} value={cn}
-                          className="rounded-xl border border-ocean/30 bg-card px-5 py-2.5 font-heading uppercase tracking-wide text-ocean hover:bg-ocean/5 data-[state=active]:border-safety data-[state=active]:bg-safety data-[state=active]:text-white">
-                          <Trophy className="mr-1.5 inline h-4 w-4" />{cn}
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                  </Tabs>
-                </div>
-
-                {activeRegattaClass && activeRegattaSeriesList.length > 0 && (
-                  <div className="mb-5 flex flex-col items-center gap-1.5" data-testid="regatta-series-tabs">
-                    <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Series</span>
-                    <Tabs value={activeRegattaSeries || undefined} onValueChange={setActiveRegattaSeries}>
-                      <TabsList className="flex h-auto w-fit flex-wrap justify-center gap-2">
-                        {activeRegattaSeriesList.map((s) => (
-                          <TabsTrigger key={s.id} value={s.id}
-                            className="rounded-xl border border-ocean/30 bg-card px-4 py-2 font-heading uppercase tracking-wide text-ocean hover:bg-ocean/5 data-[state=active]:border-safety data-[state=active]:bg-safety data-[state=active]:text-white">
-                            {s.name !== regattaDetail.name ? s.name : "Overall"}
-                          </TabsTrigger>
-                        ))}
-                      </TabsList>
-                    </Tabs>
-                  </div>
-                )}
-
+                {/* The class and series are chosen in the hero (and collapse to
+                    chips there), so the detail only names the selection. */}
                 {activeRegattaSeries && (
                   <section className="rounded-2xl border border-border bg-card p-4 sm:p-6" data-testid="regatta-selected-results">
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
