@@ -844,6 +844,13 @@ function ScrollHintWrap({ children }) {
   );
 }
 
+// Local (not UTC) date — the schedule auto-fill counts from it, and
+// toISOString would shift the day for timezones east of UTC.
+const todayLocal = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
 function SeriesTab({ classes, clubId }) {
   // "all" from the start: every load shows all classes, so a series cannot
   // disappear simply because it belongs to a different fleet. The class
@@ -897,12 +904,9 @@ function SeriesTab({ classes, clubId }) {
   const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", series_type: "championship", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
   const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
-  // Schedule auto-fill start: default to today's local date, not a stale
-  // hard-coded day (toISOString would shift the date for timezones east of UTC).
-  const [schedStart, setSchedStart] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  });
+  // The auto-fill counts weekly from this date; opening the dialog seeds it
+  // from the series' own first race date when it already has one.
+  const [schedStart, setSchedStart] = useState(todayLocal);
   const [autoSize, setAutoSize] = useState(5);
   const patchCfg = (patch) => setForm((f) => ({ ...f, scoring_config: { ...f.scoring_config, ...patch } }));
   const patchCfgNested = (key, patch) => setForm((f) => ({ ...f, scoring_config: { ...f.scoring_config, [key]: { ...f.scoring_config[key], ...patch } } }));
@@ -1008,7 +1012,11 @@ function SeriesTab({ classes, clubId }) {
       toast.error(e.response?.data?.detail || "Could not generate schedule");
     }
   };
-  const setSchedDate = (idx, val) => setForm((f) => { const sc = [...(f.schedule || [])]; sc[idx] = val; return { ...f, schedule: sc }; });
+  const setSchedDate = (idx, val) => {
+    setForm((f) => { const sc = [...(f.schedule || [])]; sc[idx] = val; return { ...f, schedule: sc }; });
+    // Race 1 is where the auto-fill starts, so keep the start date with it.
+    if (idx === 0 && val) setSchedStart(val);
+  };
   const del = async (id) => { await api.deleteSeries(id, series.find((x) => x.id === id)?.version); toast.success("Deleted"); load(); };
   const quickSet = async (s, patch) => {
     try { await api.updateSeries(s.id, { ...s, ...patch }, s.version); }
@@ -1078,7 +1086,7 @@ function SeriesTab({ classes, clubId }) {
           </Select>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || "") }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || ""), order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" })} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
+          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => { setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || ""), order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" }); setSchedStart(todayLocal()); }} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
           <DialogContent className="max-h-[85vh] overflow-y-auto">
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} series</DialogTitle></DialogHeader>
             <div className="space-y-3">
@@ -1360,10 +1368,14 @@ function SeriesTab({ classes, clubId }) {
                   <Label className="font-heading uppercase text-sm">Race schedule</Label>
                   <div className="flex items-center gap-2">
                     <Input type="date" value={schedStart} onChange={(e) => setSchedStart(e.target.value)} className="h-8 w-36" data-testid="sched-start-input" />
-                    <Button type="button" size="sm" variant="outline" onClick={genSchedule} data-testid="gen-schedule-btn">Auto-fill Sat.</Button>
+                    <Button type="button" size="sm" variant="outline" onClick={genSchedule} data-testid="gen-schedule-btn">Auto-fill weekly</Button>
                   </div>
                 </div>
-                {!editing && <p className="text-xs text-muted-foreground">Save the series first, then re-open to set dates.</p>}
+                <p className="text-xs text-muted-foreground">
+                  {editing
+                    ? "Every date is 7 days after the one before, starting from the date on the left."
+                    : "Save the series first, then re-open to set dates."}
+                </p>
                 <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
                   {(form.schedule || []).map((d, i) => (
                     <div key={i} className="flex items-center gap-1.5">
@@ -1454,7 +1466,7 @@ function SeriesTab({ classes, clubId }) {
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
                 <Button size="icon" variant="ghost" disabled={locked} title="Boats in this series" data-testid={`series-boats-${s.name}`} onClick={() => setBoatsSeries(s)}><Users className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", series_type: s.series_type || "championship", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", series_type: s.series_type || "championship", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setSchedStart((s.schedule || [])[0] || todayLocal()); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
                   <>

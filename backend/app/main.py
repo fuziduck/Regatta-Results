@@ -3502,7 +3502,10 @@ async def update_series_boats(series_id: str, data: SeriesBoatsInput,
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
-def _saturdays_from(start: str, n: int):
+def _weekly_dates_from(start: str, n: int):
+    """One date per race: the date given is race 1 and every race after it is
+    a week later, whatever weekday that lands on — a club that races on
+    Wednesday gets Wednesdays."""
     d0 = datetime.strptime(start, "%Y-%m-%d").date()
     return [(d0 + timedelta(days=7 * i)).isoformat() for i in range(max(0, n))]
 
@@ -3519,7 +3522,7 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict =
     sailed_dates = [r["date"] for r in races]
     if total < len(sailed_dates):
         total = len(sailed_dates)
-    future = _saturdays_from(data.start_date, total - len(sailed_dates))
+    future = _weekly_dates_from(data.start_date, total - len(sailed_dates))
     schedule = sailed_dates + future
     result = await db.series.update_one(_version_filter(series_id, expected),
                                         {"$set": {"schedule": schedule, "planned_races": total},
