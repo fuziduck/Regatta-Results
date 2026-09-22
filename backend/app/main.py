@@ -854,6 +854,19 @@ class AdvertUpdate(BaseModel):
     format: Optional[str] = None
 
 
+class DivisionInput(BaseModel):
+    """One rating division of a class.
+
+    A fleet sometimes races under more than one rating system at once — IRC
+    boats and YTC boats in the same class and the same series. Each division
+    is a named group of boats scored in its own table under its own rating
+    system; a boat joins one through its own ``division`` field. The class and
+    the series stay single: only the results are separated.
+    """
+    name: str
+    scoring_mode: Literal["one_design", "irc", "py", "ytc"] = "one_design"
+
+
 class ClassInput(BaseModel):
     name: str
     default_start_time: str = "10:30"
@@ -862,6 +875,11 @@ class ClassInput(BaseModel):
     # (corrected = elapsed x 1000 / number) — "py" (Portsmouth Yardstick) or
     # "ytc" (RYA Yacht Time Correction). See RATING_FIELD.
     scoring_mode: Literal["one_design", "irc", "py", "ytc"] = "one_design"
+    # Rating divisions of the class (see DivisionInput). With two or more the
+    # class is scored as one table per division, each under its division's
+    # rating system; with none it is one fleet under scoring_mode, exactly as
+    # before, so every existing class is untouched.
+    divisions: Optional[List[DivisionInput]] = None
     # Required when a webmaster creates a class (officer/admin default to
     # their own club).
     club_id: Optional[str] = None
@@ -890,6 +908,11 @@ class BoatInput(BaseModel):
     # may carry any combination of TCC, PY and YTC; the class or series
     # scoring mode decides which one is used.
     ytc: Optional[float] = None
+    # The rating division this boat competes in (see ClassInput.divisions),
+    # e.g. "IRC" or "YTC". Blank on a class without divisions; on a class that
+    # has them it is inferred from the certificate the boat holds (see
+    # _boat_division), so an unassigned boat is still scored.
+    division: Optional[str] = ""
     # Boat make/model (used mainly for the cruiser fleet, e.g. "Bavaria 34").
     boat_type: Optional[str] = None
     # Home club label shown on results (defaults to the club that set up the
@@ -2564,10 +2587,10 @@ async def clubs_directory(year: Optional[int] = None):
                     is_overall = raced >= ser.get("planned_races", 0)
                 if is_overall:
                     full = await db.series.find_one({"id": ser["id"]}, {"_id": 0})
-                    payload = await _standings_for_series(full)
-                    if payload is None:
-                        payload = await compute_series_standings(full)
-                    standings = payload.get("standings") or []
+                    payload = await _series_results(full)
+                    # A class split into rating divisions headlines each
+                    # division's leader; the combined list is not a fleet order.
+                    standings = _division_tables(payload)[0].get("standings") or []
                     top3 = [{"position": s.get("rank", i + 1),
                              "boat": s.get("boat_name", "?"),
                              "sail_no": s.get("sail_no", "")}
@@ -3034,7 +3057,10 @@ async def get_classes(request: Request, club_id: Optional[str] = None):
         q["club_id"] = club
     items = await db.classes.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
     for item in items:
-        item["class_group_key"] = class_group_key(item.get("name")) if item.get("scoring_mode") == "one_design" else None
+        # A class split into rating divisions is not one one-design fleet, so
+        # it never shares a cross-club class-group page.
+        one_design_fleet = item.get("scoring_mode") == "one_design" and not _class_divisions(item)
+        item["class_group_key"] = class_group_key(item.get("name")) if one_design_fleet else None
     return items
 
 
@@ -3096,7 +3122,8 @@ async def get_class_group_directory(class_key: str):
     separate club-owned Sonata records resolve to one shared fleet page."""
     wanted = class_group_key(class_key)
     classes = await db.classes.find({"scoring_mode": "one_design"}, {"_id": 0}).to_list(5000)
-    matching = [c for c in classes if class_group_key(c.get("name")) == wanted]
+    matching = [c for c in classes
+                if class_group_key(c.get("name")) == wanted and not _class_divisions(c)]
     if not matching:
         raise HTTPException(status_code=404, detail="One-design class group not found")
     items = await _class_directory_items([c.get("id") for c in matching])
@@ -3118,7 +3145,9 @@ async def create_class(data: ClassInput, user: dict = Depends(require_admin)):
     _ensure_club(user, club_id)
     doc = {"id": new_id(), "club_id": club_id, "name": data.name,
            "default_start_time": data.default_start_time,
-           "scoring_mode": data.scoring_mode, "created_at": now_iso()}
+           "scoring_mode": data.scoring_mode,
+           "divisions": [d.model_dump() for d in (data.divisions or [])],
+           "created_at": now_iso()}
     await db.classes.insert_one(doc)
     doc.pop("_id", None)
     await _log_audit(request=None, user=user, action="CLASS_CREATED",
@@ -3130,8 +3159,10 @@ async def create_class(data: ClassInput, user: dict = Depends(require_admin)):
 @api_router.put("/classes/{class_id}")
 async def update_class(class_id: str, data: ClassInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(class_id, user)
-    await db.classes.update_one({"id": class_id}, {"$set": {"name": data.name,
-                                  "default_start_time": data.default_start_time, "scoring_mode": data.scoring_mode}})
+    await db.classes.update_one({"id": class_id}, {"$set": {
+        "name": data.name, "default_start_time": data.default_start_time,
+        "scoring_mode": data.scoring_mode,
+        "divisions": [d.model_dump() for d in (data.divisions or [])]}})
     await _log_audit(request=None, user=user, action="CLASS_UPDATED",
                      description=f"Updated class {cls.get('name')}",
                      resource_type="class", resource_id=class_id, club_id=cls.get("club_id"))
@@ -4119,18 +4150,29 @@ async def get_regatta(regatta_id: str, request: Request, club_id: Optional[str] 
         series_doc = next((x for x in series_docs if x.get("id") == s["id"]), None)
         if not series_doc:
             continue
-        frozen = await _standings_for_series(series_doc)
-        standings = frozen if frozen is not None else await compute_series_standings(series_doc)
-        rows = standings.get("standings") or []
-        s["boat_count"] = len(rows)
-        s["winner"] = rows[0].get("boat_name") if rows else None
-        # Podium (top three) for the overview cards — straight from the same
-        # live standings, never a separate calculation.
-        s["podium"] = [{
-            "rank": r.get("rank"), "boat_name": r.get("boat_name"),
-            "sail_no": r.get("sail_no"), "helm": r.get("helm"),
-            "total": r.get("total"), "net": r.get("net"),
-        } for r in rows[:3]]
+        standings = await _series_results(series_doc)
+
+        def _podium(table):
+            """Top three of one standings table, straight from the same live
+            standings — never a separate calculation."""
+            return [{
+                "rank": r.get("rank"), "boat_name": r.get("boat_name"),
+                "sail_no": r.get("sail_no"), "helm": r.get("helm"),
+                "total": r.get("total"), "net": r.get("net"),
+            } for r in (table.get("standings") or [])[:3]]
+
+        # A class split into rating divisions has a leader per division: the
+        # overview reports each of them rather than ranking IRC boats against
+        # YTC boats.
+        tables = _division_tables(standings)
+        s["boat_count"] = sum(len(t.get("standings") or []) for t in tables)
+        s["winner"] = (tables[0].get("standings") or [{}])[0].get("boat_name") if len(tables) == 1 else None
+        s["podium"] = _podium(tables[0]) if len(tables) == 1 else []
+        if len(tables) > 1:
+            s["divisions"] = [{"name": t.get("division_name"),
+                               "boat_count": len(t.get("standings") or []),
+                               "winner": (t.get("standings") or [{}])[0].get("boat_name"),
+                               "podium": _podium(t)} for t in tables]
     return regatta
 
 
@@ -4557,7 +4599,7 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     # derived from corrected time; one-design places are the officer's order and
     # are never re-derived from the clock.
     if new_code == "FINISHED" and prev_code != "FINISHED" and target.get("finish_time") \
-            and await _race_scoring_mode(race) in RATING_FIELD:
+            and await _race_corrected_order(race):
         resequence = True
     if resequence:
         await _resequence_race(race)
@@ -5680,6 +5722,75 @@ def _corrected_seconds(mode, finish_time, start_time, rating):
     return None
 
 
+def _class_divisions(cls) -> list:
+    """The rating divisions a class fields, in display order — e.g.
+    [{"name": "IRC", "scoring_mode": "irc"}, {"name": "YTC", "scoring_mode": "ytc"}].
+
+    Two divisions are needed for a split to mean anything: with none (or just
+    one) the class is a single fleet scored by its own scoring_mode, exactly
+    as before, so an existing class is never re-scored by this feature.
+    """
+    clean, seen = [], set()
+    for d in (cls or {}).get("divisions") or []:
+        name = str((d or {}).get("name") or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        clean.append({"name": name,
+                      "scoring_mode": (d or {}).get("scoring_mode") or "one_design"})
+    return clean if len(clean) >= 2 else []
+
+
+def _boat_division(boat, divisions) -> str:
+    """The division a boat competes in ("" when the class has no divisions).
+
+    The boat's own choice wins; otherwise she goes to the division whose
+    rating system she holds a certificate for, then to the first division — a
+    boat is never silently dropped from the results because nobody assigned
+    her.
+    """
+    if not divisions:
+        return ""
+    chosen = str(boat.get("division") or "").strip().lower()
+    for d in divisions:
+        if d["name"].lower() == chosen:
+            return d["name"]
+    for d in divisions:
+        if boat.get(RATING_FIELD.get(d["scoring_mode"], "")):
+            return d["name"]
+    return divisions[0]["name"]
+
+
+def _division_fleet(boats, divisions, name) -> set:
+    """ids of the boats competing in one division of a class."""
+    return {b["id"] for b in boats if _boat_division(b, divisions) == name}
+
+
+def _division_tables(payload) -> list:
+    """The standings tables a series/overall payload holds: one per rating
+    division when the class is split, otherwise the single combined table."""
+    divisions = (payload or {}).get("divisions")
+    return divisions if divisions else [payload]
+
+
+def _division_table(payload, name):
+    """One named division's table of a payload; the payload itself when no
+    division is named or that division has no table."""
+    if name is None:
+        return payload
+    return next((t for t in _division_tables(payload) if t.get("division_name") == name), payload)
+
+
+def _row_of_boat(payload, boat_ids):
+    """A boat's standings row in whichever table she is scored in — her
+    division's table when the class is split, else the single table."""
+    for table in _division_tables(payload):
+        row = next((r for r in (table or {}).get("standings", []) if r["boat_id"] in boat_ids), None)
+        if row:
+            return table, row
+    return None, None
+
+
 def _race_start_time(race, cls=None):
     """Best known start instant for a race: the start gun (actual_start), else
     the scheduled class start on the race date. None if neither resolves."""
@@ -5719,20 +5830,16 @@ async def _resolve_race_start(race):
     return _race_start_time(race, cls)
 
 
-def _resequence_finished(results, scoring_mode="one_design", start_time=None, boat_ratings=None):
-    """Assign finishing places 1..n to finished boats.
+def _place_finished(finished, scoring_mode, start_time, boat_ratings):
+    """Assign places 1..n across ONE fleet of finished boats: by corrected
+    time for a handicap mode (see RATING_FIELD), by the recorded finish time
+    for one-design.
 
-    one_design: by recorded finish time.
-    Any handicap mode (see RATING_FIELD): by corrected time — IRC Rule 12.2
-    for "irc", yardstick (elapsed x 1000 / number) for "py" and "ytc".
     Handicap modes: boats with equal corrected time share a place, and RRS A7
     later splits the points of the tied places and the place immediately
     below. Boats whose corrected time cannot be computed (no rating / no start
     time) fall back to finish time and rank after the computable boats.
     """
-    finished = [r for r in results if r.get("code") == "FINISHED"]
-    if not finished:
-        return
     if scoring_mode in RATING_FIELD and start_time:
         ratings = boat_ratings or {}
 
@@ -5767,6 +5874,29 @@ def _resequence_finished(results, scoring_mode="one_design", start_time=None, bo
             r["position"] = i + 1
 
 
+def _resequence_finished(results, scoring_mode="one_design", start_time=None,
+                         boat_ratings=None, boat_modes=None):
+    """Assign finishing places 1..n to finished boats (see _place_finished for
+    the ranking rules).
+
+    boat_modes: {boat_id: scoring_mode} when the class is split into rating
+    divisions — each division is then ranked within itself (an IRC boat is
+    placed against the IRC boats, never against the YTC boats), each under its
+    own mode and certificate.
+    """
+    finished = [r for r in results if r.get("code") == "FINISHED"]
+    if not finished:
+        return
+    if not boat_modes:
+        _place_finished(finished, scoring_mode, start_time, boat_ratings)
+        return
+    groups = {}
+    for r in finished:
+        groups.setdefault(boat_modes.get(r["boat_id"]) or scoring_mode, []).append(r)
+    for mode, fleet in groups.items():
+        _place_finished(fleet, mode, start_time, boat_ratings)
+
+
 async def _race_scoring_mode(race, cls=None):
     """Scoring mode for a race: the mode set on its series (the source of
     truth), falling back to the class's legacy mode for races without a
@@ -5781,19 +5911,42 @@ async def _race_scoring_mode(race, cls=None):
 
 
 async def _resequence_race(race):
-    """Re-sequence a race's finished boats per the race's series scoring mode
-    (legacy races fall back to the class mode). Fetches the class (scheduled
-    start) and boats (their rating — see RATING_FIELD) when the series is
-    handicap-scored."""
+    """Re-sequence a race's finished boats: within each rated division when
+    the class fields more than one rating system, otherwise per the race's
+    series scoring mode (legacy races fall back to the class mode). Fetches
+    the class (scheduled start) and boats (their rating — see RATING_FIELD)
+    when any corrected-time order is involved."""
     cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
+    results = race.get("results", [])
+    divisions = _class_divisions(cls)
+    if divisions:
+        boats = await db.boats.find({"class_id": race.get("class_id")}, {"_id": 0}).to_list(2000)
+        by_division = {d["name"]: d["scoring_mode"] for d in divisions}
+        modes, ratings = {}, {}
+        for b in boats:
+            mode = by_division[_boat_division(b, divisions)]
+            modes[b["id"]] = mode
+            ratings[b["id"]] = b.get(RATING_FIELD.get(mode, ""))
+        _resequence_finished(results, start_time=_race_start_time(race, cls),
+                             boat_ratings=ratings, boat_modes=modes)
+        return
     mode = await _race_scoring_mode(race, cls)
     if mode not in RATING_FIELD:
-        _resequence_finished(race.get("results", []))
+        _resequence_finished(results)
         return
     boats = await db.boats.find({"class_id": race.get("class_id")}, {"_id": 0}).to_list(2000)
     key = RATING_FIELD[mode]
     ratings = {b["id"]: b.get(key) for b in boats}
-    _resequence_finished(race.get("results", []), mode, _race_start_time(race, cls), ratings)
+    _resequence_finished(results, mode, _race_start_time(race, cls), ratings)
+
+
+async def _race_corrected_order(race) -> bool:
+    """Whether a race's finishing order comes from corrected time: its series
+    mode is a handicap, or any of its class's rating divisions is."""
+    cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
+    if any(d["scoring_mode"] in RATING_FIELD for d in _class_divisions(cls)):
+        return True
+    return await _race_scoring_mode(race, cls) in RATING_FIELD
 
 
 def _a8_tiebreak(entries, drop):
@@ -5961,13 +6114,18 @@ def _fold_combined_mini_groups(series, agg, race_meta):
         # can rank them within the mini-series day. A boat that DNC'd every
         # mini race did not take part in the day at all — it scores the same
         # DNC the main series would award for a normal race, never a
-        # finishing position within the day.
+        # finishing position within the day. An OOD entry is similar: the
+        # boat was on duty, so its whole-series average must pass through to
+        # the main series rather than being replaced by the day's position.
         boat_scores = {}
         dnc_only = set()
+        duty_in_group = set()
         for bid, entries in agg.items():
             mini_entries = [entries[j] for j in idxs]
             if all(e["code"] == "DNC" for e in mini_entries):
                 dnc_only.add(bid)
+            if any(e["code"] in DUTY_CODES for e in mini_entries):
+                duty_in_group.add(bid)
             avg, drop = _mini_combined_score(mini_entries, g["discards"])
             mini_tb_1, mini_tb_2 = _a8_tiebreak(mini_entries, drop)
             boat_scores[bid] = (avg, drop, mini_tb_1, mini_tb_2)
@@ -5976,13 +6134,23 @@ def _fold_combined_mini_groups(series, agg, race_meta):
         # becomes the single score carried into the main series, matching
         # the overall-championship convention for combined mini-series days.
         # Boats DNC for the whole day are excluded (they score DNC instead).
-        sorted_bids = sorted((b for b in boat_scores if b not in dnc_only),
+        sorted_bids = sorted((b for b in boat_scores if b not in dnc_only and b not in duty_in_group),
                              key=lambda b: (boat_scores[b][0], boat_scores[b][2], boat_scores[b][3]))
         ranks = {bid: i + 1 for i, bid in enumerate(sorted_bids)}
-        # Second pass: folded entry carries the rank, not the average.
+        # Second pass: folded entries normally carry the day's rank, not the
+        # average. DNC and OOD are exceptions: both remain non-finishing codes
+        # in the parent series. OOD keeps the already calculated whole-series
+        # duty average from its mini-race entry; it must never become a daily
+        # finishing position just because the group is displayed as combined.
         for bid, entries in agg.items():
             avg, drop, mini_tb_1, mini_tb_2 = boat_scores[bid]
-            if bid in dnc_only:
+            if bid in duty_in_group:
+                duty_entry = next(e for e in (entries[j] for j in idxs)
+                                  if e["code"] in DUTY_CODES)
+                new_agg[bid].append({"points": duty_entry["points"], "code": "OOD",
+                                     "discardable": True, "position": None,
+                                     "mini_tb": None})
+            elif bid in dnc_only:
                 new_agg[bid].append({"points": avg, "code": "DNC",
                                      "discardable": True, "position": None,
                                      "mini_tb": None})
@@ -6030,14 +6198,19 @@ def _apply_duty_points(agg, entries_by_race, cfg=None):
                     e["points"] = float(entries_by_race[i] + 1)
 
 
-def _race_columns(races, boat_map, cfg, member_ids):
+def _race_columns(races, boat_map, cfg, member_ids, entries_base=None):
     """Score every boat in every race: boat_id -> one entry per race, in the
     order of `races`. Returns (agg, entries_by_race), where entries_by_race is
     the series entry count each race was scored against — the DNC base the
     duty fallback uses.
 
     Every value here is per-race: nothing depends on which other races of the
-    series are being displayed, so a view can be taken as a slice of columns."""
+    series are being displayed, so a view can be taken as a slice of columns.
+
+    entries_base: the fleet size a non-finish (DNC/A5) score is measured
+    against when the series has no explicit membership — a rating division's
+    own fleet, so an IRC boat's DNC is scored against the IRC boats, not
+    against the YTC boats sharing her class and series."""
     agg = {bid: [] for bid in boat_map}
     entries_by_race = []
     for race in races:
@@ -6050,6 +6223,8 @@ def _race_columns(races, boat_map, cfg, member_ids):
             # entries_count, which was captured when the class was larger and
             # still counts the boats that were removed.
             series_entries = len(member_ids)
+        elif entries_base is not None:
+            series_entries = entries_base
         else:
             series_entries = race.get("entries_count") or len(results)
         entries_by_race.append(series_entries)
@@ -6087,7 +6262,7 @@ def _race_columns(races, boat_map, cfg, member_ids):
     return agg, entries_by_race
 
 
-async def _series_scores(series, race_numbers=None, fold_combined=False):
+async def _series_scores(series, race_numbers=None, fold_combined=False, division=None):
     """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
     per-race entry dicts, aligned to race_meta; cfg: the series' effective
     scoring config; races: the published races in view. If race_numbers is
@@ -6104,7 +6279,10 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
     with scoring "combined" are folded into single daily results — the
     mini-series discards are applied, the counting races averaged, and each
     group becomes ONE scoring unit (race_meta entry + agg entry) instead of
-    its individual races."""
+    its individual races.
+
+    division: score one rating division of the class only — its own boats,
+    with a non-finish scored against that division's fleet."""
     races = await db.races.find({"series_id": series["id"], "status": "published",
                                  "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
@@ -6116,6 +6294,20 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
     view_races = [races[i] for i in view_idx]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     member_ids = series.get("member_boat_ids") or []
+    # A rating division is a fleet of its own: only its boats are scored, and
+    # its DNC base is its own size (see _race_columns).
+    entries_base = None
+    if division is not None:
+        cls = await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}
+        divisions = _class_divisions(cls)
+        if division not in [d["name"] for d in divisions]:
+            raise HTTPException(status_code=404, detail="Rating division not found")
+        div_ids = _division_fleet(boats, divisions, division)
+        boats = [b for b in boats if b["id"] in div_ids]
+        if member_ids:
+            member_ids = [i for i in member_ids if i in div_ids]
+        else:
+            entries_base = len(div_ids)
     if member_ids:
         # Explicit series membership (officer/admin managed): exactly these
         # boats form part of the series. Members absent from an individual
@@ -6140,7 +6332,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
             boats = [b for b in boats if b.get("id") in entered]
     boat_map = {b["id"]: b for b in boats}
     cfg = _series_scoring_config(series)
-    agg, entries_by_race = _race_columns(races, boat_map, cfg, member_ids)
+    agg, entries_by_race = _race_columns(races, boat_map, cfg, member_ids, entries_base)
     _apply_duty_points(agg, entries_by_race, cfg)
     agg = {bid: [entries[i] for i in view_idx] for bid, entries in agg.items()}
     races = view_races
@@ -6150,13 +6342,16 @@ async def _series_scores(series, race_numbers=None, fold_combined=False):
     return agg, boat_map, race_meta, cfg, races
 
 
-async def compute_series_standings(series, race_numbers=None, discards=None):
-    """Compute the canonical normalized results-export payload."""
+async def compute_series_standings(series, race_numbers=None, discards=None, division=None):
+    """Compute the canonical normalized results-export payload.
+
+    division: compute it for one rating division of the class only (see
+    _class_divisions) — a fleet of its own, ranked in its own table."""
     # The full series folds "combined" mini groups into one daily result each;
     # a mini-series view (race_numbers given) always shows the individual
     # races, so folding never applies there.
     agg, boat_map, race_meta, cfg, races = await _series_scores(
-        series, race_numbers, fold_combined=(race_numbers is None))
+        series, race_numbers, fold_combined=(race_numbers is None), division=division)
     club_name = await _club_name_of_class(series.get("class_id"))
     club_map = await _club_map_for_display()
     race_count = len(race_meta)
@@ -6276,6 +6471,38 @@ async def compute_series_standings(series, race_numbers=None, discards=None):
     return payload
 
 
+async def _series_standings_payload(series, race_numbers=None, discards=None):
+    """Live series standings, split into one table per rating division when
+    the class fields more than one rating system (see _class_divisions).
+
+    The whole-class table stays alongside the divisions: the engine scores
+    each boat's stored finishing places, so a boat's own points are the same
+    either way. The results pages show the divisions; the combined table keeps
+    the per-boat history, statistics and exports working on one shape.
+    """
+    payload = await compute_series_standings(series, race_numbers, discards)
+    divisions = _class_divisions(await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}))
+    tables = []
+    for d in divisions:
+        table = await compute_series_standings(series, race_numbers, discards, division=d["name"])
+        table["division_name"] = d["name"]
+        table["division_scoring_mode"] = d["scoring_mode"]
+        tables.append(table)
+    if tables:
+        payload["divisions"] = tables
+    return payload
+
+
+async def _series_results(series):
+    """A series' standings exactly as its results pages show them: the frozen
+    snapshot for a locked or archived season, otherwise the live calculation,
+    each split into one table per rating division where the class has them."""
+    frozen = await _standings_for_series(series)
+    if frozen is not None:
+        return frozen
+    return await _series_standings_payload(series)
+
+
 # ---------------------------------------------------------------------------
 # Season locking — immutable historical snapshots
 # ---------------------------------------------------------------------------
@@ -6315,7 +6542,7 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     computed points, duty/TLE/penalty/redress decisions, discards, tie-breaks,
     the ratings used, the scoring-rule configuration and who locked it."""
     agg, boat_map, race_meta, cfg, races = await _series_scores(series)
-    payload = await compute_series_standings(series)
+    payload = await _series_standings_payload(series)
     # Freeze each mini-series view too, so a locked season's mini standings
     # are equally immutable.
     if series.get("mini_series"):
@@ -6326,7 +6553,7 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
         mini_payloads = {}
         for gi, group in enumerate(groups, start=1):
             try:
-                mini_payloads[str(gi)] = await compute_series_standings(
+                mini_payloads[str(gi)] = await _series_standings_payload(
                     series, race_numbers=group["race_numbers"], discards=group["discards"])
             except Exception:
                 continue
@@ -6579,10 +6806,7 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     if club and (await _class_club_id(series.get("class_id"))) != club:
         raise HTTPException(status_code=404, detail="Series not found")
     if mini is None:
-        frozen = await _standings_for_series(series)
-        if frozen is not None:
-            return frozen
-        return await compute_series_standings(series)
+        return await _series_results(series)
     # Mini-series view: standings over one of the series' named mini groups.
     if not series.get("mini_series"):
         raise HTTPException(status_code=400, detail="This series is not split into mini series")
@@ -6596,17 +6820,21 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     if mini < 1 or mini > len(groups):
         raise HTTPException(status_code=404, detail="Mini series not found")
     group = groups[mini - 1]
-    result = await compute_series_standings(series, race_numbers=group["race_numbers"],
-                                            discards=group["discards"])
+    result = await _series_standings_payload(series, race_numbers=group["race_numbers"],
+                                             discards=group["discards"])
     result["mini_index"] = mini
     result["mini_name"] = group["name"]
     result["mini_series"] = {"enabled": True, "groups": groups}
     return result
 
 
-async def compute_overall_standings(class_id: str, year: int):
+async def compute_overall_standings(class_id: str, year: int, division=None):
     """Overall championship standings for a class and year (every series in
     the class that counts towards the championship, summed by net score).
+
+    division: the championship for one rating division of the class only — a
+    championship of its own, so an IRC boat is never ranked against a YTC
+    boat that races the same series.
 
     A class that fields exactly ONE series has no multi-series championship
     to combine — that single series IS its overall championship (e.g. a
@@ -6623,6 +6851,12 @@ async def compute_overall_standings(class_id: str, year: int):
         if len(sole) == 1:
             all_series = sole
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
+    divisions = _class_divisions(await db.classes.find_one({"id": class_id}, {"_id": 0}))
+    if division is not None:
+        if division not in [d["name"] for d in divisions]:
+            raise HTTPException(status_code=404, detail="Rating division not found")
+        div_ids = _division_fleet(boats, divisions, division)
+        boats = [b for b in boats if b["id"] in div_ids]
     club_name = await _club_name_of_class(class_id)
     club_map = await _club_map_for_display()
     boat_map = {b["id"]: b for b in boats}
@@ -6656,6 +6890,10 @@ async def compute_overall_standings(class_id: str, year: int):
         # empty). RRS A5: DNC always scores series entries + 1.
         raced_boats = {x.get("boat_id") for r in race_docs
                        for x in (r.get("results") or []) if x.get("boat_id")}
+        if division is not None:
+            # A division's DNC base is its own fleet, exactly as its series
+            # standings score it.
+            raced_boats &= set(boat_map)
         entries = len(raced_boats) if raced_boats else len(boat_map)
         dnc = float(entries + 1)
         # The net an all-DNC boat scores in this series: every race is
@@ -6673,7 +6911,8 @@ async def compute_overall_standings(class_id: str, year: int):
         name = series["name"]
         series_names.append(name)
         frozen = await _standings_for_series(series)
-        result = frozen if frozen is not None else await compute_series_standings(series)
+        result = frozen if frozen is not None else await compute_series_standings(series, division=division)
+        result = _division_table(result, division)
         pos = use_position[name]
         for row in result["standings"]:
             net = row["rank"] if pos else row["net"]
@@ -6731,12 +6970,28 @@ async def compute_overall_standings(class_id: str, year: int):
     return {"series_names": series_names, "standings": rows, "entries": len(rows)}
 
 
+async def _overall_standings_payload(class_id: str, year: int):
+    """Overall championship standings, split into one table per rating
+    division when the class fields more than one rating system."""
+    payload = await compute_overall_standings(class_id, year)
+    divisions = _class_divisions(await db.classes.find_one({"id": class_id}, {"_id": 0}))
+    tables = []
+    for d in divisions:
+        table = await compute_overall_standings(class_id, year, division=d["name"])
+        table["division_name"] = d["name"]
+        table["division_scoring_mode"] = d["scoring_mode"]
+        tables.append(table)
+    if tables:
+        payload["divisions"] = tables
+    return payload
+
+
 @api_router.get("/standings/overall")
 async def overall_standings(class_id: str, year: int, request: Request, club_id: Optional[str] = None):
     club = await _resolve_club_id(request, club_id, honor_param=True)
     if club and (await _class_club_id(class_id)) != club:
         raise HTTPException(status_code=404, detail="Class not found")
-    return await compute_overall_standings(class_id, year)
+    return await _overall_standings_payload(class_id, year)
 
 
 @api_router.get("/fleet/search")
@@ -6930,12 +7185,13 @@ async def fleet_profile(fleet_id: str):
         if not series:
             continue
         try:
-            frozen = await _standings_for_series(series)
-            standings = frozen if frozen is not None else await compute_series_standings(series)
+            standings = await _series_results(series)
         except HTTPException:
             continue
         series_payloads[sid] = standings
-        row = next((r for r in standings.get("standings", []) if r["boat_id"] in ids), None)
+        # Her own division's table when the class is split into rating
+        # divisions — that is where her position and points belong.
+        _table, row = _row_of_boat(standings, ids)
         if row is None:
             continue
         # A series where the boat was DNC in every published race is not part
@@ -6975,16 +7231,16 @@ async def fleet_profile(fleet_id: str):
             continue
         seen_cy.add(cy)
         try:
-            payload = await compute_overall_standings(s["class_id"], s["year"])
+            payload = await _overall_standings_payload(s["class_id"], s["year"])
         except HTTPException:
             continue
         overall_payloads[cy] = payload
-        row = next((r for r in payload.get("standings", []) if r["boat_id"] in ids), None)
+        table, row = _row_of_boat(payload, ids)
         if row:
             overall.append({"class_id": s.get("class_id"), "class_name": s["class_name"],
                             "club_name": s["club_name"], "club_slug": s.get("club_slug"),
                             "year": s["year"], "rank": row.get("rank"),
-                            "entries": len(payload.get("standings", [])),
+                            "entries": len((table or {}).get("standings") or []),
                             "net": row.get("net"), "total": row.get("total")})
     overall.sort(key=lambda x: (x.get("year") or 0, x.get("club_name") or ""), reverse=True)
     primary = min(members, key=lambda m: m.get("created_at") or "")
@@ -7098,7 +7354,9 @@ async def fleet_profile(fleet_id: str):
         if ov:
             leader_net = None
             prev_net = None
-            for r in ov.get("standings", [])[:3]:
+            # The championship preview belongs to the boat's own division.
+            ov_table, _own = _row_of_boat(ov, ids)
+            for r in (ov_table or ov).get("standings", [])[:3]:
                 netv = r.get("net")
                 if leader_net is None:
                     leader_net = netv

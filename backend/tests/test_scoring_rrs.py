@@ -1005,6 +1005,26 @@ class TestMiniSeriesCombined:
         assert by_id["b1"]["scores"][1]["points"] == 1
         assert by_id["b1"]["net"] == 5.0  # 1 + 1 + 3
 
+    def test_combined_ood_carries_whole_series_average_into_parent(self):
+        # An OOD in a combined day must remain OOD in the parent series. Its
+        # score is the whole-series duty average, not the finishing position
+        # it would have received from the day's combined ranking.
+        races = [
+            self._race(1, [self._res("b1", "OOD"), self._res("b2", "FINISHED", 1)], entries=2),
+            self._race(2, [self._res("b1", "FINISHED", 2), self._res("b2", "FINISHED", 1)], entries=2),
+            self._race(3, [self._res("b1", "FINISHED", 1), self._res("b2", "FINISHED", 2)], entries=2),
+        ]
+        groups = [{"name": "Day", "race_numbers": [1, 2], "discards": 0,
+                   "scoring": "combined"}]
+        st = self._run(groups, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        # OOD average is (2 + 1) / 2 = 1.5 over the whole series' non-duty
+        # results, including the race outside the combined group.
+        assert by_id["b1"]["scores"][0]["code"] == "OOD"
+        assert by_id["b1"]["scores"][0]["points"] == 1.5
+        assert by_id["b2"]["scores"][0]["code"] == "MINI"
+        assert by_id["b1"]["rank"] == 1 and by_id["b2"]["rank"] == 2
+
     def test_combined_containing_dnc(self):
         # 2, DNC(4), 9 with 1 discard -> the DNC is a real score (4) and 9 is
         # the worst -> avg 3.0.  b2 wins every race → b2 is 1st, b1 is 2nd.
