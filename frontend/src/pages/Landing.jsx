@@ -5,7 +5,6 @@ import { api } from "@/lib/api";
 import { fmtDate, CURRENT_YEAR, MAX_YEAR, divisionTables } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import { SeriesStandings, OverallStandings } from "@/components/StandingsTable";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
@@ -21,7 +20,6 @@ import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
 import PublishedRaces from "@/components/PublishedRaces";
-import UpcomingRaces from "@/components/UpcomingRaces";
 import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Breadcrumbs from "@/components/Breadcrumbs";
 
@@ -92,7 +90,7 @@ function NotificationBanner({ items }) {
 // Presentational: renders the standings content for the class/series chosen
 // in the hero. All fetching lives in the Landing page so the selector tabs can
 // sit in the banner.
-function ClassResults({ classId, clubId, clubSlug, year, clubName, className, clubIcon, series, activeSeries, activeMini, setActiveMini, overall, seriesData, adverts }) {
+function ClassResults({ classId, clubId, clubSlug, year, clubName, className, clubIcon, series, activeSeries, overall, seriesData, adverts }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
   // Shareable permalink for the results currently shown. The class/series
@@ -147,48 +145,22 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
     );
   }
 
-  // Mini-series feature: the full standings payload carries the named groups,
-  // and each mini view is keyed separately so it can be fetched independently.
-  // Groups with no races assigned are dropped (defence-in-depth; the backend
-  // normalizer already excludes them) so leftover empty groups never render
-  // as tabs with empty tables.
-  const miniMeta = active.mini_series ? seriesData[active.id]?.mini_series : null;
-  const groups = ((miniMeta && miniMeta.groups) || []).filter((g) => (g.race_numbers || []).length > 0);
-  const dataKey = activeMini ? `${active.id}:m${activeMini}` : active.id;
-  const miniData = seriesData[dataKey];
-  const activeGroup = activeMini ? groups[activeMini - 1] : null;
-  const miniLabel = activeGroup ? ` · ${activeGroup.name}` : "";
+  // A split race is already represented in the main standings payload as a
+  // single combined column, so the public series view does not need a second
+  // "SPLIT / OVERALL / mini series" navigation section.
+  const miniData = seriesData[active.id];
 
   return (
     <div className="pt-5">
-      {groups.length > 0 && (
-        <div className="flex items-center gap-2 mb-4" data-testid="mini-series-tabs">
-          <span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">Split</span>
-          <Tabs value={activeMini ? String(activeMini) : "overall"} onValueChange={(v) => setActiveMini(v === "overall" ? null : Number(v))}>
-            <TabsList className="h-auto flex-wrap">
-              <TabsTrigger value="overall" data-testid="mini-tab-overall"
-                className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
-                Overall
-              </TabsTrigger>
-              {groups.map((g, i) => (
-                <TabsTrigger key={i} value={String(i + 1)} data-testid={`mini-tab-${i + 1}`}
-                  className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
-                  {g.name}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-        </div>
-      )}
       <div className="flex items-center justify-between gap-3 mb-3">
-        <h3 className="text-xl uppercase tracking-tight">{active.name} Series{miniLabel}</h3>
+        <h3 className="text-xl uppercase tracking-tight">{active.name} Series</h3>
         <div className="flex items-center gap-2 shrink-0">
           <CopyLinkButton url={shareUrl} />
           <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
             disabled={!miniData?.standings?.length}
             onClick={() => {
-              exportSeriesPdf({ clubName, className, seriesName: `${active.name}${miniLabel}`, year: active.year || year, data: miniData, icon: clubIcon, adverts });
+              exportSeriesPdf({ clubName, className,                seriesName: active.name, year: active.year || year, data: miniData, icon: clubIcon, adverts });
               trackEvent(SAILSCORE_EVENTS.DOWNLOAD_SERIES_PDF, {
                 series_id: active.id,
                 series_name: active.name,
@@ -241,7 +213,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
           </div>
         );
       })()}
-      <SeriesStandings data={miniData} onOpenMini={setActiveMini} />
+      <SeriesStandings data={miniData} />
       <PublishedRaces seriesId={active.id} series={active} classId={classId} clubId={clubId} clubSlug={clubSlug} scoringMode={active.scoring_mode || "one_design"} />
     </div>
   );
@@ -279,7 +251,6 @@ export default function Landing() {
   const { adverts, roll } = useAdverts();
   const [series, setSeries] = useState([]);
   const [activeSeries, setActiveSeries] = useState("overall");
-  const [activeMini, setActiveMini] = useState(null);
   // Deep link from the site search: a ?series= id preselects that series on
   // first load (applied once the series list arrives; consumed after).
   const seriesParamRef = useRef(searchParams.get("series"));
@@ -341,7 +312,7 @@ export default function Landing() {
   // hero and the results content below).
   useEffect(() => {
     if (!clubId || !activeClass) return;
-    setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall"); setActiveMini(null);
+    setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall");
     api.getSeries({ class_id: activeClass, year, club_id: clubId }).then(setSeries).catch(() => {});
     api.overallStandings(activeClass, year, clubId).then(setOverall).catch(() => setOverall(null));
   }, [clubId, activeClass, year]);
@@ -436,8 +407,6 @@ export default function Landing() {
       .catch(() => {});
   }, [view, clubId, activeRegattaSeries, regattaSeriesData]);
 
-  useEffect(() => { setActiveMini(null); }, [activeSeries]);
-
   useEffect(() => {
     if (!clubId || !activeClass || activeSeries === "overall") return;
     if (seriesData[activeSeries]) return;
@@ -445,16 +414,6 @@ export default function Landing() {
       .then((d) => setSeriesData((prev) => ({ ...prev, [activeSeries]: d })))
       .catch(() => {});
   }, [clubId, activeClass, activeSeries, seriesData]);
-
-  // Mini-series views: standings over one consecutive chunk of the series' races.
-  useEffect(() => {
-    if (!clubId || !activeClass || activeSeries === "overall" || !activeMini) return;
-    const key = `${activeSeries}:m${activeMini}`;
-    if (seriesData[key]) return;
-    api.seriesStandings(activeSeries, clubId, activeMini)
-      .then((d) => setSeriesData((prev) => ({ ...prev, [key]: d })))
-      .catch(() => {});
-  }, [clubId, activeClass, activeSeries, activeMini, seriesData]);
 
   // Series linked to a regatta are that regatta's racing, not a championship:
   // they stay out of the championship tabs below (the regatta section and its
@@ -718,9 +677,16 @@ export default function Landing() {
           <div className="mt-5 flex flex-wrap items-end gap-x-8 gap-y-4">
             <YearSwitcher grouped value={year} onChange={setYear} years={[...new Set([...pastYears, CURRENT_YEAR - 1, ...futureYears])]}
               labels={{ past: "Past Results", current: "Current Results", future: "Future Series" }} />
-            {club.official_notice_board !== false && <Link to={`/club/${club.slug}/notice-board`} className="self-end">
-              <Button variant="outline" size="sm" className="gap-1.5 border-white/60 bg-white/10 text-white hover:bg-white hover:text-ocean" data-testid="notice-board-link">Official Notice Board</Button>
-            </Link>}
+            <div className="flex flex-wrap items-center gap-2 self-end">
+              <Link to={`/club/${club.slug}/calendar${year !== CURRENT_YEAR ? `?year=${year}` : ""}`}>
+                <Button variant="outline" size="sm" className="gap-1.5 border-white/60 bg-white/10 text-white hover:bg-white/15" data-testid="club-calendar-tab">
+                  <CalendarDays className="h-4 w-4" /> Calendar
+                </Button>
+              </Link>
+              {club.official_notice_board !== false && <Link to={`/club/${club.slug}/notice-board`} className="self-end">
+                <Button variant="outline" size="sm" className="gap-1.5 border-white/60 bg-white/10 text-white hover:bg-white hover:text-ocean" data-testid="notice-board-link">Official Notice Board</Button>
+              </Link>}
+            </div>
           </div>
 
           {/* One row, the level being chosen in. Picking a choice opens the
@@ -855,8 +821,6 @@ export default function Landing() {
                   clubIcon={club.icon}
                   series={displaySeries}
                   activeSeries={activeSeries}
-                  activeMini={activeMini}
-                  setActiveMini={setActiveMini}
                   adverts={adverts}
                   overall={overall}
                   seriesData={seriesData}
@@ -972,7 +936,6 @@ export default function Landing() {
           </div>
         )}
 
-        <UpcomingRaces clubId={clubId} clubSlug={club.slug} year={year} />
       </main>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">

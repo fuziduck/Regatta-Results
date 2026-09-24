@@ -257,7 +257,7 @@ export const api = {
   addMiniRace: (id, gi, d) => client.post(`/series/${id}/mini/${gi}/races`, d).then((r) => r.data),
   updateMiniGroupSettings: (id, gi, d, v) => client.put(`/series/${id}/mini/${gi}`, withVer(d, v)).then((r) => r.data),
   mergeMiniGroup: (id, gi) => client.post(`/series/${id}/mini/${gi}/merge`).then((r) => r.data),
-  scheduledRaces: (date) => client.get("/scheduled-races", { params: date ? { date } : {} }).then((r) => r.data),
+  scheduledRaces: (params = {}) => client.get("/scheduled-races", { params }).then((r) => r.data),
   lockSeries: (id, reason, v) => client.post(`/series/${id}/lock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   unlockSeries: (id, reason, v) => client.post(`/series/${id}/unlock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   archiveSeries: (id, reason, v) => client.post(`/series/${id}/archive`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
