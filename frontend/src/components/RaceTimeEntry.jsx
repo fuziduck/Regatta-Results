@@ -13,7 +13,7 @@ import { clockToIso, clockValueOf, outcomeLabel } from "@/lib/helpers";
  * catalogue from /rrs-codes ({code, label} entries), the same list every other
  * code menu in the console offers.
  */
-export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onClock, onElapsed, onCode }) {
+export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onClock, onElapsed, onCode, pendingCode = null }) {
   const clock = mode === "clock";
   return (
     <>
@@ -30,10 +30,15 @@ export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onCloc
           <tbody>
             {rows.map((r) => {
               const b = boats[r.boat_id] || {};
+              // Held DPI/RDG: the stored code is unchanged until the panel is
+              // saved, but the menu must show the pick — snapping back to the
+              // old code is what made RDG look broken here.
+              const held = pendingCode?.boatId === r.boat_id ? pendingCode.code : null;
+              const shown = held || r.code;
               return (
                 <tr key={r.boat_id} className="border-b last:border-0">
                   <td className="py-1.5 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
-                  <td className="font-mono">{r.code === "FINISHED" ? r.position : <span className="text-muted-foreground">—</span>}</td>
+                  <td className="font-mono">{shown === "FINISHED" ? r.position : held ? <span className="font-sans text-[10px] font-bold uppercase tracking-wide text-ocean">{held}</span> : <span className="text-muted-foreground">—</span>}</td>
                   <td>
                     {clock
                       ? <ClockInput clock={clockValueOf(r.finish_time)} date={race.date} testId={`clock-input-${b.sail_no}`}
@@ -42,10 +47,17 @@ export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onCloc
                       : <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => onElapsed(r.boat_id, secs)} />}
                   </td>
                   <td>
-                    <Select value={r.code === "DNS" ? "" : r.code} onValueChange={(v) => v && onCode(r.boat_id, v)}>
-                      <SelectTrigger className="h-8" data-testid={`time-code-${b.sail_no}`}><SelectValue placeholder="Code…">{r.code}</SelectValue></SelectTrigger>
+                    <Select value={shown === "DNS" ? "" : shown} onValueChange={(v) => v && onCode(r.boat_id, v)}>
+                      <SelectTrigger className="h-8" data-testid={`time-code-${b.sail_no}`}><SelectValue placeholder="Code…">{shown}</SelectValue></SelectTrigger>
                       <SelectContent>{codes.map((c) => <SelectItem key={c.code} value={c.code}>{outcomeLabel(c.code, c.label)}</SelectItem>)}</SelectContent>
                     </Select>
+                    {held && (
+                      <button type="button" data-testid={`time-pending-${b.sail_no}`}
+                        onClick={() => document.getElementById(`decision-row-${r.boat_id}`)?.scrollIntoView?.({ block: "nearest" })}
+                        className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-ocean hover:underline">
+                        {held} — enter points ↓
+                      </button>
+                    )}
                   </td>
                 </tr>
               );

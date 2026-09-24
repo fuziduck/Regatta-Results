@@ -348,6 +348,13 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // Without it the select snapped back to the previous code, so the officer's
   // click looked ignored (and the row still read OCS).
   const [pendingCode, setPendingCode] = useState(null); // { boatId, code }
+  // Picking DPI/RDG anywhere other than the provisional table opens its panel
+  // further down the page — bring it into view so the pick never looks like a
+  // dead click. "nearest" means no movement when it is already on screen.
+  useEffect(() => {
+    if (!panelBoat) return;
+    document.getElementById(`decision-row-${panelBoat}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [panelBoat]);
   const [validateMsg, setValidateMsg] = useState(null);
   // When the race cannot be fetched (deleted/renumbered elsewhere), show a
   // clear error with a way back instead of hanging on "Loading race…" forever.
@@ -544,8 +551,10 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     runMutation(() => api.selectBoats(raceId, [], version), "Selection cleared — every boat scores DNC");
   // A handicap finish carries its own instant: a tap captures "now", a typed
   // entry passes the officer's time.
-  const finishAt = (boatId, when) =>
-    queueCommit((v) => runMutation(() => api.recordFinish(raceId, boatId, when, v), `${boats[boatId]?.name} finished`));
+  const finishAt = (boatId, when) => {
+    dropPending(boatId);
+    return queueCommit((v) => runMutation(() => api.recordFinish(raceId, boatId, when, v), `${boats[boatId]?.name} finished`));
+  };
   // In a one-design race the finishing order is the officer's, so the next
   // place is simply the one after the last boat placed.
   const nextPlace = () => finished.reduce((max, r) => Math.max(max, Number(r.position) || 0), 0) + 1;
@@ -553,13 +562,14 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     if (!isOneDesign) {
       return finishAt(boatId, new Date().toISOString());
     }
+    dropPending(boatId);
     const nextPosition = nextPlace();
     return runMutation(
       () => api.adjustResult(raceId, boatId, { code: "FINISHED", position: nextPosition }, version),
       `${boats[boatId]?.name} recorded ${nextPosition}${nextPosition === 1 ? "st" : nextPosition === 2 ? "nd" : nextPosition === 3 ? "rd" : "th"}`
     );
   };
-  const undo = (boatId) => runMutation(() => api.undoFinish(raceId, boatId, version));
+  const undo = (boatId) => { dropPending(boatId); return runMutation(() => api.undoFinish(raceId, boatId, version)); };
   // Release a boat from a code back to an ordinary finish: the penalty fields
   // go with it (the server drops the committee points and decision record). A
   // boat with a recorded time is re-placed from that time; in a one-design race
@@ -578,10 +588,21 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // form is filled, whether the code was just picked or an existing decision is
   // being re-opened. `code` says which decision record (dpi_* / rdg_*) to read.
   const openDecision = (boatId, code) => {
+    // Re-picking the code already pending must not wipe what the committee has
+    // typed into the panel — only a genuinely new decision (or re-opening a
+    // stored one) refills the form.
+    if (pendingCode?.boatId === boatId && pendingCode.code === code) {
+      setPanelBoat(boatId);
+      return;
+    }
     const entry = race.results.find((r) => r.boat_id === boatId);
     const prefix = code.toLowerCase();
+    // Points come back only when re-editing a decision already stored on the
+    // result: a fresh DPI/RDG starts empty, so the `penalty_points: 0` default
+    // every result carries can never be saved as the committee's score.
+    const existing = entry?.code === code;
     setDecision({
-      penalty_points: entry?.penalty_points ?? "",
+      penalty_points: existing ? (entry?.penalty_points ?? "") : "",
       reason: entry?.[`${prefix}_reason`] || "",
       decision_maker: entry?.[`${prefix}_decision_maker`] || "",
       date: entry?.[`${prefix}_date`] || "",
@@ -591,6 +612,14 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     setPanelBoat(boatId);
   };
   const closeDecision = () => { setPanelBoat(null); setPendingCode(null); };
+  // The decision panel lives in the provisional table, below whichever menu
+  // the code was picked from — jump to it so a held code is never stranded.
+  const revealDecision = (boatId) =>
+    document.getElementById(`decision-row-${boatId}`)?.scrollIntoView?.({ block: "nearest" });
+  // A finish tap, undo or typed elapsed time supersedes a decision still being
+  // typed for that same boat: its row falls back to the stored code instead of
+  // keeping a stale DPI/RDG badge over a normal finish.
+  const dropPending = (boatId) => { if (pendingCode?.boatId === boatId) closeDecision(); };
   const changeCode = async (boatId, code) => {
     if (code === "FINISHED") {
       closeDecision();
@@ -640,8 +669,10 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     }
   };
   const changePos = (boatId, position) => runMutation(() => api.adjustResult(raceId, boatId, { position: Number(position) }, version));
-  const changeElapsed = (boatId, seconds) =>
-    queueCommit((v) => runMutation(() => api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }, v)));
+  const changeElapsed = (boatId, seconds) => {
+    dropPending(boatId);
+    return queueCommit((v) => runMutation(() => api.adjustResult(raceId, boatId, { elapsed_seconds: seconds }, v)));
+  };
   const setStatus = (s) => runMutation(
     () => api.setStatus(raceId, s, version),
     s === "published" ? "Results published to landing page!" :
@@ -798,13 +829,18 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
           </div>
           {showTiming && timeEntryMode !== "live" ? (
             <RaceTimeEntry mode={timeEntryMode} rows={orderBoatIds(racing)} boats={boats} race={race}
-              codes={rrsCodes} hasStart={hasStart}
+              codes={rrsCodes} hasStart={hasStart} pendingCode={pendingCode}
               onClock={finishAt} onElapsed={changeElapsed} onCode={changeCode} />
           ) : (
           <div className={`grid gap-2 sm:gap-3 ${crowded ? "grid-cols-3 sm:grid-cols-4 lg:grid-cols-5" : "grid-cols-2 sm:grid-cols-3"}`} data-testid="finish-grid">
             {!boatsReady && <div className="col-span-full text-sm text-muted-foreground py-4">Loading boats…</div>}
             {boatsReady && toFinish.map((r) => {
               const b = boats[r.boat_id] || {};
+              // A picked DPI/RDG is held, not yet stored — this menu has to
+              // show it. It was bound straight to `r.code`, so the select
+              // snapped back to DNS/Code… and the click looked ignored.
+              const held = pendingCode?.boatId === r.boat_id ? pendingCode.code : null;
+              const shown = held || r.code;
               return (
                 <div key={r.boat_id} className={`rounded-2xl bg-safety text-white flex flex-col overflow-hidden ${crowded ? "" : "shadow-sm"}`}>
                   <button data-testid={`finish-btn-${b.sail_no}`} onClick={() => finish(r.boat_id)}
@@ -813,12 +849,19 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                     <span className={`font-mono opacity-90 mt-0.5 ${crowded ? "text-sm sm:text-base" : "text-2xl mt-1"}`}>{b.sail_no}</span>
                   </button>
                   <div className={`bg-black/15 px-2 py-1.5 ${crowded ? "" : ""}`}>
-                    <Select value={r.code === "DNS" ? "" : r.code} onValueChange={(v) => v && changeCode(r.boat_id, v)}>
+                    <Select value={shown === "DNS" ? "" : shown} onValueChange={(v) => v && changeCode(r.boat_id, v)}>
                       <SelectTrigger className="h-7 w-full bg-white/10 text-white border-white/25 data-[placeholder]:text-white/70 text-xs" data-testid={`finish-code-${b.sail_no}`}>
-                        <SelectValue placeholder="Code…">{r.code}</SelectValue>
+                        <SelectValue placeholder="Code…">{shown}</SelectValue>
                       </SelectTrigger>
                       <SelectContent>{rrsCodes.map((c) => <SelectItem key={c.code} value={c.code}>{outcomeLabel(c.code, c.label)}</SelectItem>)}</SelectContent>
                     </Select>
+                    {held && (
+                      <button type="button" data-testid={`pending-decision-${b.sail_no}`}
+                        onClick={() => revealDecision(r.boat_id)}
+                        className="mt-1.5 w-full rounded bg-white/20 px-1.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white transition-colors hover:bg-white/30">
+                        {held} — enter points ↓
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -918,7 +961,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                       </td>
                     </tr>
                     {panelBoat === r.boat_id && (
-                      <tr className="border-b bg-muted/30">
+                      <tr className="border-b bg-muted/30" id={`decision-row-${r.boat_id}`}>
                         <td colSpan={showTiming ? 4 : 3} className="py-3">
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                             <div className="space-y-1"><Label className="text-[10px] uppercase">Resulting points</Label><Input type="number" min="0" step="0.5" className="h-8" value={decision.penalty_points} onChange={(e) => setDecision({ ...decision, penalty_points: e.target.value })} data-testid={`decision-points-${b.sail_no}`} /></div>

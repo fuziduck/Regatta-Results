@@ -381,4 +381,68 @@ describe("RaceConsole committee decisions (DPI / RDG)", () => {
     ["FINISHED", "DNS", "DGM", "RDG", "DPI"].forEach((c) =>
       expect(row.querySelector(`[data-testid="select-item-${c}"]`)).not.toBeNull());
   });
+
+  // The defect: those two menus bound their value straight to the STORED code.
+  // TLE writes immediately, so it stuck — but DPI/RDG deliberately hold the
+  // pick until the committee's points arrive, so `r.code` never changed and the
+  // select snapped back to DNS/Code…. The officer's RDG click looked ignored.
+  it("holds an RDG picked from the finish grid instead of snapping back", async () => {
+    renderConsole();
+    await flush();
+    // Both fixture boats are DNS, so both sit in the tap grid.
+    act(() => {
+      container.querySelector('[data-testid="finish-code-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      container.querySelector('[data-testid="select-item-RDG"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="finish-code-1"]').textContent).toContain("RDG");
+    expect(container.querySelector('[data-testid="pending-decision-1"]')).not.toBeNull();
+    // Still nothing written — the points are what make RDG legal.
+    expect(mockApi.adjustResult).not.toHaveBeenCalled();
+    // The panel it leads to is open down in the provisional table.
+    expect(container.querySelector('[data-testid="decision-points-1"]')).not.toBeNull();
+  });
+
+  it("holds an RDG picked from the typed-entry table too", async () => {
+    renderConsole(HANDICAP_META);
+    await flush();
+    chooseMode("clock");
+    const row = rowOf(container.querySelector('[data-testid="time-entry-clock"]'), 0);
+    clickIn(row, '[data-testid="time-code-1"]');
+    clickIn(row, '[data-testid="select-item-RDG"]');
+    await flush();
+
+    expect(row.querySelector('[data-testid="time-code-1"]').textContent).toContain("RDG");
+    expect(row.querySelector('[data-testid="time-pending-1"]')).not.toBeNull();
+    expect(mockApi.adjustResult).not.toHaveBeenCalled();
+  });
+
+  // Every result is created with `penalty_points: 0`. Prefilling that into a
+  // FRESH decision would let a bare save score the boat 0 points, which the
+  // engine treats as a committee-decided score.
+  it("never pre-fills a fresh RDG with the stored 0 points", async () => {
+    mockApi.getRace.mockResolvedValue({ ...race, results: [
+      { boat_id: "b1", code: "FINISHED", position: 1, finish_time: null },
+      { boat_id: "b2", code: "OCS", position: null, finish_time: null, penalty_points: 0 },
+    ] });
+    renderConsole();
+    await flush();
+    const row = rowOf(container.querySelector('[data-testid="adjust-table"]'), 1);
+    clickIn(row, '[data-testid="code-select-2"]');
+    clickIn(row, '[data-testid="select-item-RDG"]');
+    await flush();
+
+    expect(container.querySelector('[data-testid="decision-points-2"]').value).toBe("");
+  });
+
+  it("keeps points already typed when the same code is picked again", async () => {
+    const row = await pick("RDG");
+    type(scoreOf(2), "4");
+
+    clickIn(row, '[data-testid="select-item-RDG"]'); // re-pick, e.g. to reopen
+    await flush();
+
+    expect(container.querySelector('[data-testid="decision-points-2"]').value).toBe("4");
+  });
 });
