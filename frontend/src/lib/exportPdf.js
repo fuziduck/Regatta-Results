@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { divisionTables } from "./helpers";
 import { fmtScore, raceCellStyle } from "./resultCellStyle";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
 
@@ -168,7 +169,10 @@ function header(doc, { clubName, className, title, year, icon, competitionLabel 
 }
 
 export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon, adverts, competitionLabel }) {
-  if (!data || !data.standings?.length) return;
+  // A class split into rating divisions exports one table per division in the
+  // same document, so an IRC boat is never printed against a YTC boat.
+  const tables = divisionTables(data).filter((t) => t.standings?.length);
+  if (!tables.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   const contentTop = header(doc, { clubName, className, title: `${seriesName} Series`, year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
@@ -182,8 +186,18 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
     return r ? (r.mini_name || `R${r.race_number}`) : `R${i + 1}`;
   });
 
+  // Each division is rendered after the previous one: autotable paginates a
+  // table on its own, and its finalY carries into the next table's startY.
+  tables.forEach((table, i) => {
+  const startY = i === 0 ? contentTop : doc.lastAutoTable.finalY + 30;
+  if (tables.length > 1) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(...OCEAN);
+    doc.text(`${table.division_name} division`, 40, startY - 12);
+  }
   autoTable(doc, {
-    startY: contentTop,
+    startY,
     // The bottom margin reserves the footer band (sponsors + attribution) so
     // it never overlaps the results, on one page or many.
     margin: { top: contentTop, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
@@ -191,7 +205,7 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
     // Race columns carry the raw score objects (not formatted strings) so the
     // cell hook below can style them from structured data — discarded DNCs,
     // duty averages etc. highlight identically to numerical discards.
-    body: data.standings.map((row) => [
+    body: table.standings.map((row) => [
       String(row.rank),
       `${row.boat_name}\n${row.sail_no} · ${row.helm}`,
       row.home_club || "—",
@@ -226,12 +240,13 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
       if (style.fontStyle) d.cell.styles.fontStyle = style.fontStyle;
       if (style.fillColor) d.cell.styles.fillColor = style.fillColor;
     },
-    foot: [["", "", "", ...cols.map(() => ""), `Discards: ${data.discards}`, `${data.race_count} race${data.race_count !== 1 ? "s" : ""} sailed`]],
+    foot: [["", "", "", ...cols.map(() => ""), `Discards: ${data.discards}`, `${table.race_count} race${table.race_count !== 1 ? "s" : ""} sailed`]],
     footStyles: { fillColor: [241, 245, 249], textColor: MUTED, fontSize: 8, halign: "center" },
     // Drawn on every page, inside the reserved band at the page foot.
     didDrawPage: (d) => {
       if (d.doc) drawPageFooter(d.doc, sponsors);
     },
+  });
   });
 
   doc.save(`${className}-${seriesName}-${year}-results.pdf`);
@@ -322,20 +337,31 @@ export function exportBoatProfilePdf({ clubName, boat, seasons, history }) {
 }
 
 export function exportOverallPdf({ clubName, className, year, data, icon, adverts, competitionLabel }) {
-  if (!data || !data.standings?.length) return;
+  // A class split into rating divisions has a championship per division: each
+  // is printed as its own table, never ranked against the other.
+  const tables = divisionTables(data).filter((t) => t.standings?.length);
+  if (!tables.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   const contentTop = header(doc, { clubName, className, title: "Overall Championship", year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
+  tables.forEach((table, i) => {
+  const startY = i === 0 ? contentTop : doc.lastAutoTable.finalY + 30;
+  if (tables.length > 1) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(...OCEAN);
+    doc.text(`${table.division_name} division`, 40, startY - 12);
+  }
   autoTable(doc, {
-    startY: contentTop,
+    startY,
     margin: { top: contentTop, right: 40, bottom: FOOTER_BAND_HEIGHT + 40, left: 40 },
-    head: [["Pos", "Boat", "Club", ...data.series_names, "Total", "Net"]],
-    body: data.standings.map((row) => [
-      `${row.rank} / ${row.entries ?? data.entries ?? "–"}`,
+    head: [["Pos", "Boat", "Club", ...table.series_names, "Total", "Net"]],
+    body: table.standings.map((row) => [
+      `${row.rank} / ${row.entries ?? table.entries ?? "–"}`,
       `${row.boat_name}\n${row.sail_no} · ${row.helm}`,
       row.home_club || "—",
-      ...data.series_names.map((s) => (row.per_series?.[s] ?? "—")),
+      ...table.series_names.map((s) => (row.per_series?.[s] ?? "—")),
       String(row.total),
       String(row.net),
     ]),
@@ -346,13 +372,14 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
       0: { cellWidth: 42, halign: "center", fontStyle: "bold" },
       1: { cellWidth: 145 },
       2: { cellWidth: 90 },
-      ...Object.fromEntries(data.series_names.map((_, j) => [j + 3, { halign: "center" }])),
-      [3 + data.series_names.length]: { cellWidth: 45, halign: "center", fontStyle: "bold" },
-      [4 + data.series_names.length]: { cellWidth: 45, halign: "center" },
+      ...Object.fromEntries(table.series_names.map((_, j) => [j + 3, { halign: "center" }])),
+      [3 + table.series_names.length]: { cellWidth: 45, halign: "center", fontStyle: "bold" },
+      [4 + table.series_names.length]: { cellWidth: 45, halign: "center" },
     },
     didDrawPage: (d) => {
       if (d.doc) drawPageFooter(d.doc, sponsors);
     },
+  });
   });
 
   doc.save(`${className}-Overall-${year}.pdf`);

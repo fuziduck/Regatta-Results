@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, CalendarDays, ChevronRight, Clock3, MapPin, Users } from "lucide-react";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, scoringModeLabel, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, boatDivision, boatScoringMode, classDivisions, divisionTables, scoringModeLabel, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 
 const PODIUM_ROW = {
   1: "bg-amber-100/80 dark:bg-amber-400/15",
@@ -88,24 +88,46 @@ export default function Race() {
     return () => { active = false; };
   }, [raceId]);
 
+  const divisions = classDivisions(classInfo);
+
   const rows = useMemo(() => {
     if (!race) return [];
+    // Points come from each boat's own table — a class split into rating
+    // divisions scores her against her division, not the whole class.
     const pointsByBoat = new Map();
     const raceIndex = (standings?.races || []).findIndex((item) => Number(item.race_number) === Number(race.race_number));
-    (standings?.standings || []).forEach((standing) => {
-      const score = raceIndex >= 0 ? standing.scores?.[raceIndex] : null;
-      pointsByBoat.set(standing.boat_id, score?.points);
+    divisionTables(standings).forEach((table) => {
+      (table.standings || []).forEach((standing) => {
+        const score = raceIndex >= 0 ? standing.scores?.[raceIndex] : null;
+        pointsByBoat.set(standing.boat_id, score?.points);
+      });
     });
-    return [...(race.results || [])].sort(resultOrder).map((result) => ({
-      ...result,
-      points: pointsByBoat.get(result.boat_id),
-    }));
-  }, [race, standings]);
+    return [...(race.results || [])]
+      // Divisions are shown as separate results: the rows of one division stay
+      // together, each in its own finishing order.
+      .sort((a, b) => {
+        if (divisions.length) {
+          const da = boatDivision(boats[a.boat_id], divisions);
+          const db = boatDivision(boats[b.boat_id], divisions);
+          if (da !== db) return da.localeCompare(db);
+        }
+        return resultOrder(a, b);
+      })
+      .map((result) => ({
+        ...result,
+        points: pointsByBoat.get(result.boat_id),
+        division: boatDivision(boats[result.boat_id], divisions),
+      }));
+  }, [race, standings, boats, divisions]);
 
   if (!race) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
 
   const scoringMode = series?.scoring_mode || classInfo?.scoring_mode || "one_design";
-  const hasTiming = scoringMode !== "one_design";
+  // A split class is timed when any of its divisions is a handicap.
+  const hasTiming = divisions.length ? divisions.some((d) => d.scoring_mode !== "one_design") : scoringMode !== "one_design";
+  const scoringLabel = divisions.length
+    ? divisions.map((d) => `${d.name} (${scoringModeLabel(d.scoring_mode)})`).join(" · ")
+    : scoringModeLabel(scoringMode);
   const status = raceStatus(race);
   const parentSeriesHref = series
     ? `/club/${slug}?class=${encodeURIComponent(race.class_id)}&series=${encodeURIComponent(series.id)}&year=${race.year}`
@@ -144,7 +166,7 @@ export default function Race() {
             <div className="flex items-start gap-2"><Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Scheduled start</span><strong>{race.start_time || classInfo?.default_start_time || "To be confirmed"}</strong></span></div>
             <div className="flex items-start gap-2"><Users className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Entries</span><strong>{entries}</strong></span></div>
             <div className="flex items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Class / fleet</span><strong>{classInfo?.name || "—"}</strong></span></div>
-            <div><span className="block text-xs uppercase tracking-wider text-muted-foreground">Scoring</span><strong>{scoringModeLabel(scoringMode)}</strong></div>
+            <div><span className="block text-xs uppercase tracking-wider text-muted-foreground">{divisions.length ? "Divisions" : "Scoring"}</span><strong>{scoringLabel}</strong></div>
           </div>
           <nav className="mt-6 flex flex-wrap gap-2 border-t border-border pt-4" aria-label="Race parents">
             <Link to={parentSeriesHref} className="text-sm font-semibold text-ocean hover:underline">View parent series</Link>
@@ -178,8 +200,11 @@ export default function Race() {
                     const boat = boats[result.boat_id] || {};
                     const position = result.code === "FINISHED" ? Number(result.position) : null;
                     const elapsed = result.code === "FINISHED" ? elapsedSecondsOf(result.finish_time, race) : null;
+                    // Corrected time follows the boat's own division's rating
+                    // system (one-design divisions have none to show).
+                    const boatMode = boatScoringMode(boat, divisions, scoringMode);
                     const corrected = result.code === "FINISHED" && hasTiming
-                      ? correctedSecondsOf(result.finish_time, race, boatRating(scoringMode, boat), scoringMode)
+                      ? correctedSecondsOf(result.finish_time, race, boatRating(boatMode, boat), boatMode)
                       : null;
                     const crew = boat.crew || boat.crew_name || (Array.isArray(boat.crew_names) ? boat.crew_names.join(", ") : "—");
                     const resultCode = result.code && result.code !== "FINISHED" ? result.code : null;
@@ -193,7 +218,7 @@ export default function Race() {
                           <Link to={`/boat/${boat.fleet_id || result.boat_id}`} className={`font-semibold text-ocean hover:underline ${shouldWrapBoatName(boat.name) ? "whitespace-pre-line break-words" : ""}`}>{wrapBoatName(boat.name || "Unknown boat")}</Link>
                           <div className="text-xs text-muted-foreground sm:hidden">Helm: {boat.helm || "—"} · Crew: {crew}</div>
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{classInfo?.name || "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{classInfo?.name || "—"}{result.division && <span className="ml-1 font-semibold text-ocean">· {result.division}</span>}</td>
                         <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">{boat.helm || "—"}</td>
                         <td className="hidden px-3 py-2.5 text-muted-foreground lg:table-cell">{crew}</td>
                         {hasTiming && <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsed) : "—"}</td>}

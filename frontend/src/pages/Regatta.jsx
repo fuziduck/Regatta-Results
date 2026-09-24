@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { SeriesStandingsTable } from "@/components/StandingsTable";
+import { SeriesStandings } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { competitionImage, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
@@ -130,7 +130,7 @@ export default function Regatta() {
           <Download className="w-3.5 h-3.5" /> PDF
         </Button>
       </div>
-      <SeriesStandingsTable data={standings[s.id]} />
+      <SeriesStandings data={standings[s.id]} />
       <PublishedRaces
         seriesId={s.id}
         series={s}
@@ -197,7 +197,7 @@ export default function Regatta() {
                   { icon: <Flag className="w-4 h-4" />, label: "Races", value: regatta.race_count || 0 },
                   { icon: <Sailboat className="w-4 h-4" />, label: "Classes", value: regatta.class_count || classNames.length },
                   { icon: <Users className="w-4 h-4" />, label: "Boats", value: regatta.series?.reduce((sum, s) => sum + (s.boat_count || 0), 0) || "—" },
-                  { icon: <Trophy className="w-4 h-4" />, label: "Winners", value: regatta.series?.filter((s) => s.winner).length || 0 },
+                  { icon: <Trophy className="w-4 h-4" />, label: "Winners", value: regatta.series?.reduce((n, s) => n + (s.divisions?.length ? s.divisions.filter((d) => d.winner).length : (s.winner ? 1 : 0)), 0) || 0 },
                 ].map(({ icon, label, value }) => (
                   <div key={label} className="rounded-xl border border-border bg-card p-3 text-center">
                     <div className="flex items-center justify-center gap-1.5 text-ocean mb-1">{icon}<span className="text-xs uppercase tracking-widest font-semibold text-muted-foreground">{label}</span></div>
@@ -230,20 +230,28 @@ export default function Regatta() {
                           <div className="text-xs text-muted-foreground">{s.race_count} races · {s.boat_count} boats</div>
                         </div>
                         <div className="mt-2 space-y-1.5">
-                          {(s.podium || []).map((p, i) => (
-                            <div key={i} className="flex items-center gap-2 text-sm">
-                              <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${PODIUM[i]?.chip || "bg-muted text-muted-foreground"}`} title={PODIUM[i]?.label}>
-                                <Medal className="w-3.5 h-3.5" />
-                              </span>
-                              <span className="w-5 font-mono text-xs text-muted-foreground">{p.rank}</span>
-                              <strong className="truncate">{p.boat_name}</strong>
-                              {p.sail_no && <span className="hidden sm:inline font-mono text-xs text-muted-foreground">{p.sail_no}</span>}
-                              <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">{p.net} pts</span>
+                          {/* A class split into rating divisions has a podium
+                              per division: each one is listed under its own
+                              name rather than ranked together. */}
+                          {(s.divisions?.length ? s.divisions : [{ podium: s.podium, winner: s.winner }]).map((d, di) => (
+                            <div key={di} className={di ? "pt-1.5" : ""}>
+                              {d.name && <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-safety" data-testid={`regatta-division-${d.name}`}>{d.name}</div>}
+                              {(d.podium || []).map((p, i) => (
+                                <div key={i} className="flex items-center gap-2 text-sm">
+                                  <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${PODIUM[i]?.chip || "bg-muted text-muted-foreground"}`} title={PODIUM[i]?.label}>
+                                    <Medal className="w-3.5 h-3.5" />
+                                  </span>
+                                  <span className="w-5 font-mono text-xs text-muted-foreground">{p.rank}</span>
+                                  <strong className="truncate">{p.boat_name}</strong>
+                                  {p.sail_no && <span className="hidden sm:inline font-mono text-xs text-muted-foreground">{p.sail_no}</span>}
+                                  <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">{p.net} pts</span>
+                                </div>
+                              ))}
+                              {(d.podium || []).length === 0 && (
+                                <div className="text-sm"><span className="text-muted-foreground">Winner:</span> <strong>{d.winner || "—"}</strong></div>
+                              )}
                             </div>
                           ))}
-                          {(s.podium || []).length === 0 && (
-                            <div className="text-sm"><span className="text-muted-foreground">Winner:</span> <strong>{s.winner || "—"}</strong></div>
-                          )}
                         </div>
                       </div>
                     ))}

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import ThemeToggle from "@/components/ThemeToggle";
-import { SeriesStandingsTable } from "@/components/StandingsTable";
+import { SeriesStandings } from "@/components/StandingsTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -650,7 +650,7 @@ export default function Boat() {
                 {seriesBusy ? (
                   <p className="text-muted-foreground">Loading series…</p>
                 ) : active.payload ? (
-                  <SeriesStandingsTable data={active.payload} />
+                  <SeriesStandings data={active.payload} />
                 ) : (
                   <p className="text-muted-foreground">Could not load this series.</p>
                 )}

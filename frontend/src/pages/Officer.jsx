@@ -6,8 +6,8 @@ import ClubPicker from "@/components/ClubPicker";
 import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel } from "@/lib/helpers";
-import { SeriesStandingsTable } from "@/components/StandingsTable";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision } from "@/lib/helpers";
+import { SeriesStandings } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { RaceTimeEntry } from "@/components/RaceTimeEntry";
 import RaceTimer from "@/components/RaceTimer";
@@ -455,9 +455,24 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   }
   if (!race) return <div className="p-8 text-muted-foreground">Loading race…</div>;
 
+  const divisions = classDivisions(meta);
   const scoringMode = series?.scoring_mode || meta.scoring_mode || "one_design";
-  const isOneDesign = scoringMode === "one_design";
+  // Every division of a split class is one-design only when none is a handicap
+  // — a date-stamped finish is still needed for a timed division.
+  const isOneDesign = divisions.length
+    ? divisions.every((d) => d.scoring_mode === "one_design")
+    : scoringMode === "one_design";
   const showTiming = !isOneDesign;
+  // Places restart in each division of a split class, so the rows are grouped
+  // by division before their finishing order.
+  const byDivisionThenPosition = (rows) => [...rows].sort((a, b) => {
+    if (divisions.length) {
+      const da = boatDivision(boats[a.boat_id], divisions);
+      const db = boatDivision(boats[b.boat_id], divisions);
+      if (da !== db) return da.localeCompare(db);
+    }
+    return (Number(a.position) || 0) - (Number(b.position) || 0);
+  });
   // The instant every time on this race is measured from (gun, else scheduled
   // start) — helpers.raceStart owns that rule, helpers.raceClock the readout.
   const startAt = Date.parse(raceStart(race));
@@ -487,7 +502,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     return [...list].sort((a, b) => idx(a.boat_id) - idx(b.boat_id));
   };
   const toFinish = orderBoatIds(racing.filter((r) => r.code === "DNS"));
-  const finished = visibleResults.filter((r) => r.code === "FINISHED").sort((a, b) => a.position - b.position);
+  const finished = byDivisionThenPosition(visibleResults.filter((r) => r.code === "FINISHED"));
   // Big fleets (say a dozen or more boats still racing) get a compact layout:
   // more columns and smaller name/sail text so every boat is visible on one
   // screen instead of overflowing a huge wall of buttons.
@@ -869,13 +884,14 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                   return (
                     <Fragment key={r.boat_id}>
                     <tr className="border-b last:border-0">
-                      <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
+                      <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>
+                        {divisions.length > 0 && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-safety" data-testid={`row-division-${b.sail_no}`}>{boatDivision(b, divisions)}</span>}
+                      </td>
                       <td>
                         {shown === "FINISHED"
                           ? <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />
                           : <Badge variant="outline" className={CODE_COLORS[shown]} data-testid={`pos-badge-${b.sail_no}`}>{shown}</Badge>}
-                      </td>
-                      {showTiming && <td>
+                      </td>                        {showTiming && <td>
                         {shown === "FINISHED"
                           ? <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => changeElapsed(r.boat_id, secs)} data-testid={`elapsed-input-${b.sail_no}`} className="[&_input]:w-12" />
                           : <span className="text-muted-foreground">—</span>}
@@ -976,7 +992,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                       {g.scoring === "combined" ? "Combined day" : "Separate races"}
                     </Badge>
                   </div>
-                  <SeriesStandingsTable data={data} />
+                  <SeriesStandings data={data} />
                 </section>
               );
             })}
@@ -1887,6 +1903,9 @@ export default function Officer() {
     class_name: classes[r.class_id]?.name || "Class",
     series_name: series[r.series_id]?.name || "Series",
     scoring_mode: series[r.series_id]?.scoring_mode || classes[r.class_id]?.scoring_mode || "one_design",
+    // The class's rating divisions, when it fields more than one system: each
+    // is scored (and placed) in its own table.
+    divisions: classDivisions(classes[r.class_id]),
   });
 
   // Note shown on a race (or scheduled race) that belongs to a mini series,

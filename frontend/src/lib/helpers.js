@@ -146,6 +146,48 @@ export const SCORING_MODES = {
 
 export const scoringModeLabel = (mode) => (SCORING_MODES[mode] || SCORING_MODES.one_design).label;
 
+// Rating divisions: a class may field more than one rating system at once
+// (IRC boats and YTC boats in the same class and the same series), each scored
+// in its own table. Mirrors the backend's _class_divisions / _boat_division.
+export function classDivisions(cls) {
+  const clean = (cls?.divisions || [])
+    .map((d) => ({ name: (d?.name || "").trim(), scoring_mode: d?.scoring_mode || "one_design" }))
+    .filter((d) => d.name);
+  return clean.length >= 2 ? clean : [];
+}
+
+// The division a boat competes in: her own choice, else the division whose
+// rating system she holds a certificate for, else the first one. "" when the
+// class has no divisions.
+export function boatDivision(boat, divisions) {
+  if (!divisions?.length) return "";
+  const chosen = (boat?.division || "").trim().toLowerCase();
+  const named = divisions.find((d) => d.name.toLowerCase() === chosen);
+  if (named) return named.name;
+  const rated = divisions.find((d) => boatRating(d.scoring_mode, boat));
+  return (rated || divisions[0]).name;
+}
+
+// The scoring mode a boat is scored under: her division's mode when the class
+// is split, else the class/series mode passed in.
+export function boatScoringMode(boat, divisions, fallback) {
+  const name = boatDivision(boat, divisions);
+  return (divisions.find((d) => d.name === name) || {}).scoring_mode || fallback;
+}
+
+// The standings tables a payload holds: one per rating division when the class
+// is split, else the single combined table.
+export const divisionTables = (data) => (data?.divisions?.length ? data.divisions : data ? [data] : []);
+
+// A boat's row in whichever table she is scored in, with that table.
+export function boatStanding(data, boatId) {
+  for (const table of divisionTables(data)) {
+    const row = (table.standings || []).find((r) => r.boat_id === boatId);
+    if (row) return { table, row };
+  }
+  return { table: null, row: null };
+}
+
 // The rating on a boat record that a scoring mode corrects by; null for
 // one-design and for a boat that has no rating in that mode.
 export function boatRating(mode, boat) {

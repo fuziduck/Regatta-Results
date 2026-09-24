@@ -11,7 +11,56 @@ import {
   outcomeLabel,
   boatRating,
   correctedSecondsOf,
+  classDivisions,
+  boatDivision,
+  boatScoringMode,
+  divisionTables,
+  boatStanding,
 } from "./helpers";
+
+describe("rating divisions (a class racing under two rating systems)", () => {
+  const divisions = [
+    { name: "IRC", scoring_mode: "irc" },
+    { name: "YTC", scoring_mode: "ytc" },
+  ];
+
+  it("needs two divisions to be a split", () => {
+    expect(classDivisions({ divisions })).toEqual(divisions);
+    expect(classDivisions({ divisions: [divisions[0]] })).toEqual([]);
+    expect(classDivisions({})).toEqual([]);
+    // A blank name is not a division.
+    expect(classDivisions({ divisions: [{ name: "  " }, divisions[1]] })).toEqual([]);
+  });
+
+  it("places a boat by her own choice, else by the certificate she holds", () => {
+    // No tcc, a YTC number -> the YTC division.
+    expect(boatDivision({ ytc: 1020 }, divisions)).toBe("YTC");
+    expect(boatDivision({ tcc: 1.015 }, divisions)).toBe("IRC");
+    // A boat holding both is placed where her certificates lead first, unless
+    // she says otherwise.
+    expect(boatDivision({ tcc: 1.015, ytc: 1020 }, divisions)).toBe("IRC");
+    expect(boatDivision({ tcc: 1.015, ytc: 1020, division: "YTC" }, divisions)).toBe("YTC");
+    // No rating at all: the first division, so she is never dropped.
+    expect(boatDivision({}, divisions)).toBe("IRC");
+    expect(boatDivision({}, [])).toBe("");
+  });
+
+  it("scores a boat under her division's mode", () => {
+    expect(boatScoringMode({ ytc: 1020 }, divisions, "one_design")).toBe("ytc");
+    expect(boatScoringMode({ tcc: 1.015 }, divisions, "one_design")).toBe("irc");
+    expect(boatScoringMode({}, [], "py")).toBe("py");
+  });
+
+  it("reads divisions out of a standings payload, with the boat's own table", () => {
+    const irc = { division_name: "IRC", standings: [{ boat_id: "a" }] };
+    const ytc = { division_name: "YTC", standings: [{ boat_id: "b" }] };
+    const payload = { standings: [{ boat_id: "a" }, { boat_id: "b" }], divisions: [irc, ytc] };
+    expect(divisionTables(payload)).toEqual([irc, ytc]);
+    expect(divisionTables({ standings: [] })).toEqual([{ standings: [] }]);
+    expect(boatStanding(payload, "b")).toEqual({ table: ytc, row: { boat_id: "b" } });
+    expect(boatStanding(payload, "zz")).toEqual({ table: null, row: null });
+  });
+});
 
 describe("shouldWrapBoatName (14-character threshold on the name itself)", () => {
   it("treats names under 14 characters as single-line", () => {

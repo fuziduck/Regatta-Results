@@ -10,7 +10,7 @@ import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { SERIES_TYPES } from "@/lib/competition";
-import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel } from "@/lib/helpers";
+import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel, classDivisions, boatDivision } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
 import { ElapsedInput } from "@/components/ElapsedInput";
@@ -285,22 +285,28 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
 
 /* ---------------- Classes ---------------- */
 function ClassesTab({ classes, reload, clubId }) {
-  const [form, setForm] = useState({ name: "", default_start_time: "10:30", scoring_mode: "one_design" });
+  const BLANK = { name: "", default_start_time: "10:30", scoring_mode: "one_design", divisions: [] };
+  const [form, setForm] = useState(BLANK);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
   const save = async () => {
     if (!form.name) return toast.error("Name required");
-    if (editing) await api.updateClass(editing, form); else await api.createClass({ ...form, club_id: clubId });
-    toast.success("Saved"); setOpen(false); setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); reload();
+    // Blank division rows are dropped; a class needs two to be a split.
+    const body = { ...form, divisions: (form.divisions || []).filter((d) => (d.name || "").trim()) };
+    if (editing) await api.updateClass(editing, body); else await api.createClass({ ...body, club_id: clubId });
+    toast.success("Saved"); setOpen(false); setEditing(null); setForm(BLANK); reload();
   };
   const del = async (id) => { await api.deleteClass(id); toast.success("Deleted"); reload(); };
+  const setDivision = (i, patch) => setForm((f) => ({
+    ...f, divisions: (f.divisions || []).map((d, j) => (j === i ? { ...d, ...patch } : d)),
+  }));
 
   return (
     <div>
       <div className="flex justify-between items-center mb-4">
         <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
-        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ name: "", default_start_time: "10:30", scoring_mode: "one_design" }); } }}>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm(BLANK); } }}>
           <DialogTrigger asChild><Button data-testid="add-class-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add class</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} class</DialogTitle></DialogHeader>
@@ -308,6 +314,36 @@ function ClassesTab({ classes, reload, clubId }) {
               <div className="space-y-1.5"><Label>Class name</Label><Input data-testid="class-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dragon" /></div>
               <div className="space-y-1.5"><Label>Default start time</Label><Input type="time" data-testid="class-time-input" value={form.default_start_time} onChange={(e) => setForm({ ...form, default_start_time: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Scoring system</Label><Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}><SelectTrigger data-testid="class-scoring-input"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="one_design">One-design</SelectItem><SelectItem value="irc">IRC</SelectItem><SelectItem value="py">PY</SelectItem><SelectItem value="ytc">YTC</SelectItem></SelectContent></Select></div>
+              {/* Rating divisions: some fleets race under two rating systems at
+                  once (IRC and YTC boats in the same class and series). Each
+                  division is scored in its own table. */}
+              <div className="space-y-2 rounded-lg border border-border p-3" data-testid="class-divisions-panel">
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Rating divisions</Label>
+                  <Button type="button" size="sm" variant="outline" className="h-7 gap-1" data-testid="add-division-btn"
+                    onClick={() => setForm((f) => ({ ...f, divisions: [...(f.divisions || []), { name: "", scoring_mode: "irc" }] }))}>
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Two or more divisions score the class as one table per rating system. Race number and series stay the same.
+                  Leave empty for a single fleet.
+                </p>
+                {(form.divisions || []).map((d, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input value={d.name} placeholder="Division name, e.g. IRC" data-testid={`division-name-${i}`}
+                      onChange={(e) => setDivision(i, { name: e.target.value })} />
+                    <Select value={d.scoring_mode || "irc"} onValueChange={(v) => setDivision(i, { scoring_mode: v })}>
+                      <SelectTrigger className="w-36" data-testid={`division-mode-${i}`}><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="one_design">One-design</SelectItem><SelectItem value="irc">IRC</SelectItem><SelectItem value="py">PY</SelectItem><SelectItem value="ytc">YTC</SelectItem></SelectContent>
+                    </Select>
+                    <Button type="button" size="icon" variant="ghost" className="text-destructive shrink-0" data-testid={`remove-division-${i}`}
+                      onClick={() => setForm((f) => ({ ...f, divisions: (f.divisions || []).filter((_, j) => j !== i) }))}>
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
             <DialogFooter><Button onClick={save} data-testid="save-class-btn" className="bg-ocean hover:bg-ocean-dark">Save</Button></DialogFooter>
           </DialogContent>
@@ -319,10 +355,12 @@ function ClassesTab({ classes, reload, clubId }) {
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
-              <TableCell>{scoringModeLabel(c.scoring_mode)}</TableCell>
+              <TableCell>{classDivisions(c).length
+                ? <span className="flex flex-wrap gap-1" data-testid={`class-divisions-${c.name}`}>{classDivisions(c).map((d) => <Badge key={d.name} variant="outline">{d.name} · {scoringModeLabel(d.scoring_mode)}</Badge>)}</span>
+                : scoringModeLabel(c.scoring_mode)}</TableCell>
               <TableCell><ClassIconUpload classData={c} onUpdated={reload} /></TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design", divisions: (c.divisions || []).map((d) => ({ name: d.name || "", scoring_mode: d.scoring_mode || "one_design" })) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
@@ -341,8 +379,10 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   const [boats, setBoats] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const blank = { name: "", sail_no: "", class_id: "", home_club: clubName || "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", py: "", ytc: "", boat_type: "" };
+  const blank = { name: "", sail_no: "", class_id: "", home_club: clubName || "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", py: "", ytc: "", boat_type: "", division: "" };
   const [form, setForm] = useState(blank);
+  // Rating divisions of the class being edited, if it has any (see ClassesTab).
+  const boatDivisions = classDivisions(classes.find((c) => c.id === form.class_id));
   // Shared boat identity: matches found for the typed name+sail, and the
   // admin's choice — link to an existing fleet identity, or keep separate
   // (a different boat with identical details).
@@ -481,6 +521,18 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
               <div className="space-y-1.5"><Label>TCC (IRC rating)</Label><Input type="number" step="0.001" min="0" data-testid="boat-tcc-input" value={form.tcc} onChange={(e) => setForm({ ...form, tcc: e.target.value })} placeholder="e.g. 1.015 — blank if not IRC-rated" /></div>
               <div className="space-y-1.5"><Label>PY (Portsmouth)</Label><Input type="number" step="1" min="0" data-testid="boat-py-input" value={form.py} onChange={(e) => setForm({ ...form, py: e.target.value })} placeholder="e.g. 1013 — blank if not PY-rated" /></div>
               <div className="space-y-1.5"><Label>YTC (RYA Yacht Time Correction)</Label><Input type="number" step="1" min="0" data-testid="boat-ytc-input" value={form.ytc} onChange={(e) => setForm({ ...form, ytc: e.target.value })} placeholder="e.g. 1020 — blank if not YTC-rated" /></div>
+              {boatDivisions.length > 0 && (
+                <div className="space-y-1.5 col-span-2"><Label>Rating division</Label>
+                  <Select value={form.division || "auto"} onValueChange={(v) => setForm({ ...form, division: v === "auto" ? "" : v })}>
+                    <SelectTrigger data-testid="boat-division-input"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">By rating (automatic)</SelectItem>
+                      {boatDivisions.map((d) => <SelectItem key={d.name} value={d.name}>{d.name} · {scoringModeLabel(d.scoring_mode)}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Which rating table this boat is scored in. Automatic places her by the certificate she holds.</p>
+                </div>
+              )}
               <div className="flex items-center gap-2 col-span-2"><Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} data-testid="boat-active-switch" /><Label>Active (racing this year)</Label></div>
               {fleetMatches.length > 0 && (
                 <div className="col-span-2 rounded-lg border border-ocean/30 bg-ocean/5 p-3 space-y-2" data-testid="fleet-link-panel">
@@ -551,7 +603,7 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Club</TableHead><TableHead>Helm</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>PY</TableHead><TableHead>YTC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Division</TableHead><TableHead>Club</TableHead><TableHead>Helm</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>PY</TableHead><TableHead>YTC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{boats.map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
@@ -562,6 +614,14 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
                 )}
               </TableCell>
               <TableCell>{cname(b.class_id)}</TableCell>
+              <TableCell className="text-muted-foreground">{(() => {
+                const divs = classDivisions(classes.find((c) => c.id === b.class_id));
+                if (!divs.length) return "—";
+                // An unassigned boat is placed by the certificate she holds —
+                // the same rule the scoring uses (see boatDivision).
+                const name = boatDivision(b, divs);
+                return <span title={b.division ? "Set on this boat" : "Placed by her rating certificate"}>{name}</span>;
+              })()}</TableCell>
               <TableCell className="text-muted-foreground">{showClub(b)}</TableCell>
               <TableCell>{b.helm}</TableCell>
               <TableCell className="text-muted-foreground">{b.boat_type || "—"}</TableCell>
@@ -570,11 +630,11 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
               <TableCell className="font-mono">{b.ytc ? Math.round(b.ytc) : "—"}</TableCell>
               <TableCell>{b.active ? <Badge className="bg-emerald-100 text-emerald-800">Yes</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
               <TableCell className="text-right">
-                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, home_club: b.home_club || clubName || "", helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "", py: b.py ?? "", ytc: b.ytc ?? "", boat_type: b.boat_type ?? "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, home_club: b.home_club || clubName || "", helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "", py: b.py ?? "", ytc: b.ytc ?? "", boat_type: b.boat_type ?? "", division: b.division || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b.id)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!boats.length && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
+            {!boats.length && <TableRow><TableCell colSpan={12} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>
@@ -904,6 +964,10 @@ function SeriesTab({ classes, clubId }) {
   const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", series_type: "championship", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
   const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
+  // When the chosen class fields rating divisions, this series is scored as one
+  // table per division and has no single scoring system to choose.
+  const classOfSeries = classes.find((c) => c.id === form.class_id) || {};
+  const seriesDivisions = classDivisions(classOfSeries);
   // The auto-fill counts weekly from this date; opening the dialog seeds it
   // from the series' own first race date when it already has one.
   const [schedStart, setSchedStart] = useState(todayLocal);
@@ -1139,18 +1203,28 @@ function SeriesTab({ classes, clubId }) {
                 <p className="text-[11px] text-muted-foreground">Series belonging to a competition appear on its page (per class) instead of the club's championship list.</p>
               </div>
               <div className="space-y-1.5"><Label>Scoring system</Label>
-                <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
-                  <SelectTrigger data-testid="series-scoring-input"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="one_design">One-design (finish order)</SelectItem>
-                    <SelectItem value="irc">IRC (corrected time)</SelectItem>
-                    <SelectItem value="py">PY (Portsmouth Yardstick)</SelectItem>
-                    <SelectItem value="ytc">YTC (RYA Yacht Time Correction)</SelectItem>
-                  </SelectContent>
-                </Select>
-                {form.scoring_mode === "irc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × TCC); boats need a TCC.</p>}
-                {form.scoring_mode === "py" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ PY); boats need a PY number.</p>}
-                {form.scoring_mode === "ytc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ YTC); boats need a YTC number.</p>}
+                {/* A class split into rating divisions decides how its series
+                    are scored — one table per division — so the series has no
+                    single system to choose. */}
+                {seriesDivisions.length > 0 ? (
+                  <p className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground" data-testid="series-divisions-note">
+                    {classOfSeries.name} is split into {seriesDivisions.map((d) => `${d.name} (${scoringModeLabel(d.scoring_mode)})`).join(" and ")}:
+                    this series is scored as one table per division automatically.
+                  </p>
+                ) : (
+                  <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
+                    <SelectTrigger data-testid="series-scoring-input"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="one_design">One-design (finish order)</SelectItem>
+                      <SelectItem value="irc">IRC (corrected time)</SelectItem>
+                      <SelectItem value="py">PY (Portsmouth Yardstick)</SelectItem>
+                      <SelectItem value="ytc">YTC (RYA Yacht Time Correction)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+                {!seriesDivisions.length && form.scoring_mode === "irc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × TCC); boats need a TCC.</p>}
+                {!seriesDivisions.length && form.scoring_mode === "py" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ PY); boats need a PY number.</p>}
+                {!seriesDivisions.length && form.scoring_mode === "ytc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ YTC); boats need a YTC number.</p>}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5"><Label>Year</Label><Input type="number" min="2000" max="2100" data-testid="series-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>

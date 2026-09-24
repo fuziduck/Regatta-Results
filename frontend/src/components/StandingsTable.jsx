@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Layers, Trophy } from "lucide-react";
 import { podiumPlace } from "@/lib/resultCellStyle";
-import { shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { divisionTables, scoringModeLabel, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 
 // Keep the rank (#) column pinned at the left edge and offset the sticky Boat
 // column by the rank column's ACTUAL rendered width, so the two sit
@@ -33,6 +33,43 @@ const medal = (rank) => {
   if (rank === 3) return "text-orange-600 dark:text-orange-400";
   return "text-muted-foreground";
 };
+
+// A class that fields more than one rating system (IRC boats and YTC boats in
+// the same class and series) is scored in one table per division, so each
+// division gets its own titled table and an IRC boat is never ranked against a
+// YTC boat. A class without divisions renders the single table, unchanged.
+function DivisionHeadings({ data, children }) {
+  const tables = divisionTables(data);
+  if (tables.length < 2) return children(tables[0]);
+  return tables.map((table) => (
+    <div key={table.division_name} className="mb-6 last:mb-0">
+      <h4 className="mb-2 font-heading text-lg uppercase tracking-tight text-ocean"
+          data-testid={`division-${table.division_name}`}>
+        {table.division_name}{" "}
+        <span className="font-body text-sm normal-case text-muted-foreground">
+          {scoringModeLabel(table.division_scoring_mode)} division
+        </span>
+      </h4>
+      {children(table)}
+    </div>
+  ));
+}
+
+export function SeriesStandings({ data, onOpenMini }) {
+  return (
+    <DivisionHeadings data={data}>
+      {(table) => <SeriesStandingsTable data={table} onOpenMini={onOpenMini} />}
+    </DivisionHeadings>
+  );
+}
+
+export function OverallStandings({ data }) {
+  return (
+    <DivisionHeadings data={data}>
+      {(table) => <OverallStandingsTable data={table} />}
+    </DivisionHeadings>
+  );
+}
 
 // Web equivalents of the PDF export's podium fills (see resultCellStyle.js) —
 // medal backgrounds with dark text, so the highlight stays readable on screen

@@ -5,7 +5,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { SeriesStandingsTable } from "./StandingsTable";
+import { SeriesStandingsTable, SeriesStandings } from "./StandingsTable";
 
 let container;
 let root;
@@ -129,5 +129,45 @@ describe("combined mini-series drill-down link", () => {
     renderTable(combinedData());
     expect(container.querySelector("[data-testid^='open-mini-']")).toBeNull();
     expect(container.querySelector("thead").textContent).toContain("combined · 2 races");
+  });
+});
+
+describe("SeriesStandings (rating divisions)", () => {
+  const renderSplit = (d) => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <SeriesStandings data={d} />
+        </MemoryRouter>
+      );
+    });
+    return container;
+  };
+
+  const split = () => ({
+    ...data(),
+    divisions: [
+      { division_name: "IRC", division_scoring_mode: "irc", ...data() },
+      { division_name: "YTC", division_scoring_mode: "ytc", ...data() },
+    ],
+  });
+
+  it("renders one titled table per division", () => {
+    renderSplit(split());
+    expect(container.querySelectorAll("[data-testid='series-standings-table']").length).toBe(2);
+    const headings = container.querySelectorAll("[data-testid^='division-']");
+    expect([...headings].map((h) => h.textContent)).toEqual([
+      "IRC IRC division",
+      "YTC YTC division",
+    ]);
+  });
+
+  it("renders the single table with no division heading when the class is not split", () => {
+    renderSplit(data());
+    expect(container.querySelectorAll("[data-testid='series-standings-table']").length).toBe(1);
+    expect(container.querySelector("[data-testid^='division-']")).toBeNull();
   });
 });

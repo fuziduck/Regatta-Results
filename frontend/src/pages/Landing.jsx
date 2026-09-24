@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, CURRENT_YEAR, MAX_YEAR } from "@/lib/helpers";
+import { fmtDate, CURRENT_YEAR, MAX_YEAR, divisionTables } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
-import { SeriesStandingsTable, OverallStandingsTable } from "@/components/StandingsTable";
+import { SeriesStandings, OverallStandings } from "@/components/StandingsTable";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -142,7 +142,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
             </Button>
           </div>
         </div>
-        <OverallStandingsTable data={overall} />
+        <OverallStandings data={overall} />
       </div>
     );
   }
@@ -206,11 +206,15 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
         const planned = active.planned_races || 0;
         const completed = races.length;
         const remaining = Math.max(0, planned - completed);
-        const boats = miniData.standings.length;
-        const leader = miniData.standings[0];
-        const second = miniData.standings[1];
-        const wins = miniData.standings.reduce((sum, s) => sum + (s.scores || []).filter((sc) => sc.points === 1).length, 0);
-        const podiums = miniData.standings.reduce((sum, s) => sum + (s.scores || []).filter((sc) => sc.points >= 1 && sc.points <= 3).length, 0);
+        // A class split into rating divisions is summarised by its first
+        // division's leader (named in the card); the boat and win counts add
+        // up across the divisions.
+        const tables = divisionTables(miniData);
+        const boats = tables.reduce((n, t) => n + (t.standings || []).length, 0);
+        const leader = tables[0]?.standings?.[0];
+        const second = tables[0]?.standings?.[1];
+        const wins = tables.reduce((sum, t) => sum + (t.standings || []).reduce((n, s) => n + (s.scores || []).filter((sc) => sc.points === 1).length, 0), 0);
+        const podiums = tables.reduce((sum, t) => sum + (t.standings || []).reduce((n, s) => n + (s.scores || []).filter((sc) => sc.points >= 1 && sc.points <= 3).length, 0), 0);
         const gap = leader && second ? (second.net != null && leader.net != null ? second.net - leader.net : null) : null;
         return (
           <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="series-stats">
@@ -227,7 +231,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
             <div className="rounded-xl border border-border bg-card p-3 text-center">
               <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Leader</div>
               <div className="font-heading text-lg text-ocean truncate" title={leader?.boat_name}>{leader?.boat_name || "—"}</div>
-              <div className="text-[10px] text-muted-foreground">{leader?.net != null ? `${leader.net} pts` : ""}{gap != null ? ` · +${gap}` : ""}</div>
+              <div className="text-[10px] text-muted-foreground">{tables.length > 1 ? `${tables[0].division_name} · ` : ""}{leader?.net != null ? `${leader.net} pts` : ""}{gap != null ? ` · +${gap}` : ""}</div>
             </div>
             <div className="rounded-xl border border-border bg-card p-3 text-center">
               <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Podiums</div>
@@ -237,7 +241,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
           </div>
         );
       })()}
-      <SeriesStandingsTable data={miniData} onOpenMini={setActiveMini} />
+      <SeriesStandings data={miniData} onOpenMini={setActiveMini} />
       <PublishedRaces seriesId={active.id} series={active} classId={classId} clubId={clubId} clubSlug={clubSlug} scoringMode={active.scoring_mode || "one_design"} />
     </div>
   );
@@ -937,7 +941,7 @@ export default function Landing() {
                         <Download className="h-4 w-4" /> PDF
                       </Button>
                     </div>
-                    <SeriesStandingsTable data={regattaSeriesData[activeRegattaSeries]} />
+                    <SeriesStandings data={regattaSeriesData[activeRegattaSeries]} />
                     <PublishedRaces
                       seriesId={activeRegattaSeries}
                       series={activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)}

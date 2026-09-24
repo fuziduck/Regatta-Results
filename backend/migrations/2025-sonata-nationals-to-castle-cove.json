@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "migration_id": "2025-sonata-nationals-to-castle-cove-v1",
+  "description": "Move the 2025 Sonata Nationals series from the Royal Southern Sonata class to Castle Cove Sailing Club, rename it 49th Sonata Nationals, and classify it as a Championship without changing race results or scoring rules.",
+  "created_at": "2026-09-03T00:00:00+00:00",
+  "safety": {
+    "mode": "metadata-and-ownership-only",
+    "never_modify": [
+      "races.results",
+      "races.scoring fields",
+      "series.discards",
+      "series.scoring_config",
+      "series.use_a5_3",
+      "series.use_finishers",
+      "series.lock_status",
+      "boats.name",
+      "boats.sail_no",
+      "boats.helm",
+      "boats.home_club",
+      "season_snapshots.payload",
+      "notice file/pdf/attachment data"
+    ],
+    "recommended_before_apply": "Take a full encrypted production backup and keep the archive until the post-migration verification is complete."
+  },    "execution": {
+      "dry_run_first": true,
+      "requires_production_backup": true,
+      "requires_reviewed_migration_runner": true,
+      "not_a_results_import": true,
+      "do_not_run_with_import_results_py": true
+    },
+    "identifiers": {
+    "source_club": {
+      "id": "dfad78e4-b4ab-4135-b325-c13d5079fe96",
+      "name": "Royal Southern Yacht Club",
+      "slug": "royal-southern-yacht-club"
+    },
+    "target_club": {
+      "id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+      "name": "Castle Cove Sailing Club",
+      "slug": "castle-cove-sailing-club"
+    },
+    "source_class": {
+      "id": "aea1a501-fa08-4ff3-b545-2439b6e28a8d",
+      "name": "Sonata"
+    },
+    "target_class": {
+      "id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+      "name": "Sonata"
+    },
+    "series": {
+      "id": "b5465564-cbc5-4239-8fb2-89e2e71be599",
+      "old_name": "2025 Castle Cove Sailing Club",
+      "new_name": "49th Sonata Nationals"
+    },
+    "competition": {
+      "id": "dc075a70-0ae2-5159-97d9-147e8028343f",
+      "name": "49th Sonata Nationals",
+      "type": "championship",
+      "scope": "class"
+    },
+    "competition_notice_board": {
+      "id": "7d6c0771-ccb4-5ce5-9da9-7bf68147b162"
+    }
+  },
+  "preconditions": {
+    "target_club_must_match": true,
+    "source_class": {
+      "club_id": "dfad78e4-b4ab-4135-b325-c13d5079fe96",
+      "name": "Sonata",
+      "default_start_time": "10:25",
+      "scoring_mode": "one_design",
+      "version": 1
+    },
+    "target_class_must_not_exist_unless_exact_id": {
+      "id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+      "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+      "name": "Sonata"
+    },
+    "target_class_name_must_not_exist_under_another_id": true,
+    "target_competition_must_not_exist_unless_exact_id": true,
+    "series": {
+      "id": "b5465564-cbc5-4239-8fb2-89e2e71be599",
+      "name": "2025 Castle Cove Sailing Club",
+      "class_id": "aea1a501-fa08-4ff3-b545-2439b6e28a8d",
+      "year": 2025,
+      "version": 12,
+      "lock_status": "locked",
+      "planned_races": 9,
+      "discards": 2,
+      "included_in_overall": true,
+      "scoring_mode": "one_design",
+      "use_a5_3": true,
+      "use_finishers": false,
+      "scoring_config_sha256": "9e4bd13f09cee09bae36e6d5033fa0c2fb6479fd1c4166cd020acbb87a728253"
+    },
+    "race_ids_by_number": [
+      [1, "88ed7299-45ab-4fb7-a47f-0c9beed2e675"],
+      [2, "44e60f28-c65b-4b62-9fe8-aca11bdbccb1"],
+      [3, "ff3400a9-b218-4faf-b331-895ecd466bd0"],
+      [4, "3f465eca-0954-4d9f-94c0-cf6b29bb9690"],
+      [5, "b2757ff6-d65a-49ba-88e0-71cf45568be1"],
+      [6, "5274656d-b7d7-48fc-8873-1c1053c78059"],
+      [7, "013d7ea6-b854-466f-bc7e-a7e791e9c58b"],
+      [8, "59569a37-2b1d-4736-89f3-12dbd419ddda"],
+      [9, "5ba053d5-85cd-4f0f-bb09-cc6de646446f"]
+    ],
+    "boat_count": 27,
+    "boat_ids": [
+      "081c9751-37fb-43c7-9683-8d3642110f9f",
+      "0c9149bf-82cb-4683-ac06-0958ae10396d",
+      "141e7108-d8ad-4a5c-b892-da06d8681000",
+      "147cc93e-5de1-4061-bd07-663ab276d906",
+      "2254d135-dd26-4bd6-a4c6-02f011e03a67",
+      "22bd3a76-5265-48f6-ba88-03b5fb9912e6",
+      "411ff313-71ee-434a-828f-4dcb48d8b142",
+      "4920bcfb-20d2-4859-8cc0-1b2e7586e06e",
+      "6629bb6d-3db4-4b2d-8b22-f3d76485fe21",
+      "6ba667af-f3d1-40b0-9524-267e228147c7",
+      "6fdf77dd-1466-483d-9e33-4c5511531b13",
+      "70efe0f6-4307-43b3-8315-96ee4a70309b",
+      "7515ec6c-8c13-46ac-95ef-752cfa0f25a4",
+      "8ade3f81-7a81-4dd1-8aa8-34ef833249b9",
+      "98cec38a-58a1-4819-b61f-226815023fd3",
+      "999bdd23-87f7-4201-be6c-ab4f3665fa0a",
+      "a501da8a-56e6-4492-b705-6df9570ecf8e",
+      "a95c13b5-9e57-4d00-9da7-18f64f092c53",
+      "af9c15f3-b412-46b7-9b5f-d2f0090d253b",
+      "b2eef828-b14d-4747-96e5-8f6ea966c696",
+      "bb063f2d-2785-49f1-85ff-368e4de0a6ad",
+      "bfaf93e2-172f-4ca4-8c27-5e301d15f0c0",
+      "c1284606-0438-48da-94e9-efca29c69c57",
+      "c3f41120-bc9c-4ec4-99b5-c1bf4d662b64",
+      "cb5f2023-0099-46dd-9ef7-12eb780eda16",
+      "e347ad4d-baef-4794-933d-2123062f884b",
+      "ffc1371a-0662-4078-b00a-6bf6bee16ea9"
+    ],
+    "race_result_count_each": 27,
+    "immutable_projection_sha256": {
+      "races": "b9a3a9bc602f47c9dacc67054aa5b03cf70c3a5adfc6356fa14192061817dc75",
+      "boats": "30e84e522bf1b49a844884c2d50f913f36730cc5b7aa08bec2db819c976a406e"
+    },
+    "standings_before_summary_sha256": "912afce88a18a7c9ffbedb74e1db20e6984a25acdd043f03cfc4135a8a281ec9",
+    "standings_before_response_sha256": "29419cd7c42d6aecd658e925f56928b8f69a1783e9805666df52c8587773fb69",
+    "standings_before": [
+      [1, "141e7108-d8ad-4a5c-b892-da06d8681000", 42.0, 11.0],
+      [2, "c1284606-0438-48da-94e9-efca29c69c57", 66.0, 16.0],
+      [3, "8ade3f81-7a81-4dd1-8aa8-34ef833249b9", 31.0, 18.0]
+    ]
+  },
+  "operations": [
+    {
+      "op": "create_or_verify_class",
+      "collection": "classes",
+      "document": {
+        "id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+        "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+        "name": "Sonata",
+        "default_start_time": "10:25",
+        "scoring_mode": "one_design",
+        "version": 1
+      }
+    },
+    {
+      "op": "create_or_verify_competition",
+      "collection": "regattas",
+      "document": {
+        "id": "dc075a70-0ae2-5159-97d9-147e8028343f",
+        "name": "49th Sonata Nationals",
+        "year": 2025,
+        "competition_type": "championship",
+        "championship_scope": "class",
+        "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+        "host_club": "Castle Cove Sailing Club",
+        "start_date": "2025-08-24",
+        "end_date": "2025-08-27",
+        "status": "Complete",
+        "date_label": "2025-08-24 – 2025-08-27"
+      }
+    },
+    {
+      "op": "create_or_verify_notice_board",
+      "collection": "notice_boards",
+      "document": {
+        "id": "7d6c0771-ccb4-5ce5-9da9-7bf68147b162",
+        "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+        "title": "49th Sonata Nationals Official Notice Board",
+        "slug": "49th-sonata-nationals-notices",
+        "status": "active",
+        "board_type": "competition",
+        "competition_id": "dc075a70-0ae2-5159-97d9-147e8028343f",
+        "competition_type": "championship",
+        "championship_scope": "class",
+        "competition_name": "49th Sonata Nationals",
+        "year": 2025,
+        "created_by": "migration"
+      }
+    },
+    {
+      "op": "update_one",
+      "collection": "series",
+      "filter": {
+        "id": "b5465564-cbc5-4239-8fb2-89e2e71be599",
+        "class_id": "aea1a501-fa08-4ff3-b545-2439b6e28a8d",
+        "year": 2025,
+        "name": "2025 Castle Cove Sailing Club"
+      },
+      "set": {
+        "name": "49th Sonata Nationals",
+        "class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+        "regatta_id": "dc075a70-0ae2-5159-97d9-147e8028343f"
+      },
+      "increment": {
+        "version": 1
+      },
+      "expected_modified_count": 1
+    },
+    {
+      "op": "update_many",
+      "collection": "races",
+      "filter": {
+        "id": {
+          "$in": [
+            "88ed7299-45ab-4fb7-a47f-0c9beed2e675",
+            "44e60f28-c65b-4b62-9fe8-aca11bdbccb1",
+            "ff3400a9-b218-4faf-b331-895ecd466bd0",
+            "3f465eca-0954-4d9f-94c0-cf6b29bb9690",
+            "b2757ff6-d65a-49ba-88e0-71cf45568be1",
+            "5274656d-b7d7-48fc-8873-1c1053c78059",
+            "013d7ea6-b854-466f-bc7e-a7e791e9c58b",
+            "59569a37-2b1d-4736-89f3-12dbd419ddda",
+            "5ba053d5-85cd-4f0f-bb09-cc6de646446f"
+          ]
+        },
+        "series_id": "b5465564-cbc5-4239-8fb2-89e2e71be599",
+        "class_id": "aea1a501-fa08-4ff3-b545-2439b6e28a8d",
+        "year": 2025
+      },
+      "set": {
+        "class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44"
+      },
+      "expected_modified_count": 9
+    },
+    {
+      "op": "update_many",
+      "collection": "boats",
+      "filter": {
+        "id": {
+          "$in": [
+            "081c9751-37fb-43c7-9683-8d3642110f9f",
+            "0c9149bf-82cb-4683-ac06-0958ae10396d",
+            "141e7108-d8ad-4a5c-b892-da06d8681000",
+            "147cc93e-5de1-4061-bd07-663ab276d906",
+            "2254d135-dd26-4bd6-a4c6-02f011e03a67",
+            "22bd3a76-5265-48f6-ba88-03b5fb9912e6",
+            "411ff313-71ee-434a-828f-4dcb48d8b142",
+            "4920bcfb-20d2-4859-8cc0-1b2e7586e06e",
+            "6629bb6d-3db4-4b2d-8b22-f3d76485fe21",
+            "6ba667af-f3d1-40b0-9524-267e228147c7",
+            "6fdf77dd-1466-483d-9e33-4c5511531b13",
+            "70efe0f6-4307-43b3-8315-96ee4a70309b",
+            "7515ec6c-8c13-46ac-95ef-752cfa0f25a4",
+            "8ade3f81-7a81-4dd1-8aa8-34ef833249b9",
+            "98cec38a-58a1-4819-b61f-226815023fd3",
+            "999bdd23-87f7-4201-be6c-ab4f3665fa0a",
+            "a501da8a-56e6-4492-b705-6df9570ecf8e",
+            "a95c13b5-9e57-4d00-9da7-18f64f092c53",
+            "af9c15f3-b412-46b7-9b5f-d2f0090d253b",
+            "b2eef828-b14d-4747-96e5-8f6ea966c696",
+            "bb063f2d-2785-49f1-85ff-368e4de0a6ad",
+            "bfaf93e2-172f-4ca4-8c27-5e301d15f0c0",
+            "c1284606-0438-48da-94e9-efca29c69c57",
+            "c3f41120-bc9c-4ec4-99b5-c1bf4d662b64",
+            "cb5f2023-0099-46dd-9ef7-12eb780eda16",
+            "e347ad4d-baef-4794-933d-2123062f884b",
+            "ffc1371a-0662-4078-b00a-6bf6bee16ea9"
+          ]
+        },
+        "class_id": "aea1a501-fa08-4ff3-b545-2439b6e28a8d",
+        "year": 2025
+      },
+      "set": {
+        "class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44"
+      },
+      "expected_modified_count": 27
+    },
+    {
+      "op": "update_many",
+      "collection": "season_snapshots",
+      "filter": {
+        "series_id": "b5465564-cbc5-4239-8fb2-89e2e71be599",
+        "class_id": "aea1a501-fa08-4ff3-b545-2439b6e28a8d"
+      },
+      "set": {
+        "class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+        "series_name": "49th Sonata Nationals"
+      },
+      "expected_modified_count": "zero_or_more"
+    },
+    {
+      "op": "update_many",
+      "collection": "notices",
+      "filter": {
+        "series_id": "b5465564-cbc5-4239-8fb2-89e2e71be599"
+      },
+      "set": {
+        "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+        "competition_id": "dc075a70-0ae2-5159-97d9-147e8028343f",
+        "board_id": "7d6c0771-ccb4-5ce5-9da9-7bf68147b162",
+        "club_name": "Castle Cove Sailing Club",
+        "series_name": "49th Sonata Nationals",
+        "event_name": "49th Sonata Nationals"
+      },
+      "expected_modified_count": "zero_or_more"
+    },
+    {
+      "op": "update_many",
+      "collection": "subscriptions",
+      "filter": {
+        "subscription_type": "series",
+        "target_id": "b5465564-cbc5-4239-8fb2-89e2e71be599"
+      },
+      "set": {
+        "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223"
+      },
+      "expected_modified_count": "zero_or_more"
+    }
+  ],
+  "postconditions": {
+    "series": {
+      "id": "b5465564-cbc5-4239-8fb2-89e2e71be599",
+      "name": "49th Sonata Nationals",
+      "class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+      "regatta_id": "dc075a70-0ae2-5159-97d9-147e8028343f",
+      "year": 2025,
+      "lock_status": "locked",
+      "version": 13,
+      "race_count": 9
+    },
+    "target_class": {
+      "id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+      "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+      "name": "Sonata"
+    },
+    "competition": {
+      "id": "dc075a70-0ae2-5159-97d9-147e8028343f",
+      "club_id": "0c0c55b8-ab6d-4624-ac3b-99205c994223",
+      "competition_type": "championship"
+    },
+    "races": {
+      "count": 9,
+      "all_class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44",
+      "result_count_each": 27
+    },
+    "boats": {
+      "count": 27,
+      "all_class_id": "c9ed629e-adc8-52cd-9261-f0ca9555ad44"
+    },
+    "standings_must_match_before": true
+  }
+}
