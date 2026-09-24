@@ -6880,8 +6880,20 @@ async def compute_overall_standings(class_id: str, year: int, division=None):
         name = series["name"]
         race_docs = await db.races.find({"series_id": series["id"], "status": "published",
                                          "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
+        # "Scored by position" only holds when the WHOLE series is a single
+        # combined day — a regatta whose mini groups are all "combined". A
+        # championship series that merely CONTAINS a combined day (its
+        # mini_series_groups are all combined, but it also has ordinary races
+        # outside every group) is NOT position-scored: its net already counts
+        # each race, the combined day and the discards. Treating it as
+        # position-scored swapped the series net for the boat's finishing RANK,
+        # so a 3-point net appeared as 1 point in the championship.
         groups = series.get("mini_series_groups") or []
-        pos = bool(series.get("mini_series")) and groups and all(g.get("scoring") == "combined" for g in groups)
+        group_race_numbers = {int(n) for g in groups for n in (g.get("race_numbers") or [])}
+        published_numbers = {int(r.get("race_number") or 0) for r in race_docs}
+        pos = (bool(series.get("mini_series")) and bool(groups)
+               and all(g.get("scoring") == "combined" for g in groups)
+               and published_numbers <= group_race_numbers)
         use_position[name] = pos
         if not race_docs:
             continue
@@ -6915,10 +6927,17 @@ async def compute_overall_standings(class_id: str, year: int, division=None):
         result = _division_table(result, division)
         pos = use_position[name]
         for row in result["standings"]:
+            # A boat's contribution to the championship is the NET it scored
+            # in that series. Only a series that is wholly one combined day
+            # (see `pos` above) scores by finishing position, and there net and
+            # rank are the same number anyway. Every other series — including
+            # a championship series that contains a combined day — must
+            # contribute its net, or an incomplete series shows its finishing
+            # place instead of the points actually sailed.
             net = row["rank"] if pos else row["net"]
             # Gross companion for display: the series' points BEFORE its
-            # discards were applied (combined mini-series days score by
-            # finishing position, so their gross equals the net contribution).
+            # discards were applied (a wholly-combined series scores by
+            # finishing position, so its gross equals the net contribution).
             gross = row["rank"] if pos else row.get("total", row["net"])
             totals[row["boat_id"]] = totals.get(row["boat_id"], 0.0) + net
             totals_gross[row["boat_id"]] = totals_gross.get(row["boat_id"], 0.0) + gross

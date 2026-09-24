@@ -20,6 +20,8 @@ import sys
 import asyncio
 import types
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
@@ -829,6 +831,117 @@ def _unlock_series(series, db):
 def _standings_for(series, db):
     server.db = db
     return asyncio.run(server._standings_for_series(series))
+
+
+def _overall(db):
+    server.db = db
+    return asyncio.run(server.compute_overall_standings("c1", 2026))
+
+
+def _series_standings(series, db):
+    server.db = db
+    return asyncio.run(server.compute_series_standings(series))
+
+
+class TestOverallCombinedSeries:
+    """A boat's contribution to the class championship is the NET it scored in
+    that series. The engine has a position-scored path for a series that is
+    wholly one combined day (a regatta) — where net and rank are the same
+    number. A championship series that merely CONTAINS a combined day is not
+    position-scored: it also has ordinary races outside every mini group, so
+    substituting rank for net reported the boat's finishing PLACE instead of the
+    points actually sailed.
+
+    The defect this pins: Medway Sonata's Early Autumn (races 1, 2, a combined
+    day for race 3, and race 4) showed Watersong's 3-point net as 1 point in
+    the championship.
+    """
+
+    def _series_docs(self, early_autumn_extra=None):
+        early_spring = {"id": "s1", "class_id": "c1", "year": 2026, "name": "Early Spring",
+                        "discards": 0, "included_in_overall": True, "order": 1,
+                        "planned_races": 4}
+        early_autumn = {"id": "s2", "class_id": "c1", "year": 2026, "name": "Early Autumn",
+                        "discards": 0, "included_in_overall": True, "order": 2,
+                        "planned_races": 5, "mini_series": True,
+                        "mini_series_groups": [
+                            {"name": "2 Races", "race_numbers": [3],
+                             "discards": 0, "scoring": "combined"}]}
+        if early_autumn_extra:
+            early_autumn.update(early_autumn_extra)
+        return [early_spring, early_autumn]
+
+    def _races(self):
+        # Early Spring: b1 wins both races -> net 2. Early Autumn: one ordinary
+        # race, a combined day (R3A/R3B), and one ordinary race. b1 sails all
+        # of it and finishes 1st in the series, but its NET is 3.
+        return [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)], series_id="s1"),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)], series_id="s1"),
+            _race(1, [_fin("b1", 1), _fin("b2", 2)], series_id="s2"),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)], series_id="s2", id="s2r2"),
+            _race(3, [_fin("b1", 1), _fin("b2", 2)], series_id="s2", id="s2r3a"),
+            _race(3, [_fin("b2", 1), _fin("b1", 2)], series_id="s2", id="s2r3b"),
+            _race(4, [_fin("b1", 1), _fin("b2", 2)], series_id="s2", id="s2r4"),
+        ]
+
+    def test_combined_day_inside_a_series_contributes_its_net(self):
+        boats = [_boat(i) for i in range(1, 3)]
+        db = _fake_db(self._races(), boats, self._series_docs())
+        payload = _overall(db)
+        by_id = {r["boat_id"]: r for r in payload["standings"]}
+        b1 = by_id["b1"]
+        # What the series itself awards is the reference: the championship must
+        # show exactly that, whatever the number is.
+        series = _series_standings(db.series.docs[1], db)
+        s_rows = {r["boat_id"]: r for r in series["standings"]}
+        # The fixture only has value if the net and the rank DIFFER — that gap
+        # is exactly what the defect reported as the championship score.
+        assert s_rows["b1"]["net"] != s_rows["b1"]["rank"]
+        assert b1["per_series"]["Early Autumn"] == s_rows["b1"]["net"]
+        assert b1["per_series"]["Early Spring"] == 2
+        assert b1["net"] == pytest.approx(s_rows["b1"]["net"] + 2)
+
+    def test_wholly_combined_regatta_still_scores_by_position(self):
+        # A series that is entirely one combined day keeps the position-scored
+        # path: its net IS the finishing place, so nothing changes there.
+        docs = self._series_docs()
+        regatta = {"id": "s3", "class_id": "c1", "year": 2026, "name": "Regatta Day",
+                   "discards": 0, "included_in_overall": True, "order": 3,
+                   "planned_races": 2, "mini_series": True,
+                   "mini_series_groups": [
+                       {"name": "Day", "race_numbers": [1, 2],
+                        "discards": 0, "scoring": "combined"}]}
+        docs.append(regatta)
+        races = self._races() + [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)], series_id="s3", id="s3r1"),
+            _race(2, [_fin("b1", 1), _fin("b2", 2)], series_id="s3", id="s3r2"),
+        ]
+        boats = [_boat(i) for i in range(1, 3)]
+        db = _fake_db(races, boats, docs)
+        payload = _overall(db)
+        by_id = {r["boat_id"]: r for r in payload["standings"]}
+        regatta_rows = {r["boat_id"]: r for r in _series_standings(db.series.docs[2], db)["standings"]}
+        # Regatta Day: one combined day, so net and rank agree and the
+        # position-scored path is unchanged by this fix.
+        assert regatta_rows["b1"]["net"] == regatta_rows["b1"]["rank"]
+        assert by_id["b1"]["per_series"]["Regatta Day"] == regatta_rows["b1"]["net"]
+        # ... while the series that merely CONTAINS a combined day still nets.
+        early_rows = {r["boat_id"]: r for r in _series_standings(db.series.docs[1], db)["standings"]}
+        assert by_id["b1"]["per_series"]["Early Autumn"] == early_rows["b1"]["net"]
+
+    def test_ordinary_races_alongside_a_combined_group_keep_series_net(self):
+        # A series whose only group is combined but which also has ordinary
+        # races (exactly Medway's Early Autumn shape) is still net-scored.
+        docs = self._series_docs()
+        races = [r for r in self._races() if r["id"] not in ("s2r3a", "s2r3b")]
+        boats = [_boat(i) for i in range(1, 3)]
+        db = _fake_db(races, boats, docs)
+        payload = _overall(db)
+        by_id = {r["boat_id"]: r for r in payload["standings"]}
+        s_rows = {r["boat_id"]: r for r in _series_standings(db.series.docs[1], db)["standings"]}
+        assert by_id["b1"]["per_series"]["Early Autumn"] == s_rows["b1"]["net"]
+
 
 
 class TestSeasonLocking:
