@@ -65,6 +65,17 @@ macOS wipes `/tmp` on reboot and various tooling recreates the dirs empty.
   `docker compose -f docker-compose.dev.yml up -d`. Remove any stale
   launchd preview job (`launchctl remove com.codebuff.pv30eb`) before
   starting a fresh preview.
+- **mongodb can be SIGKILLed on the first `up` after a Docker Desktop
+  restart** (seen 2026-09-21: `Exited (137)`, `OOMKilled=false`, killed a
+  second into its startup index build; the backend then answers `/api/`
+  but every data endpoint hangs until the 20s+ client timeout). Compose
+  still reports the backend and frontend healthy, so check the DB itself:
+  `docker inspect regatta-mongodb --format '{{.State.Status}}'`. Fix is a
+  second start plus a wait for health:
+  `docker compose -f docker-compose.dev.yml up -d mongodb`, then poll
+  `docker inspect regatta-mongodb --format '{{.State.Health.Status}}'`
+  until `healthy` and confirm it is still running ~20s later (disk was
+  not the cause — 264Gi free).
 - **Don't run the static preview server** (`python3 -m http.server 3000`)
   while the compose stack is up — it binds 127.0.0.1:3000 first and shadows
   the frontend container.
