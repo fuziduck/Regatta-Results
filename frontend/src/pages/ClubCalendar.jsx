@@ -113,13 +113,13 @@ export default function ClubCalendar() {
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                           {dayRaces.map((race, raceIndex) => (
-                            <Link key={`${race.series_id}-${race.race_number}-${raceIndex}`} to={race.race_id ? `/club/${club.slug}/race/${race.race_id}` : `/club/${club.slug}?series=${race.series_id}`} className="flex items-center gap-2 rounded-lg border border-ocean/15 bg-ocean/5 px-3 py-2 text-xs text-ocean hover:bg-ocean/10" title={`${race.class_name || "Class"} · ${race.series_name} · Race ${race.race_number}`}>
+                            <div key={`${race.series_id}-${race.race_number}-${raceIndex}`} data-testid="calendar-race" className="flex items-center gap-2 rounded-lg border border-ocean/15 bg-ocean/5 px-3 py-2 text-xs text-ocean" title={`${race.class_name || "Class"} · ${race.series_name} · Race ${race.race_number}`}>
                               <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-ocean/10"><Sailboat className="h-3.5 w-3.5" /></span>
                               <span className="min-w-0">
                                 <span className="block truncate font-semibold">{race.class_name || "Race"} · R{race.race_number}</span>
                                 <span className="block truncate text-muted-foreground">{race.series_name}{race.start_time ? ` · ${race.start_time}` : ""}</span>
                               </span>
-                            </Link>
+                            </div>
                           ))}
                         </div>
                       </div>

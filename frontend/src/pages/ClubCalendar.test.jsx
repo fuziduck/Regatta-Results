@@ -46,4 +46,7 @@ test("requests the selected club's scheduled races and renders compact race days
   expect(container.querySelector('[data-testid="calendar-day-2026-10-03"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="calendar-day-2026-09-26"]').textContent).toContain("Early Autumn");
   expect(container.querySelectorAll('[data-testid^="calendar-day-"]')).toHaveLength(2);
+  expect(container.querySelectorAll('[data-testid="calendar-race"]')).toHaveLength(2);
+  expect(container.querySelector('[data-testid="calendar-race"]').tagName).toBe("DIV");
+  expect(container.querySelector('[data-testid="calendar-race"]').closest("a")).toBeNull();
 });

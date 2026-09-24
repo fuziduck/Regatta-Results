@@ -776,22 +776,15 @@ export default function Landing() {
               </div>
             )}
             <div className="min-w-0">
-              <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
-                <div>
-                  <h2 className="text-lg md:text-lg uppercase tracking-tight mb-1">Results by class</h2>
-                  <p className="text-muted-foreground text-sm">Each fleet races its own series and overall championship.</p>
+              {sideAdverts.length > 0 && (
+                <div className="mb-6 flex flex-wrap gap-4" data-testid="section-adverts">
+                  {sideAdverts.map((a) => (
+                    <div key={a.id} className="w-48 md:w-56">
+                      <AdvertCard advert={a} />
+                    </div>
+                  ))}
                 </div>
-                {/* Sponsor adverts sit beside the section heading, on the right. */}
-                {sideAdverts.length > 0 && (
-                  <div className="flex flex-wrap gap-4" data-testid="section-adverts">
-                    {sideAdverts.map((a) => (
-                      <div key={a.id} className="w-48 md:w-56">
-                        <AdvertCard advert={a} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              )}
 
               {classes.length === 0 ? (
                 <p className="text-muted-foreground">No classes set up yet.</p>
