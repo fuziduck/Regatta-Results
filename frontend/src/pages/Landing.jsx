@@ -659,6 +659,18 @@ export default function Landing() {
       label: chosen ? chosen.label : "—",
       onClick: settled ? undefined : () => setDepth(i),
     });
+
+    // A single class is intentionally omitted from the selector row, but it
+    // still belongs in the path so choosing a category never leaves the user
+    // wondering which class the results represent.
+    const implicitClass = level.key === "category" && (
+      view === "regattas" ? regattaClasses.length === 1 : visibleClasses.length === 1
+    );
+    if (implicitClass) {
+      crumbs.push({
+        label: view === "regattas" ? activeRegattaClass : activeClassObj.name,
+      });
+    }
   });
   // The regatta detail carries the class levels, so the regatta results wait
   // for it — otherwise they would flash before that level appears.
