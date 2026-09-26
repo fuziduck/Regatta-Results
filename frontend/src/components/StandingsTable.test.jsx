@@ -68,8 +68,8 @@ describe("boat-name wrapping in the standings table", () => {
     // The cell caps the column width so the name cannot widen the table.
     const cell = long.closest("td");
     expect(cell.className).toContain("max-w-52");
-    expect(container.querySelector('[data-testid="standing-total-2"]').textContent).toBe("2");
-    expect(container.querySelector('[data-testid="standing-net-2"]').textContent).toBe("2");
+    const rowCells = [...container.querySelector('[data-testid="standing-row-2"]').querySelectorAll("td")];
+    expect(rowCells.slice(-2).map((cell) => cell.textContent)).toEqual(["2", "2"]);
   });
 
   it("does not cap the width for short names (layout unchanged)", () => {
@@ -87,46 +87,13 @@ describe("boat-name wrapping in the standings table", () => {
     expect(linkFor("2").getAttribute("href")).toBe("/boat/b2"); // link intact
     expect(container.querySelector('[data-testid="boat-sail-link-2"]').textContent).toBe("2");
     expect(container.querySelector('[data-testid="boat-sail-link-2"]').getAttribute("href")).toBe("/boat/b2");
-    const headers = [...container.querySelectorAll("thead th")].slice(0, 4);
-    expect(headers[0].querySelector("[data-testid='standing-position-mobile']").textContent).toBe("#");
-    expect(headers.slice(1).map((th) => th.textContent.trim())).toEqual(["Sail No. / Boat", "Total", "Net"]);
-    expect(headers[1].className).toContain("w-24");
-    const standingsTable = container.querySelector('[data-testid="series-standings-table"]');
-    expect(standingsTable.className).toContain("[&_td:nth-child(2)]:w-24");
-    expect(standingsTable.closest('[role="region"]').getAttribute("tabindex")).toBe("0");
-    expect(container.textContent).toContain("Swipe horizontally for race results");
-
-    const mobileSummaryHeaders = [...container.querySelectorAll('[data-testid="standing-total-mobile-header"], [data-testid="standing-net-mobile-header"]')];
-    expect(mobileSummaryHeaders.map((header) => header.textContent)).toEqual(["Total", "Net"]);
-    expect(mobileSummaryHeaders[0].compareDocumentPosition(mobileSummaryHeaders[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(mobileSummaryHeaders[0].className).not.toContain("right-");
-    expect(mobileSummaryHeaders[1].className).not.toContain("right-");
-    expect(mobileSummaryHeaders[0].className).toContain("sticky top-0"); // vertically sticky, but scrolls horizontally with results
-    expect(mobileSummaryHeaders[1].className).toContain("sticky top-0");
-    expect(mobileSummaryHeaders[0].className).not.toContain("z-30");
-    expect(mobileSummaryHeaders[1].className).not.toContain("z-30");
-    const boatRow = container.querySelector('[data-testid="standing-row-2"]');
-    const rowCells = [...boatRow.querySelectorAll("td")];
-    expect(rowCells[1].className).toContain("w-24");
-    const mobileTotal = container.querySelector('[data-testid="standing-total-mobile-2"]');
-    const mobileNet = container.querySelector('[data-testid="standing-net-mobile-2"]');
-    const mobileTotalIndex = rowCells.indexOf(mobileTotal);
-    const mobileNetIndex = rowCells.indexOf(mobileNet);
-    expect(mobileNetIndex).toBe(rowCells.length - 2); // the final cell is the hidden desktop Club column
-    expect(mobileTotalIndex).toBe(mobileNetIndex - 1);
-    expect(mobileTotal.textContent).toBe("2");
-    expect(mobileNet.textContent).toBe("2");
-    expect(mobileTotal.className).not.toContain("sticky");
-    expect(mobileNet.className).not.toContain("sticky");
-    expect(mobileTotal.className).not.toContain("right-");
-    expect(mobileNet.className).not.toContain("right-");
-    expect(container.querySelector('[data-testid="standing-row-1"] td').className).toContain("bg-amber-400");
-    expect(container.querySelector('[data-testid="standing-row-1"] td:nth-child(2)').className).toContain("bg-amber-400");
-    expect(container.querySelector('[data-testid="standing-row-1"] td:nth-last-child(3)').className).toContain("bg-amber-400");
-    expect(container.querySelector('[data-testid="standing-row-1"] td:nth-last-child(2)').className).toContain("bg-amber-400");
-    expect(container.querySelector('[data-testid="standing-row-1"] td:nth-last-child(2)').className).not.toContain("sticky");
-    expect(container.querySelector('[data-testid="standing-total-2"]').className).toContain("sm:table-cell");
-    expect(container.querySelector('[data-testid="standing-net-2"]').className).toContain("sm:table-cell");
+    const headers = [...container.querySelectorAll("thead th")];
+    expect(headers.slice(0, 3).map((th) => th.textContent.trim())).toEqual(["#", "Boat", "Club"]);
+    expect(headers.slice(-2).map((th) => th.textContent.trim())).toEqual(["Total", "Net"]);
+    expect(container.querySelector('[data-testid="standing-row-2"] td:nth-child(2)').textContent).toContain("The Flying\nFish");
+    expect(container.querySelector('[data-testid="standing-total-mobile-2"]')).toBeNull();
+    expect(container.querySelector('[data-testid="standing-net-mobile-2"]')).toBeNull();
+    expect(container.textContent).not.toContain("Swipe horizontally for race results");
   });
 });
 
