@@ -88,10 +88,10 @@ describe("BoatSearchBox", () => {
     expect(mockApi.siteSearch).toHaveBeenCalledWith("wa");
     expect(container.querySelector('[data-testid="boat-search-results"]')).not.toBeNull();
     // Each type renders a section with a linking row.
-    expect(container.querySelector('[data-testid="boat-result-f1"]').getAttribute("href")).toBe("/boat/f1");
+    expect(container.querySelector('[data-testid="boat-result-f1"]').getAttribute("href")).toBe("/boat/f1/watersong");
     expect(container.querySelector('[data-testid="club-result-c1"]').getAttribute("href")).toBe("/club/medway-yacht-club");
-    expect(container.querySelector('[data-testid="series-result-s1"]').getAttribute("href")).toBe("/club/medway-yacht-club?class=cl1&series=s1");
-    expect(container.querySelector('[data-testid="class-result-cl1"]').getAttribute("href")).toBe("/club/medway-yacht-club?class=cl1");
+    expect(container.querySelector('[data-testid="series-result-s1"]').getAttribute("href")).toBe("/club/medway-yacht-club/series/s1/early-spring-2026?class=cl1&year=2026");
+    expect(container.querySelector('[data-testid="class-result-cl1"]').getAttribute("href")).toBe("/class/cl1/sonata");
   });
 
   it("type tabs filter the results", async () => {
@@ -135,7 +135,7 @@ describe("BoatSearchBox", () => {
     expect(first.getAttribute("data-highlighted")).toBeDefined();
     expect(input().getAttribute("aria-activedescendant")).toBe(first.id);
     pressKey("Enter");
-    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1");
+    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1/watersong");
     expect(container.querySelector('[data-testid="boat-search-dropdown"]')).toBeNull();
   });
 
@@ -157,7 +157,7 @@ describe("BoatSearchBox", () => {
     renderBox();
     await typeSearch("wa");
     pressKey("Enter");
-    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1");
+    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1/watersong");
   });
 
   it("hovering a row moves the keyboard highlight to it", async () => {
@@ -191,7 +191,7 @@ describe("BoatSearchBox", () => {
     expect(input().getAttribute("aria-activedescendant")).toBeNull();
     pressKey("Enter");
     // New result set (the mock always returns the boat first) — Enter picks row 0.
-    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1");
+    expect(mockNavigate).toHaveBeenCalledWith("/boat/f1/watersong");
   });
 
   it("/ and Cmd+K focus the search from anywhere on the page", () => {

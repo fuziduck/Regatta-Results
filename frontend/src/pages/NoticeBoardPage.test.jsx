@@ -9,7 +9,7 @@ jest.mock("react-router-dom", () => ({
   useParams: () => ({ slug: "medway" }),
 }));
 jest.mock("@/lib/api", () => {
-  const api = { getClubs: jest.fn(), getNoticeBoards: jest.fn(), getNoticeSections: jest.fn() };
+  const api = { getClubs: jest.fn() };
   return { api, formatApiError: (d) => d || "error" };
 });
 jest.mock("@/components/HeaderMenu", () => () => <button type="button" data-testid="header-menu-btn" />);
@@ -48,15 +48,12 @@ const renderPage = () => {
 };
 
 beforeEach(() => {
-  mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "medway", name: "Medway Yacht Club" }]);
-  mockApi.getNoticeBoards.mockResolvedValue([]);
-  mockApi.getNoticeSections.mockResolvedValue([]);
+  mockApi.getClubs.mockResolvedValue([{ id: "c1", slug: "medway", name: "Medway Yacht Club", official_notice_board: true }]);
 });
 
 afterEach(async () => {
   if (root) {
-    // Flush the chained club -> board -> sections promises (macrotask) so no
-    // state update lands after unmount.
+    // Flush the club lookup promise (macrotask) so no state update lands after unmount.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     act(() => root.unmount());
     root = null;
@@ -67,8 +64,6 @@ afterEach(async () => {
   }
   document.body.innerHTML = "";
   mockApi.getClubs.mockClear();
-  mockApi.getNoticeBoards.mockClear();
-  mockApi.getNoticeSections.mockClear();
 });
 
 describe("Notice Board page — ONB subscription", () => {
@@ -83,8 +78,6 @@ describe("Notice Board page — ONB subscription", () => {
   it("loads the club's notice board after the club resolves", async () => {
     renderPage();
     await act(async () => {});
-    await act(async () => {});
-    expect(mockApi.getNoticeBoards).toHaveBeenCalledWith({ club_id: "c1" });
     expect(container.querySelector('[data-testid="notice-board"]')).not.toBeNull();
   });
 });

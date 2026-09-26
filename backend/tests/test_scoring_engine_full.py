@@ -717,7 +717,13 @@ def _matches(doc, filt):
     if not filt:
         return True
     for k, v in filt.items():
-        if isinstance(v, dict):
+        if k == "$or":
+            if not any(_matches(doc, clause) for clause in v):
+                return False
+        elif k == "$and":
+            if not all(_matches(doc, clause) for clause in v):
+                return False
+        elif isinstance(v, dict):
             for op, val in v.items():
                 if op == "$in" and doc.get(k) not in val:
                     return False
@@ -804,7 +810,7 @@ def _fake_db(races, boats, series_docs, snapshots=None):
     return types.SimpleNamespace(
         races=_FakeColl(races), boats=_FakeColl(boats), series=_FakeColl(series_docs),
         season_snapshots=_FakeColl(snapshots or []),
-        classes=_FakeColl([{"id": "c1", "club_id": "club-1", "name": "Sonata"}]),
+        classes=_FakeColl([{"id": "c1", "club_id": "club-1", "name": "Sonata", "scoring_mode": "one_design"}]),
         clubs=_FakeColl([{"id": "club-1", "name": "Medway Yacht Club"}]),
         audit_logs=_FakeColl([]),
     )
@@ -841,6 +847,141 @@ def _overall(db):
 def _series_standings(series, db):
     server.db = db
     return asyncio.run(server.compute_series_standings(series))
+
+
+class TestMultiScoringSeries:
+    """Independent corrected-time standings derived from each boat's one
+    stored finish time, with no result duplication."""
+
+    def test_irc_and_ytc_orders_and_points_are_derived_from_one_time(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="Fast hull", tcc=1.05, ytc=1100),
+            _boat(2, name="Slow hull", tcc=0.95, ytc=900),
+        ]
+        # Two stored raw finish times rank differently under TCC and YTC:
+        # the rating certificates are each boat's own and both views share
+        # the exact same recorded finish_time values.
+        race = _race(1, [
+            _fin("b1", 2, ft="2026-05-02T11:01:40Z"),
+            _fin("b2", 1, ft="2026-05-02T11:03:20Z"),
+        ], date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+
+        irc = asyncio.run(server.compute_series_standings(series, scoring_mode="irc"))
+        ytc = asyncio.run(server.compute_series_standings(series, scoring_mode="ytc"))
+        irc_order = [row["boat_id"] for row in irc["standings"]]
+        ytc_order = [row["boat_id"] for row in ytc["standings"]]
+        assert irc_order == ["b2", "b1"]
+        assert ytc_order == ["b1", "b2"]
+        # Original single race results and finish times were not rewritten.
+        assert len(db.races.docs[0]["results"]) == 2
+        assert all(result.get("finish_time") for result in db.races.docs[0]["results"])
+        assert [result["position"] for result in db.races.docs[0]["results"]] == [2, 1]
+
+    def test_multiple_modes_are_normalized_and_legacy_is_single_mode(self):
+        assert server._series_scoring_modes({"scoring_modes": ["irc", "irc", "ytc"]}) == ["irc", "ytc"]
+        assert server._series_scoring_modes({"scoring_mode": "py"}) == ["py"]
+        assert server._series_scoring_modes({}) == ["one_design"]
+        assert server.SeriesInput(name="series", class_id="c1", year=2026,
+                                  scoring_modes=["irc", "ytc"]).model_dump()["scoring_modes"] == ["irc", "ytc"]
+        with pytest.raises(Exception):
+            server.SeriesInput(name="series", class_id="c1", year=2026,
+                               scoring_modes=["irc", "not-a-mode"])
+
+    def test_published_race_gets_derived_positions_without_mutating_stored_results(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="Fast hull", tcc=1.05, ytc=1100),
+            _boat(2, name="Slow hull", tcc=0.95, ytc=900),
+        ]
+        race = _race(1, [
+            _fin("b1", 2, ft="2026-05-02T11:01:40Z"),
+            _fin("b2", 1, ft="2026-05-02T11:03:20Z"),
+        ], date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+
+        decorated = asyncio.run(server._decorate_races_scoring_positions([race]))[0]
+        assert decorated["scoring_positions"]["irc"] == {"b2": 1, "b1": 2}
+        assert decorated["scoring_positions"]["ytc"] == {"b1": 1, "b2": 2}
+        assert "scoring_positions" not in db.races.docs[0]
+        assert [result["position"] for result in db.races.docs[0]["results"]] == [2, 1]
+
+    def test_locked_snapshot_freezes_each_mode_race_position(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"],
+                  "lock_status": server.LOCK_LOCKED}
+        boats = [
+            _boat(1, name="Fast hull", tcc=1.05, ytc=1100),
+            _boat(2, name="Slow hull", tcc=0.95, ytc=900),
+        ]
+        race = _race(1, [
+            _fin("b1", 2, ft="2026-05-02T11:01:40Z"),
+            _fin("b2", 1, ft="2026-05-02T11:03:20Z"),
+        ], date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+        snapshot = asyncio.run(server._build_snapshot_doc(series, ADMIN_USER, 1))
+        db.season_snapshots.docs.append(snapshot)
+        frozen = {entry["boat_id"]: entry["scoring_positions"]
+                  for entry in snapshot["races"][0]["results"]}
+        assert frozen["b1"] == {"irc": 2, "ytc": 1}
+        assert frozen["b2"] == {"irc": 1, "ytc": 2}
+
+        # Later rating edits and corrected finish times cannot rewrite a locked
+        # public race result; it is served from the snapshot's per-mode places.
+        db.boats.docs[0]["tcc"] = 0.8
+        db.boats.docs[0]["ytc"] = 800
+        db.races.docs[0]["results"][0]["finish_time"] = "2026-05-02T11:10:00Z"
+        decorated = asyncio.run(server._decorate_races_scoring_positions([db.races.docs[0]]))[0]
+        assert decorated["scoring_positions"] == {
+            "irc": {"b1": 2, "b2": 1}, "ytc": {"b1": 1, "b2": 2},
+        }
+
+    def test_multi_mode_series_payload_returns_both_full_tables(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="Fast hull", tcc=1.05, ytc=1100),
+            _boat(2, name="Slow hull", tcc=0.95, ytc=900),
+        ]
+        race = _race(1, [
+            _fin("b1", 2, ft="2026-05-02T11:01:40Z"),
+            _fin("b2", 1, ft="2026-05-02T11:03:20Z"),
+        ], date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+        payload = asyncio.run(server._series_standings_payload(series))
+        tables = {table["division_scoring_mode"]: table for table in payload["divisions"]}
+        assert set(tables) == {"irc", "ytc"}
+        assert [r["boat_id"] for r in tables["irc"]["standings"]] == ["b2", "b1"]
+        assert [r["boat_id"] for r in tables["ytc"]["standings"]] == ["b1", "b2"]
+        assert len(payload["standings"]) == 2  # compatibility all-boats view
+
+    def test_overall_standings_also_return_each_selected_scoring_view(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "name": "Cruiser Autumn",
+                  "discards": 0, "included_in_overall": True,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="Fast hull", tcc=1.05, ytc=1100),
+            _boat(2, name="Slow hull", tcc=0.95, ytc=900),
+        ]
+        race = _race(1, [
+            _fin("b1", 2, ft="2026-05-02T11:01:40Z"),
+            _fin("b2", 1, ft="2026-05-02T11:03:20Z"),
+        ], date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+
+        payload = asyncio.run(server._overall_standings_payload("c1", 2026))
+        tables = {table["division_scoring_mode"]: table for table in payload["divisions"]}
+        assert set(tables) == {"irc", "ytc"}
+        assert [row["boat_id"] for row in tables["irc"]["standings"]] == ["b2", "b1"]
+        assert [row["boat_id"] for row in tables["ytc"]["standings"]] == ["b1", "b2"]
 
 
 class TestOverallCombinedSeries:

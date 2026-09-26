@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { competitionPath, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
+import { seriesResultsPath } from "@/lib/seo";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
 import OfficialsLink from "@/components/OfficialsLink";
@@ -39,7 +40,9 @@ function SeriesCard({ item, clubSlug }) {
   const itemClubSlug = item.club_slug || clubSlug;
   const href = competition && itemClubSlug
     ? competitionPath({ ...competition, series_type: item.series_type }, itemClubSlug)
-    : `/club/${itemClubSlug || ""}?class=${item.class_id || ""}&series=${item.id}${item.year ? `&year=${item.year}` : ""}`;
+    : itemClubSlug
+      ? seriesResultsPath(itemClubSlug, item.id, item.name, item.year, item.class_id)
+      : `/club/${itemClubSlug || ""}?class=${item.class_id || ""}&series=${item.id}${item.year ? `&year=${item.year}` : ""}`;
   return (
     <Link to={href} className="group block rounded-2xl border border-border bg-card p-3.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/45 hover:shadow-lg" data-testid={`class-series-${item.id}`}>
       <div className="flex items-start justify-between gap-3">

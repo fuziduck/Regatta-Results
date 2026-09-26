@@ -26,7 +26,7 @@ const renderSchedule = async (races = []) => {
     root.render(
       <PublishedRaces
         seriesId="series-1"
-        series={{ planned_races: 5, schedule: ["2026-04-04", "2026-04-11", "2026-04-18", "2026-04-25", "2026-05-02"] }}
+        series={{ name: "Series", planned_races: 5, year: 2026, schedule: ["2026-04-04", "2026-04-11", "2026-04-18", "2026-04-25", "2026-05-02"] }}
         classId="class-1"
         clubId="club-1"
         clubSlug="medway-yacht-club"
@@ -39,7 +39,7 @@ const renderSchedule = async (races = []) => {
 beforeEach(() => {
   mockApi.getRaces.mockResolvedValue([]);
   mockApi.getBoats.mockResolvedValue([]);
-  mockApi.getClasses.mockResolvedValue([{ id: "class-1", default_start_time: "10:30" }]);
+  mockApi.getClasses.mockResolvedValue([{ id: "class-1", name: "Sonata", default_start_time: "10:30" }]);
 });
 
 afterEach(() => {
@@ -69,8 +69,8 @@ test("shows every scheduled slot in race-number order and links only completed r
     expect.stringContaining("Postponed"),
     expect.stringContaining("Cancelled"),
   ]));
-  expect(rows[0].querySelector('a[href="/club/medway-yacht-club/race/r1"]')).not.toBeNull();
-  expect(rows[2].querySelector('a[href="/club/medway-yacht-club/race/r3"]')).not.toBeNull();
+  expect(rows[0].querySelector('a[href="/club/medway-yacht-club/race/r1/sonata-series-race-1-2026"]')).not.toBeNull();
+  expect(rows[2].querySelector('a[href="/club/medway-yacht-club/race/r3/sonata-series-race-3-2026"]')).not.toBeNull();
   expect(rows[1].querySelector("a")).toBeNull();
   expect(rows[3].querySelector("a")).toBeNull();
   expect(rows[4].querySelector("a")).toBeNull();
@@ -101,6 +101,38 @@ test("a YTC series shows the YTC column and corrects by the boat's YTC number", 
   const cells = [...container.querySelectorAll("tbody tr td")].map((td) => td.textContent);
   expect(cells).toContain("1013");              // the YTC certificate, not the PY one
   expect(cells).toContain("29:37");             // 1800 s x 1000 / 1013 = 1777 s corrected
+});
+
+test("publishes one race in separate IRC and YTC orders using the same recorded times", async () => {
+  mockApi.getRaces.mockResolvedValue([{
+    id: "r-dual", race_number: 1, date: "2026-05-02", start_time: "10:00",
+    start_tz_offset_minutes: 0, status: "published",
+    scoring_positions: { irc: { b1: 2, b2: 1 }, ytc: { b1: 1, b2: 2 } },
+    results: [
+      { boat_id: "b1", code: "FINISHED", position: 2, finish_time: "2026-05-02T11:01:40Z" },
+      { boat_id: "b2", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:03:20Z" },
+    ],
+  }]);
+  mockApi.getBoats.mockResolvedValue([
+    { id: "b1", name: "Fast hull", sail_no: "1", tcc: 1.05, ytc: 1100 },
+    { id: "b2", name: "Slow hull", sail_no: "2", tcc: 0.95, ytc: 900 },
+  ]);
+  const series = { scoring_mode: "irc", scoring_modes: ["irc", "ytc"] };
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => { root.render(<PublishedRaces seriesId="series-1" series={series} classId="class-1" clubId="club-1" scoringMode="irc" />); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  act(() => { container.querySelector('[data-testid="race-folder-r-dual"]').click(); });
+
+  let rows = [...container.querySelectorAll("tbody tr")];
+  expect(rows[0].textContent).toContain("Slow hull");
+  expect(container.querySelector("thead").textContent).toContain("IRC");
+  act(() => { container.querySelector('[data-testid="published-race-r-dual-ytc"]').click(); });
+  rows = [...container.querySelectorAll("tbody tr")];
+  expect(rows[0].textContent).toContain("Fast hull");
+  expect(container.querySelector("thead").textContent).toContain("YTC");
+  expect(rows[0].textContent).toContain("1100");
 });
 
 test("uses the class default start time for planned races and preserves a race's start time", async () => {

@@ -65,6 +65,19 @@ macOS wipes `/tmp` on reboot and various tooling recreates the dirs empty.
   `docker compose -f docker-compose.dev.yml up -d`. Remove any stale
   launchd preview job (`launchctl remove com.codebuff.pv30eb`) before
   starting a fresh preview.
+- **Don't background `docker compose up --build`** (learned 2026-09-26):
+  backgrounded with `nohup … & disown` it gets REAPED mid-build, and the
+  failure is silent — the log just stops partway through, while
+  `docker compose ps` cheerfully reports all three services "healthy"
+  because compose started the containers from the PREVIOUS image. Always run
+  a `--build` synchronously and read the tail of the log for the
+  `Container … Started` lines. To check which image a container really
+  runs: `docker inspect regatta-frontend --format '{{.Image}}'`. (Usually
+  `--build` is unnecessary anyway — see the frontend note above.)
+- **A dead session cookie after a restart is expected, not a bug**: JWTs last
+  `JWT_EXPIRE_HOURS` (8h dev), and the Docker restart drops the browser's
+  in-memory session state. Navigating to `/admin` redirects to
+  `/login?from=…`; the user just signs in again in the Preview tab.
 - **mongodb can be SIGKILLed on the first `up` after a Docker Desktop
   restart** (seen 2026-09-21: `Exited (137)`, `OOMKilled=false`, killed a
   second into its startup index build; the backend then answers `/api/`
@@ -86,10 +99,22 @@ macOS wipes `/tmp` on reboot and various tooling recreates the dirs empty.
   starter seed (no races/results). Recover with `docker run -v regatta_mongodb_data:/data/db mongo:7`.
 - **Backend mount**: `./backend:/app` works because pip installs to system
   site-packages (outside /app), so the mount only shadows source code, not
-  dependencies. The workspace `.venv` is inert inside the container.
-- **Frontend code changes**: require `docker compose up --build` to rebuild
-  the image (CRA bundles at image build time). Backend changes are live
-  immediately via `--reload`.
+  dependencies. The workspace `.venv` is inert inside the container.- **Frontend code changes are LIVE — no rebuild needed.** CORRECTED 2026-09-26:
+  the old note here claimed "CRA bundles at image build time, so run
+  `up --build`". That is **wrong**. `docker-compose.dev.yml` bind-mounts
+  `./frontend:/app` (with `CHOKIDAR_USEPOLLING=true` because inotify does not
+  cross the Docker Desktop VM boundary), and the container `CMD` is
+  `npm start` — a webpack **dev server**, not a static bundle. Edits to
+  `src/` recompile and hot-reload on save. The image only supplies
+  `node_modules` (preserved by the anonymous `/app/node_modules` volume), so
+  its age is irrelevant. **Only** rebuild (`--build`) if `package.json`
+  changes (new/changed dependencies). Backend changes are likewise live
+  immediately via `--reload` + the `./backend:/app` mount.
+  Note: the image also contains a stale `frontend/build/` directory, copied in
+  by `COPY . .` because the build output is gitignored-but-present locally.
+  Nothing serves it — grep it to check "is my change bundled?" and you will
+  wrongly conclude the change is missing. Check the live dev-server chunks or
+  just look at the browser instead.
 
 ## 2. Reproduce the build artifacts (without Docker)
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { fmtDateShort } from "@/lib/helpers";
+import { raceResultPath } from "@/lib/seo";
 import { Badge } from "@/components/ui/badge";
 import { CalendarDays, ChevronRight, Clock, Flag, Sailboat } from "lucide-react";
 
@@ -78,7 +79,7 @@ export default function UpcomingRaces({ clubId, clubSlug, year }) {
                     </div>
                   </div>
                   {r.race_id ? (
-                    <Link to={`/club/${clubSlug}/race/${r.race_id}`} className="text-xs font-semibold text-ocean hover:underline inline-flex items-center gap-1 shrink-0">
+                    <Link to={raceResultPath(clubSlug, r.race_id, `${r.class_name || "Sailing"} ${r.series_name || "Series"} race ${r.race_number} ${year || ""}`)} className="text-xs font-semibold text-ocean hover:underline inline-flex items-center gap-1 shrink-0">
                       View <ChevronRight className="w-3 h-3" />
                     </Link>
                   ) : (

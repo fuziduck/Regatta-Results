@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useDeleteWithUndo } from "@/hooks/use-delete-with-undo";
 import { toast } from "sonner";
 
 const subscriptionLabel = (type) => ({
@@ -15,8 +16,8 @@ const subscriptionLabel = (type) => ({
   boat: "Boat results",
 }[type] || type);
 
-function SubscriptionTable({ rows, deleting, remove }) {
-  return <div className="overflow-x-auto rounded-xl border border-border"><table className="w-full text-sm"><thead className="bg-muted"><tr><th className="px-3 py-2 text-left">Email address</th><th className="px-3 py-2 text-left">Notification target</th><th className="px-3 py-2 text-left">Confirmed</th><th className="px-3 py-2 text-right">Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-border"><td className="px-3 py-3 font-medium"><span className="inline-flex items-center gap-2"><Mail className="w-4 h-4 text-muted-foreground" />{row.email}</span></td><td className="px-3 py-3"><span className="text-xs font-semibold text-ocean">{subscriptionLabel(row.subscription_type)}</span><div>{row.target_name || row.target_id}</div></td><td className="px-3 py-3 text-xs text-muted-foreground">{row.verified_at ? new Date(row.verified_at).toLocaleString("en-GB") : "—"}</td><td className="px-3 py-3 text-right"><Button variant="ghost" size="icon" aria-label={`Delete ${row.email}`} disabled={deleting === row.id} onClick={() => remove(row)} data-testid={`delete-subscription-${row.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button></td></tr>)}</tbody></table></div>;
+function SubscriptionTable({ rows, remove }) {
+  return <div className="overflow-x-auto rounded-xl border border-border"><table className="w-full text-sm"><thead className="bg-muted"><tr><th className="px-3 py-2 text-left">Email address</th><th className="px-3 py-2 text-left">Notification target</th><th className="px-3 py-2 text-left">Confirmed</th><th className="px-3 py-2 text-right">Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-t border-border"><td className="px-3 py-3 font-medium"><span className="inline-flex items-center gap-2"><Mail className="w-4 h-4 text-muted-foreground" />{row.email}</span></td><td className="px-3 py-3"><span className="text-xs font-semibold text-ocean">{subscriptionLabel(row.subscription_type)}</span><div>{row.target_name || row.target_id}</div></td><td className="px-3 py-3 text-xs text-muted-foreground">{row.verified_at ? new Date(row.verified_at).toLocaleString("en-GB") : "—"}</td><td className="px-3 py-3 text-right"><Button variant="ghost" size="icon" aria-label={`Delete ${row.email}`} onClick={() => remove(row)} data-testid={`delete-subscription-${row.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button></td></tr>)}</tbody></table></div>;
 }
 
 export default function SubscriptionOverview({ clubId = null, webmaster = false }) {
@@ -26,7 +27,7 @@ export default function SubscriptionOverview({ clubId = null, webmaster = false 
   // single club's subscriptions are shown as a plain table.
   const [selectedClub, setSelectedClub] = useState("");
   const [error, setError] = useState("");
-  const [deleting, setDeleting] = useState(null);
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
 
   // The webmaster's dropdown needs the club list regardless of selection.
   useEffect(() => {
@@ -45,22 +46,26 @@ export default function SubscriptionOverview({ clubId = null, webmaster = false 
   }, [clubId, webmaster, selectedClub]);
   useEffect(() => { load(); }, [load]);
 
-  const remove = async (row) => {
-    if (!window.confirm(`Remove all subscriptions for ${row.email}?`)) return;
-    setDeleting(row.id);
-    try {
-      // The webmaster deletes within the club scope shown (dropdown choice,
-      // or the row's own club when viewing the all-clubs view).
+  const remove = (row) => askDelete({
+    key: row.id,
+    title: `Remove all subscriptions for ${row.email}?`,
+    description: "Every active and pending results and notice-board subscription for this address stops. They can subscribe again later.",
+    confirmLabel: "Remove subscriptions",
+    successMessage: "Subscription removed",
+    undoneMessage: "Subscription kept",
+    errorMessage: "Could not remove subscription",
+    // The webmaster deletes within the club scope shown (dropdown choice, or
+    // the row's own club when viewing the all-clubs view).
+    commit: async () => {
       const scope = webmaster ? (selectedClub || row.club_id) : clubId;
       await api.deleteAdminSubscription(row.id, scope);
-      toast.success("Subscription removed");
       load();
-    }
-    catch (e) { toast.error(e?.response?.data?.detail || "Could not remove subscription"); }
-    finally { setDeleting(null); }
-  };
+    },
+    undo: load,
+  });
 
   return <section className="rounded-2xl border border-border bg-card p-5 space-y-4" data-testid="subscription-overview">
+    {dialog}
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="flex items-center gap-2 text-xl uppercase tracking-tight"><Bell className="w-5 h-5 text-ocean" /> Email subscriptions</h2>
@@ -86,9 +91,9 @@ export default function SubscriptionOverview({ clubId = null, webmaster = false 
     {rows === null
       ? <p className="text-sm text-muted-foreground">Loading subscriptions…</p>
       : webmaster && !selectedClub
-        ? <Accordion type="multiple" className="space-y-2">{clubs.map((club) => { const clubRows = rows.filter((row) => row.club_id === club.id); return <AccordionItem key={club.id} value={club.id} className="rounded-xl border border-border px-4"><AccordionTrigger className="font-heading uppercase hover:no-underline">{club.name}<span className="ml-2 text-xs font-normal text-muted-foreground">({clubRows.length})</span></AccordionTrigger><AccordionContent>{clubRows.length ? <SubscriptionTable rows={clubRows} deleting={deleting} remove={remove} /> : <p className="text-sm text-muted-foreground py-3">No active subscriptions.</p>}</AccordionContent></AccordionItem>; })}</Accordion>
+        ? <Accordion type="multiple" className="space-y-2">{clubs.map((club) => { const clubRows = rows.filter((row) => row.club_id === club.id && !isPending(row.id)); return <AccordionItem key={club.id} value={club.id} className="rounded-xl border border-border px-4"><AccordionTrigger className="font-heading uppercase hover:no-underline">{club.name}<span className="ml-2 text-xs font-normal text-muted-foreground">({clubRows.length})</span></AccordionTrigger><AccordionContent>{clubRows.length ? <SubscriptionTable rows={clubRows} remove={remove} /> : <p className="text-sm text-muted-foreground py-3">No active subscriptions.</p>}</AccordionContent></AccordionItem>; })}</Accordion>
         : rows.length === 0
           ? <p className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">No active email subscriptions.</p>
-          : <SubscriptionTable rows={rows} deleting={deleting} remove={remove} />}
+          : <SubscriptionTable rows={rows.filter((row) => !isPending(row.id))} remove={remove} />}
   </section>;
 }

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { useDeleteWithUndo } from "@/hooks/use-delete-with-undo";
 import { KeyRound, Pencil, Trash2, Radio, ShieldCheck, UserPlus, Power, X, Check, Users } from "lucide-react";
 import { passcodeError, PASSCODE_HINT } from "@/lib/helpers";
 
@@ -14,6 +15,7 @@ const ROLE_ICON = { officer: Radio, admin: ShieldCheck };
 function UsersManager({ clubId = null, heading = "Club logins" }) {
   const { role: myRole } = useAuth();
   const isWebmaster = myRole === "webmaster";
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
   const [users, setUsers] = useState([]);
   const [clubs, setClubs] = useState([]);
   const [formClub, setFormClub] = useState(clubId || "");
@@ -38,6 +40,9 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
   }, [clubId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // A row being deleted is held out of the list for the undo window.
+  const visibleUsers = users.filter((u) => !isPending(u.id));
   useEffect(() => {
     if (isWebmaster) api.getClubs().then((cs) => setClubs(cs || [])).catch(() => {});
   }, [isWebmaster]);
@@ -103,19 +108,21 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
     }
   };
 
-  const remove = async (u) => {
-    if (!window.confirm(`Delete login '${u.username}'? They will no longer be able to sign in.`)) return;
-    try {
-      await api.deleteUser(u.id);
-      toast.success("Login deleted");
-      load();
-    } catch (e) {
-      toast.error(formatApiError(e.response?.data?.detail));
-    }
-  };
+  const remove = (u) => askDelete({
+    key: u.id,
+    title: `Delete the login “${u.username}”?`,
+    description: "They will no longer be able to sign in. Their race results and history are unaffected.",
+    confirmLabel: "Delete login",
+    successMessage: "Login deleted",
+    undoneMessage: "Login kept",
+    errorMessage: "Could not delete the login",
+    commit: async () => { await api.deleteUser(u.id); load(); },
+    undo: load,
+  });
 
   return (
     <div className="rounded-2xl border border-border bg-card">
+      {dialog}
       <div className="px-5 pt-5 pb-3 border-b border-border flex items-center gap-2.5">
         <Users className="w-5 h-5 text-ocean" />
         <h2 className="font-heading text-lg uppercase tracking-tight">{heading}</h2>
@@ -162,10 +169,10 @@ function UsersManager({ clubId = null, heading = "Club logins" }) {
       <p className="px-5 pb-3 -mt-1 text-xs text-muted-foreground">A temporary password will be emailed to the new user. They will be prompted to change it on first login.</p>
 
       <div className="divide-y divide-border">
-        {users.length === 0 && (
+        {visibleUsers.length === 0 && (
           <p className="p-6 text-sm text-muted-foreground text-center">No logins yet — create the first one above.</p>
         )}
-        {users.map((u) => {
+        {visibleUsers.map((u) => {
           const RoleIcon = ROLE_ICON[u.role] || Radio;
           const isEditing = editId === u.id;
           const isResetting = resetId === u.id;

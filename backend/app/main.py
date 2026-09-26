@@ -188,6 +188,7 @@ else:
     app = FastAPI()
 
 api_router = APIRouter(prefix="/api")
+from app.seo import router as seo_router
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -995,6 +996,10 @@ class SeriesInput(BaseModel):
     # series and a yardstick handicap the next. Races without a series
     # (legacy) fall back to the class's legacy scoring_mode.
     scoring_mode: Literal["one_design", "irc", "py", "ytc"] = "one_design"
+    # Additional scoring views of the same recorded race results. A multi-mode
+    # series stores each finish time once, then derives an independent place
+    # and standings table for every selected rating system.
+    scoring_modes: Optional[List[Literal["one_design", "irc", "py", "ytc"]]] = None
     # What this series is competing for. This is separate from regatta_id:
     # the latter links the series to a named competition, while this field
     # preserves the series' own category. Missing on legacy records means the
@@ -3368,7 +3373,7 @@ async def get_series(request: Request, class_id: Optional[str] = None, year: Opt
             {"id": {"$in": list(competition_ids)}}, {"_id": 0}).to_list(1000)}
     for item in items:
         item["series_type"] = series_type_for(item, competitions.get(item.get("regatta_id")))
-    return items
+    return [dict(item, scoring_modes=_series_scoring_modes(item)) for item in items]
 
 
 @api_router.post("/series")
@@ -3377,6 +3382,12 @@ async def create_series(data: SeriesInput, user: dict = Depends(require_admin)):
     doc = data.model_dump()
     doc.pop("expected_version", None)
     doc["series_type"] = normalize_series_type(doc.get("series_type"))
+    doc["scoring_modes"] = list(dict.fromkeys(doc.get("scoring_modes") or [doc.get("scoring_mode") or "one_design"]))
+    doc["scoring_mode"] = doc["scoring_modes"][0]
+
+    if len(doc["scoring_modes"]) > 1 and _class_divisions(cls):
+        raise HTTPException(status_code=400,
+                            detail="Choose either class rating divisions or multiple series scoring systems, not both")
     if doc.get("regatta_id"):
         competition = await db.regattas.find_one({"id": doc["regatta_id"]}, {"_id": 0})
         if not competition:
@@ -3431,6 +3442,11 @@ async def update_series(series_id: str, data: SeriesInput, user: dict = Depends(
     expected = _expected_version(data)
     update = data.model_dump()
     update.pop("expected_version", None)
+    update["scoring_modes"] = list(dict.fromkeys(update.get("scoring_modes") or [update.get("scoring_mode") or "one_design"]))
+    update["scoring_mode"] = update["scoring_modes"][0]
+    if len(update["scoring_modes"]) > 1 and _class_divisions(cls):
+        raise HTTPException(status_code=400,
+                            detail="Choose either class rating divisions or multiple series scoring systems, not both")
     if update.get("series_type") is None:
         update.pop("series_type", None)
     # Series membership is managed exclusively via PUT /series/{id}/boats —
@@ -4076,27 +4092,32 @@ async def _series_for_regatta(regatta):
 
     A few imported records retain an old competition id after the competition
     document was recreated. For those records, recover the relationship only
-    when year, owning club, and the series-name prefix all agree. This is a
-    read-only compatibility projection; it never rewrites series or results.
+    when year, owning club, and the series-name prefix all agree. Correctly
+    linked and recovered series are returned together. This is a read-only
+    compatibility projection; it never rewrites series or results.
     """
     regatta_id = regatta.get("id")
-    series = await db.series.find({"regatta_id": regatta_id}, {"_id": 0}).to_list(1000)
-    if series:
-        return series
+    direct = await db.series.find({"regatta_id": regatta_id}, {"_id": 0}).to_list(1000)
 
     club_id = regatta.get("club_id")
     name = (regatta.get("name") or "").strip().casefold()
     if not club_id or not name:
-        return []
+        return direct
     candidates = await db.series.find({"year": regatta.get("year"), "regatta_id": {"$exists": True}}, {"_id": 0}).to_list(5000)
     class_ids = {s.get("class_id") for s in candidates if s.get("class_id")}
     classes = await db.classes.find({"id": {"$in": list(class_ids)}}, {"_id": 0, "id": 1, "club_id": 1}).to_list(5000) if class_ids else []
     class_clubs = {c.get("id"): c.get("club_id") for c in classes}
     prefix = f"{name} "
-    return [s for s in candidates
-            if class_clubs.get(s.get("class_id")) == club_id
-            and ((s.get("name") or "").strip().casefold() == name
-                 or (s.get("name") or "").strip().casefold().startswith(prefix))]
+    # Both links are honoured together rather than one instead of the other:
+    # adding the first correctly-linked series to a competition must not switch
+    # off the recovery of its imported ones and hide them.
+    seen = {s.get("id") for s in direct}
+    legacy = [s for s in candidates
+              if s.get("id") not in seen
+              and class_clubs.get(s.get("class_id")) == club_id
+              and ((s.get("name") or "").strip().casefold() == name
+                   or (s.get("name") or "").strip().casefold().startswith(prefix))]
+    return direct + legacy
 
 
 @api_router.get("/regattas")
@@ -4127,6 +4148,7 @@ async def get_regattas(request: Request, year: Optional[int] = None, club_id: Op
         regatta["series"] = [{"id": s.get("id"), "class_id": s.get("class_id"),
                                "name": s.get("name", ""),
                                "scoring_mode": s.get("scoring_mode", "one_design"),
+                               "scoring_modes": _series_scoring_modes(s),
                                "series_type": series_type_for(s, regatta),
                                "planned_races": s.get("planned_races", 0),
                                "schedule": s.get("schedule", []),
@@ -4165,11 +4187,17 @@ async def get_regatta(regatta_id: str, request: Request, club_id: Optional[str] 
         # overview reports each of them rather than ranking IRC boats against
         # YTC boats.
         tables = _division_tables(standings)
-        s["boat_count"] = sum(len(t.get("standings") or []) for t in tables)
+        multi_scoring = any(t.get("table_kind") == "scoring_mode" for t in tables)
+        counts = [len(t.get("standings") or []) for t in tables]
+        # Separate scoring views contain the same fleet; rating divisions are
+        # disjoint fleets. Don't double-count boats in a multi-mode summary.
+        s["boat_count"] = max(counts, default=0) if multi_scoring else sum(counts)
         s["winner"] = (tables[0].get("standings") or [{}])[0].get("boat_name") if len(tables) == 1 else None
         s["podium"] = _podium(tables[0]) if len(tables) == 1 else []
         if len(tables) > 1:
             s["divisions"] = [{"name": t.get("division_name"),
+                               "division_scoring_mode": t.get("division_scoring_mode"),
+                               "table_kind": t.get("table_kind"),
                                "boat_count": len(t.get("standings") or []),
                                "winner": (t.get("standings") or [{}])[0].get("boat_name"),
                                "podium": _podium(t)} for t in tables]
@@ -4189,9 +4217,6 @@ async def create_regatta(data: RegattaInput, request: Request, user: dict = Depe
     doc["club_id"] = club_id
     doc["created_at"] = now_iso()
     await db.regattas.insert_one(doc)
-    # Every competition gets one linked ONB. This board stores no race data;
-    # it is only the target for competition notices and uploaded documents.
-    await _competition_notice_board(doc, create=True)
     doc.pop("_id", None)
     await _log_audit(request=request, user=user, action="REGATTA_CREATED",
                      description=f"Created regatta {data.name} ({data.year})",
@@ -4242,16 +4267,11 @@ async def delete_regatta(regatta_id: str, request: Request, user: dict = Depends
 
 @api_router.get("/regattas/{regatta_id}/notice-board")
 async def get_regatta_notice_board(regatta_id: str, club_id: Optional[str] = None):
-    """Public metadata for a competition's dedicated Official Notice Board.
-
-    When a club is supplied by the public competition page, require the
-    competition to belong to that club so a board can never be displayed under
-    another club's route.
-    """
+    """Read legacy competition-board metadata without provisioning a new board."""
     competition = await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
     if not competition or (club_id and competition.get("club_id") != club_id):
         raise HTTPException(status_code=404, detail="Competition not found")
-    board = await _competition_notice_board(competition, create=True)
+    board = await _competition_notice_board(competition, create=False)
     if not board:
         raise HTTPException(status_code=404, detail="Notice board unavailable")
     return board
@@ -4313,7 +4333,7 @@ async def get_races(request: Request, status: Optional[str] = None, class_id: Op
             k: v for k, v in item.items()
             if k not in {"results", "entries_count", "actual_start", "version", "published_at", "publication_event_id"}
         } for item in items]
-    return items
+    return await _decorate_races_scoring_positions(items)
 
 
 @api_router.get("/races/{race_id}")
@@ -4330,6 +4350,8 @@ async def get_race(race_id: str, request: Request):
     if user and user.get("role") != "webmaster":
         if user.get("club_id") != await _class_club_id(race.get("class_id")):
             raise HTTPException(status_code=404, detail="Race not found")
+    if race.get("status") == "published":
+        return (await _decorate_races_scoring_positions([race]))[0]
     return race
 
 
@@ -5711,6 +5733,14 @@ def _yardstick_corrected_sec(finish_time, start_time, yardstick):
 RATING_FIELD = {"irc": "tcc", "py": "py", "ytc": "ytc"}
 
 
+def _series_scoring_modes(series) -> list:
+    """Canonical ordered scoring modes for a series, including legacy records."""
+    modes = series.get("scoring_modes") or [series.get("scoring_mode") or "one_design"]
+    valid = ("one_design", "irc", "py", "ytc")
+    clean = list(dict.fromkeys(mode for mode in modes if mode in valid))
+    return clean or [series.get("scoring_mode") or "one_design"]
+
+
 def _corrected_seconds(mode, finish_time, start_time, rating):
     """Corrected time in seconds for a handicap scoring mode (see
     RATING_FIELD), or None when the mode is not a handicap or the elapsed time
@@ -5897,17 +5927,20 @@ def _resequence_finished(results, scoring_mode="one_design", start_time=None,
         _place_finished(fleet, mode, start_time, boat_ratings)
 
 
-async def _race_scoring_mode(race, cls=None):
-    """Scoring mode for a race: the mode set on its series (the source of
-    truth), falling back to the class's legacy mode for races without a
-    series."""
+async def _race_scoring_modes(race, cls=None):
+    """Scoring modes for a race, preferring its series, then legacy class mode."""
     if race.get("series_id"):
-        ser = await db.series.find_one({"id": race["series_id"]}, {"_id": 0, "scoring_mode": 1})
-        mode = (ser or {}).get("scoring_mode")
-        if mode:
-            return mode
+        ser = await db.series.find_one({"id": race["series_id"]},
+                                       {"_id": 0, "scoring_mode": 1, "scoring_modes": 1})
+        if ser:
+            return _series_scoring_modes(ser)
     cls = cls if cls is not None else await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
-    return cls.get("scoring_mode") or "one_design"
+    return [cls.get("scoring_mode") or "one_design"]
+
+
+async def _race_scoring_mode(race, cls=None):
+    """Primary race scoring mode (the first mode selected on its series)."""
+    return (await _race_scoring_modes(race, cls))[0]
 
 
 async def _resequence_race(race):
@@ -5946,7 +5979,7 @@ async def _race_corrected_order(race) -> bool:
     cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0}) or {}
     if any(d["scoring_mode"] in RATING_FIELD for d in _class_divisions(cls)):
         return True
-    return await _race_scoring_mode(race, cls) in RATING_FIELD
+    return any(mode in RATING_FIELD for mode in await _race_scoring_modes(race, cls))
 
 
 def _a8_tiebreak(entries, drop):
@@ -6198,7 +6231,114 @@ def _apply_duty_points(agg, entries_by_race, cfg=None):
                     e["points"] = float(entries_by_race[i] + 1)
 
 
-def _race_columns(races, boat_map, cfg, member_ids, entries_base=None):
+async def _decorate_races_scoring_positions(races):
+    """Attach read-only positions for each scoring view to published race data.
+
+    The database still stores one result per boat and one finish time. These
+    additional positions are calculated for public race tables only; officer
+    mutations and the canonical race record are untouched.
+    """
+    dual = [race for race in races if race.get("status") == "published" and race.get("series_id")]
+    series_ids = list({race["series_id"] for race in dual})
+    if not series_ids:
+        return races
+    series_docs = await db.series.find({"id": {"$in": series_ids}}, {"_id": 0}).to_list(1000)
+    series_map = {series["id"]: series for series in series_docs}
+    dual_series = {sid: series for sid, series in series_map.items()
+                   if len(_series_scoring_modes(series)) > 1}
+    if not dual_series:
+        return races
+    # Honor explicit membership when present; otherwise only boats entered in
+    # at least one published series race form the fleet. This avoids ranking a
+    # one-off entrant against unrelated class members on the public race page.
+    series_fleets = {}
+    for sid, series in dual_series.items():
+        members = set(series.get("member_boat_ids") or [])
+        if not members:
+            all_published = await db.races.find(
+                {"series_id": sid, "status": "published", "abandoned": {"$ne": True}},
+                {"_id": 0, "results": 1}).to_list(1000)
+            members = {result.get("boat_id") for item in all_published
+                       for result in item.get("results", []) if result.get("boat_id")}
+        series_fleets[sid] = members
+    frozen_races = {}
+    for sid, series in dual_series.items():
+        if series.get("lock_status") not in NOT_EDITABLE:
+            continue
+        snapshots = await db.season_snapshots.find(
+            {"series_id": sid, "status": {"$in": [LOCK_LOCKED, LOCK_ARCHIVED]}},
+            {"_id": 0}).sort("version", -1).to_list(1)
+        if snapshots:
+            frozen_races[sid] = {item.get("race_id"): item for item in snapshots[0].get("races", [])
+                                 if item.get("race_id")}
+    class_ids = list({series.get("class_id") for series in dual_series.values() if series.get("class_id")})
+    classes = await db.classes.find({"id": {"$in": class_ids}}, {"_id": 0}).to_list(1000)
+    boat_conditions = [{"class_id": class_id} for class_id in class_ids]
+    class_map = {cls["id"]: cls for cls in classes}
+    boats = await db.boats.find({"$or": boat_conditions}, {"_id": 0}).to_list(5000)
+    boats_by_class = {}
+    for boat in boats:
+        boats_by_class.setdefault(boat.get("class_id"), {})[boat["id"]] = boat
+    out = []
+    for race in races:
+        series = dual_series.get(race.get("series_id"))
+        if not series:
+            out.append(race)
+            continue
+        frozen_race = frozen_races.get(race.get("series_id"), {}).get(race.get("id"))
+        if frozen_race:
+            race_copy = dict(race)
+            # Pre-feature locked snapshots stored only their primary place;
+            # preserve current legacy display rather than replacing positions
+            # with empty mode maps until that season is explicitly amended.
+            if any(entry.get("scoring_positions") for entry in frozen_race.get("results", [])):
+                race_copy["scoring_positions"] = {
+                    mode: {entry.get("boat_id"): (entry.get("scoring_positions") or {}).get(mode)
+                           for entry in frozen_race.get("results", [])
+                           if (entry.get("scoring_positions") or {}).get(mode) is not None}
+                    for mode in _series_scoring_modes(series)
+                }
+            else:
+                race_copy["scoring_positions"] = {modes[0]: {
+                    entry.get("boat_id"): entry.get("position")
+                    for entry in frozen_race.get("results", []) if entry.get("position") is not None
+                }}
+            out.append(race_copy)
+            continue
+        all_boats = boats_by_class.get(race.get("class_id"), {})
+        series_fleet = series_fleets.get(race.get("series_id"), set())
+        boat_map = {bid: boat for bid, boat in all_boats.items() if bid in series_fleet}
+        cls = class_map.get(race.get("class_id"), {})
+        scoring_race = {**race, "_scoring_start_time": _race_start_time(race, cls)}
+        race_copy = dict(race)
+        race_copy["scoring_positions"] = {
+            mode: _positions_for_mode(scoring_race, mode, boat_map)
+            for mode in _series_scoring_modes(series)
+        }
+        out.append(race_copy)
+    return out
+
+
+def _positions_for_mode(race, mode, boat_map):
+    """Derive race places from the single recorded finish times for one mode."""
+    results = race.get("results", [])
+    ranked = [dict(result, code="FINISHED") for result in results
+              if result.get("boat_id") in boat_map
+              and result.get("code") in ("FINISHED", *PENALTY_CODES)]
+    if mode == "one_design":
+        # One-design's official result is the order manually recorded by the
+        # officer. Handicap tables derive their own corrected-time places from
+        # these same finish times; they should not silently redefine this view.
+        return {result.get("boat_id"): result.get("position") for result in results}
+    start_time = race.get("_scoring_start_time") or _race_start_time(race)
+    ratings = {bid: boat.get(RATING_FIELD.get(mode, "")) for bid, boat in boat_map.items()}
+    if ranked:
+        _place_finished(ranked, mode, start_time, ratings)
+    return {result.get("boat_id"): result.get("position") for result in ranked}
+
+
+def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
+                  scoring_mode=None, derive_positions=False, position_boat_map=None):
     """Score every boat in every race: boat_id -> one entry per race, in the
     order of `races`. Returns (agg, entries_by_race), where entries_by_race is
     the series entry count each race was scored against — the DNC base the
@@ -6215,6 +6355,9 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None):
     entries_by_race = []
     for race in races:
         results = race.get("results", [])
+        mode_positions = (_positions_for_mode(
+            race, scoring_mode, position_boat_map or boat_map)
+            if derive_positions and scoring_mode else {})
         if member_ids:
             # Explicit membership defines the whole series fleet, so the DNC /
             # non-finish (A5) scoring base is the CURRENT member count. Removing
@@ -6239,11 +6382,15 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None):
                                  "position": None, "code": "DNC"}
             else:
                 code = r.get("code")
+                position = r.get("position")
+                if code in ("FINISHED", *PENALTY_CODES) and bid in mode_positions:
+                    position = mode_positions[bid]
+                scored_result = {**r, "position": position}
                 per_boat[bid] = {
-                    "points": result_points(r, series_entries, start_entries,
+                    "points": result_points(scored_result, series_entries, start_entries,
                                              finishers=finishers, cfg=cfg),
                     "discardable": code not in NON_DISCARDABLE,
-                    "position": r.get("position") if code in ("FINISHED", *PENALTY_CODES) else None,
+                    "position": position if code in ("FINISHED", *PENALTY_CODES) else None,
                     "code": code,
                 }
         # RRS A7: boats tied on the finishing line (equal stored position) split
@@ -6262,7 +6409,8 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None):
     return agg, entries_by_race
 
 
-async def _series_scores(series, race_numbers=None, fold_combined=False, division=None):
+async def _series_scores(series, race_numbers=None, fold_combined=False, division=None,
+                         scoring_mode=None):
     """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
     per-race entry dicts, aligned to race_meta; cfg: the series' effective
     scoring config; races: the published races in view. If race_numbers is
@@ -6294,6 +6442,18 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
     view_races = [races[i] for i in view_idx]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     member_ids = series.get("member_boat_ids") or []
+    # A mini-series view still derives corrected places against the full
+    # series fleet, not only boats who appear in that mini group. Otherwise
+    # boats sailing elsewhere in the same series disappear from the rating
+    # comparison used by whole-series duty averages.
+    position_boat_map = {b["id"]: b for b in boats}
+    if member_ids:
+        member_set = set(member_ids)
+        position_boat_map = {bid: b for bid, b in position_boat_map.items() if bid in member_set}
+    elif races:
+        entered_series = {result.get("boat_id") for race in races
+                          for result in (race.get("results") or []) if result.get("boat_id")}
+        position_boat_map = {bid: b for bid, b in position_boat_map.items() if bid in entered_series}
     # A rating division is a fleet of its own: only its boats are scored, and
     # its DNC base is its own size (see _race_columns).
     entries_base = None
@@ -6332,7 +6492,16 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
             boats = [b for b in boats if b.get("id") in entered]
     boat_map = {b["id"]: b for b in boats}
     cfg = _series_scoring_config(series)
-    agg, entries_by_race = _race_columns(races, boat_map, cfg, member_ids, entries_base)
+    selected_mode = scoring_mode or _series_scoring_modes(series)[0]
+    derive_positions = len(_series_scoring_modes(series)) > 1
+    if derive_positions:
+        cls_for_scoring = await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}
+        for race in races:
+            race["_scoring_start_time"] = _race_start_time(race, cls_for_scoring)
+    agg, entries_by_race = _race_columns(
+        races, boat_map, cfg, member_ids, entries_base,
+        scoring_mode=selected_mode, derive_positions=derive_positions,
+        position_boat_map=position_boat_map)
     _apply_duty_points(agg, entries_by_race, cfg)
     agg = {bid: [entries[i] for i in view_idx] for bid, entries in agg.items()}
     races = view_races
@@ -6342,7 +6511,8 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
     return agg, boat_map, race_meta, cfg, races
 
 
-async def compute_series_standings(series, race_numbers=None, discards=None, division=None):
+async def compute_series_standings(series, race_numbers=None, discards=None, division=None,
+                                   scoring_mode=None):
     """Compute the canonical normalized results-export payload.
 
     division: compute it for one rating division of the class only (see
@@ -6351,7 +6521,8 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
     # a mini-series view (race_numbers given) always shows the individual
     # races, so folding never applies there.
     agg, boat_map, race_meta, cfg, races = await _series_scores(
-        series, race_numbers, fold_combined=(race_numbers is None), division=division)
+        series, race_numbers, fold_combined=(race_numbers is None), division=division,
+        scoring_mode=scoring_mode)
     club_name = await _club_name_of_class(series.get("class_id"))
     club_map = await _club_map_for_display()
     race_count = len(race_meta)
@@ -6446,6 +6617,8 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
         r.pop("_mini_tb", None)
         r.pop("_combined_avg", None)
     payload = {"race_count": race_count, "races_scored": race_count,
+               "scoring_mode": scoring_mode or _series_scoring_modes(series)[0],
+               "scoring_modes": _series_scoring_modes(series),
                "discards": discards, "discards_applied": discards,
                "configured_discards": configured_discards,
                "discard_policy": discard_policy,
@@ -6472,22 +6645,29 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
 
 
 async def _series_standings_payload(series, race_numbers=None, discards=None):
-    """Live series standings, split into one table per rating division when
-    the class fields more than one rating system (see _class_divisions).
-
-    The whole-class table stays alongside the divisions: the engine scores
-    each boat's stored finishing places, so a boat's own points are the same
-    either way. The results pages show the divisions; the combined table keeps
-    the per-boat history, statistics and exports working on one shape.
-    """
+    """Live standings split by class division or, for multi-scoring series,
+    into independent scoring tables over the same boats and recorded finishes."""
     payload = await compute_series_standings(series, race_numbers, discards)
-    divisions = _class_divisions(await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}))
+    cls = await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}
+    divisions = _class_divisions(cls)
+    if divisions and len(_series_scoring_modes(series)) > 1:
+        raise HTTPException(status_code=400,
+                            detail="A series cannot combine class rating divisions with multiple scoring tables")
     tables = []
-    for d in divisions:
-        table = await compute_series_standings(series, race_numbers, discards, division=d["name"])
-        table["division_name"] = d["name"]
-        table["division_scoring_mode"] = d["scoring_mode"]
-        tables.append(table)
+    if divisions:
+        for d in divisions:
+            table = await compute_series_standings(series, race_numbers, discards, division=d["name"])
+            table["division_name"] = d["name"]
+            table["division_scoring_mode"] = d["scoring_mode"]
+            tables.append(table)
+    elif len(_series_scoring_modes(series)) > 1:
+        for mode in _series_scoring_modes(series):
+            table = await compute_series_standings(
+                series, race_numbers, discards, scoring_mode=mode)
+            table["division_name"] = mode.upper() if mode != "one_design" else "One-design"
+            table["division_scoring_mode"] = mode
+            table["table_kind"] = "scoring_mode"
+            tables.append(table)
     if tables:
         payload["divisions"] = tables
     return payload
@@ -6543,6 +6723,25 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     the ratings used, the scoring-rule configuration and who locked it."""
     agg, boat_map, race_meta, cfg, races = await _series_scores(series)
     payload = await _series_standings_payload(series)
+    modes = _series_scoring_modes(series)
+    cls_snapshot = (await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}) \
+        if len(modes) > 1 else {}
+    position_boat_map = {b["id"]: b for b in (await db.boats.find(
+        {"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000))} \
+        if len(modes) > 1 else boat_map
+    member_ids = set(series.get("member_boat_ids") or [])
+    if member_ids:
+        position_boat_map = {bid: boat for bid, boat in position_boat_map.items() if bid in member_ids}
+    elif races:
+        entered = {result.get("boat_id") for race in races for result in race.get("results", [])
+                   if result.get("boat_id")}
+        position_boat_map = {bid: boat for bid, boat in position_boat_map.items() if bid in entered}
+    primary_positions = {
+        race.get("id"): _positions_for_mode(
+            {**race, "_scoring_start_time": _race_start_time(race, cls_snapshot)},
+            modes[0], position_boat_map)
+        for race in races
+    } if len(modes) > 1 else {}
     # Freeze each mini-series view too, so a locked season's mini standings
     # are equally immutable.
     if series.get("mini_series"):
@@ -6563,6 +6762,12 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     for i, race in enumerate(races):
         present = {r["boat_id"]: r for r in race.get("results", [])}
         entries = []
+        race_mode_positions = {
+            mode: _positions_for_mode(
+                {**race, "_scoring_start_time": _race_start_time(race, cls_snapshot)},
+                mode, position_boat_map)
+            for mode in modes
+        } if len(modes) > 1 else {}
         for bid in boat_map:
             e = agg[bid][i]
             raw = present.get(bid) or {}
@@ -6573,13 +6778,16 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
             entries.append({
                 "boat_id": bid, "boat_name": boat_map[bid].get("name"),
                 "sail_no": boat_map[bid].get("sail_no"),
-                "code": e["code"], "position": raw.get("position"),
+                "code": e["code"],
+                "position": primary_positions.get(race.get("id"), {}).get(bid, raw.get("position")),
+                "scoring_positions": {mode: positions.get(bid) for mode, positions in race_mode_positions.items()} or None,
                 "finish_time": raw.get("finish_time"),
                 "penalty_points": raw.get("penalty_points"),
                 "points": e["points"], "discardable": e["discardable"],
                 "dpi": dpi or None, "rdg": rdg or None,
             })
         races_detail.append({
+            "race_id": race.get("id"),
             "race_number": race.get("race_number"), "date": race.get("date"),
             "status": race.get("status"), "entries_count": race.get("entries_count"),
             "start_time": race.get("start_time"), "actual_start": race.get("actual_start"),
@@ -6600,6 +6808,7 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
             "schedule": series.get("schedule", []),
             "planned_races": series.get("planned_races", 0),
             "scoring_mode": series.get("scoring_mode"),
+            "scoring_modes": _series_scoring_modes(series),
             "included_in_overall": series.get("included_in_overall", True),
             "order": series.get("order", 0),
             "use_a5_3": bool(series.get("use_a5_3")),
@@ -6828,7 +7037,8 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     return result
 
 
-async def compute_overall_standings(class_id: str, year: int, division=None):
+async def compute_overall_standings(class_id: str, year: int, division=None,
+                                    scoring_mode=None):
     """Overall championship standings for a class and year (every series in
     the class that counts towards the championship, summed by net score).
 
@@ -6850,6 +7060,16 @@ async def compute_overall_standings(class_id: str, year: int, division=None):
         sole = await db.series.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(1000)
         if len(sole) == 1:
             all_series = sole
+    # A scoring-mode overall only combines series that offer that scoring
+    # system. IRC points from an IRC-only series must not be added to a YTC
+    # standings table (or vice versa).
+    if scoring_mode is not None:
+        # A mode-specific championship has no coherent score for a series
+        # configured under another single mode. Multi-mode series simply
+        # contribute their matching table; do not apply the class's primary
+        # mode to every series in the aggregate.
+        all_series = [series for series in all_series
+                      if scoring_mode in _series_scoring_modes(series)]
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
     divisions = _class_divisions(await db.classes.find_one({"id": class_id}, {"_id": 0}))
     if division is not None:
@@ -6923,8 +7143,18 @@ async def compute_overall_standings(class_id: str, year: int, division=None):
         name = series["name"]
         series_names.append(name)
         frozen = await _standings_for_series(series)
-        result = frozen if frozen is not None else await compute_series_standings(series, division=division)
-        result = _division_table(result, division)
+        modes = _series_scoring_modes(series)
+        multi_mode = len(modes) > 1
+        series_mode = scoring_mode if multi_mode and scoring_mode in modes else modes[0]
+        result = frozen
+        if result is not None and multi_mode:
+            result = next((table for table in _division_tables(result)
+                           if table.get("division_scoring_mode") == series_mode), result)
+        elif result is None:
+            result = await compute_series_standings(
+                series, division=division, scoring_mode=series_mode if multi_mode else None)
+        else:
+            result = _division_table(result, division)
         pos = use_position[name]
         for row in result["standings"]:
             # A boat's contribution to the championship is the NET it scored
@@ -6990,16 +7220,29 @@ async def compute_overall_standings(class_id: str, year: int, division=None):
 
 
 async def _overall_standings_payload(class_id: str, year: int):
-    """Overall championship standings, split into one table per rating
-    division when the class fields more than one rating system."""
+    """Overall standings split by class divisions or selected series scoring modes."""
     payload = await compute_overall_standings(class_id, year)
-    divisions = _class_divisions(await db.classes.find_one({"id": class_id}, {"_id": 0}))
+    cls = await db.classes.find_one({"id": class_id}, {"_id": 0}) or {}
+    class_divisions = _class_divisions(cls)
     tables = []
-    for d in divisions:
-        table = await compute_overall_standings(class_id, year, division=d["name"])
-        table["division_name"] = d["name"]
-        table["division_scoring_mode"] = d["scoring_mode"]
-        tables.append(table)
+    if class_divisions:
+        for d in class_divisions:
+            table = await compute_overall_standings(class_id, year, division=d["name"])
+            table["division_name"] = d["name"]
+            table["division_scoring_mode"] = d["scoring_mode"]
+            tables.append(table)
+    else:
+        series_list = await db.series.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(1000)
+        multi_modes = list(dict.fromkeys(
+            mode for series in series_list if len(_series_scoring_modes(series)) > 1
+            for mode in _series_scoring_modes(series)))
+        if multi_modes:
+            for mode in multi_modes:
+                table = await compute_overall_standings(class_id, year, scoring_mode=mode)
+                table["division_name"] = mode.upper() if mode != "one_design" else "One-design"
+                table["division_scoring_mode"] = mode
+                table["table_kind"] = "scoring_mode"
+                tables.append(table)
     if tables:
         payload["divisions"] = tables
     return payload
@@ -8423,23 +8666,20 @@ async def _notice_area_title(club_id: str, publication_area: str) -> str:
 
 async def _next_notice_number(club_id: str, publication_area: str = "Club Notices",
                               board_id: Optional[str] = None) -> int:
-    """Return the next number within one ONB and publication area.
+    """Return the next number for one club and publication area.
 
-    Legacy notices without ``board_id`` belong to the main club ONB. Dedicated
-    competition boards have independent numbering, so No. 1 on a regatta board
-    cannot collide conceptually with No. 1 on the club board.
+    With no explicit legacy board target, count notices across all boards: the
+    public club ONB now presents those records together as area sections.
+    Older board-specific clients can still request a board-local sequence.
     """
     area = publication_area or "Club Notices"
-    board_filter = ({"$or": [{"board_id": {"$exists": False}}, {"board_id": None}]}
-                    if not board_id else {"board_id": board_id})
     query = {
         "club_id": club_id,
-        "$and": [
-            {"$or": [{"publication_area": area},
-                     {"publication_area": {"$exists": False}, "heading": area}]},
-            board_filter,
-        ],
+        "$or": [{"publication_area": area},
+                {"publication_area": {"$exists": False}, "heading": area}],
     }
+    if board_id:
+        query["board_id"] = board_id
     agg = await db.notices.find_one(
         query, sort=[("notice_number", -1)], projection={"notice_number": 1})
     return int((agg or {}).get("notice_number") or 0) + 1
@@ -8569,9 +8809,11 @@ class NoticeWithdrawInput(BaseModel):
 
 
 async def _notice_board_target(club_id: str, board_id: Optional[str]) -> dict:
-    """Validate a selected board belongs to the target club and denormalise
-    its competition identity onto the notice. Empty/omitted means the main
-    club ONB and intentionally returns no board fields."""
+    """Validate a legacy dedicated board target and copy its display metadata.
+
+    New notice publishing uses the club board's publication areas. Keep this
+    validation for older clients and existing board-specific records.
+    """
     if not board_id:
         return {"board_id": None, "board_title": None, "competition_id": None}
     board = await db.notice_boards.find_one({"id": board_id, "status": "active"}, {"_id": 0})
@@ -8592,13 +8834,7 @@ async def list_notice_boards(request: Request, club_id: Optional[str] = None):
     club = await db.clubs.find_one({"id": scope}, {"_id": 0, "official_notice_board": 1})
     if club and club.get("official_notice_board") is False:
         return []
-    # Provision competition boards while listing the club's ONB. This keeps
-    # existing competitions discoverable without a destructive migration and
-    # guarantees that boards are created under their owning club only.
-    competitions = await db.regattas.find({"club_id": scope}, {"_id": 0}).to_list(1000)
-    for competition in competitions:
-        await _competition_notice_board(competition, create=True)
-    return await db.notice_boards.find({"club_id": scope, "status": "active"}, {"_id": 0}).sort("title", 1).to_list(100)
+    return await db.notice_boards.find({"club_id": scope, "status": "active", "board_type": {"$ne": "competition"}}, {"_id": 0}).sort("title", 1).to_list(100)
 
 
 @api_router.post("/notice-boards")
@@ -8639,35 +8875,6 @@ async def create_notice_section(board_id: str, data: NoticeSectionInput, request
 
 class NoticeAreaInput(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
-
-
-@api_router.get("/notice-targets")
-async def list_notice_targets(request: Request, club_id: Optional[str] = None,
-                              user: dict = Depends(require_officer)):
-    """Return the main club ONB plus one dedicated target for every active
-    Regatta/Championship. The endpoint is for authorised creation workflows;
-    public readers use the board-specific notice endpoints instead."""
-    scope = await _resolve_club_id(request, club_id, honor_param=True)
-    if not scope:
-        raise HTTPException(status_code=400, detail="club_id is required")
-    _ensure_club(user, scope)
-    club = await db.clubs.find_one({"id": scope}, {"_id": 0, "name": 1})
-    competitions = await db.regattas.find({"club_id": scope}, {"_id": 0}).sort([("year", -1), ("start_date", 1)]).to_list(1000)
-    targets = []
-    for competition in competitions:
-        board = await _competition_notice_board(competition, create=True)
-        if board:
-            targets.append({
-                "id": board["id"], "title": board["title"], "kind": "competition",
-                "competition_id": competition.get("id"), "competition_name": competition.get("name"),
-                "competition_type": normalize_competition_type(competition.get("competition_type")),
-                "championship_scope": competition.get("championship_scope"),
-                "year": competition.get("year"),
-            })
-    return {
-        "main": {"id": None, "title": f"{(club or {}).get('name') or 'Club'} Official Notice Board", "kind": "club"},
-        "competitions": targets,
-    }
 
 
 @api_router.post("/clubs/{club_id}/notice-areas")
@@ -8784,16 +8991,10 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
         q["board_id"] = requested_board
     elif requested_competition:
         q["competition_id"] = requested_competition
-    elif not staff_view:
-        # Public club ONB: hide only notices assigned to the new competition
-        # boards. Legacy notices without board_id and older series-section
-        # notices assigned to generic boards remain visible as before.
-        competition_boards = await db.notice_boards.find(
-            {"club_id": scope, "board_type": "competition", "status": "active"},
-            {"_id": 0, "id": 1}).to_list(1000)
-        competition_board_ids = [b["id"] for b in competition_boards]
-        if competition_board_ids:
-            q["board_id"] = {"$nin": competition_board_ids}
+    # With publication areas as the public ONB sections, competition-board
+    # notices are also visible on the club ONB and grouped by their area. This
+    # keeps any notices already posted to a legacy Regatta board discoverable
+    # after competition-specific tabs are removed.
     if request.query_params.get("publication_area"):
         q["publication_area"] = request.query_params.get("publication_area")
     if request.query_params.get("section_id"):
@@ -9410,26 +9611,15 @@ async def _send_published_notice_email(email: str, notice: dict, pdf: Optional[b
 
 async def _notify_published_notice(notice: dict) -> dict:
     """Email each newly published ONB document once to matching active
-    subscribers. Main club subscriptions receive all notices for their club;
-    a competition-board subscription receives only notices assigned to that
-    board. Uses the same delivery ledger for exactly-once publication sends."""
+    subscribers. Main club subscriptions receive all area notices; legacy
+    board subscriptions remain isolated to their assigned competition board."""
     club_id = notice.get("club_id")
     if not club_id:
         return {"matched": 0, "sent": 0, "skipped": 0}
     board_id = notice.get("board_id")
-    # The original `notice` subscription means the main club ONB. Keep it
-    # backwards-compatible for existing subscribers, but do not leak a
-    # competition publication into their inbox. Legacy generic board records
-    # remain part of the main club stream; only dedicated competition boards
-    # are excluded. A new `notice_board` subscription receives its exact board.
-    competition_boards = await db.notice_boards.find(
-        {"club_id": club_id, "board_type": "competition", "status": "active"},
-        {"_id": 0, "id": 1}).to_list(1000)
-    competition_board_ids = [b["id"] for b in competition_boards]
-    target_or = [{
-        "subscription_type": "notice", "target_id": club_id,
-        "board_id": {"$nin": competition_board_ids},
-    }]
+    # The club ONB now includes every publication area, including legacy
+    # board-targeted notices. Keep existing board subscribers working too.
+    target_or = [{"subscription_type": "notice", "target_id": club_id}]
     if board_id:
         target_or.append({"subscription_type": "notice_board", "target_id": board_id})
     subscribers = await db.subscriptions.find({
@@ -9725,6 +9915,8 @@ async def run_seed():
 
 
 app.include_router(api_router)
+app.include_router(seo_router)
+app.state.db = db
 
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Defence-in-depth response headers for every API response.

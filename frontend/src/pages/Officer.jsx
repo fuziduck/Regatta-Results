@@ -6,7 +6,7 @@ import ClubPicker from "@/components/ClubPicker";
 import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, seriesScoringModes } from "@/lib/helpers";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { RaceTimeEntry } from "@/components/RaceTimeEntry";
@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import { useDeleteWithUndo } from "@/hooks/use-delete-with-undo";
 import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText, Users } from "lucide-react";
 
 const STATUS_BADGE = {
@@ -317,6 +318,7 @@ function RaceNoticeSection({ value, onChange, onSave, busy = false, saveLabel = 
 }
 
 export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onSwitchRace, onEnterBatch, raceDayNotices = true, onSeriesBoatsSaved }) {
+  const { askDelete, dialog } = useDeleteWithUndo();
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
@@ -464,11 +466,13 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
 
   const divisions = classDivisions(meta);
   const scoringMode = series?.scoring_mode || meta.scoring_mode || "one_design";
+  const selectedScoringModes = seriesScoringModes(series || { scoring_mode: scoringMode });
+  const scoringModes = selectedScoringModes.length ? selectedScoringModes : ["one_design"];
   // Every division of a split class is one-design only when none is a handicap
   // — a date-stamped finish is still needed for a timed division.
   const isOneDesign = divisions.length
     ? divisions.every((d) => d.scoring_mode === "one_design")
-    : scoringMode === "one_design";
+    : scoringModes.every((mode) => mode === "one_design");
   const showTiming = !isOneDesign;
   // Places restart in each division of a split class, so the rows are grouped
   // by division before their finishing order.
@@ -683,7 +687,20 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     () => api.abandonRace(raceId, flag, version),
     flag ? "Race abandoned — removed from series scoring" : "Race restored to the series"
   );
-  const remove = () => runMutation(() => api.deleteRace(raceId, version), "Race deleted").then((r) => { if (r) onBack(); });
+  // The page stays put while the undo window is open — leaving mid-window would
+  // make the undo unreachable — and only steps back once the delete lands.
+  const remove = () => askDelete({
+    title: "Delete this race?",
+    description: "The race, its start and every recorded result are removed permanently. If it belongs to a series, the series is rescored without it.",
+    confirmLabel: "Delete race",
+    successMessage: "Race deleted",
+    undoneMessage: "Race kept",
+    errorMessage: "Could not delete the race",
+    commit: async () => {
+      const r = await runMutation(() => api.deleteRace(raceId, version));
+      if (r) onBack();
+    },
+  });
   const gun = () => runMutation(() => api.startRace(raceId, new Date().toISOString(), version), "Race started — timer running");
   // Typed start (the gun fired before the page was open, or it was mis-tapped):
   // everything measured from the start — live taps, typed finish times, the
@@ -710,12 +727,13 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
 
   return (
     <div className="pb-40">
+      {dialog}
       <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={onBack} data-testid="console-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
           <div className="flex-1">
             <div className="font-heading text-lg uppercase tracking-tight leading-none">{meta.class_name} · {meta.series_name}</div>
-            <div className="text-xs text-muted-foreground">{race.mini_group_label || `Race ${race.race_number}`} · {fmtDate(race.date)}{showTiming && race.start_time && ` · Start ${race.start_time}`}</div>
+            <div className="text-xs text-muted-foreground">{race.mini_group_label || `Race ${race.race_number}`} · {fmtDate(race.date)}{showTiming && race.start_time && ` · Start ${race.start_time}`}{scoringModes.length > 1 && ` · ${scoringModes.map((mode) => mode.toUpperCase()).join(" + ")} results from one finish-time entry`}</div>
           </div>
           <Badge className={STATUS_BADGE[race.status]}>{race.status}</Badge>
           {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300" data-testid="abandoned-badge">Abandoned</Badge>}
@@ -1078,6 +1096,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
 }
 
 export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, classes, seriesMap, onClose, raceDayNotices = true, rrsCodes = [] }) {
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
   const [races, setRaces] = useState([]);
   const [boatsMap, setBoatsMap] = useState({});
   const [expandMap, setExpandMap] = useState({});
@@ -1286,10 +1305,22 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
 
   // Remove a race from the mini series entirely. The backend also cleans up
   // the group's race_numbers so the scoring engine doesn't reference it.
-  const deleteRace = useCallback(async (race) => {
-    const r = await mutate(() => api.deleteRace(race.id, race.version));
-    if (r) await loadGroup();
-  }, [mutate, loadGroup]);
+  const deleteRace = useCallback((race) => {
+    askDelete({
+      key: race.id,
+      title: `Delete ${race.mini_group_label || `race ${race.race_number}`} from this mini series?`,
+      description: "The race and its results are removed, and the group's race numbers close up so scoring never references it.",
+      confirmLabel: "Delete race",
+      successMessage: "Race deleted",
+      undoneMessage: "Race kept",
+      errorMessage: "Could not delete the race",
+      commit: async () => {
+        const r = await mutate(() => api.deleteRace(race.id, race.version));
+        if (r) await loadGroup();
+      },
+      undo: loadGroup,
+    });
+  }, [askDelete, mutate, loadGroup]);
 
   // Restore the original single race. The backend also restores every later
   // race number and scheduled date position, so the series timeline is intact.
@@ -1426,6 +1457,7 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
 
   return (
     <div className="pb-20">
+      {dialog}
       {/* Header */}        <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={onClose} data-testid="batch-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
@@ -1575,7 +1607,7 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
             <CheckCircle2 className="w-4 h-4 shrink-0" /> All {races.length} races in this group are published.
           </div>
         )}
-        {races.map((race, raceIdx) => {
+        {races.filter((race) => !isPending(race.id)).map((race, raceIdx) => {
           const expanded = expandMap[race.id];
           const allBoats = race.results || [];
           const racing = allBoats.filter((r) => r.code !== "DNC");
@@ -1612,7 +1644,7 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
                   </Button>
                 )}
                 <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10" data-testid={`delete-race-btn-${race.race_number}`}
-                  onClick={() => { if (window.confirm(`Delete ${race.mini_group_label || `race ${race.race_number}`} from this mini series? This cannot be undone.`)) deleteRace(race); }}>
+                  onClick={() => deleteRace(race)}>
                   <Trash2 className="w-3.5 h-3.5" />
                 </Button>
                 <button onClick={() => toggleExpand(race.id)} className="p-1 rounded-lg hover:bg-muted transition-colors" data-testid={`expand-btn-${race.race_number}`}>
@@ -1946,6 +1978,7 @@ export default function Officer() {
     class_name: classes[r.class_id]?.name || "Class",
     series_name: series[r.series_id]?.name || "Series",
     scoring_mode: series[r.series_id]?.scoring_mode || classes[r.class_id]?.scoring_mode || "one_design",
+    scoring_modes: seriesScoringModes(series[r.series_id] || { scoring_mode: classes[r.class_id]?.scoring_mode || "one_design" }),
     // The class's rating divisions, when it fields more than one system: each
     // is scored (and placed) in its own table.
     divisions: classDivisions(classes[r.class_id]),

@@ -85,10 +85,6 @@ export default function NoticeWizard({ onDone }) {
   const [method, setMethod] = useState("generated"); // 'generated' | 'uploaded' | 'link'
   const [publicationArea, setPublicationArea] = useState("club");
   const [publicationAreas, setPublicationAreas] = useState([{ key: "club", title: "Club Notices" }, { key: "open_event", title: "Open Event Notices" }]);
-  // ONB target: null is the main club board; a value is one competition's
-  // dedicated board. Publication areas remain available inside either board.
-  const [noticeTargets, setNoticeTargets] = useState({ main: null, competitions: [] });
-  const [selectedBoardId, setSelectedBoardId] = useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [addingArea, setAddingArea] = useState(false);
   const [fields, setFields] = useState({});
@@ -174,22 +170,9 @@ export default function NoticeWizard({ onDone }) {
         .then((c) => { setCtx(c); if (c.class_id) setClasses([{ id: c.class_id, name: c.class_name }]); })
         .catch(() => {});
     }
-    api.nextNoticeNumber(typeKey, effectiveClubId, publicationArea, selectedBoardId || null).then((r) => setNoticeNumber(r.next)).catch(() => {});
+    api.nextNoticeNumber(typeKey, effectiveClubId, publicationArea).then((r) => setNoticeNumber(r.next)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clubId, role, selectedClubId, typeKey, publicationArea, selectedBoardId]);
-
-  // Load the main club ONB plus every competition ONB owned by this club.
-  useEffect(() => {
-    const effectiveClubId = role === "webmaster" ? selectedClubId : clubId;
-    if (!effectiveClubId) return;
-    if (!api.getNoticeTargets) return; // compatibility with older test clients
-    api.getNoticeTargets(effectiveClubId).then((targets) => {
-      setNoticeTargets(targets || { main: null, competitions: [] });
-      if (selectedBoardId && !(targets?.competitions || []).some((t) => t.id === selectedBoardId)) {
-        setSelectedBoardId("");
-      }
-    }).catch(() => {});
-  }, [clubId, role, selectedClubId, selectedBoardId]);
+  }, [clubId, role, selectedClubId, typeKey, publicationArea]);
 
   // Load link options once per type.
   useEffect(() => {
@@ -295,7 +278,6 @@ export default function NoticeWizard({ onDone }) {
     const payload = {
       notice_type: typeKey,
       publication_area: publicationArea,
-      ...(selectedBoardId ? { board_id: selectedBoardId } : {}),
       title: fields.subject || (typeDef ? typeDef.label : ""),
       notice_number: noticeNumber,
       effective_datetime: effectiveDatetime || null,
@@ -323,7 +305,6 @@ export default function NoticeWizard({ onDone }) {
     const payload = {
       notice_type: typeKey,
       publication_area: publicationArea,
-      ...(selectedBoardId ? { board_id: selectedBoardId } : {}),
       title: fields.title || (typeDef ? typeDef.label : ""),
       notice_number: noticeNumber,
       effective_datetime: effectiveDatetime || null,
@@ -353,7 +334,6 @@ export default function NoticeWizard({ onDone }) {
     const n = await api.uploadNotice({
       notice_type: typeKey,
       publication_area: publicationArea,
-      ...(selectedBoardId ? { board_id: selectedBoardId } : {}),
       title: fields.title || (uploadFile.name || "Uploaded notice"),
       notice_number: noticeNumber,
       series_id: fields.series_id || (ctx?.series_id || null),
@@ -375,9 +355,7 @@ export default function NoticeWizard({ onDone }) {
   const previewRecord = useMemo(() => {
     if (!typeDef || !noticeId) return null;
     const areaTitle = publicationAreas.find((a) => a.key === publicationArea)?.title || publicationArea;
-    const targetTitle = selectedBoardId
-      ? (noticeTargets.competitions || []).find((target) => target.id === selectedBoardId)?.title
-      : (noticeTargets.main?.title || "Main club Official Notice Board");
+    const targetTitle = "Main club Official Notice Board";
     // Build what the public ONB would show for this generated notice.
     if (method === "generated") {
       return {
@@ -427,7 +405,7 @@ export default function NoticeWizard({ onDone }) {
       file_size: uploadFile?.size || null,
       body: [],
     };
-  }, [typeDef, typeKey, noticeId, method, fields, noticeNumber, effectiveDatetime, publicationDatetime, publicationArea, publicationAreas, ctx, draftVersion, uploadFile, noticeTargets.competitions, noticeTargets.main?.title, selectedBoardId]);
+  }, [typeDef, typeKey, noticeId, method, fields, noticeNumber, effectiveDatetime, publicationDatetime, publicationArea, publicationAreas, ctx, draftVersion, uploadFile]);
 
   // Generate the PDF blob for the preview pane and the data URL for publishing.
   useEffect(() => {
@@ -599,20 +577,8 @@ export default function NoticeWizard({ onDone }) {
               </div>
             ))}
             <div className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 space-y-2" data-testid="publication-area-selector">
-              <Label className="font-heading uppercase text-sm">Where should this notice appear?</Label>                  <p className="text-xs text-muted-foreground">Choose the main club ONB or a competition board, then select its publication area.</p>
-              <RadioGroup value={selectedBoardId || "__main__"} onValueChange={(v) => setSelectedBoardId(v === "__main__" ? "" : v)} className="grid gap-2 mb-3" data-testid="notice-board-targets">
-                <label className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${!selectedBoardId ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
-                  <RadioGroupItem value="__main__" id="notice-board-main" />
-                  <span><span className="block font-semibold">{noticeTargets.main?.title || "Main club Official Notice Board"}</span><span className="block text-xs text-muted-foreground">General club notices and publications</span></span>
-                </label>
-                {(noticeTargets.competitions || []).map((target) => (
-                  <label key={target.id} className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${selectedBoardId === target.id ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>
-                    <RadioGroupItem value={target.id} id={`notice-board-${target.id}`} />
-                    <span><span className="block font-semibold">{target.competition_name || target.title}</span><span className="block text-xs text-muted-foreground">{target.competition_type === "championship" ? "Championship" : "Regatta"} · dedicated ONB</span></span>
-                  </label>
-                ))}
-              </RadioGroup>
-              <Label className="font-heading uppercase text-sm">Publication area</Label>
+              <Label className="font-heading uppercase text-sm">Notice area</Label>
+              <p className="text-xs text-muted-foreground">Choose the section in the club Official Notice Board where this notice should appear.</p>
               <RadioGroup value={publicationArea} onValueChange={setPublicationArea} className="grid sm:grid-cols-2 gap-2">
 
                 {publicationAreas.map((area) => <label key={area.key} className={`flex items-center gap-2 rounded-lg border p-3 cursor-pointer ${publicationArea === area.key ? "border-ocean bg-white dark:bg-card" : "border-border"}`}>

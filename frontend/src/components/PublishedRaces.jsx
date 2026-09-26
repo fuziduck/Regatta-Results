@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, scoringModeLabel, SCORING_MODES, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, scoringModeLabel, seriesScoringModes, SCORING_MODES, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { boatProfilePath, raceResultPath } from "@/lib/seo";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { FlagOff } from "lucide-react";
@@ -34,6 +35,7 @@ export default function PublishedRaces({
   const [races, setRaces] = useState([]);
   const [boats, setBoats] = useState({});
   const [classInfo, setClassInfo] = useState(null);
+  const [raceMode, setRaceMode] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -58,8 +60,15 @@ export default function PublishedRaces({
     return () => { active = false; };
   }, [seriesId, classId, clubId]);
 
+  const selectedScoringModes = seriesScoringModes({
+    ...(series || {}), scoring_mode: series?.scoring_mode || scoringMode,
+  });
+  const scoringModes = selectedScoringModes.length ? selectedScoringModes : ["one_design"];
+  const hasRatingDivisions = (classInfo?.divisions || []).filter((d) => (d?.name || "").trim()).length >= 2;
+  const activeMode = raceMode && scoringModes.includes(raceMode) ? raceMode : scoringModes[0];
+  const multiScoring = scoringModes.length > 1 && !hasRatingDivisions;
   // Yardstick handicaps (PY, YTC) show the boat's number; IRC shows the design.
-  const yardstick = !!(SCORING_MODES[scoringMode] || {}).yardstick;
+  const yardstick = !!(SCORING_MODES[activeMode] || {}).yardstick;
 
   const completed = useMemo(() => races.filter((race) => raceStatus(race) === "Completed"), [races]);
   const sorted = useMemo(() => [...completed].sort((a, b) => (a.date < b.date ? 1 : -1)), [completed]);
@@ -96,7 +105,11 @@ export default function PublishedRaces({
     <>
       {sorted.length > 0 && <Accordion type="single" collapsible className="mt-6" data-testid={testId}>
         {sorted.map((race) => {
-          const rows = [...(race.results || [])].sort((a, b) => {
+          const scoringPositions = race.scoring_positions?.[activeMode] || {};
+          const rows = [...(race.results || [])].map((result) => ({
+            ...result,
+            position: scoringPositions[result.boat_id] ?? result.position,
+          })).sort((a, b) => {
             if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
             if (a.code === "FINISHED") return -1;
             if (b.code === "FINISHED") return 1;
@@ -118,6 +131,11 @@ export default function PublishedRaces({
                 </div>
               </AccordionTrigger>
               <AccordionContent>
+                {multiScoring && <div className="mb-3 flex gap-2" role="group" aria-label={`Race ${race.race_number} scoring system`}>
+                  {scoringModes.map((mode) => <button key={mode} type="button" data-testid={`published-race-${race.id}-${mode}`}
+                    className={`inline-flex min-h-11 items-center rounded-md border px-3 text-xs font-semibold ${activeMode === mode ? "border-ocean bg-ocean text-white" : "border-border text-ocean"}`}
+                    onClick={() => setRaceMode(mode)}>{scoringModeLabel(mode)}</button>)}
+                </div>}
                 {race.abandoned ? (
                   <div className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 p-4 text-sm text-red-700 dark:text-red-300 flex items-start gap-2" data-testid={`race-abandoned-${race.id}`}>
                     <FlagOff className="w-4 h-4 shrink-0 mt-0.5" />
@@ -131,28 +149,28 @@ export default function PublishedRaces({
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-left text-muted-foreground border-b">
-                          <th className="py-2 w-10">Pos</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
-                          {scoringMode !== "one_design" && <><th>{yardstick ? scoringModeLabel(scoringMode) : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
+                          <th className="py-2 w-10">Pos{multiScoring ? ` (${scoringModeLabel(activeMode)})` : ""}</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
+                          {activeMode !== "one_design" && <><th>{yardstick ? scoringModeLabel(activeMode) : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((result) => {
                           const boat = boats[result.boat_id] || {};
-                          const rating = boatRating(scoringMode, boat);
+                          const rating = boatRating(activeMode, boat);
                           return (
                             <tr key={result.boat_id} className="border-b last:border-0">
-                              <td className="py-2 font-heading text-base">{result.code === "FINISHED" ? result.position : "–"}</td>
+                              <td className="py-2 font-heading text-base">{result.code === "FINISHED" ? (scoringPositions[result.boat_id] ?? result.position) : "–"}</td>
                               <td className={shouldWrapBoatName(boat.name) ? "max-w-52" : ""}>
-                                <span className={`font-semibold ${shouldWrapBoatName(boat.name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"}`}>{wrapBoatName(boat.name)}</span>{" "}
-                                <span className="font-mono text-xs text-muted-foreground">{boat.sail_no}</span>
+                                <Link to={boatProfilePath(boat.fleet_id || result.boat_id, boat.name)} className={`font-semibold ${shouldWrapBoatName(boat.name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"}`}>{wrapBoatName(boat.name || "Unknown boat")}</Link>{" "}
+                                <span className="font-mono text-xs text-muted-foreground">{boat.sail_no || "—"}</span>
                               </td>
                               <td className="text-muted-foreground whitespace-nowrap">{boat.home_club || "—"}</td>
-                              <td className="text-muted-foreground">{boat.helm}</td>
+                              <td className="text-muted-foreground">{boat.helm || "—"}</td>
                               <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[result.code] || ""} text-[10px]`}>{result.code}</Badge></td>
-                              {scoringMode !== "one_design" && <>
+                              {activeMode !== "one_design" && <>
                                 <td className="text-muted-foreground">{yardstick ? (rating ? Math.round(rating) : "—") : (boat.boat_type || "—")}</td>
                                 <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsedSecondsOf(result.finish_time, race)) : "—"}</td>
-                                <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(result.finish_time, race, rating, scoringMode)) : "—"}</td>
+                                <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(result.finish_time, race, rating, activeMode)) : "—"}</td>
                               </>}
                             </tr>
                           );
@@ -188,7 +206,7 @@ export default function PublishedRaces({
                 <tr key={`${row.number}-${row.race?.id || row.label}`} className={index % 2 ? "bg-muted" : "bg-card"} data-testid={`schedule-row-${row.number}`}>
                   <td className="px-3 py-2 font-heading">
                     {row.status === "Completed" && row.race && clubSlug ? (
-                      <Link to={`/club/${clubSlug}/race/${row.race.id}`} className="text-ocean hover:underline">{row.label}</Link>
+                      <Link to={raceResultPath(clubSlug, row.race.id, `${classInfo?.name || "Sailing"} ${series?.name || "Series"} race ${row.number} ${series?.year || ""}`)} className="text-ocean hover:underline">{row.label}</Link>
                     ) : row.label}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">{row.date ? fmtDate(row.date) : "To be confirmed"}</td>
@@ -196,7 +214,7 @@ export default function PublishedRaces({
                   <td className="px-3 py-2"><Badge variant="outline" className={STATUS_CLASS[row.status]}>{row.status}</Badge></td>
                   <td className="px-3 py-2">
                     {row.status === "Completed" && row.race && clubSlug ? (
-                      <Link to={`/club/${clubSlug}/race/${row.race.id}`} className="font-semibold text-ocean hover:underline">View Results</Link>
+                      <Link to={raceResultPath(clubSlug, row.race.id, `${classInfo?.name || "Sailing"} ${series?.name || "Series"} race ${row.number} ${series?.year || ""}`)} className="font-semibold text-ocean hover:underline">View Results</Link>
                     ) : <span className="text-xs text-muted-foreground">Results not yet available</span>}
                   </td>
                 </tr>

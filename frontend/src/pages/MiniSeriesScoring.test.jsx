@@ -51,8 +51,10 @@ jest.mock("@/components/ui/select", () => {
 jest.mock("sonner", () => ({ toast: { error: jest.fn(), success: jest.fn(), info: jest.fn() } }));
 
 import Officer, { MiniSeriesBatchEntry } from "./Officer";
+import { UNDO_WINDOW_MS, setUndoWindowMs } from "@/hooks/use-delete-with-undo";
 
 const mockApi = require("@/lib/api").api;
+const mockToast = require("sonner").toast;
 
 let container;
 let root;
@@ -114,6 +116,8 @@ afterEach(async () => {
   }
   document.body.innerHTML = "";
   Object.values(mockApi).forEach((fn) => fn.mockClear());
+  Object.values(mockToast).forEach((fn) => fn.mockClear());
+  setUndoWindowMs(UNDO_WINDOW_MS);
 });
 
 describe("Mini series scoring page", () => {
@@ -427,23 +431,72 @@ describe("Mini series scoring page", () => {
 });
 
 // Keeps the Officer import exercised (it is the module that exports the page).
-  it("deletes a race from the mini series after confirmation", async () => {
-    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+// Deleting needs a deliberate confirmation, and the server is only told once
+// the undo window has closed — so it can still be walked back.
+const openDelete = async (label = "2") => {
+  const delBtn = container.querySelector(`[data-testid="delete-race-btn-${label}"]`);
+  expect(delBtn).not.toBeNull();
+  act(() => delBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+};
+
+const clickIn = async (testId) => {
+  const el = document.querySelector(`[data-testid="${testId}"]`);
+  expect(el).not.toBeNull();
+  act(() => el.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+};
+
+  it("asks for confirmation before deleting a race from the mini series", async () => {
+    setUndoWindowMs(0);
     renderPage();
     await act(async () => {});
-    // Each race card has a delete button (the small trash icon).
-    const delBtn = container.querySelector('[data-testid="delete-race-btn-2"]');
-    expect(delBtn).not.toBeNull();
-    act(() => delBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
-    expect(confirmSpy).toHaveBeenCalled();
+    await openDelete();
+
+    // Confirming is a deliberate second step: nothing is gone yet.
+    expect(mockApi.deleteRace).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="confirm-delete-dialog"]')).not.toBeNull();
+
+    await clickIn("confirm-delete-confirm");
+
     expect(mockApi.deleteRace).toHaveBeenCalledTimes(1);
     const [raceId, version] = mockApi.deleteRace.mock.calls[0];
     expect(raceId).toBe("r2");
     expect(version).toBe(1);
-    // The page refreshes the group after deletion.
+    // The page refreshes the group after the delete lands.
     expect(mockApi.getRaces).toHaveBeenCalled();
-    confirmSpy.mockRestore();
+  });
+
+  it("keeps the race when the confirmation is cancelled", async () => {
+    renderPage();
+    await act(async () => {});
+    await openDelete();
+    await clickIn("confirm-delete-cancel");
+
+    expect(mockApi.deleteRace).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="delete-race-btn-2"]')).not.toBeNull();
+  });
+
+  it("hides the race at once but only deletes it after the undo window", async () => {
+    setUndoWindowMs(5000);
+    renderPage();
+    await act(async () => {});
+    await openDelete();
+    await clickIn("confirm-delete-confirm");
+
+    // Gone from the page immediately...
+    expect(container.querySelector('[data-testid="delete-race-btn-2"]')).toBeNull();
+    // ...but the server has not been told.
+    expect(mockApi.deleteRace).not.toHaveBeenCalled();
+
+    // The toast the officer sees carries the undo action.
+    const undo = mockToast.success.mock.calls.map(([, opts]) => opts?.action).find((a) => a?.label === "Undo");
+    expect(undo).toBeTruthy();
+    act(() => { undo.onClick(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
+    expect(mockApi.deleteRace).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="delete-race-btn-2"]')).not.toBeNull();
   });
 
 describe("Officer module", () => {

@@ -24,6 +24,7 @@ describe("competition policy", () => {
   test("standalone legacy series and routes retain safe defaults", () => {
     expect(competitionType({})).toBe("championship");
     expect(competitionPath({ competition_type: "regatta", id: "r1" }, "club")).toBe("/club/club/regatta/r1");
+    expect(competitionPath({ competition_type: "regatta", id: "r1", name: "Summer Regatta", year: 2026 }, "club")).toBe("/club/club/regatta/r1/summer-regatta-2026");
     expect(competitionPath({ competition_type: "championship", id: "c1" }, "club")).toBe("/club/club/competition/c1");
   });
 

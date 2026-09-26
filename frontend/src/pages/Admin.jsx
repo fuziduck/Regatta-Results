@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { Fragment, useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
@@ -9,8 +9,8 @@ import ConsoleNav from "@/components/ConsoleNav";
 import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
-import { SERIES_TYPES } from "@/lib/competition";
-import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel, classDivisions, boatDivision } from "@/lib/helpers";
+import { classGroupKey, normalizeSeriesType } from "@/lib/competition";
+import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel, classDivisions, seriesScoringModes } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
 import { ElapsedInput } from "@/components/ElapsedInput";
@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { useDeleteWithUndo } from "@/hooks/use-delete-with-undo";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -28,12 +29,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Copy } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
 
   const load = useCallback(() => {
     if (!clubId) return;
@@ -62,22 +64,26 @@ function ClubIconField({ clubId }) {
     }
   };
 
-  const remove = async () => {
-    setBusy(true);
-    try {
-      await api.deleteClubIcon(clubId);
-      toast.success("Club icon removed — back to the letter");
-      load();
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Could not remove icon");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const remove = () => askDelete({
+    key: "club-icon",
+    title: "Remove the club icon?",
+    description: "The club goes back to showing its letter wherever the badge appears.",
+    confirmLabel: "Remove icon",
+    successMessage: "Club icon removed",
+    undoneMessage: "Club icon kept",
+    errorMessage: "Could not remove icon",
+    commit: async () => { await api.deleteClubIcon(clubId); load(); },
+    undo: load,
+  });
+
+  // Hidden the instant the officer confirms, so the delete reads as done while
+  // the undo window is still open.
+  const shownIcon = isPending("club-icon") ? null : icon;
 
   return (
     <div className="rounded-2xl border border-border bg-card p-5 mb-6 flex flex-wrap items-center gap-4">
-      <ClubBadge club={{ icon, name: "Club" }} size="w-16 h-16" textSize="text-3xl" />
+      {dialog}
+      <ClubBadge club={{ icon: shownIcon, name: "Club" }} size="w-16 h-16" textSize="text-3xl" />
       <div className="min-w-0 flex-1">
         <div className="font-heading text-lg uppercase tracking-tight">Club icon</div>
       </div>
@@ -87,7 +93,7 @@ function ClubIconField({ clubId }) {
           onClick={() => fileRef.current?.click()} data-testid="club-icon-upload">
           <Upload className="w-4 h-4" /> {icon ? "Change" : "Upload"} icon
         </Button>
-        {icon && (
+        {shownIcon && (
           <Button variant="ghost" className="text-destructive" disabled={busy} onClick={remove} data-testid="club-icon-remove">
             <ImageOff className="w-4 h-4" /> Remove
           </Button>
@@ -105,6 +111,7 @@ function ClubIconField({ clubId }) {
 function ClassIconUpload({ classData, onUpdated }) {
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
   const pick = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -125,26 +132,27 @@ function ClassIconUpload({ classData, onUpdated }) {
       e.target.value = "";
     }
   };
-  const remove = async () => {
-    setBusy(true);
-    try {
-      const updated = await api.deleteClassIcon(classData.id);
-      toast.success("Boat icon removed");
-      onUpdated?.(updated);
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Could not remove boat icon");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const remove = () => askDelete({
+    key: classData.id,
+    title: `Remove the icon for ${classData.name}?`,
+    description: "The class goes back to the default boat symbol in the results and consoles.",
+    confirmLabel: "Remove icon",
+    successMessage: "Boat icon removed",
+    undoneMessage: "Boat icon kept",
+    errorMessage: "Could not remove boat icon",
+    commit: async () => { await api.deleteClassIcon(classData.id); onUpdated?.(); },
+    undo: () => onUpdated?.(),
+  });
+  const shownIcon = isPending(classData.id) ? null : classData.icon;
   return (
     <div className="flex items-center justify-end gap-2">
-      {classData.icon ? <img src={classData.icon} alt="" className="h-9 w-9 rounded-lg object-cover bg-white" /> : <Sailboat className="h-5 w-5 text-ocean/50" />}
+      {dialog}
+      {shownIcon ? <img src={shownIcon} alt="" className="h-9 w-9 rounded-lg object-cover bg-white" /> : <Sailboat className="h-5 w-5 text-ocean/50" />}
       <input ref={fileRef} type="file" accept="image/*" className="hidden" data-testid={`class-icon-file-${classData.name}`} onChange={pick} />
       <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={busy} onClick={() => fileRef.current?.click()} data-testid={`class-icon-upload-${classData.name}`}>
         <Upload className="h-3.5 w-3.5" /> {busy ? "…" : classData.icon ? "Change" : "Upload"}
       </Button>
-      {classData.icon && <Button size="sm" variant="ghost" className="h-8 text-destructive" disabled={busy} onClick={remove} data-testid={`class-icon-remove-${classData.name}`}><ImageOff className="h-3.5 w-3.5" /></Button>}
+      {shownIcon && <Button size="sm" variant="ghost" className="h-8 text-destructive" disabled={busy} onClick={remove} data-testid={`class-icon-remove-${classData.name}`}><ImageOff className="h-3.5 w-3.5" /></Button>}
     </div>
   );
 }
@@ -289,6 +297,7 @@ function ClassesTab({ classes, reload, clubId }) {
   const [form, setForm] = useState(BLANK);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
 
   const save = async () => {
     if (!form.name) return toast.error("Name required");
@@ -297,13 +306,24 @@ function ClassesTab({ classes, reload, clubId }) {
     if (editing) await api.updateClass(editing, body); else await api.createClass({ ...body, club_id: clubId });
     toast.success("Saved"); setOpen(false); setEditing(null); setForm(BLANK); reload();
   };
-  const del = async (id) => { await api.deleteClass(id); toast.success("Deleted"); reload(); };
+  const del = (c) => askDelete({
+    key: c.id,
+    title: `Delete the class “${c.name}”?`,
+    description: "Its boats stay in the fleet but lose their class. Series and regattas built on this class are not removed.",
+    confirmLabel: "Delete class",
+    successMessage: "Class deleted",
+    undoneMessage: "Class kept",
+    errorMessage: "Could not delete the class",
+    commit: async () => { await api.deleteClass(c.id); reload(); },
+    undo: reload,
+  });
   const setDivision = (i, patch) => setForm((f) => ({
     ...f, divisions: (f.divisions || []).map((d, j) => (j === i ? { ...d, ...patch } : d)),
   }));
 
   return (
     <div>
+      {dialog}
       <div className="flex justify-between items-center mb-4">
         <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm(BLANK); } }}>
@@ -351,7 +371,7 @@ function ClassesTab({ classes, reload, clubId }) {
       </div>
       <div className="rounded-xl border overflow-hidden">
         <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Scoring</TableHead><TableHead>Boat icon</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-          <TableBody>{classes.map((c) => (
+          <TableBody>{classes.filter((c) => !isPending(c.id)).map((c) => (
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
@@ -361,7 +381,7 @@ function ClassesTab({ classes, reload, clubId }) {
               <TableCell><ClassIconUpload classData={c} onUpdated={reload} /></TableCell>
               <TableCell className="text-right">
                 <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design", divisions: (c.divisions || []).map((d) => ({ name: d.name || "", scoring_mode: d.scoring_mode || "one_design" })) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c.id)}><Trash2 className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-class-${c.name}`} onClick={() => del(c)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
           </TableBody></Table>
@@ -372,11 +392,21 @@ function ClassesTab({ classes, reload, clubId }) {
 
 /* ---------------- Boats ---------------- */
 function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
   const [classFilter, setClassFilter] = useState("all");
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
-  const { seasonYears } = useSeasonYears(clubId);
+  const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
   const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
+  const copyYearChoices = withSeasonYears([...YEAR_OPTIONS, yearFilter - 1, yearFilter, yearFilter + 1], seasonYears);
   const [boats, setBoats] = useState([]);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyFromYear, setCopyFromYear] = useState(CURRENT_YEAR - 1);
+  const [copyToYear, setCopyToYear] = useState(CURRENT_YEAR);
+  const [copySourceBoats, setCopySourceBoats] = useState([]);
+  const [copyTargetBoats, setCopyTargetBoats] = useState([]);
+  const [copySelection, setCopySelection] = useState([]);
+  const [copyLoading, setCopyLoading] = useState(false);
+  const [copySaving, setCopySaving] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const blank = { name: "", sail_no: "", class_id: "", home_club: clubName || "", helm: "", year: CURRENT_YEAR, active: true, tcc: "", py: "", ytc: "", boat_type: "", division: "" };
@@ -401,6 +431,40 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
   }, [classFilter, yearFilter, clubId]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setClassFilter("all"); setYearFilter(CURRENT_YEAR); }, [clubId]);
+
+  useEffect(() => {
+    if (!copyOpen) return undefined;
+    if (copyFromYear === copyToYear) {
+      setCopySourceBoats([]);
+      setCopyTargetBoats([]);
+      setCopySelection([]);
+      setCopyLoading(false);
+      return undefined;
+    }
+    let current = true;
+    setCopyLoading(true);
+    setCopySourceBoats([]);
+    setCopyTargetBoats([]);
+    setCopySelection([]);
+    const params = (year) => ({ year, ...(clubId ? { club_id: clubId } : {}) });
+    Promise.all([api.getBoats(params(copyFromYear)), api.getBoats(params(copyToYear))])
+      .then(([source, target]) => {
+        if (!current) return;
+        const sourceBoats = source || [];
+        const targetBoats = target || [];
+        const targetKeys = new Set(targetBoats.map(boatCopyKey));
+        setCopySourceBoats(sourceBoats);
+        setCopyTargetBoats(targetBoats);
+        setCopySelection(sourceBoats
+          .filter((boat) => classes.some((cls) => cls.id === boat.class_id) && !targetKeys.has(boatCopyKey(boat)))
+          .map((boat) => boat.id));
+      })
+      .catch((error) => {
+        if (current) toast.error(error.response?.data?.detail || "Could not load boats for these seasons");
+      })
+      .finally(() => { if (current) setCopyLoading(false); });
+    return () => { current = false; };
+  }, [copyOpen, copyFromYear, copyToYear, clubId, classes]);
 
   // Debounced fleet lookup while the dialog is open: show whether the typed
   // boat already exists elsewhere so the admin can link (or keep separate).
@@ -473,17 +537,76 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
     }
     toast.success("Saved"); setOpen(false); setEditing(null); setForm(blank); setFleetMatches([]); setFleetChoice("auto"); setFleetTarget(""); load();
   };
-  const del = async (id) => { await api.deleteBoat(id, boats.find((b) => b.id === id)?.version); toast.success("Deleted"); load(); };
-  const cname = (id) => classes.find((c) => c.id === id)?.name || "—";
-  // Fallback for boats created before home_club existed: derive from the class's club.
-  const clubOf = (b) => {
-    const cl = classes.find((c) => c.id === b.class_id);
-    return clubs.find((c) => c.id === cl?.club_id)?.name || "—";
+  const targetBoatKeys = new Set(copyTargetBoats.map(boatCopyKey));
+  const copyCandidates = copySourceBoats.map((boat) => ({
+    boat,
+    unavailable: !classes.some((cls) => cls.id === boat.class_id)
+      ? "Class no longer exists"
+      : targetBoatKeys.has(boatCopyKey(boat)) ? "Already in target season" : "",
+  }));
+  const selectedCopyBoats = copySourceBoats.filter((boat) => copySelection.includes(boat.id)
+    && !targetBoatKeys.has(boatCopyKey(boat))
+    && classes.some((cls) => cls.id === boat.class_id));
+
+  const copyBoats = async () => {
+    if (!selectedCopyBoats.length || copySaving || copyFromYear === copyToYear) return;
+    setCopySaving(true);
+    let copied = 0;
+    const failures = [];
+    for (const boat of selectedCopyBoats) {
+      try {
+        await api.createBoat({
+          name: boat.name,
+          sail_no: boat.sail_no,
+          class_id: boat.class_id,
+          helm: boat.helm || "",
+          year: copyToYear,
+          // Active is season-specific. A copied boat is being registered for
+          // the destination season, even when its source-season record is now inactive.
+          active: true,
+          tcc: boat.tcc ?? null,
+          py: boat.py ?? null,
+          ytc: boat.ytc ?? null,
+          division: boat.division || "",
+          boat_type: boat.boat_type || "",
+          home_club: boat.home_club || "",
+          // Keep the existing shared identity while creating a distinct
+          // season-specific record. The source record itself is never edited.
+          fleet_id: boat.fleet_id || boat.id,
+        });
+        copied += 1;
+      } catch (error) {
+        const detail = error.response?.data?.detail;
+        failures.push(`${boat.name}: ${typeof detail === "string" ? detail : detail?.message || "could not copy"}`);
+      }
+    }
+    setCopySaving(false);
+    if (copied) {
+      toast.success(`Copied ${copied} boat${copied === 1 ? "" : "s"} into ${copyToYear}`);
+      setCopyOpen(false);
+      setYearFilter(copyToYear);
+      reloadYears();
+    }
+    if (failures.length) {
+      toast.error(`${failures.length} boat${failures.length === 1 ? "" : "s"} could not be copied: ${failures.slice(0, 2).join("; ")}`);
+    }
   };
-  const showClub = (b) => b.home_club || clubOf(b);
+
+  const del = (b) => askDelete({
+    key: b.id,
+    title: `Delete the boat “${b.name}”?`,
+    description: "Its recorded results are removed with it. Series and regattas are rescored without it.",
+    confirmLabel: "Delete boat",
+    successMessage: "Boat deleted",
+    undoneMessage: "Boat kept",
+    errorMessage: "Could not delete the boat",
+    commit: async () => { await api.deleteBoat(b.id, b.version); load(); },
+    undo: load,
+  });
 
   return (
     <div>
+      {dialog}
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
         <div className="flex items-center gap-2">
           <Label className="text-sm">Class</Label>
@@ -499,6 +622,63 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
             <SelectContent>{yearChoices.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
           </Select>
         </div>
+        <Dialog open={copyOpen} onOpenChange={(value) => {
+          setCopyOpen(value);
+          if (value) { setCopyToYear(yearFilter); setCopyFromYear(yearFilter - 1); }
+        }}>
+          <DialogTrigger asChild>
+            <Button variant="outline" className="gap-2" data-testid="copy-boats-open"><Copy className="w-4 h-4" /> Copy boats</Button>
+          </DialogTrigger>
+          <DialogContent className="max-h-[85vh] overflow-y-auto" data-testid="copy-boats-dialog">
+            <DialogHeader>
+              <DialogTitle className="font-heading uppercase">Copy boats between seasons</DialogTitle>
+              <p className="text-sm text-muted-foreground">Create new, active boat records for another season using existing details. Race results and series memberships are not copied; shared boat identities are preserved.</p>
+            </DialogHeader>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5"><Label>Copy from</Label>
+                <Select value={String(copyFromYear)} onValueChange={(value) => setCopyFromYear(Number(value))}>
+                  <SelectTrigger data-testid="copy-boats-from-year"><SelectValue /></SelectTrigger>
+                  <SelectContent>{copyYearChoices.map((year) => <SelectItem key={year} value={String(year)}>{year}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5"><Label>Copy into</Label>
+                <Select value={String(copyToYear)} onValueChange={(value) => setCopyToYear(Number(value))}>
+                  <SelectTrigger data-testid="copy-boats-to-year"><SelectValue /></SelectTrigger>
+                  <SelectContent>{copyYearChoices.map((year) => <SelectItem key={year} value={String(year)}>{year}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            </div>
+            {copyFromYear === copyToYear ? (
+              <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">Choose two different seasons.</p>
+            ) : copyLoading ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">Loading boats…</p>
+            ) : copySourceBoats.length === 0 ? (
+              <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No boats found in {copyFromYear}.</p>
+            ) : (
+              <div className="max-h-64 overflow-y-auto rounded-lg border border-border" data-testid="copy-boats-list">
+                {copyCandidates.map(({ boat, unavailable }) => (
+                  <label key={boat.id} className="flex items-center gap-3 border-b border-border p-3 last:border-0">
+                    <input type="checkbox" className="h-4 w-4 accent-ocean" data-testid={`copy-boat-checkbox-${boat.id}`}
+                      checked={copySelection.includes(boat.id)} disabled={!!unavailable || copySaving}
+                      onChange={(event) => setCopySelection((selected) => event.target.checked
+                        ? [...selected, boat.id] : selected.filter((id) => id !== boat.id))} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">{boat.name} <span className="font-mono text-xs text-muted-foreground">#{boat.sail_no}</span></span>
+                      <span className="block truncate text-xs text-muted-foreground">{classes.find((cls) => cls.id === boat.class_id)?.name || "Unknown class"}{boat.helm ? ` · ${boat.helm}` : ""}</span>
+                    </span>
+                    {unavailable && <span className="shrink-0 text-xs text-muted-foreground">{unavailable}</span>}
+                  </label>
+                ))}
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCopyOpen(false)} disabled={copySaving}>Cancel</Button>
+              <Button onClick={copyBoats} disabled={copyLoading || copySaving || !selectedCopyBoats.length || copyFromYear === copyToYear} data-testid="copy-boats-submit" className="gap-2 bg-ocean hover:bg-ocean-dark">
+                <Copy className="w-4 h-4" /> {copySaving ? "Copying…" : `Copy ${selectedCopyBoats.length} boat${selectedCopyBoats.length === 1 ? "" : "s"}`}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm(blank); } }}>
           <DialogTrigger asChild><Button data-testid="add-boat-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add boat</Button></DialogTrigger>
           <DialogContent>
@@ -602,9 +782,9 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
           </DialogContent>
         </Dialog>
       </div>
-      <div className="rounded-xl border overflow-hidden overflow-x-auto">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Class</TableHead><TableHead>Division</TableHead><TableHead>Club</TableHead><TableHead>Helm</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>PY</TableHead><TableHead>YTC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-          <TableBody>{boats.map((b) => (
+      <div className="rounded-xl border overflow-hidden overflow-x-auto [&_th]:h-8 [&_td]:py-1 [&_td_button]:h-7 [&_td_button]:w-7">
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Sail No.</TableHead><TableHead>Boat</TableHead><TableHead>Type</TableHead><TableHead>TCC</TableHead><TableHead>PY</TableHead><TableHead>YTC</TableHead><TableHead>Active</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+          <TableBody>{boats.filter((b) => !isPending(b.id)).map((b) => (
             <TableRow key={b.id} data-testid={`boat-row-${b.sail_no}`}>
               <TableCell className="font-mono font-bold">{b.sail_no}</TableCell>
               <TableCell className="font-semibold">
@@ -613,17 +793,6 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
                   <Link2 title="Shares one boat identity with records at other clubs/classes" className="w-3.5 h-3.5 inline ml-1.5 text-ocean dark:text-ocean-light" data-testid={`linked-${b.sail_no}`} />
                 )}
               </TableCell>
-              <TableCell>{cname(b.class_id)}</TableCell>
-              <TableCell className="text-muted-foreground">{(() => {
-                const divs = classDivisions(classes.find((c) => c.id === b.class_id));
-                if (!divs.length) return "—";
-                // An unassigned boat is placed by the certificate she holds —
-                // the same rule the scoring uses (see boatDivision).
-                const name = boatDivision(b, divs);
-                return <span title={b.division ? "Set on this boat" : "Placed by her rating certificate"}>{name}</span>;
-              })()}</TableCell>
-              <TableCell className="text-muted-foreground">{showClub(b)}</TableCell>
-              <TableCell>{b.helm}</TableCell>
               <TableCell className="text-muted-foreground">{b.boat_type || "—"}</TableCell>
               <TableCell className="font-mono">{b.tcc ? b.tcc.toFixed(3) : "—"}</TableCell>
               <TableCell className="font-mono">{b.py ? Math.round(b.py) : "—"}</TableCell>
@@ -631,10 +800,10 @@ function BoatsTab({ classes, clubs, clubId, clubName = "" }) {
               <TableCell>{b.active ? <Badge className="bg-emerald-100 text-emerald-800">Yes</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
               <TableCell className="text-right">
                 <Button size="icon" variant="ghost" onClick={() => { setEditing(b.id); setForm({ name: b.name, sail_no: b.sail_no, class_id: b.class_id, home_club: b.home_club || clubName || "", helm: b.helm, year: b.year, active: b.active, tcc: b.tcc ?? "", py: b.py ?? "", ytc: b.ytc ?? "", boat_type: b.boat_type ?? "", division: b.division || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b.id)}><Trash2 className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-boat-${b.sail_no}`} onClick={() => del(b)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>))}
-            {!boats.length && <TableRow><TableCell colSpan={12} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
+            {!boats.length && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">No boats yet.</TableCell></TableRow>}
           </TableBody></Table>
       </div>
     </div>
@@ -661,10 +830,19 @@ function useSeasonYears(clubId) {
 const withSeasonYears = (base, seasonYears) =>
   [...new Set([...base, ...seasonYears])].sort((a, b) => b - a);
 
+const boatCopyKey = (boat) => [boat.class_id, boat.sail_no, boat.name]
+  .map((value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, ""))
+  .join("|");
+
 // Regattas: racing occasions that group series across classes. A regatta
 // holds no races or results itself — series opt in via their regatta_id,
 // and the regatta card/page derives classes and race counts from them.
-function RegattasTab({ clubId }) {
+function RegattasTab({ clubId, classes = [] }) {
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
+  // Which competition's series panel is open. The series themselves are the
+  // same records the championship tabs show — here they are grouped under the
+  // competition that owns their category.
+  const [expandedRegatta, setExpandedRegatta] = useState(null);
   const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
   const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
   const yearChoices = withSeasonYears(YEAR_OPTIONS, seasonYears);
@@ -706,16 +884,17 @@ function RegattasTab({ clubId }) {
     }
   };
 
-  const del = async (r) => {
-    if (!window.confirm(`Delete the regatta “${r.name}”? Its series stay intact and simply become standalone series again.`)) return;
-    try {
-      await api.deleteRegatta(r.id);
-      toast.success("Regatta deleted — series unlinked");
-      load();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Could not delete regatta");
-    }
-  };
+  const del = (r) => askDelete({
+    key: r.id,
+    title: `Delete the regatta “${r.name}”?`,
+    description: "Its series stay intact and simply become standalone series again.",
+    confirmLabel: "Delete regatta",
+    successMessage: "Regatta deleted — series unlinked",
+    undoneMessage: "Regatta kept",
+    errorMessage: "Could not delete regatta",
+    commit: async () => { await api.deleteRegatta(r.id); load(); },
+    undo: load,
+  });
 
   const pickThumb = async (e, regatta) => {
     const file = e.target.files?.[0];
@@ -740,6 +919,7 @@ function RegattasTab({ clubId }) {
 
   return (
     <div>
+      {dialog}
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
         <div className="flex items-center gap-2">
           <Label className="text-sm">Year</Label>
@@ -803,11 +983,12 @@ function RegattasTab({ clubId }) {
           </DialogContent>
         </Dialog>
       </div>
-      <p className="text-sm text-muted-foreground mb-4">A competition groups series across classes — either a regatta (a specific racing occasion) or a championship (a competition over a period). Add the club's series to it from the Series tab; standalone series remain visible there and in Historic Results.</p>
+      <p className="text-sm text-muted-foreground mb-4">A competition groups series across classes — either a regatta (a specific racing occasion) or a championship (a competition over a period). Open a competition's row to add its series. Series that belong to no competition are set up in the Championship and Club Championship tabs.</p>
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
         <Table><TableHeader><TableRow className="bg-muted"><TableHead>Photo</TableHead><TableHead>Competition</TableHead><TableHead>Type</TableHead><TableHead>Year</TableHead><TableHead>Dates</TableHead><TableHead>Host</TableHead><TableHead>Status</TableHead><TableHead>Series</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-          <TableBody>{regattas.map((r) => (
-            <TableRow key={r.id} data-testid={`regatta-row-${r.name}`}>
+          <TableBody>{regattas.filter((r) => !isPending(r.id)).map((r) => (
+            <Fragment key={r.id}>
+            <TableRow data-testid={`regatta-row-${r.name}`}>
               <TableCell>
                 <div className="flex items-center gap-2">
                   <div className="w-16 h-10 shrink-0 overflow-hidden rounded-md border border-border bg-ocean/10 grid place-items-center">
@@ -828,12 +1009,33 @@ function RegattasTab({ clubId }) {
               <TableCell className="text-xs text-muted-foreground">{r.date_label || "—"}</TableCell>
               <TableCell className="text-xs">{r.host_club || "—"}</TableCell>
               <TableCell>{r.status ? <Badge variant={r.status === "Complete" ? "default" : r.status === "Upcoming" ? "outline" : "secondary"}>{r.status}</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
-              <TableCell className="text-xs text-muted-foreground">{r.series?.length || 0} series · {r.class_count || 0} classes · {r.race_count || 0} races</TableCell>
+              <TableCell className="text-xs text-muted-foreground">
+                <button type="button" data-testid={`regatta-series-${r.name}`}
+                  aria-expanded={expandedRegatta === r.id}
+                  onClick={() => setExpandedRegatta((cur) => (cur === r.id ? null : r.id))}
+                  className="-mx-1.5 inline-flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors hover:bg-muted">
+                  <ChevronDown className={`w-3 h-3 transition-transform ${expandedRegatta === r.id ? "" : "-rotate-90"}`} />
+                  {r.series?.length || 0} series · {r.class_count || 0} classes · {r.race_count || 0} races
+                </button>
+              </TableCell>
               <TableCell className="text-right whitespace-nowrap">
                 <Button size="icon" variant="ghost" onClick={() => { setEditing(r.id); setForm({ name: r.name, year: r.year, competition_type: r.competition_type || "regatta", championship_scope: r.championship_scope || "", start_date: r.start_date || "", end_date: r.end_date || "", host_club: r.host_club || "", status: r.status || "", description: r.description || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" className="text-destructive" onClick={() => del(r)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>
+            {expandedRegatta === r.id && (
+              <TableRow data-testid={`regatta-series-row-${r.name}`}>
+                <TableCell colSpan={9} className="bg-muted/30 px-4 py-5">
+                  <div className="mb-3">
+                    <h3 className="font-heading text-sm uppercase tracking-tight">Series in “{r.name}”</h3>
+                    <p className="text-xs text-muted-foreground">Each class races as its own series. These appear on the competition's public page, grouped by class.</p>
+                  </div>
+                  <SeriesTab classes={classes} clubId={clubId} seriesType="regatta" regattaId={r.id}
+                    seriesIds={(r.series || []).map((s) => s.id)} />
+                </TableCell>
+              </TableRow>
+            )}
+            </Fragment>
           ))}
             {!regattas.length && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No competitions for this year yet.</TableCell></TableRow>}
           </TableBody></Table>
@@ -911,12 +1113,17 @@ const todayLocal = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
-function SeriesTab({ classes, clubId }) {
-  // "all" from the start: every load shows all classes, so a series cannot
-  // disappear simply because it belongs to a different fleet. The class
-  // filter remains available for focused editing and scoring work.
+// One bucket of the competition tree per tab. A Championship or Club
+// Championship series stands on its own; anything linked to a named
+// competition belongs to that competition and is set up from the Regattas tab.
+// That is the same split the public results pages use to categorise series.
+function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = null, seriesIds = null }) {
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
+  // Every load shows all classes, so a series cannot disappear simply
+  // because it belongs to a different fleet. The year starts at the current
+  // season; "All years" remains available when admins need the full history.
   const [classFilter, setClassFilter] = useState("all");
-  const [yearFilter, setYearFilter] = useState("all");
+  const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
   const { seasonYears, reload: reloadYears } = useSeasonYears(clubId);
   const yearChoices = ["all", ...withSeasonYears(YEAR_OPTIONS, seasonYears)];
   const [series, setSeries] = useState([]);
@@ -959,9 +1166,7 @@ function SeriesTab({ classes, clubId }) {
     cfg.duty = { ...defaultScoringConfig().duty, ...cfg.duty };
     return cfg;
   };
-  const [regattas, setRegattas] = useState([]);
-  useEffect(() => { api.getRegattas({ ...(clubId ? { club_id: clubId } : {}) }).then(setRegattas).catch(() => {}); }, [clubId]);
-  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", series_type: "championship", discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
+  const blank = () => ({ name: "", class_id: "", year: CURRENT_YEAR, scoring_mode: "one_design", scoring_modes: ["one_design"], series_type: seriesType, discards: 0, included_in_overall: true, order: 0, planned_races: 0, schedule: [], use_a5_3: false, use_finishers: false, mini_series: false, mini_series_groups: [], scoring_config: defaultScoringConfig(), regatta_id: "" });
   const miniGroupScoring = (g) => (g && (g.scoring === "combined" ? "combined" : "additional"));
   const [form, setForm] = useState(blank());
   // When the chosen class fields rating divisions, this series is scored as one
@@ -1009,9 +1214,9 @@ function SeriesTab({ classes, clubId }) {
   };
 
   // Reset filters when the club changes so stale series never bleed across
-  // clubs; the "all" default reapplies immediately via the new value below.
+  // clubs; the current-season default reapplies immediately for the new club.
   useEffect(() => {
-    setClassFilter("all"); setYearFilter("all"); setSeries([]);
+    setClassFilter("all"); setYearFilter(CURRENT_YEAR); setSeries([]);
   }, [clubId]);
   const load = useCallback(() => {
     if (!classFilter) return;
@@ -1019,10 +1224,38 @@ function SeriesTab({ classes, clubId }) {
     if (classFilter !== "all") params.class_id = classFilter;
     api.getSeries(params).then(setSeries);
     // Duplicate scan is club-wide (not filtered) — a duplicate is only visible
-    // as a problem when both rows are seen together.
-    api.getSeriesDuplicates(clubId ? { club_id: clubId } : {}).then(setDuplicates).catch(() => setDuplicates([]));
-  }, [classFilter, yearFilter, clubId]);
+    // as a problem when both rows are seen together. It belongs to the
+    // standalone tabs, not to a single competition's panel.
+    if (!regattaId) api.getSeriesDuplicates(clubId ? { club_id: clubId } : {}).then(setDuplicates).catch(() => setDuplicates([]));
+  }, [classFilter, yearFilter, clubId, regattaId]);
   useEffect(() => { load(); }, [load]);
+
+  // The bucket this tab owns: a competition's own series when scoped to one,
+  // otherwise the standalone series whose stored category matches.
+  //
+  // Membership of a competition comes from its own series list rather than
+  // from comparing regatta_id, because some imported series still carry the id
+  // of a competition document that was later recreated — the API recovers
+  // those, so the ids alone would leave them out.
+  const membership = seriesIds ? new Set(seriesIds) : null;
+  const visibleSeries = series.filter((s) => !isPending(s.id)
+    && (membership ? membership.has(s.id) : !s.regatta_id && normalizeSeriesType(s.series_type) === seriesType));
+  // Grouped by class so each fleet reads as one block, with the class named
+  // once at the top of its group — which is why the table needs no Class
+  // column of its own. Same-named classes share a group, matching how the rest
+  // of the app treats them as one fleet identity.
+  const classGroups = (() => {
+    const groups = new Map();
+    visibleSeries.forEach((s) => {
+      const name = classes.find((c) => c.id === s.class_id)?.name || "Unknown class";
+      const key = classGroupKey(name) || name;
+      if (!groups.has(key)) groups.set(key, { key, name, items: [] });
+      groups.get(key).items.push(s);
+    });
+    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+  })();
+  const bucketLabel = seriesType === "club_championship" ? "Club Championship" : "Championship";
+  const dialogTitle = `${editing ? "Edit" : "Add"} ${regattaId ? "" : `${bucketLabel} `}series`;
 
   const save = async () => {
     if (!form.name || !form.class_id) return toast.error("Name and class required");
@@ -1032,8 +1265,10 @@ function SeriesTab({ classes, clubId }) {
     // source of truth the engine actually reads.
     const convention = cfg.a5_convention;
     const payload = {
-      ...form, regatta_id: form.regatta_id || null,
-      series_type: form.series_type || "championship",
+      ...form, regatta_id: regattaId || null,
+      scoring_modes: seriesScoringModes(form),
+      scoring_mode: seriesScoringModes(form)[0],
+      series_type: form.series_type || seriesType,
       discards: Number(form.discards), order: Number(form.order),
       year: Number(form.year), planned_races: Number(form.planned_races),
       schedule: form.schedule || [],
@@ -1081,7 +1316,17 @@ function SeriesTab({ classes, clubId }) {
     // Race 1 is where the auto-fill starts, so keep the start date with it.
     if (idx === 0 && val) setSchedStart(val);
   };
-  const del = async (id) => { await api.deleteSeries(id, series.find((x) => x.id === id)?.version); toast.success("Deleted"); load(); };
+  const del = (s) => askDelete({
+    key: s.id,
+    title: `Delete the series “${s.name}”?`,
+    description: "Its races, results and snapshots are removed permanently. This cannot be recovered.",
+    confirmLabel: "Delete series",
+    successMessage: "Series deleted",
+    undoneMessage: "Series kept",
+    errorMessage: "Could not delete the series",
+    commit: async () => { await api.deleteSeries(s.id, s.version); load(); },
+    undo: load,
+  });
   const quickSet = async (s, patch) => {
     try { await api.updateSeries(s.id, { ...s, ...patch }, s.version); }
     catch (e) {
@@ -1093,21 +1338,6 @@ function SeriesTab({ classes, clubId }) {
       else toast.error(e.response?.data?.detail || "Could not update series");
     }
     load();
-  };
-  const reclassify = async (s, type) => {
-    const previous = s.series_type || "championship";
-    if (type === previous) return;
-    setSeries((items) => items.map((item) => item.id === s.id ? { ...item, series_type: type } : item));
-    try {
-      const updated = await api.updateSeriesType(s.id, type, s.version);
-      setSeries((items) => items.map((item) => item.id === s.id ? { ...item, ...updated } : item));
-      toast.success(`${s.name} reallocated as ${type === "club_championship" ? "Club Championship" : type === "regatta" ? "Regatta" : "Championship"}`);
-    } catch (e) {
-      setSeries((items) => items.map((item) => item.id === s.id ? { ...item, series_type: previous } : item));
-      if (e.response?.status === 409) toast.error("This series was changed by another user. Reload the series list and try again.");
-      else toast.error(e.response?.data?.detail || "Could not reallocate series");
-      load();
-    }
   };
 
   // Fold one duplicate series into its sibling. Both stay listed until the
@@ -1131,6 +1361,7 @@ function SeriesTab({ classes, clubId }) {
 
   return (
     <div>
+      {dialog}
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
         <div className="flex items-center gap-2">
           <Label className="text-sm">Class</Label>
@@ -1150,58 +1381,28 @@ function SeriesTab({ classes, clubId }) {
           </Select>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || "") }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => { setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || ""), order: series.length + 1, scoring_mode: classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design" }); setSchedStart(todayLocal()); }} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
+          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => { const mode = classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design"; setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || ""), order: series.length + 1, scoring_mode: mode, scoring_modes: [mode] }); setSchedStart(todayLocal()); }} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
           <DialogContent className="max-h-[85vh] overflow-y-auto">
-            <DialogHeader><DialogTitle className="font-heading uppercase">{editing ? "Edit" : "Add"} series</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle className="font-heading uppercase">{dialogTitle}</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Series name</Label><Input data-testid="series-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Early Spring" /></div>
               <div className="space-y-1.5"><Label>Class</Label>
-                <Select value={form.class_id} onValueChange={(v) => setForm({ ...form, class_id: v })}>
+                <Select value={form.class_id} onValueChange={(v) => {
+                  const nextClass = classes.find((item) => item.id === v) || {};
+                  const modes = classDivisions(nextClass).length ? [nextClass.scoring_mode || "one_design"] : seriesScoringModes(form);
+                  setForm({ ...form, class_id: v, scoring_mode: modes[0] || "one_design", scoring_modes: modes });
+                }}>
                   <SelectTrigger data-testid="series-class-input"><SelectValue placeholder="Class" /></SelectTrigger>
                   <SelectContent>{classes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select></div>
-              <div className="space-y-2" data-testid="series-type-field">
-                <div className="flex items-center justify-between gap-2">
-                  <Label>What type of racing is this series?</Label>
-                  <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Required</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" role="radiogroup" aria-label="Series type">
-                  {SERIES_TYPES.map((option) => {
-                    const icons = { championship: <Trophy className="w-4 h-4" />, club_championship: <Building2 className="w-4 h-4" />, regatta: <CalendarDays className="w-4 h-4" /> };
-                    const selected = (form.series_type || "championship") === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        data-testid={`series-type-${option.value}`}
-                        onClick={() => setForm({ ...form, series_type: option.value })}
-                        className={`text-left rounded-xl border p-3 transition-all ${selected
-                          ? "border-ocean bg-ocean/10 text-ocean dark:text-ocean-light ring-2 ring-ocean/20"
-                          : "border-border bg-card hover:border-ocean/50 hover:bg-ocean/5"}`}
-                      >
-                        <span className="flex items-center gap-2 font-semibold text-sm">
-                          <span className={`grid place-items-center w-7 h-7 rounded-lg ${selected ? "bg-ocean text-white" : "bg-muted text-muted-foreground"}`}>{icons[option.value]}</span>
-                          {option.label}
-                        </span>
-                        <span className="block text-[11px] leading-tight text-muted-foreground mt-2">{option.description}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-[11px] text-muted-foreground">Choose the purpose of this series. This does not change scoring; it controls how the results are labelled and grouped. You can optionally link it to a named competition below.</p>
-              </div>
-              <div className="space-y-1.5"><Label>Competition <span className="text-muted-foreground normal-case text-xs">(optional — named regatta or championship)</span></Label>
-                <Select value={form.regatta_id || "__none__"} onValueChange={(v) => setForm({ ...form, regatta_id: v === "__none__" ? "" : v })}>
-                  <SelectTrigger data-testid="series-regatta-input"><SelectValue placeholder="Not part of a competition" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">Not part of a competition</SelectItem>
-                    {regattas.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} · {r.year}{r.competition_type === "championship" ? " (Championship)" : ""}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <p className="text-[11px] text-muted-foreground">Series belonging to a competition appear on its page (per class) instead of the club's championship list.</p>
-              </div>
+              {/* The category used to be a picker in here. It is now decided by
+                  the tab you opened the dialog from, so the two can never
+                  disagree. A competition's series are added from Regattas. */}
+              <p className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground" data-testid="series-bucket-note">
+                {regattaId
+                  ? "This series will be listed under the competition you opened it from, and on that competition's public page."
+                  : `This will be a standalone ${bucketLabel} series — it appears in the ${bucketLabel} tab and in the club's results. To put a series under a named regatta or championship, add it from the Regattas tab.`}
+              </p>
               <div className="space-y-1.5"><Label>Scoring system</Label>
                 {/* A class split into rating divisions decides how its series
                     are scored — one table per division — so the series has no
@@ -1212,19 +1413,32 @@ function SeriesTab({ classes, clubId }) {
                     this series is scored as one table per division automatically.
                   </p>
                 ) : (
-                  <Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}>
-                    <SelectTrigger data-testid="series-scoring-input"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="one_design">One-design (finish order)</SelectItem>
-                      <SelectItem value="irc">IRC (corrected time)</SelectItem>
-                      <SelectItem value="py">PY (Portsmouth Yardstick)</SelectItem>
-                      <SelectItem value="ytc">YTC (RYA Yacht Time Correction)</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="space-y-2" data-testid="series-scoring-input">
+                    <p className="text-xs text-muted-foreground">Select every scoring system this series should publish. Race finish times are entered once and scored into each selected table.</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[["one_design", "One-design"], ["irc", "IRC"], ["py", "PY"], ["ytc", "YTC"]].map(([mode, label]) => {
+                        const selected = seriesScoringModes(form);
+                        return <label key={mode} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
+                          <input type="checkbox" data-testid={`series-scoring-${mode}`} checked={selected.includes(mode)}
+                            onChange={(event) => setForm((current) => {
+                              const modes = seriesScoringModes(current);
+                              const next = event.target.checked
+                                ? [...(modes.filter((item) => item !== "one_design").length
+                                  ? modes.filter((item) => item !== "one_design") : []), mode]
+                                : modes.filter((item) => item !== mode);
+                              if (!next.length) return current;
+                              return { ...current, scoring_modes: next, scoring_mode: next[0] };
+                            })} />
+                          {label}{mode === "one_design" ? " (finish order)" : " (corrected time)"}
+                        </label>;
+                      })}
+                    </div>
+                    {seriesScoringModes(form).length > 1 && <p className="text-xs font-medium text-ocean" data-testid="multi-scoring-note">One set of race results will generate a separate table for each selected system.</p>}
+                  </div>
                 )}
-                {!seriesDivisions.length && form.scoring_mode === "irc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × TCC); boats need a TCC.</p>}
-                {!seriesDivisions.length && form.scoring_mode === "py" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ PY); boats need a PY number.</p>}
-                {!seriesDivisions.length && form.scoring_mode === "ytc" && <p className="text-xs text-muted-foreground">Finishes ordered by corrected time (elapsed × 1000 ÷ YTC); boats need a YTC number.</p>}
+                {!seriesDivisions.length && seriesScoringModes(form).includes("irc") && <p className="text-xs text-muted-foreground">IRC finishes are ordered by corrected time (elapsed × TCC); boats need a TCC.</p>}
+                {!seriesDivisions.length && seriesScoringModes(form).includes("py") && <p className="text-xs text-muted-foreground">PY finishes are ordered by corrected time (elapsed × 1000 ÷ PY); boats need a PY number.</p>}
+                {!seriesDivisions.length && seriesScoringModes(form).includes("ytc") && <p className="text-xs text-muted-foreground">YTC finishes are ordered by corrected time (elapsed × 1000 ÷ YTC); boats need a YTC number.</p>}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5"><Label>Year</Label><Input type="number" min="2000" max="2100" data-testid="series-year-input" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></div>
@@ -1467,7 +1681,7 @@ function SeriesTab({ classes, clubId }) {
       </div>
       {/* Duplicate series: two series sharing class + name + year would split
           the fleet across two standings tables. Offer the merge here. */}
-      {!!duplicates.length && (
+      {!regattaId && !!duplicates.length && (
         <div className="mb-4 rounded-xl border border-amber-400/60 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2" data-testid="series-duplicates-card">
           {duplicates.map((group) => (
             <div key={`${group.class_id}-${group.name}-${group.year}`} className="flex flex-wrap items-center gap-2 text-sm">
@@ -1502,28 +1716,29 @@ function SeriesTab({ classes, clubId }) {
       )}
       <div className="rounded-xl border overflow-hidden">
         <ScrollHintWrap>
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead>Series</TableHead><TableHead>Class</TableHead><TableHead>Type</TableHead><TableHead>Competition</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Mini</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-          <TableBody>{series.map((s) => {
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead className="w-32 max-w-32">Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+          <TableBody>{classGroups.map((group, gi) => (
+            <Fragment key={group.key}>
+            {/* The break between fleets: one tinted row naming the class, so a
+                scan down the table stops at each one. */}
+            <TableRow data-testid={`series-group-${group.name}`}
+              className={`border-border bg-muted hover:bg-muted ${gi > 0 ? "border-t-2" : ""}`}>
+              <TableCell colSpan={10} className="py-1.5">
+                <span className="font-heading text-sm uppercase tracking-tight">{group.name}</span>
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  ({group.items.length} series)
+                </span>
+              </TableCell>
+            </TableRow>
+            {group.items.map((s) => {
             const cfg = scoringConfigFromSeries(s);
             const locked = s.lock_status === "locked" || s.lock_status === "archived";
             return (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
-              <TableCell className="font-heading text-lg uppercase tracking-tight">{s.name}</TableCell>
-              <TableCell className="text-sm">{classes.find((c) => c.id === s.class_id)?.name || "Unknown class"}</TableCell>
-              <TableCell>
-                <Select value={s.series_type || "championship"} onValueChange={(v) => reclassify(s, v)}>
-                  <SelectTrigger className="h-8 w-40" data-testid={`series-type-select-${s.name}`} aria-label={`Reallocate ${s.name}`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SERIES_TYPES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </TableCell>
-              <TableCell>{s.regatta_id ? <Badge className="gap-1 bg-ocean/10 text-ocean border border-ocean/30"><CalendarDays className="w-3 h-3" />{(regattas.find((r) => r.id === s.regatta_id) || {}).name || "Competition"}</Badge> : <Badge variant="outline" className="text-muted-foreground">Standalone series</Badge>}</TableCell>
+              <TableCell className="w-32 max-w-32 font-heading text-lg uppercase tracking-tight whitespace-normal break-words">{s.name}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
-              <TableCell>{s.scoring_mode === "irc" ? <Badge className="bg-indigo-100 text-indigo-800">IRC</Badge> : s.scoring_mode === "py" ? <Badge className="bg-emerald-100 text-emerald-800">PY</Badge> : s.scoring_mode === "ytc" ? <Badge className="bg-cyan-100 text-cyan-800">YTC</Badge> : <Badge variant="outline">One-design</Badge>}</TableCell>
+              <TableCell><div className="flex flex-wrap gap-1">{seriesScoringModes(s).map((mode) => <Badge key={mode} variant="outline">{scoringModeLabel(mode)}</Badge>)}</div></TableCell>
               <TableCell className="font-mono">{s.discards}</TableCell>
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
@@ -1532,15 +1747,14 @@ function SeriesTab({ classes, clubId }) {
                 {cfg.tle?.enabled && <span className="text-amber-700 font-semibold"> · TLE</span>}
                 <span className="text-[10px] block">SCP {cfg.scp.value}{cfg.scp.method === "percent" ? "%" : ""} · ZFP {cfg.zfp.value}{cfg.zfp.method === "percent" ? "%" : ""} · {cfg.discard_policy === "increasing" ? "incr. discards" : `${s.discards} discard${s.discards === 1 ? "" : "s"}`}</span>
               </TableCell>
-              <TableCell>{s.mini_series ? <Badge className="bg-purple-100 text-purple-800">{s.mini_series_groups?.length || 0} mini series</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
               <TableCell>
                 {s.lock_status === "archived" ? <Badge className="bg-slate-700 text-white gap-1"><Archive className="w-3 h-3" /> Archived v{s.lock_version || 1}</Badge>
                   : locked ? <Badge className="bg-emerald-600 text-white gap-1"><ShieldCheck className="w-3 h-3" /> Locked v{s.lock_version || 1}</Badge>
                   : <Badge variant="outline" className="text-muted-foreground">Open</Badge>}
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
-                <Button size="icon" variant="ghost" disabled={locked} title="Boats in this series" data-testid={`series-boats-${s.name}`} onClick={() => setBoatsSeries(s)}><Users className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", series_type: s.series_type || "championship", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setSchedStart((s.schedule || [])[0] || todayLocal()); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                <Button size="sm" variant="outline" disabled={locked} title="Select boats in this series" aria-label={`Select boats for ${s.name}`} className="h-8 gap-1.5 border-ocean/50 px-2 text-xs font-semibold text-ocean hover:bg-ocean hover:text-white" data-testid={`series-boats-${s.name}`} onClick={() => setBoatsSeries(s)}><Users className="w-4 h-4" />Select boats</Button>
+                <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", scoring_modes: seriesScoringModes(s), series_type: s.series_type || "championship", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setSchedStart((s.schedule || [])[0] || todayLocal()); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
                   <>
@@ -1552,11 +1766,13 @@ function SeriesTab({ classes, clubId }) {
                 ) : (
                   <Button size="sm" variant="outline" className="text-emerald-700 border-emerald-500/60 h-8" data-testid={`lock-${s.name}`} onClick={() => { setLockDialog({ mode: "lock", series: s }); setLockReason(""); }}>Lock season</Button>
                 )}
-                <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s.id)}><Trash2 className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" className="text-destructive" data-testid={`delete-series-${s.name}`} onClick={() => del(s)}><Trash2 className="w-4 h-4" /></Button>
               </TableCell>
             </TableRow>
           );})}
-            {!series.length && <TableRow><TableCell colSpan={14} className="text-center text-muted-foreground py-6">No series for this year. Try another year or class.</TableCell></TableRow>}
+            </Fragment>
+          ))}
+            {!classGroups.length && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-6">{regattaId ? "No series in this competition yet — add the first one above." : `No ${bucketLabel.toLowerCase()} series for this year. Try another year or class.`}</TableCell></TableRow>}
           </TableBody></Table>
         </ScrollHintWrap>
       </div>
@@ -1646,15 +1862,19 @@ function SeriesTab({ classes, clubId }) {
 function NoticeManagementTab({ clubId }) {
   const navigate = useNavigate();
   const [notices, setNotices] = useState([]);
-  const [busy, setBusy] = useState(false);
   const [areaName, setAreaName] = useState("");
   const [areas, setAreas] = useState(["Club Notices", "Open Event Notices"]);
+  const { askDelete, isPending, dialog } = useDeleteWithUndo();
   const load = useCallback(() => {
     if (!clubId) return;
     api.getNotices({ club_id: clubId }).then(setNotices).catch(() => setNotices([]));
   }, [clubId]);
+  const loadAreas = useCallback(() => {
+    if (!clubId) return;
+    api.getNoticeAreas(clubId).then((items) => setAreas((items || []).map((item) => item.title))).catch(() => {});
+  }, [clubId]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (clubId) api.getNoticeAreas(clubId).then((items) => setAreas((items || []).map((item) => item.title))).catch(() => {}); }, [clubId]);
+  useEffect(() => { loadAreas(); }, [loadAreas]);
   const addArea = async () => {
     const value = areaName.trim();
     if (!value) return toast.error("Enter a name for the notice area");
@@ -1676,16 +1896,17 @@ function NoticeManagementTab({ clubId }) {
       toast.error(e.response?.data?.detail || "Could not save notice area");
     }
   };
-  const removeArea = async (area) => {
-    if (!window.confirm(`Remove the notice area “${area}” from this club? Existing notices in it remain on the board.`)) return;
-    try {
-      await api.deleteNoticeArea(clubId, area);
-      setAreas(areas.filter((a) => a !== area));
-      toast.success("Notice area removed");
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Could not remove notice area");
-    }
-  };
+  const removeArea = (area) => askDelete({
+    key: `area:${area}`,
+    title: `Remove the notice area “${area}”?`,
+    description: "Existing notices in it remain on the board and keep their place.",
+    confirmLabel: "Remove area",
+    successMessage: "Notice area removed",
+    undoneMessage: "Notice area kept",
+    errorMessage: "Could not remove notice area",
+    commit: async () => { await api.deleteNoticeArea(clubId, area); loadAreas(); },
+    undo: loadAreas,
+  });
   const edit = async (notice) => {
     const title = window.prompt("Correct notice title", notice.title || "");
     if (title === null) return;
@@ -1697,28 +1918,27 @@ function NoticeManagementTab({ clubId }) {
       toast.error(e.response?.data?.detail || "Could not edit notice");
     }
   };
-  const remove = async (notice) => {
-    if (!window.confirm(`Remove “${notice.title}” from the Official Notice Board? This cannot be undone.`)) return;
-    setBusy(true);
-    try {
-      await api.deleteNotice(notice.id, notice.version);
-      toast.success("Notice removed from the Official Notice Board");
-      load();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Could not remove notice");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const remove = (notice) => askDelete({
+    key: notice.id,
+    title: `Remove “${notice.title}” from the Official Notice Board?`,
+    description: "The notice disappears from the public board. Competitors who have already seen it are not told.",
+    confirmLabel: "Remove notice",
+    successMessage: "Notice removed from the Official Notice Board",
+    undoneMessage: "Notice kept",
+    errorMessage: "Could not remove notice",
+    commit: async () => { await api.deleteNotice(notice.id, notice.version); load(); },
+    undo: load,
+  });
   return (
     <section className="space-y-3" data-testid="notice-management">
+      {dialog}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-2xl uppercase tracking-tighter">Official Notice Board</h2><p className="text-sm text-muted-foreground">Create, view and remove notices from this club’s public ONB.</p></div>
         <Button className="gap-1.5" onClick={() => navigate(`/notice/new?club=${clubId}`)} data-testid="create-notice-btn"><FileText className="w-4 h-4" /> New Notice</Button>
       </div>
       <div className="rounded-xl border border-border bg-card p-4 space-y-3" data-testid="notice-area-manager">
         <div><h3 className="font-heading uppercase">Notice areas</h3><p className="text-xs text-muted-foreground">Create additional areas for this club’s ONB. Race Admins and Race Officers can choose them when posting.</p></div>
-        <div className="flex flex-wrap gap-2">{areas.map((area) =>
+        <div className="flex flex-wrap gap-2">{areas.filter((area) => !isPending(`area:${area}`)).map((area) =>
           <Badge key={area} variant="outline" className="gap-1.5 pr-1">
             {area}
             {!["Club Notices", "Open Event Notices"].includes(area) && (
@@ -1735,7 +1955,7 @@ function NoticeManagementTab({ clubId }) {
         return <Accordion type="multiple" defaultValue={ordered} data-testid="notice-area-management-groups">
           {ordered.map((area) => <AccordionItem key={area} value={area} className="rounded-xl border border-border bg-card px-4 mb-3">
             <AccordionTrigger className="font-heading uppercase tracking-tight hover:no-underline" data-testid={`notice-area-group-${area}`}>{area} <span className="ml-2 text-xs font-normal text-muted-foreground">({grouped[area].length})</span></AccordionTrigger>
-            <AccordionContent><div className="space-y-2">{grouped[area].map((notice) => <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"><div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div><Button size="sm" variant="outline" className="gap-1.5" disabled={busy} onClick={() => edit(notice)} data-testid={`edit-notice-${notice.id}`}><Pencil className="w-4 h-4" /> Edit</Button><Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" disabled={busy} onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button></div>)}</div></AccordionContent>
+            <AccordionContent><div className="space-y-2">{grouped[area].filter((notice) => !isPending(notice.id)).map((notice) => <div key={notice.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"><div className="flex-1 min-w-0"><div className="font-heading uppercase tracking-tight">{notice.notice_type_label || notice.notice_type}</div><div className="font-semibold truncate">{notice.title}</div><div className="text-xs text-muted-foreground">No. {notice.notice_number} · {notice.status}</div></div><Button size="sm" variant="outline" className="gap-1.5" onClick={() => edit(notice)} data-testid={`edit-notice-${notice.id}`}><Pencil className="w-4 h-4" /> Edit</Button><Button size="sm" variant="outline" className="gap-1.5 text-destructive border-destructive/40" onClick={() => remove(notice)} data-testid={`remove-notice-${notice.id}`}><Trash2 className="w-4 h-4" /> Remove</Button></div>)}</div></AccordionContent>
           </AccordionItem>)}
         </Accordion>;
       })()}
@@ -1745,7 +1965,7 @@ function NoticeManagementTab({ clubId }) {
 
 function HistoricTab({ classes, rrsCodes, clubId }) {
   const [classId, setClassId] = useState("all");
-  const [yearFilter, setYearFilter] = useState("all");
+  const [yearFilter, setYearFilter] = useState(CURRENT_YEAR);
   const { seasonYears } = useSeasonYears(clubId);
   const yearChoices = ["all", ...withSeasonYears(YEAR_OPTIONS, seasonYears)];
   const [seriesList, setSeriesList] = useState([]);
@@ -1798,7 +2018,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
   const firstRun = useRef(true);
   useEffect(() => {
     if (firstRun.current) { firstRun.current = false; return; }
-    setClassId(""); setSeriesId(""); setRace(null); setYearFilter("all");
+    setClassId(""); setSeriesId(""); setRace(null); setYearFilter(CURRENT_YEAR);
   }, [clubId]);
   useEffect(() => {
     if (classId) {
@@ -2102,8 +2322,6 @@ export default function Admin() {
           </Button>
         </div>
         <div className="mb-6" />
-        {clubId && <ClubIconField clubId={clubId} />}
-        {clubId && <ClubNoticeToggle clubId={clubId} />}
         <Tabs defaultValue={initialTab}>
           {/* The tab bar stays a single row: on narrow screens it scrolls
               horizontally instead of wrapping into a tall stack of tabs. */}
@@ -2111,7 +2329,8 @@ export default function Admin() {
             <TabsList className="h-auto w-max min-w-full gap-1" data-testid="admin-tabs">
               <TabsTrigger value="classes" data-testid="tab-classes" className="gap-1.5 py-1.5"><Layers className="w-4 h-4" /> Classes</TabsTrigger>
               <TabsTrigger value="boats" data-testid="tab-boats" className="gap-1.5 py-1.5"><Sailboat className="w-4 h-4" /> Boats</TabsTrigger>
-              <TabsTrigger value="series" data-testid="tab-series" className="gap-1.5 py-1.5"><Trophy className="w-4 h-4" /> Series</TabsTrigger>
+              <TabsTrigger value="championship" data-testid="tab-championship" className="gap-1.5 py-1.5"><Trophy className="w-4 h-4" /> Championship</TabsTrigger>
+              <TabsTrigger value="club_championship" data-testid="tab-club-championship" className="gap-1.5 py-1.5"><Building2 className="w-4 h-4" /> Club Championship</TabsTrigger>
               <TabsTrigger value="regattas" data-testid="tab-regattas" className="gap-1.5 py-1.5"><CalendarDays className="w-4 h-4" /> Regattas</TabsTrigger>
               <TabsTrigger value="notices" data-testid="tab-notices" className="gap-1.5 py-1.5"><FileText className="w-4 h-4" /> Notice Board</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
@@ -2119,6 +2338,7 @@ export default function Admin() {
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="users" data-testid="tab-users" className="gap-1.5 py-1.5"><Users className="w-4 h-4" /> Logins</TabsTrigger>
               <TabsTrigger value="subscriptions" data-testid="tab-subscriptions" className="gap-1.5 py-1.5"><Mail className="w-4 h-4" /> Subscriptions</TabsTrigger>
+              <TabsTrigger value="club" data-testid="tab-club" className="gap-1.5 py-1.5"><Building2 className="w-4 h-4" /> Club</TabsTrigger>
               {isWebmaster && <TabsTrigger value="activity" data-testid="tab-activity" className="gap-1.5 py-1.5"><ScrollText className="w-4 h-4" /> Activity</TabsTrigger>}
               {!isWebmaster && (
                 <>
@@ -2130,10 +2350,22 @@ export default function Admin() {
           </div>
           <TabsContent value="boats" className="pt-6"><BoatsTab classes={classes} clubs={boatClubs} clubId={clubId} clubName={clubName || ""} /></TabsContent>
           <TabsContent value="classes" className="pt-6"><ClassesTab classes={classes} reload={reloadClasses} clubId={clubId} /></TabsContent>
-          <TabsContent value="series" className="pt-6"><SeriesTab classes={classes} clubId={clubId} /></TabsContent>
-          <TabsContent value="regattas" className="pt-6"><RegattasTab clubId={clubId} /></TabsContent>
+          <TabsContent value="championship" className="pt-6"><SeriesTab classes={classes} clubId={clubId} seriesType="championship" /></TabsContent>
+          <TabsContent value="club_championship" className="pt-6"><SeriesTab classes={classes} clubId={clubId} seriesType="club_championship" /></TabsContent>
+          <TabsContent value="regattas" className="pt-6"><RegattasTab clubId={clubId} classes={classes} /></TabsContent>
           <TabsContent value="notices" className="pt-6"><NoticeManagementTab clubId={clubId} /></TabsContent>
           <TabsContent value="subscriptions" className="pt-6"><SubscriptionOverview clubId={clubId} /></TabsContent>
+          {/* Club identity and the notice-board switches used to sit above the
+              tab bar on every visit; they live here so the default view stays
+              focused on the fleet and season. */}
+          <TabsContent value="club" className="pt-6" data-testid="tab-club-content">
+            <div className="mb-4">
+              <h2 className="text-2xl uppercase tracking-tighter">Club</h2>
+              <p className="text-muted-foreground text-sm">Club identity and the notice boards your competitors see.</p>
+            </div>
+            {clubId && <ClubIconField clubId={clubId} />}
+            {clubId && <ClubNoticeToggle clubId={clubId} />}
+          </TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>
           {isWebmaster && <TabsContent value="activity" className="pt-6"><AuditLog webmaster /></TabsContent>}

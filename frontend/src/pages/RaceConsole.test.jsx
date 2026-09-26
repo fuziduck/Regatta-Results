@@ -13,6 +13,7 @@ jest.mock("@/lib/api", () => {
     adjustResult: jest.fn(),
     recordFinish: jest.fn(),
     startRace: jest.fn(),
+    deleteRace: jest.fn(),
   };
   return { api, formatApiError: (d) => d || "error" };
 });
@@ -47,6 +48,7 @@ jest.mock("@/components/ui/select", () => {
 });
 
 import { RaceConsole } from "./Officer";
+import { UNDO_WINDOW_MS, setUndoWindowMs } from "@/hooks/use-delete-with-undo";
 
 const mockApi = require("@/lib/api").api;
 
@@ -87,6 +89,7 @@ afterEach(async () => {
   }
   document.body.innerHTML = "";
   window.localStorage.clear();
+  setUndoWindowMs(UNDO_WINDOW_MS);
   jest.clearAllMocks();
 });
 
@@ -283,6 +286,20 @@ describe("RaceConsole handicap time entry", () => {
     expect(container.querySelector('[data-testid="race-clock-note"]').textContent).toMatch(/^Started /);
   });
 
+  it("lets dual-scored series record one finish time for every scoring view", async () => {
+    renderConsole(HANDICAP_META, {
+      series: { scoring_mode: "irc", scoring_modes: ["irc", "ytc"] },
+    });
+    await flush();
+
+    expect(container.textContent).toContain("IRC + YTC results from one finish-time entry");
+    expect(container.querySelectorAll('[data-testid="time-entry-mode"]')).toHaveLength(1);
+    click(container.querySelector('[data-testid="finish-btn-1"]'));
+    await flush();
+    expect(mockApi.recordFinish).toHaveBeenCalledTimes(1);
+    expect(mockApi.recordFinish).toHaveBeenCalledWith("r1", "b1", expect.any(String), 3);
+  });
+
   it("keeps one-design races on tap order", async () => {
     renderConsole();
     await flush();
@@ -444,5 +461,51 @@ describe("RaceConsole committee decisions (DPI / RDG)", () => {
     await flush();
 
     expect(container.querySelector('[data-testid="decision-points-2"]').value).toBe("4");
+  });
+});
+
+// Deleting a race is the one irreversible action on the console, so it asks
+// first — and the officer stays on the page until the delete actually lands.
+describe("RaceConsole delete confirmation", () => {
+  it("asks before deleting, then deletes and steps back", async () => {
+    setUndoWindowMs(0);
+    mockApi.deleteRace.mockResolvedValue({ ok: true });
+    const onBack = jest.fn();
+    renderConsole(DEFAULT_META, { onBack });
+    await flush();
+
+    const delBtn = container.querySelector('[data-testid="delete-race-btn"]');
+    expect(delBtn).not.toBeNull();
+    act(() => delBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    // Nothing happens until the officer confirms.
+    expect(mockApi.deleteRace).not.toHaveBeenCalled();
+    expect(onBack).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="confirm-delete-dialog"]')).not.toBeNull();
+
+    act(() => document.querySelector('[data-testid="confirm-delete-confirm"]')
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
+    expect(mockApi.deleteRace).toHaveBeenCalledWith("r1", 3);
+    expect(onBack).toHaveBeenCalled();
+  });
+
+  it("keeps the race when the confirmation is cancelled", async () => {
+    mockApi.deleteRace.mockResolvedValue({ ok: true });
+    const onBack = jest.fn();
+    renderConsole(DEFAULT_META, { onBack });
+    await flush();
+
+    act(() => container.querySelector('[data-testid="delete-race-btn"]')
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    act(() => document.querySelector('[data-testid="confirm-delete-cancel"]')
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
+    expect(mockApi.deleteRace).not.toHaveBeenCalled();
+    expect(onBack).not.toHaveBeenCalled();
   });
 });

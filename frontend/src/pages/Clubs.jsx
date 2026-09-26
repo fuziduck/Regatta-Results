@@ -13,6 +13,7 @@ import BoatSearchBox from "@/components/BoatSearchBox";
 import OfficialsLink from "@/components/OfficialsLink";
 import Logo from "@/components/Logo";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
+import { classProfilePath, groupedClassPath } from "@/lib/seo";
 
 function ClubIcon({ club, size = "w-16 h-16" }) {
   return <ClubBadge club={club} size={size} textSize="text-3xl" />;
@@ -237,7 +238,7 @@ export default function Clubs() {
                 const owningClubs = classGroup
                   .map((item) => systemClubs.find((club) => club.id === item.club_id)?.name)
                   .filter(Boolean);
-                const href = isGrouped ? `/class/group/${encodeURIComponent(groupName)}` : `/class/${classData.id}`;
+                const href = isGrouped ? groupedClassPath(groupName) : classProfilePath(classData.id, groupName);
                 return (
                   <Link key={isGrouped ? `group-${classData.class_group_key}` : classData.id} to={href}
                     data-testid={`system-class-card-${classData.class_group_key || classData.id}`}

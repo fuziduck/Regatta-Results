@@ -1,4 +1,5 @@
 // Presentation helpers for the Competition (Regatta / Championship) UI.
+import { slugifySegment } from "@/lib/seo";
 // The image is deliberately a remote placeholder so a competition can look
 // complete before an official photo is uploaded from the admin console.
 export const DEFAULT_COMPETITION_IMAGE =
@@ -36,7 +37,9 @@ export function competitionType(competition) {
 
 export function competitionPath(competition, clubSlug) {
   const prefix = competitionType(competition) === "regatta" ? "regatta" : "competition";
-  return `/club/${clubSlug}/${prefix}/${competition?.id || ""}`;
+  const label = `${String(competition?.name || "").trim()} ${competition?.year || ""}`.trim();
+  const readableName = label ? slugifySegment(label) : "";
+  return `/club/${clubSlug}/${prefix}/${competition?.id || ""}${readableName ? `/${readableName}` : ""}`;
 }
 
 export function competitionTypeLabel(competition) {

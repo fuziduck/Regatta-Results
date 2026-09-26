@@ -7,12 +7,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
-import { competitionImage, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
+import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, Flag, MapPin, Medal, Trophy, Users, Sailboat } from "lucide-react";
-import { fmtDate } from "@/lib/helpers";
-import NoticeBoard from "@/components/NoticeBoard";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import ResultsSubscription from "@/components/ResultsSubscription";
 import PublishedRaces from "@/components/PublishedRaces";
 
 // Human label for a competition's type + championship scope, e.g.
@@ -35,7 +32,6 @@ export default function Regatta() {
   // Standings payloads per series id, fetched lazily when the Results tab
   // needs them (never duplicated or written — straight from the series API).
   const [standings, setStandings] = useState({});
-  const [noticeBoard, setNoticeBoard] = useState(null);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -56,12 +52,6 @@ export default function Regatta() {
     });
     return seen;
   }, [regatta]);
-
-  useEffect(() => {
-    if (!regattaId) return;
-    if (!club) return;
-    api.getRegattaNoticeBoard(regattaId, { club_id: club.id }).then(setNoticeBoard).catch(() => setNoticeBoard(null));
-  }, [regattaId, club]);
 
   useEffect(() => {
     if (tab !== "results" || !regatta || !club) return;
@@ -147,7 +137,7 @@ export default function Regatta() {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <Link to={`/club/${club.slug}`}>
+          <Link to={competitionPath(regatta, slug)}>
             <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean">
               <ArrowLeft className="w-4 h-4" /> Back to results
             </Button>
@@ -186,7 +176,6 @@ export default function Regatta() {
           <TabsList>
             <TabsTrigger value="overview" data-testid="regatta-tab-overview">Overview</TabsTrigger>
             <TabsTrigger value="results" data-testid="regatta-tab-results">Results</TabsTrigger>
-            <TabsTrigger value="notice" data-testid="regatta-tab-notice">Notice Board</TabsTrigger>
           </TabsList>
 
           {tab === "overview" && (
@@ -235,7 +224,7 @@ export default function Regatta() {
                               name rather than ranked together. */}
                           {(s.divisions?.length ? s.divisions : [{ podium: s.podium, winner: s.winner }]).map((d, di) => (
                             <div key={di} className={di ? "pt-1.5" : ""}>
-                              {d.name && <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-safety" data-testid={`regatta-division-${d.name}`}>{d.name}</div>}
+                              {d.name && <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-safety" data-testid={`regatta-division-${d.name}`}>{d.name}{d.table_kind === "scoring_mode" ? " results" : ""}</div>}
                               {(d.podium || []).map((p, i) => (
                                 <div key={i} className="flex items-center gap-2 text-sm">
                                   <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${PODIUM[i]?.chip || "bg-muted text-muted-foreground"}`} title={PODIUM[i]?.label}>
@@ -298,30 +287,6 @@ export default function Regatta() {
             </div>
           )}
 
-          {tab === "notice" && (
-            <div className="pt-6" data-testid="regatta-notice">
-              <div className="mb-5 rounded-xl border border-ocean/20 bg-ocean/5 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="font-heading uppercase tracking-tight text-ocean">{noticeBoard?.title || `${regatta.name} Official Notice Board`}</div>
-                    <p className="mt-1 text-sm text-muted-foreground">Official notices for this competition only. Club-wide notices remain on the main club board.</p>
-                  </div>
-                  {noticeBoard && <ResultsSubscription
-                    subscriptionType="notice_board"
-                    targetId={noticeBoard.id}
-                    targetName={noticeBoard.title || `${regatta.name} Official Notice Board`}
-                    buttonLabel="Subscribe to this ONB"
-                    dialogTitle={`Subscribe to ${regatta.name} notices`}
-                    description={<>We'll email you whenever a new notice is published to the <strong className="text-foreground">{noticeBoard.title || `${regatta.name} Official Notice Board`}</strong>. No Sailscore account is needed.</>}
-                  />}
-                </div>
-              </div>
-              {noticeBoard ? <NoticeBoard clubId={club.id} boardId={noticeBoard.id} embedded /> : (
-                <p className="text-sm text-muted-foreground">The competition notice board is unavailable.</p>
-              )}
-              <p className="text-sm text-muted-foreground mt-4">Dates: {fmtDate(regatta.start_date)}{regatta.end_date && regatta.end_date !== regatta.start_date ? ` – ${fmtDate(regatta.end_date)}` : ""}</p>
-            </div>
-          )}
         </Tabs>
       </main>
     </div>

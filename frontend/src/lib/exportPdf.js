@@ -194,7 +194,7 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
     doc.setTextColor(...OCEAN);
-    doc.text(`${table.division_name} division`, 40, startY - 12);
+    doc.text(`${table.division_name} ${table.table_kind === "scoring_mode" ? "results" : "division"}`, 40, startY - 12);
   }
   autoTable(doc, {
     startY,
@@ -351,7 +351,7 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
     doc.setTextColor(...OCEAN);
-    doc.text(`${table.division_name} division`, 40, startY - 12);
+    doc.text(`${table.division_name} ${table.table_kind === "scoring_mode" ? "results" : "division"}`, 40, startY - 12);
   }
   autoTable(doc, {
     startY,

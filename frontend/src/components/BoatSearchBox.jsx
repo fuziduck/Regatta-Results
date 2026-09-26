@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { SAILSCORE_EVENTS, trackEvent } from "@/lib/analytics";
+import { boatProfilePath, classProfilePath, seriesResultsPath } from "@/lib/seo";
 import { Anchor, CalendarDays, Layers, Sailboat, Search, X, ArrowRight } from "lucide-react";
 
 const TYPES = [
@@ -23,10 +24,10 @@ const TYPE_ICON = {
 // Row destinations, shared by the rendered links and the keyboard highlight
 // list so Enter always follows the same route a click would.
 const rowHrefs = {
-  boat: (b) => `/boat/${b.fleet_id}`,
+  boat: (b) => boatProfilePath(b.fleet_id, b.name),
   club: (c) => `/club/${c.slug}`,
-  series: (s) => `/club/${s.club_slug}${s.class_id ? `?class=${s.class_id}` : ""}${s.id ? `&series=${s.id}` : ""}`,
-  class: (c) => `/club/${c.club_slug}?class=${c.id}`,
+  series: (s) => seriesResultsPath(s.club_slug, s.id, s.name, s.year, s.class_id),
+  class: (c) => classProfilePath(c.id, c.name),
 };
 
 function rowClasses(highlighted) {

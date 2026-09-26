@@ -3,9 +3,11 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, CalendarDays, ChevronRight, Clock3, MapPin, Users } from "lucide-react";
+import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, MapPin, Users } from "lucide-react";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, boatDivision, boatScoringMode, classDivisions, divisionTables, scoringModeLabel, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, boatDivision, boatScoringMode, classDivisions, divisionTables, seriesScoringModes, scoringModeLabel, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { boatProfilePath, raceResultPath } from "@/lib/seo";
+import { competitionPath } from "@/lib/competition";
 
 const PODIUM_ROW = {
   1: "bg-amber-100/80 dark:bg-amber-400/15",
@@ -53,16 +55,21 @@ export default function Race() {
   const [classInfo, setClassInfo] = useState(null);
   const [regatta, setRegatta] = useState(null);
   const [standings, setStandings] = useState(null);
+  const [raceList, setRaceList] = useState([]);
 
   useEffect(() => {
     let active = true;
     api.getRace(raceId).then(async (result) => {
-      const [classBoats, classes, seriesList, regattas, standingsPayload] = await Promise.all([
+      const [classBoats, classes, seriesList, regattas, standingsPayload, relatedRaces] = await Promise.all([
         api.getBoats({ class_id: result.class_id, club_id: result.club_id }),
         api.getClasses({ club_id: result.club_id }),
         api.getSeries({ club_id: result.club_id, year: result.year }),
         api.getRegattas({ club_id: result.club_id, year: result.year }),
         result.series_id ? api.seriesStandings(result.series_id, result.club_id).catch(() => null) : Promise.resolve(null),
+        Promise.resolve().then(() => api.getRaces({
+          ...(result.series_id ? { series_id: result.series_id } : { class_id: result.class_id }),
+          club_id: result.club_id,
+        })).catch(() => []),
       ]);
       if (!active) return;
       setRace(result);
@@ -82,26 +89,66 @@ export default function Race() {
         || null;
       setRegatta(linkedRegatta);
       setStandings(standingsPayload);
+      setRaceList(relatedRaces || []);
     }).catch(() => {
       if (active) setRace(null);
     });
     return () => { active = false; };
   }, [raceId]);
 
+  const raceNavigation = useMemo(() => {
+    if (!race) return { previous: null, next: null };
+    const siblings = (raceList || [])
+      .filter((item) => item.id && String(item.status || "").toLowerCase() === "published")
+      .sort((a, b) => Number(a.race_number || 0) - Number(b.race_number || 0)
+        || String(a.date || "").localeCompare(String(b.date || "")));
+    const index = siblings.findIndex((item) => item.id === race.id);
+    return index < 0 ? { previous: null, next: null } : {
+      previous: siblings[index - 1] || null,
+      next: siblings[index + 1] || null,
+    };
+  }, [race, raceList]);
+
   const divisions = classDivisions(classInfo);
+  const scoringModes = seriesScoringModes({
+    ...(series || {}), scoring_mode: series?.scoring_mode || classInfo?.scoring_mode || "one_design",
+  });
+  const activeScoringModes = useMemo(() => scoringModes.length ? scoringModes : ["one_design"], [scoringModes]);
+  const multiScoring = !divisions.length && activeScoringModes.length > 1;
+  const [raceMode, setRaceMode] = useState(null);
+  const activeRaceMode = raceMode && activeScoringModes.includes(raceMode) ? raceMode : activeScoringModes[0];
+  const displayMode = activeRaceMode || "one_design";
+  const racePositions = useMemo(() => race?.scoring_positions?.[displayMode] || {}, [race, displayMode]);
 
   const rows = useMemo(() => {
     if (!race) return [];
     // Points come from each boat's own table — a class split into rating
     // divisions scores her against her division, not the whole class.
     const pointsByBoat = new Map();
+    const positionsByMode = new Map();
+    const allPointsByBoat = new Map();
+    const allPositionsByBoat = new Map();
     const raceIndex = (standings?.races || []).findIndex((item) => Number(item.race_number) === Number(race.race_number));
     divisionTables(standings).forEach((table) => {
+      const mode = table.division_scoring_mode || activeScoringModes[0];
+      const modePoints = pointsByBoat.get(mode) || new Map();
+      const modePositions = positionsByMode.get(mode) || new Map();
       (table.standings || []).forEach((standing) => {
         const score = raceIndex >= 0 ? standing.scores?.[raceIndex] : null;
-        pointsByBoat.set(standing.boat_id, score?.points);
+        modePoints.set(standing.boat_id, score?.points);
+        modePositions.set(standing.boat_id, standing.positions?.[raceIndex]);
+        allPointsByBoat.set(standing.boat_id, score?.points);
+        allPositionsByBoat.set(standing.boat_id, standing.positions?.[raceIndex]);
       });
+      pointsByBoat.set(mode, modePoints);
+      positionsByMode.set(mode, modePositions);
     });
+    const activePoints = multiScoring
+      ? (pointsByBoat.get(displayMode) || pointsByBoat.get(activeScoringModes[0]) || new Map())
+      : allPointsByBoat;
+    const activePositions = multiScoring
+      ? (positionsByMode.get(displayMode) || positionsByMode.get(activeScoringModes[0]) || new Map())
+      : allPositionsByBoat;
     return [...(race.results || [])]
       // Divisions are shown as separate results: the rows of one division stay
       // together, each in its own finishing order.
@@ -111,73 +158,97 @@ export default function Race() {
           const db = boatDivision(boats[b.boat_id], divisions);
           if (da !== db) return da.localeCompare(db);
         }
+        if (multiScoring) {
+          const aPos = racePositions[a.boat_id] ?? activePositions.get(a.boat_id);
+          const bPos = racePositions[b.boat_id] ?? activePositions.get(b.boat_id);
+          if (aPos != null && bPos != null) return aPos - bPos;
+        }
         return resultOrder(a, b);
       })
       .map((result) => ({
         ...result,
-        points: pointsByBoat.get(result.boat_id),
+        position: multiScoring ? (racePositions[result.boat_id] ?? activePositions.get(result.boat_id) ?? null) : result.position,
+        points: activePoints.get(result.boat_id),
         division: boatDivision(boats[result.boat_id], divisions),
       }));
-  }, [race, standings, boats, divisions]);
+  }, [race, standings, boats, divisions, multiScoring, displayMode, activeScoringModes, racePositions]);
 
   if (!race) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
 
   const scoringMode = series?.scoring_mode || classInfo?.scoring_mode || "one_design";
-  // A split class is timed when any of its divisions is a handicap.
-  const hasTiming = divisions.length ? divisions.some((d) => d.scoring_mode !== "one_design") : scoringMode !== "one_design";
+  // A split class is timed when any division uses a handicap; dual-scored
+  // series also display the corrected time for the currently selected table.
+  const hasTiming = divisions.length ? divisions.some((d) => d.scoring_mode !== "one_design") : activeScoringModes.some((mode) => mode !== "one_design");
   const scoringLabel = divisions.length
     ? divisions.map((d) => `${d.name} (${scoringModeLabel(d.scoring_mode)})`).join(" · ")
-    : scoringModeLabel(scoringMode);
+    : activeScoringModes.map(scoringModeLabel).join(" + ");
   const status = raceStatus(race);
+  // Keep the established query-form back-link working for copied bookmarks;
+  // the series page itself also has a readable URL.
   const parentSeriesHref = series
-    ? `/club/${slug}?class=${encodeURIComponent(race.class_id)}&series=${encodeURIComponent(series.id)}&year=${race.year}`
-    : `/club/${slug}`;
+    ? `/club/${slug}?class=${encodeURIComponent(race.class_id)}&series=${encodeURIComponent(series.id)}&year=${encodeURIComponent(series.year || race.year)}`
+    : `/club/${slug}?class=${encodeURIComponent(race.class_id)}&year=${encodeURIComponent(race.year)}`;
+  const racePath = (item) => raceResultPath(
+    slug, item.id,
+    `${classInfo?.name || "Sailing"} ${series?.name || "Series"} race ${item.race_number} ${race.year || ""}`,
+  );
   const entries = race.entries_count ?? race.results?.length ?? 0;
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-3 px-4">
-          <Link to={`/club/${slug}`}>
-            <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean">
-              <ArrowLeft className="h-4 w-4" /> Back to results
-            </Button>
+      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-xl">
+        <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-1 px-2 sm:gap-2 sm:px-4">
+          <Link to={parentSeriesHref} aria-label="Back to series and class results"
+            className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-1.5 text-sm font-semibold text-ocean hover:bg-muted sm:gap-1.5 sm:px-3">
+            <ArrowLeft className="h-4 w-4 shrink-0" /><span className="sm:hidden">Series</span><span className="hidden sm:inline">Series results</span>
           </Link>
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <span className="hidden sm:inline">Race results</span><ChevronRight className="h-3.5 w-3.5" />
-            <span className="font-semibold text-ocean">R{race.race_number}</span>
+          <nav className="flex items-center gap-1" aria-label="Navigate between races">
+            {raceNavigation.previous && <Link to={racePath(raceNavigation.previous)} aria-label={`Previous race ${raceNavigation.previous.race_number}`}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-xs font-semibold text-ocean hover:bg-muted">
+              <ChevronLeft className="h-4 w-4" /><span>R{raceNavigation.previous.race_number}</span>
+            </Link>}
+            {raceNavigation.next && <Link to={racePath(raceNavigation.next)} aria-label={`Next race ${raceNavigation.next.race_number}`}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-xs font-semibold text-ocean hover:bg-muted">
+              <span>R{raceNavigation.next.race_number}</span><ChevronRight className="h-4 w-4" />
+            </Link>}
+          </nav>
+          <div className="hidden min-w-0 items-center gap-1 text-xs text-muted-foreground sm:flex">
+            <span className="truncate">{classInfo?.name || "Race results"}</span><ChevronRight className="h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap font-semibold text-ocean">Race {race.race_number}</span>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-7 sm:py-10">
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7" data-testid="race-header">
-          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Club", href: `/club/${slug}` }, { label: series?.name || "Series" }, { label: `Race ${race.race_number}` }]} className="mb-4" />
-          <div className="flex flex-wrap items-start justify-between gap-4">
+      <main className="mx-auto max-w-6xl px-3 py-4 sm:px-4 sm:py-8">
+        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-6" data-testid="race-header">
+          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Club", href: `/club/${slug}` }, { label: series?.name || "Series" }, { label: `Race ${race.race_number}` }]} className="mb-3 hidden sm:block" />
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-safety">{regatta?.name || series?.name || "Race results"}</p>
-              <h1 className="mt-1 font-heading text-3xl uppercase tracking-tight text-ocean sm:text-4xl">Race {race.race_number}</h1>
-              <p className="mt-2 text-sm text-muted-foreground">{series?.name || "Individual race results"}</p>
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-safety">{regatta?.name || series?.name || "Race results"}</p>
+              <h1 className="mt-0.5 font-heading text-3xl uppercase leading-none tracking-tight text-ocean">Race {race.race_number}</h1>
             </div>
-            <Badge className={RACE_STATUS_CLASS[status] || RACE_STATUS_CLASS.Planned}>{status}</Badge>
+            <Badge className={`shrink-0 ${RACE_STATUS_CLASS[status] || RACE_STATUS_CLASS.Planned}`} aria-label={`Status: ${status}`}><span className="hidden sm:inline">Status · </span>{status}</Badge>
           </div>
-          <div className="mt-6 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-5">
-            <div className="flex items-start gap-2"><CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Race date</span><strong>{fmtDate(race.date)}</strong></span></div>
-            <div className="flex items-start gap-2"><Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Scheduled start</span><strong>{race.start_time || classInfo?.default_start_time || "To be confirmed"}</strong></span></div>
-            <div className="flex items-start gap-2"><Users className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Entries</span><strong>{entries}</strong></span></div>
-            <div className="flex items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span><span className="block text-xs uppercase tracking-wider text-muted-foreground">Class / fleet</span><strong>{classInfo?.name || "—"}</strong></span></div>
-            <div><span className="block text-xs uppercase tracking-wider text-muted-foreground">{divisions.length ? "Divisions" : "Scoring"}</span><strong>{scoringLabel}</strong></div>
+          <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
+            <div className="flex min-w-0 items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span className="min-w-0"><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Class</span><strong className="block break-words">{classInfo?.name || "—"}</strong></span></div>
+            <div className="flex min-w-0 items-start gap-2"><CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span className="min-w-0"><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Date</span><strong className="block">{fmtDate(race.date)}</strong></span></div>
+            <div className="flex min-w-0 items-start gap-2"><Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span className="min-w-0"><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Start time</span><strong className="block">{race.start_time || classInfo?.default_start_time || "To be confirmed"}</strong></span></div>
+            <div className="flex min-w-0 items-start gap-2"><Users className="mt-0.5 h-4 w-4 shrink-0 text-ocean" /><span className="min-w-0"><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Boats entered</span><strong className="block">{entries}</strong></span></div>
+            <div className="col-span-2 border-t border-border pt-2 text-xs sm:col-span-1 sm:border-0 sm:pt-0"><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">{divisions.length ? "Divisions" : "Scoring"}</span><strong className="break-words">{scoringLabel}</strong></div>
           </div>
-          <nav className="mt-6 flex flex-wrap gap-2 border-t border-border pt-4" aria-label="Race parents">
-            <Link to={parentSeriesHref} className="text-sm font-semibold text-ocean hover:underline">View parent series</Link>
-            {regatta && <><span className="text-muted-foreground">·</span><Link to={`/club/${slug}/regatta/${regatta.id}`} className="text-sm font-semibold text-ocean hover:underline">View {regatta.name}</Link></>}
+          <nav className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2" aria-label="Race and class navigation">
+            <Link to={parentSeriesHref} className="inline-flex min-h-11 items-center font-semibold text-ocean hover:underline">Series results</Link>
+            {regatta && <Link to={competitionPath({ ...regatta, competition_type: regatta.competition_type || "regatta" }, slug)} className="inline-flex min-h-11 items-center font-semibold text-ocean hover:underline">{regatta.name}</Link>}
           </nav>
         </section>
 
         <section className="mt-7" data-testid="race-results-table">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
             <div><h2 className="font-heading text-2xl uppercase tracking-tight text-ocean">Race results</h2><p className="text-sm text-muted-foreground">Sorted by finishing position · {classInfo?.name || "Fleet results"}</p></div>
-
+            {multiScoring && <div className="flex gap-2" role="group" aria-label="Race scoring system">
+              {activeScoringModes.map((mode) => <Button key={mode} size="sm" variant={displayMode === mode ? "default" : "outline"}
+                className="min-h-11 px-3" data-testid={`race-scoring-${mode}`} onClick={() => setRaceMode(mode)}>{scoringModeLabel(mode)}</Button>)}
+            </div>}
           </div>
           <div className="overflow-hidden rounded-xl border border-border">
             <div className="overflow-x-auto">
@@ -202,7 +273,7 @@ export default function Race() {
                     const elapsed = result.code === "FINISHED" ? elapsedSecondsOf(result.finish_time, race) : null;
                     // Corrected time follows the boat's own division's rating
                     // system (one-design divisions have none to show).
-                    const boatMode = boatScoringMode(boat, divisions, scoringMode);
+                    const boatMode = multiScoring ? displayMode : boatScoringMode(boat, divisions, scoringMode);
                     const corrected = result.code === "FINISHED" && hasTiming
                       ? correctedSecondsOf(result.finish_time, race, boatRating(boatMode, boat), boatMode)
                       : null;
@@ -215,7 +286,7 @@ export default function Race() {
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs font-semibold">{boat.sail_no || "—"}</td>
                         <td className={shouldWrapBoatName(boat.name) ? "max-w-48 px-3 py-2.5" : "whitespace-nowrap px-3 py-2.5"}>
-                          <Link to={`/boat/${boat.fleet_id || result.boat_id}`} className={`font-semibold text-ocean hover:underline ${shouldWrapBoatName(boat.name) ? "whitespace-pre-line break-words" : ""}`}>{wrapBoatName(boat.name || "Unknown boat")}</Link>
+                          <Link to={boatProfilePath(boat.fleet_id || result.boat_id, boat.name)} className={`font-semibold hover:underline ${shouldWrapBoatName(boat.name) ? "whitespace-pre-line break-words" : ""}`}>{wrapBoatName(boat.name || "Unknown boat")}</Link>
                           <div className="text-xs text-muted-foreground sm:hidden">Helm: {boat.helm || "—"} · Crew: {crew}</div>
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{classInfo?.name || "—"}{result.division && <span className="ml-1 font-semibold text-ocean">· {result.division}</span>}</td>

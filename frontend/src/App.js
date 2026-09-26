@@ -1,6 +1,8 @@
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
+import { applyPageMetadata, DEFAULT_DESCRIPTION } from "@/lib/seo";
+import { useEffect } from "react";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -37,6 +39,51 @@ function Protected({ children, allow }) {
   return children;
 }
 
+const PRIVATE_ROUTES = [
+  /^\/(admin|officer|webmaster)(?:\/[^/]+)*\/?$/,
+  /^\/notice\/new(?:\/[^/]+)*\/?$/,
+  /^\/(login|forgot-password|reset-password)(?:\/[^/]+)*\/?$/,
+  /^\/subscriptions(?:\/[^/]+)*\/?$/,
+];
+
+function RouteMetadata() {
+  const location = useLocation();
+  useEffect(() => {
+    const path = location.pathname;
+    const isPrivate = PRIVATE_ROUTES.some((route) => route.test(path));
+    const isUnknownRoute = ![
+      /^\/$/,
+      /^\/club\/[^/]+(?:\/calendar|\/notice-board)?\/?$/,
+      /^\/club\/[^/]+\/series\/[^/]+(?:\/[^/]+)?\/?$/,
+      /^\/club\/[^/]+\/(?:race|regatta|competition)\/[^/]+(?:\/[^/]+)?\/?$/,
+      /^\/class\/[^/]+(?:\/[^/]+)?\/?$/,
+      /^\/class\/group\/[^/]+(?:\/[^/]+)?\/?$/,
+      /^\/boat\/[^/]+(?:\/[^/]+)?\/?$/,
+      /^\/boats\/?$/,
+    ].some((route) => route.test(path));
+    let active = true;
+    const applyFallback = () => {
+      if (!active) return;
+      applyPageMetadata({
+        title: isPrivate ? "Private SailScore workspace" : "Club Sailing Results & Standings | SailScore",
+        description: isPrivate || isUnknownRoute ? "This page is not available for public search indexing." : DEFAULT_DESCRIPTION,
+        canonical: `${window.location.origin}${path}`,
+        robots: isPrivate || isUnknownRoute ? "noindex,nofollow" : "index,follow",
+      });
+    };
+    applyFallback();
+    if (!isPrivate && !isUnknownRoute) {
+      const uri = `${path}${location.search}`;
+      fetch(`/api/seo-meta?uri=${encodeURIComponent(uri)}`, { credentials: "omit" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((metadata) => { if (active && metadata) applyPageMetadata(metadata); })
+        .catch(() => {});
+    }
+    return () => { active = false; };
+  }, [location.pathname, location.search]);
+  return null;
+}
+
 function App() {
   return (
     <div className="App">
@@ -44,18 +91,20 @@ function App() {
       <TooltipProvider delayDuration={200}>
       <AuthProvider>
         <BrowserRouter>
+          <RouteMetadata />
           <Routes>
             <Route path="/" element={<Clubs />} />
             <Route path="/club/:slug" element={<Landing />} />
             <Route path="/club/:slug/calendar" element={<ClubCalendar />} />
-            <Route path="/class/group/:classKey" element={<Class />} />
-            <Route path="/class/:classId" element={<Class />} />
-            <Route path="/club/:slug/race/:raceId" element={<Race />} />
-            <Route path="/club/:slug/regatta/:regattaId" element={<Regatta />} />
-            <Route path="/club/:slug/competition/:regattaId" element={<Regatta />} />
+            <Route path="/club/:slug/series/:seriesId/:seriesName?" element={<Landing />} />
+            <Route path="/class/group/:classKey/:className?" element={<Class />} />
+            <Route path="/class/:classId/:className?" element={<Class />} />
+            <Route path="/club/:slug/race/:raceId/:raceName?" element={<Race />} />
+            <Route path="/club/:slug/regatta/:regattaId/:eventName?" element={<Regatta />} />
+            <Route path="/club/:slug/competition/:regattaId/:eventName?" element={<Regatta />} />
             <Route path="/club/:slug/notice-board" element={<NoticeBoardPage />} />
             <Route path="/boats" element={<Boats />} />
-            <Route path="/boat/:fleetId" element={<Boat />} />
+            <Route path="/boat/:fleetId/:boatName?" element={<Boat />} />
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />

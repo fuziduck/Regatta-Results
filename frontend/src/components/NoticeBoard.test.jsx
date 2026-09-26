@@ -143,8 +143,7 @@ it("renders a link notice with a Visit website button", async () => {
   expect(link.getAttribute("rel")).toContain("noopener");
 });
 
-it("shows area filter tabs only when there are more than three areas", async () => {
-  // Three areas: no filter bar.
+it("shows every configured notice area in the top bar, even when there are only a few", async () => {
   mockApi.getNoticeAreas.mockResolvedValue([
     { key: "club", title: "Club Notices" },
     { key: "open_event", title: "Open Event Notices" },
@@ -156,9 +155,11 @@ it("shows area filter tabs only when there are more than three areas", async () 
     mk("c1", "si_amendment", "Change to Sailing Instructions", 1, "Sailing Instructions"),
   ]);
   await renderBoard();
-  expect(container.querySelector('[data-testid="area-filter-tabs"]')).toBeNull();
+  const tabs = [...container.querySelectorAll('[data-testid^="area-tab-"]')].map((t) => t.textContent.trim());
+  expect(tabs).toEqual(["All areas", "Club Notices", "Open Event Notices", "Sailing Instructions"]);
+});
 
-  // Four areas: the filter bar appears with an "All areas" tab and one per area.
+it("adds each newly configured area as a top-bar section", async () => {
   mockApi.getNoticeAreas.mockResolvedValue([
     { key: "club", title: "Club Notices" },
     { key: "open_event", title: "Open Event Notices" },
@@ -176,13 +177,31 @@ it("shows area filter tabs only when there are more than three areas", async () 
   expect(tabs).toEqual(["All areas", "Club Notices", "Open Event Notices", "Sailing Instructions", "Safety"]);
 });
 
-it("filters down to one area and honours a ?area= deep link", async () => {
+it("does not expose separate competition-board tabs or targets", async () => {
+  mockApi.getNoticeAreas.mockResolvedValue([
+    { key: "club", title: "Club Notices" },
+    { key: "custom:regatta", title: "2026 Regatta" },
+  ]);
+  mockApi.getNotices.mockResolvedValue([
+    mk("legacy", "notice_to_competitors", "Notice to Competitors", 1, "2026 Regatta", {
+      board_id: "competition-board", board_title: "2026 Regatta Official Notice Board",
+    }),
+  ]);
+  await renderBoard();
+  const tabs = [...container.querySelectorAll('[data-testid^="area-tab-"]')].map((t) => t.textContent.trim());
+  expect(tabs).toEqual(["All areas", "Club Notices", "2026 Regatta"]);
+  expect(tabs).not.toContain("2026 Regatta Official Notice Board");
+});
+
+
+it("renders empty configured areas and honours a ?area= deep link", async () => {
   const mkN = (id, label, num, area) => mk(id, "general_club_notice", label, num, area);
   mockApi.getNoticeAreas.mockResolvedValue([
     { key: "club", title: "Club Notices" },
     { key: "open_event", title: "Open Event Notices" },
     { key: "custom:a", title: "Area A" },
     { key: "custom:b", title: "Area B" },
+    { key: "custom:empty", title: "Race Committee" },
   ]);
   mockApi.getNotices.mockResolvedValue([
     mkN("n1", "General Club Notice", 1, "Club Notices"),
@@ -194,16 +213,25 @@ it("filters down to one area and honours a ?area= deep link", async () => {
   mockSearchParams = new URLSearchParams("?area=area-b");
   await renderBoard();
 
-  // Only Area B's notices are shown.
+  // Deep-linked Area B is shown, including configured areas without notices.
   let areas = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
   expect(areas).toEqual(["Area B"]);
+  expect(container.querySelector('[data-testid="area-tab-race-committee"]')).not.toBeNull();
+  await act(async () => {
+    container.querySelector('[data-testid="area-tab-race-committee"]').click();
+  });
+  expect([...container.querySelectorAll("h3")].map((h) => h.textContent.trim())).toEqual(["Race Committee"]);
+  expect(container.textContent).toContain("No notices in this area yet.");
+  await act(async () => {
+    container.querySelector('[data-testid="area-tab-area-b"]').click();
+  });
 
   // Clicking the "All areas" tab restores every area.
   await act(async () => {
     container.querySelector('[data-testid="area-tab-all"]').click();
   });
   areas = [...container.querySelectorAll("h3")].map((h) => h.textContent.trim());
-  expect(areas).toEqual(["Club Notices", "Open Event Notices", "Area A", "Area B"]);
+  expect(areas).toEqual(["Club Notices", "Open Event Notices", "Area A", "Area B", "Race Committee"]);
 
   // Clicking one area filters down again.
   await act(async () => {

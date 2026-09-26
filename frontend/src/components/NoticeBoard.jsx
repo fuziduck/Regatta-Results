@@ -283,7 +283,9 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
     const i = BUILTIN_AREA_ORDER.indexOf(area);
     return i < 0 ? 99 : i;
   };
-  const areaOrder = [...groups.keys()].sort((a, b) => {
+  // Show every configured Notice Area, including sections with no notices
+  // yet. Existing notices in a removed/renamed area remain discoverable too.
+  const areaOrder = [...new Set([...(areas || []), ...groups.keys()])].sort((a, b) => {
     const ra = areaRank(a); const rb = areaRank(b);
     return (ra - rb) || a.localeCompare(b);
   });
@@ -298,10 +300,10 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
   }, [openId, notices]);
 
   // ?area=<slug> deep link: when the board's areas are known, honour a
-  // requested area filter (e.g. from a shared link) unless the visitor has
-  // already picked one.
+  // requested area filter (e.g. from a shared link) even if that area is
+  // currently empty, unless the visitor has already picked one.
   useEffect(() => {
-    if (!notices || !notices.length || activeArea) return;
+    if (!notices || activeArea) return;
     const wanted = searchParams.get("area");
     if (!wanted) return;
     const match = areaOrder.find((a) => areaSlug(a) === wanted);
@@ -310,11 +312,10 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
   }, [searchParams, notices]);
 
   if (!clubId || !notices) return null;
-  if (!notices.length) return null;
 
   // Selecting an area filters the board down to that area's full notices; the
   // choice is kept in the URL so the filtered view can be shared like a
-  // results link. With a single area (or few) the filter bar is unnecessary.
+  // results link.
   const selectArea = (area) => {
     setActiveArea(area);
     const p = new URLSearchParams(searchParams);
@@ -330,18 +331,18 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
         <h2 className="font-heading uppercase tracking-tight text-xl">Official Notice Board</h2>
         <span className="text-xs text-muted-foreground">· notices, amendments, protests and results as published</span>
       </div>
-      {areaOrder.length > 3 && (
-        <div className="mb-6" data-testid="area-filter-tabs">
-          <Tabs value={activeArea ? areaSlug(activeArea) : "all"}
+      {areaOrder.length > 0 && (
+        <div className="mb-6 border-b border-border overflow-x-auto" data-testid="area-filter-tabs">
+          <Tabs value={activeArea && areaOrder.includes(activeArea) ? areaSlug(activeArea) : "all"}
             onValueChange={(v) => selectArea(v === "all" ? null : areaOrder.find((a) => areaSlug(a) === v))}>
-            <TabsList className="h-auto flex-wrap gap-2 w-fit">
+            <TabsList className="h-auto min-w-max flex-nowrap justify-start gap-1 rounded-none bg-transparent p-0">
               <TabsTrigger value="all" data-testid="area-tab-all"
-                className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
+                className="rounded-none border-b-2 border-transparent px-4 py-3 text-muted-foreground data-[state=active]:border-ocean data-[state=active]:bg-transparent data-[state=active]:text-ocean font-heading uppercase tracking-wide text-sm">
                 All areas
               </TabsTrigger>
               {areaOrder.map((a) => (
                 <TabsTrigger key={a} value={areaSlug(a)} data-testid={`area-tab-${areaSlug(a)}`}
-                  className="px-3 py-1.5 rounded-lg border border-ocean/30 text-ocean data-[state=active]:bg-ocean data-[state=active]:text-white font-heading uppercase tracking-wide text-sm">
+                  className="rounded-none border-b-2 border-transparent px-4 py-3 text-muted-foreground data-[state=active]:border-ocean data-[state=active]:bg-transparent data-[state=active]:text-ocean font-heading uppercase tracking-wide text-sm">
                   {a}
                 </TabsTrigger>
               ))}
@@ -355,9 +356,9 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
           down unevenly depending on the engine. */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-8 items-start">
         {visibleAreas.map((area) => {
-          const typeGroups = groups.get(area);
+          const typeGroups = groups.get(area) || new Map();
           // Each area sits in its own grid cell, splitting into its notice
-          // types below.
+          // types below. Empty configured areas remain available as sections.
           const types = [...typeGroups.keys()].sort((a, b) =>
             typeRank(a) - typeRank(b) || typeGroups.get(a).label.localeCompare(typeGroups.get(b).label));
           return (
@@ -366,7 +367,9 @@ export default function NoticeBoard({ clubId, embedded = false, sectionId = null
               <h3 className="font-heading text-base font-bold uppercase tracking-tight text-ocean border-b border-ocean/30 pb-1.5 mb-4">
                 {area}
               </h3>
-              {types.map((typeKey) => {
+              {types.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No notices in this area yet.</p>
+              ) : types.map((typeKey) => {
                 const group = typeGroups.get(typeKey);
                 return (
                   <div key={typeKey} className="mb-6">

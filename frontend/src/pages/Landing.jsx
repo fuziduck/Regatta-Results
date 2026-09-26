@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
@@ -178,7 +178,11 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
         const completed = races.length;
         const remaining = Math.max(0, planned - completed);
         const tables = divisionTables(miniData);
-        const boats = tables.reduce((n, table) => n + (table.standings || []).length, 0);
+        // Scoring-mode tables show the same fleet twice; class rating divisions
+        // contain separate boats and should continue to be counted separately.
+        const boats = tables.some((table) => table.table_kind === "scoring_mode")
+          ? Math.max(0, ...tables.map((table) => (table.standings || []).length))
+          : tables.reduce((n, table) => n + (table.standings || []).length, 0);
         const leader = tables[0]?.standings?.[0];
         return (
           <div className="mb-4 grid grid-cols-3 gap-3" data-testid="series-stats">
@@ -220,9 +224,10 @@ const HERO_CHIP_REST = "border-black/50 dark:border-white/40 bg-white/60 text-bl
 const HERO_CHIP_CURRENT = "border-safety bg-safety text-white";
 
 export default function Landing() {
-  const { slug } = useParams();
+  const { slug, seriesId, seriesName } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const yearParam = Number(searchParams.get("year"));
+  const readableYear = /(?:^|-)(20\d{2}|21\d{2}|22\d{2})$/.exec(seriesName || "")?.[1];
+  const yearParam = Number(searchParams.get("year") || readableYear);
   const year = Number.isInteger(yearParam) && yearParam > 2000 && yearParam <= MAX_YEAR ? yearParam : CURRENT_YEAR;
   const setYear = (y) => {
     const p = new URLSearchParams(searchParams);
@@ -240,7 +245,11 @@ export default function Landing() {
   const [activeSeries, setActiveSeries] = useState("overall");
   // Deep link from the site search: a ?series= id preselects that series on
   // first load (applied once the series list arrives; consumed after).
-  const seriesParamRef = useRef(searchParams.get("series"));
+  const seriesParamRef = useRef(seriesId || searchParams.get("series"));
+  useEffect(() => {
+    const wanted = seriesId || searchParams.get("series");
+    if (wanted) seriesParamRef.current = wanted;
+  }, [seriesId, searchParams]);
   const [overall, setOverall] = useState(null);
   const [seriesData, setSeriesData] = useState({});
   const [regattas, setRegattas] = useState([]);
@@ -267,6 +276,27 @@ export default function Landing() {
   }, [slug]);
 
   const clubId = club?.id;
+
+  const setYearParamFromSeries = useCallback((value) => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 2000 || parsed > MAX_YEAR) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("year") !== String(parsed)) {
+      params.set("year", String(parsed));
+      setSearchParams(params, { replace: true });
+    }
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    if (!seriesId || !clubId) return;
+    api.getSeries({ club_id: clubId }).then((items) => {
+      const selected = (items || []).find((item) => item.id === seriesId);
+      if (selected?.class_id) {
+        setActiveClass(selected.class_id);
+        setYearParamFromSeries(selected.year);
+      }
+    }).catch(() => {});
+  }, [seriesId, clubId, setYearParamFromSeries]);
 
   useEffect(() => {
     if (!clubId) return;
@@ -520,10 +550,10 @@ export default function Landing() {
   const selectedRegatta = regattaComps.find((r) => r.id === regattaId);
   const heroPhoto = competitionImage(view === "regattas" ? selectedRegatta : null);
 
-  // The browse hierarchy as one sequence of levels. Only real choices appear:
-  // a level with a single option is already decided by the defaults above, so
-  // it never asks for a click. `depth` counts the levels the reader has
-  // committed to; the levels below that stay hidden, and so do the results.
+  // The browse hierarchy as a set of direct selectors. Only real choices
+  // appear: a level with a single option is already decided by the defaults,
+  // while every multi-option level stays visible so results never require a
+  // click-through just to reveal the next selector.
   const navLevels = [];
   if (showViewToggle) {
     navLevels.push({
@@ -829,7 +859,7 @@ export default function Landing() {
                       {regattaDetail.host_club && <span className="inline-flex items-center gap-1"><MapPin className="w-4 h-4" />{regattaDetail.host_club}</span>}
                     </p>
                   </div>
-                  <Link to={`/club/${club.slug}/regatta/${regattaId}`}>
+                  <Link to={competitionPath(regattaDetail, club.slug)}>
                     <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0">
                       View full regatta results <ArrowRight className="w-4 h-4" />
                     </Button>

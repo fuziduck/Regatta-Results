@@ -134,6 +134,21 @@ const reachDetailsStep = async () => {
   await act(async () => {});
 };
 
+describe("NoticeWizard — ONB publication area", () => {
+  it("offers configured notice areas without separate competition-board targets", async () => {
+    mockApi.getNoticeAreas.mockResolvedValue([
+      { key: "club", title: "Club Notices" },
+      { key: "open_event", title: "Open Event Notices" },
+      { key: "custom:regatta", title: "2026 Regatta" },
+    ]);
+    await reachDetailsStep();
+    expect(container.querySelector('[data-testid="publication-area-selector"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="notice-board-targets"]')).toBeNull();
+    expect(container.textContent).toContain("2026 Regatta");
+    expect(container.textContent).not.toContain("dedicated ONB");
+  });
+});
+
 describe("NoticeWizard — publication/effective date-time toggle", () => {
   const toggleDatetimes = () => {
     act(() => container.querySelector('[data-testid="toggle-datetimes"]').click());

@@ -146,6 +146,15 @@ export const SCORING_MODES = {
 
 export const scoringModeLabel = (mode) => (SCORING_MODES[mode] || SCORING_MODES.one_design).label;
 
+// Ordered rating systems selected for a series. Old records and clients only
+// carry scoring_mode, so retain that as the one-mode compatibility fallback.
+export function seriesScoringModes(series) {
+  const valid = Object.keys(SCORING_MODES);
+  const configured = Array.isArray(series?.scoring_modes) && series.scoring_modes.length
+    ? series.scoring_modes : [series?.scoring_mode || "one_design"];
+  return [...new Set(configured.filter((mode) => valid.includes(mode)))];
+}
+
 // Rating divisions: a class may field more than one rating system at once
 // (IRC boats and YTC boats in the same class and the same series), each scored
 // in its own table. Mirrors the backend's _class_divisions / _boat_division.

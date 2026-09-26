@@ -27,7 +27,7 @@ const client = axios.create({ baseURL: API, withCredentials: true });
 // prefix would match every path via startsWith. These are prefixes only.
 const PUBLIC_ROUTE_PREFIXES = [
   "/login", "/forgot-password", "/reset-password",
-  "/boats", "/boat/", "/club/", "/subscriptions/",
+  "/boats", "/boat/", "/class/", "/club/", "/subscriptions/",
 ];
 
 export function isPublicRoute(pathname) {
@@ -322,7 +322,6 @@ export const api = {
   // ------------------------------------------------------------------
   noticeMeta: () => client.get("/notices/meta").then((r) => r.data),
   getNoticeBoards: (params = {}) => client.get("/notice-boards", { params }).then((r) => r.data),
-  getNoticeTargets: (club_id) => client.get("/notice-targets", { params: { club_id } }).then((r) => r.data),
   getNoticeSections: (boardId) => client.get(`/notice-boards/${boardId}/sections`).then((r) => r.data),
   createNoticeBoard: (d) => client.post("/notice-boards", d).then((r) => r.data),
   createNoticeSection: (boardId, d) => client.post(`/notice-boards/${boardId}/sections`, { ...d, board_id: boardId }).then((r) => r.data),

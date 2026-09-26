@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { boatProfilePath } from "@/lib/seo";
 import { SAILSCORE_EVENTS, trackEvent } from "@/lib/analytics";
 import ThemeToggle from "@/components/ThemeToggle";
 import OfficialsLink from "@/components/OfficialsLink";
@@ -103,7 +104,7 @@ export default function Boats() {
             {results.map((b) => (
               <Link
                 key={b.fleet_id}
-                to={`/boat/${b.fleet_id}`}
+                to={boatProfilePath(b.fleet_id, b.name)}
                 data-testid={`boat-result-${b.fleet_id}`}
                 className="group flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4 hover:shadow-xl hover:border-ocean/40 hover:-translate-y-0.5 transition-all"
               >
