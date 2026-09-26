@@ -253,15 +253,10 @@ export default function Landing() {
   const [activeRegattaClass, setActiveRegattaClass] = useState(null);
   const [activeRegattaSeries, setActiveRegattaSeries] = useState(null);
   const [regattaSeriesData, setRegattaSeriesData] = useState({});
-  // Progressive disclosure in the hero: the levels (category → class → series,
-  // or category → regatta → class → series) are revealed one at a time, and
-  // each committed level collapses to a chip, so the results stay hidden until
-  // the reader has clicked their way down to them. A deep link that names a
-  // class or series opens with every level already committed.
-  const [depth, setDepth] = useState(searchParams.get("class") || searchParams.get("series") ? Infinity : 0);
+  // Category, class and series choices stay visible together; the initial
+  // selection is already enough to show current results without drilling down.
   // Both above are the browse path: category → class → series (or regatta →
-  // class → series), with a breadcrumb going up and a tab strip for the
-  // siblings at the level being browsed.
+  // class → series), with each selector available for direct switching.
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -583,28 +578,15 @@ export default function Landing() {
       });
     }
   }
-  const levelIndex = Math.min(depth, navLevels.length);
-  // The panel is always exactly one row: the level being chosen in, or — once
-  // every level is settled — the last one, so its siblings stay switchable.
-  // Settled levels are not repeated here; the breadcrumb above is the trail.
-  const browseLevel = navLevels[levelIndex] || navLevels[navLevels.length - 1] || null;
-  const browseSettled = levelIndex >= navLevels.length;
-  // Back steps the panel up one level, whichever level it is showing.
-  const browseShown = browseSettled ? navLevels.length - 1 : levelIndex;
-  // Breadcrumb trail: the club is the root of the browse hierarchy, each
-  // committed level is a crumb that steps back up to it, and the deepest
-  // choice is the page itself once there is nothing left to choose.
+  // Breadcrumb trail mirrors the selected path; direct selectors above it
+  // handle changing any level without needing Back/next steps.
   const crumbs = [
     { label: "Home", href: "/" },
-    { label: club.name, onClick: () => setDepth(0) },
+    { label: club.name },
   ];
-  navLevels.slice(0, levelIndex).forEach((level, i) => {
+  navLevels.forEach((level) => {
     const chosen = level.options.find((o) => o.value === level.value);
-    const settled = levelIndex >= navLevels.length && i === levelIndex - 1;
-    crumbs.push({
-      label: chosen ? chosen.label : "—",
-      onClick: settled ? undefined : () => setDepth(i),
-    });
+    crumbs.push({ label: chosen ? chosen.label : "—" });
 
     // A single class is intentionally omitted from the selector row, but it
     // still belongs in the path so choosing a category never leaves the user
@@ -618,10 +600,9 @@ export default function Landing() {
       });
     }
   });
-  // The regatta detail carries the class levels, so the regatta results wait
-  // for it — otherwise they would flash before that level appears.
-  const showResults = levelIndex >= navLevels.length
-    && (view !== "regattas" || !!regattaDetail || regattaComps.length === 0);
+  // A regatta needs its series metadata before showing its standings. Every
+  // other view always shows the selected results beneath the direct selectors.
+  const showResults = view !== "regattas" || !!regattaDetail || regattaComps.length === 0;
   return (
     <div className="min-h-screen bg-background">
       <NotificationBanner items={notifications} />
@@ -676,35 +657,29 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* One row, the level being chosen in. Picking a choice opens the
-              next level, and Back reopens the one above, so the panel is the
-              same size however deep you go. */}
-          {browseLevel && (
-            <div className="mt-4 w-full max-w-3xl rounded-2xl border border-white/25 bg-white/10 px-4 py-3 backdrop-blur-sm"
+          {/* Keep every available level visible. Picking a category, class,
+              regatta or series updates its results directly; no Back/next drill-down. */}
+          {navLevels.length > 0 && (
+            <div className="mt-4 w-full max-w-5xl space-y-3 rounded-2xl border border-white/25 bg-white/10 px-4 py-3 backdrop-blur-sm"
               data-testid="browse-nav">
-              <div data-testid={`nav-level-${browseLevel.key}`} className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <span className="text-white/60 text-[11px] uppercase tracking-widest font-semibold sm:w-24 sm:shrink-0">
-                  {browseLevel.label}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  {browseLevel.options.map((option) => (
-                    <button key={option.value} type="button" data-testid={option.testId}
-                      aria-current={(browseSettled && option.value === browseLevel.value) || undefined}
-                      onClick={() => { browseLevel.onPick(option.value); setDepth(levelIndex + 1); }}
-                      className={`${HERO_CHIP} ${browseSettled && option.value === browseLevel.value ? HERO_CHIP_CURRENT : HERO_CHIP_REST}`}>
-                      {option.Icon && <option.Icon className="w-4 h-4 inline -mt-0.5 mr-1.5" />}{option.label}
-                    </button>
-                  ))}
-                  {browseLevel.subscription}
-                  {browseShown > 0 && (
-                    <Button variant="ghost" size="sm" onClick={() => setDepth(browseShown - 1)}
-                      data-testid="nav-back"
-                      className="gap-1.5 border border-white/30 text-white/80 hover:bg-white/15 hover:text-white">
-                      <ArrowLeft className="w-3.5 h-3.5" /> Back
-                    </Button>
-                  )}
+              {navLevels.map((browseLevel) => (
+                <div key={browseLevel.key} data-testid={`nav-level-${browseLevel.key}`} className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold sm:w-24 sm:shrink-0">
+                    {browseLevel.label}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {browseLevel.options.map((option) => (
+                      <button key={option.value} type="button" data-testid={option.testId}
+                        aria-current={option.value === browseLevel.value ? "true" : undefined}
+                        onClick={() => browseLevel.onPick(option.value)}
+                        className={`${HERO_CHIP} ${option.value === browseLevel.value ? HERO_CHIP_CURRENT : HERO_CHIP_REST}`}>
+                        {option.Icon && <option.Icon className="w-4 h-4 inline -mt-0.5 mr-1.5" />}{option.label}
+                      </button>
+                    ))}
+                    {browseLevel.subscription}
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
           )}
         </div>
