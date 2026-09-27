@@ -27,8 +27,11 @@ import server  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Tiny filter-aware in-memory DB (supports the query shapes the fleet code
-# uses: exact equality, $in, $ne, $regex, dotted array fields, $or).
+# uses: exact equality, $in, $ne, $regex, $exists, dotted array fields, $or).
 # ---------------------------------------------------------------------------
+_MISSING = object()
+
+
 def _scalar_match(v, val):
     if isinstance(val, dict):
         # $options rides along with $regex; strip it before iterating ops.
@@ -52,6 +55,9 @@ def _scalar_match(v, val):
                 flags = _re.IGNORECASE if options == "i" else 0
                 if not _re.search(arg, str(v or ""), flags):
                     return False
+            elif op == "$exists":
+                if (v is not _MISSING) != arg:
+                    return False
             else:
                 raise NotImplementedError(op)
         return True
@@ -66,6 +72,10 @@ def _fmatches(doc, filt):
             if not any(_fmatches(doc, sub) for sub in val):
                 return False
             continue
+        if key == "$and":
+            if not all(_fmatches(doc, sub) for sub in val):
+                return False
+            continue
         if "." in key:
             base, sub = key.split(".", 1)
             arr = doc.get(base)
@@ -73,7 +83,7 @@ def _fmatches(doc, filt):
                     isinstance(x, dict) and _scalar_match(x.get(sub), val) for x in arr)):
                 return False
             continue
-        if not _scalar_match(doc.get(key), val):
+        if not _scalar_match(doc.get(key, _MISSING), val):
             return False
     return True
 
@@ -257,7 +267,7 @@ class TestFleetProfile:
 
     def test_career_across_two_clubs(self):
         server.db = self._db()
-        prof = asyncio.run(server.fleet_profile("F1"))
+        prof = asyncio.run(server.fleet_profile("F1", request=None))
         assert prof["name"] == "Watersong"
         assert prof["sail_no"] == "8420"
         assert len(prof["records"]) == 2
@@ -289,7 +299,7 @@ class TestFleetProfile:
         db.series.items.append(s3)
         db.races.items.append(r3)
         db.boats.items.append(_boat("b3", "Screwloose", "8410", "c1", 2026, fleet_id="F3"))
-        prof = asyncio.run(server.fleet_profile("F1"))
+        prof = asyncio.run(server.fleet_profile("F1", request=None))
         assert [s["series_name"] for s in prof["series"]] == ["Spring Series", "Late Spring"]
 
     def test_series_kept_when_boat_raced_any_race(self):
@@ -319,7 +329,7 @@ class TestFleetProfile:
         db.series.items.append(s3)
         db.races.items.extend([r3, r4])
         db.boats.items.append(_boat("b3", "Screwloose", "8410", "c1", 2026, fleet_id="F3"))
-        prof = asyncio.run(server.fleet_profile("F1"))
+        prof = asyncio.run(server.fleet_profile("F1", request=None))
         names = [s["series_name"] for s in prof["series"]]
         assert "Summer Series" in names
         summer = next(s for s in prof["series"] if s["series_name"] == "Summer Series")
@@ -346,7 +356,7 @@ class TestFleetProfile:
                             {"boat_id": "b3", "code": "FINISHED", "position": 1,
                              "finish_time": f"{date}T10:00:00Z", "penalty_points": 0}]})
 
-        season = next(s for s in asyncio.run(server.fleet_profile("F1"))["seasons"]
+        season = next(s for s in asyncio.run(server.fleet_profile("F1", request=None))["seasons"]
                       if s["year"] == 2026 and s["club_name"] == "Medway YC")
         rows = {h["race_number"]: h for h in season["race_history"]
                 if h["series_name"] == "Summer Series"}
@@ -367,7 +377,7 @@ class TestFleetProfile:
         for d in server.db.series.items:
             if d["id"] == "s1":
                 d["lock_status"] = server.LOCK_LOCKED
-        prof = asyncio.run(server.fleet_profile("F1"))
+        prof = asyncio.run(server.fleet_profile("F1", request=None))
         late = next(s for s in prof["series"] if s["series_name"] == "Late Spring")
         assert late["rank"] == 3
         assert late["locked"] is True
@@ -403,14 +413,14 @@ class TestFleetProfile:
             clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "m"},
                          {"id": "club-b", "name": "Other SC", "slug": "o"}]),
             season_snapshots=_Coll([]))
-        prof = asyncio.run(server.fleet_profile("F1"))
+        prof = asyncio.run(server.fleet_profile("F1", request=None))
         assert len(prof["records"]) == 2
         assert [s["series_name"] for s in prof["series"]] == ["Spring Series", "Late Spring"]
 
     def test_unknown_fleet_404(self):
         server.db = self._db()
         try:
-            asyncio.run(server.fleet_profile("missing"))
+            asyncio.run(server.fleet_profile("missing", request=None))
             assert False, "expected HTTPException"
         except server.HTTPException as exc:
             assert exc.status_code == 404
@@ -427,7 +437,7 @@ class TestFleetSearch:
                            {"id": "c2", "name": "Wayfarer", "club_id": "club-b"}]),
             clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "m"},
                          {"id": "club-b", "name": "Other SC", "slug": "o"}]))
-        out = asyncio.run(server.fleet_search("watersong"))
+        out = asyncio.run(server.fleet_search("watersong", request=None))
         assert len(out) == 1
         assert out[0]["fleet_id"] == "F1"
         assert set(out[0]["clubs"]) == {"Medway YC", "Other SC"}
@@ -445,7 +455,7 @@ class TestFleetSearch:
                            {"id": "c2", "name": "Wayfarer", "club_id": "club-b"}]),
             clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "m"},
                          {"id": "club-b", "name": "Other SC", "slug": "o"}]))
-        out = asyncio.run(server.fleet_search("watersong"))
+        out = asyncio.run(server.fleet_search("watersong", request=None))
         assert len(out) == 1
         assert set(out[0]["clubs"]) == {"Medway YC", "Other SC"}
         assert out[0]["records"] == 2
@@ -455,9 +465,9 @@ class TestFleetSearch:
             boats=_Coll([_boat("b1", "Watersong", "8420", "c1", 2026, fleet_id="F1")]),
             classes=_Coll([{"id": "c1", "name": "Sonata", "club_id": "club-a"}]),
             clubs=_Coll([{"id": "club-a", "name": "Medway YC", "slug": "m"}]))
-        out = asyncio.run(server.fleet_search("8420"))
+        out = asyncio.run(server.fleet_search("8420", request=None))
         assert len(out) == 1 and out[0]["name"] == "Watersong"
 
     def test_short_query_returns_empty(self):
         server.db = types.SimpleNamespace(boats=_Coll([]), classes=_Coll([]), clubs=_Coll([]))
-        assert asyncio.run(server.fleet_search("x")) == []
+        assert asyncio.run(server.fleet_search("x", request=None)) == []

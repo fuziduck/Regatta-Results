@@ -80,9 +80,14 @@ export default function Clubs() {
   const [directoryMode, setDirectoryMode] = useState("clubs");
   const [loading, setLoading] = useState(true);
   const [classesLoading, setClassesLoading] = useState(true);
+  const [clubsLoading, setClubsLoading] = useState(true);
   const [seasons, setSeasons] = useState([]);
   const { adverts, roll } = useAdverts();
   const sideAdverts = pickAdverts(adverts, 3, roll);
+  const publicClubIds = new Set(systemClubs
+    .filter((club) => club.approval_status === "approved" || !club.approval_status)
+    .map((club) => club.id));
+  const publicClasses = allClasses.filter((classData) => publicClubIds.has(classData.club_id));
 
   // Individual class boxes: the class with the newest published result sits at
   // the top; classes without published results keep their name order below.
@@ -129,7 +134,10 @@ export default function Clubs() {
         .then((items) => setAllClasses(items || []))
         .catch(() => setAllClasses([]))
         .finally(() => setClassesLoading(false));
-      api.getClubs().then((items) => setSystemClubs(items || [])).catch(() => setSystemClubs([]));
+      setClubsLoading(true);
+      api.getClubs().then((items) => setSystemClubs(items || []))
+        .catch(() => setSystemClubs([]))
+        .finally(() => setClubsLoading(false));
     };
     refresh();
     const t = setInterval(refresh, 30000);
@@ -224,9 +232,9 @@ export default function Clubs() {
         </div>
 
         {directoryMode === "classes" ? (
-          classesLoading ? <p className="text-muted-foreground">Loading classes…</p> : allClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
+          classesLoading || clubsLoading ? <p className="text-muted-foreground">Loading classes…</p> : publicClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-testid="class-grid">
-              {Object.values(allClasses.reduce((groups, classData) => {
+              {Object.values(publicClasses.reduce((groups, classData) => {
                 const key = classData.scoring_mode === "one_design" ? classData.class_group_key : `class:${classData.id}`;
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(classData);

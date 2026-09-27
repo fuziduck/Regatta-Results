@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import ClubPicker from "@/components/ClubPicker";
 import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
+import ClubApplicationStatus from "@/components/ClubApplicationStatus";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, seriesScoringModes } from "@/lib/helpers";
 import { SeriesStandings } from "@/components/StandingsTable";
@@ -2026,6 +2027,7 @@ export default function Officer() {
     return (
       <div className="min-h-screen bg-background">
         <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+        {!isWebmaster && <ClubApplicationStatus />}
         {/* Same-day races fill one column per race once the screen is wide
             enough — 2 up on large, 3 on xl, 4 on 2xl — so three or more
             classes racing together still fit without the consoles getting
@@ -2174,6 +2176,7 @@ export default function Officer() {
     return (
       <div className="min-h-screen bg-background">
         <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+        {!isWebmaster && <ClubApplicationStatus />}
         <MiniSeriesBatchEntry
           group={batchGroup.group}
           groupIndex={batchGroup.groupIndex}
@@ -2191,6 +2194,7 @@ export default function Officer() {
   return (
     <div className="min-h-screen bg-background">
       <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+      {!isWebmaster && <ClubApplicationStatus />}
       <main className="max-w-3xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-6">
           <div>

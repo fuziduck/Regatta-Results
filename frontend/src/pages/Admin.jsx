@@ -6,6 +6,7 @@ import ClubPicker from "@/components/ClubPicker";
 import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ClubBadge from "@/components/ClubBadge";
 import ConsoleNav from "@/components/ConsoleNav";
+import ClubApplicationStatus from "@/components/ClubApplicationStatus";
 import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
@@ -2367,6 +2368,7 @@ export default function Admin() {
   return (
     <div className="min-h-screen bg-background">
       <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+      {!isWebmaster && <ClubApplicationStatus />}
       <main className="max-w-6xl mx-auto px-4 py-8">
         <div className="flex flex-wrap items-end justify-between gap-3 mb-1">
           <div>

@@ -148,6 +148,191 @@ SUBSCRIPTION_MAX_EMAIL_ROWS = 100
 SUBSCRIPTION_VERIFY_MINUTES = int(os.environ.get("SUBSCRIPTION_VERIFY_MINUTES", "60"))
 SUBSCRIPTION_RATE_LIMIT = int(os.environ.get("SUBSCRIPTION_RATE_LIMIT", "5"))
 SUBSCRIPTION_RATE_WINDOW_SECONDS = 600
+CLUB_APPLICATION_VERIFY_MINUTES = int(os.environ.get("CLUB_APPLICATION_VERIFY_MINUTES", "1440"))
+CLUB_APPLICATION_EMAIL_LIMIT = int(os.environ.get("CLUB_APPLICATION_EMAIL_LIMIT", "5"))
+CLUB_APPLICATION_IP_LIMIT = int(os.environ.get("CLUB_APPLICATION_IP_LIMIT", "10"))
+CLUB_APPLICATION_RATE_WINDOW_SECONDS = 600
+CLUB_APPLICATION_VERIFY_IP_LIMIT = int(os.environ.get("CLUB_APPLICATION_VERIFY_IP_LIMIT", "20"))
+CLUB_APPLICATION_VERIFY_WINDOW_SECONDS = 600
+
+APPROVAL_PUBLIC = "approved"
+APPROVAL_PENDING = "pending"
+APPROVAL_REJECTED = "rejected"
+CLUB_APPLICATION_PENDING_VERIFICATION = "verification_pending"
+CLUB_APPLICATION_CREATING = "creating"
+CLUB_APPLICATION_EXPIRED = "expired"
+
+
+def _club_is_approved(club: Optional[dict]) -> bool:
+    """Legacy clubs without an approval field stay public; self-registered
+    clubs become public only after an explicit Webmaster approval."""
+    return bool(club and club.get("approval_status", APPROVAL_PUBLIC) == APPROVAL_PUBLIC)
+
+
+def _club_is_public_query() -> dict:
+    """Mongo predicate for approved clubs, including pre-migration records."""
+    return {"$or": [{"approval_status": APPROVAL_PUBLIC},
+                    {"approval_status": {"$exists": False}}]}
+
+
+def _club_app_owner_can_preview(club: Optional[dict], user: Optional[dict]) -> bool:
+    return bool(club and user and user.get("role") != "webmaster"
+                and user.get("club_id") == club.get("id")
+                and user.get("user_id")
+                and user.get("user_id") == club.get("application_owner_id"))
+
+
+async def _club_visible_to_user(club_id: Optional[str], user: Optional[dict]) -> bool:
+    if not club_id:
+        return False
+    if user and user.get("role") == "webmaster":
+        return True
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0})
+    return bool(club and (_club_is_approved(club) or _club_app_owner_can_preview(club, user)))
+
+
+async def _require_club_visible(club_id: Optional[str], user: Optional[dict],
+                                detail: str = "Club not found") -> dict:
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0}) if club_id else None
+    if not club or (not _club_is_approved(club)
+                    and not _club_app_owner_can_preview(club, user)
+                    and not (user and user.get("role") == "webmaster")):
+        raise HTTPException(status_code=404, detail=detail)
+    return club
+
+
+async def _visible_club_ids(request: Optional[Request], *, public_only: bool = False) -> Optional[list[str]]:
+    """Club ids that may appear in a public/global data projection. An
+    applicant gains only their own private club unless a public-only surface
+    (such as search or the front-page directory) is explicitly being built."""
+    user = await get_current_user(request) if request is not None else None
+    if user and user.get("role") == "webmaster" and not public_only:
+        return None
+    clubs = await db.clubs.find(_club_is_public_query(), {"_id": 0, "id": 1}).to_list(5000)
+    ids = [club.get("id") for club in clubs if club.get("id")]
+    if (not public_only and user and user.get("club_id")
+            and await _club_visible_to_user(user.get("club_id"), user)
+            and user.get("club_id") not in ids):
+        ids.append(user["club_id"])
+    return ids
+
+
+async def _visible_class_ids(request: Optional[Request], *, public_only: bool = False) -> list[str]:
+    club_ids = await _visible_club_ids(request, public_only=public_only)
+    if club_ids is None:
+        return [item["id"] for item in await db.classes.find({}, {"_id": 0, "id": 1}).to_list(5000)]
+    if not club_ids:
+        return []
+    return [item["id"] for item in await db.classes.find(
+        {"club_id": {"$in": club_ids}}, {"_id": 0, "id": 1}).to_list(5000)]
+
+
+def _club_application_public(application: dict) -> dict:
+    """Safe Webmaster queue projection; no verification token material."""
+    return {key: application.get(key) for key in (
+        "id", "club_id", "club_name", "club_slug", "applicant_name", "email",
+        "status", "submitted_at", "verified_at", "reviewed_at", "reviewed_by",
+        "webmaster_notification_sent",
+    )}
+
+
+def _club_application_session(application: Optional[dict]) -> Optional[dict]:
+    if not application:
+        return None
+    return {key: application.get(key) for key in (
+        "id", "club_id", "club_name", "club_slug", "status", "submitted_at", "verified_at",
+    )}
+
+
+async def _club_application_for_owner(user: Optional[dict]) -> Optional[dict]:
+    if not user or not user.get("club_registration_owner"):
+        return None
+    return await db.club_applications.find_one(
+        {"owner_user_id": user.get("user_id")}, {"_id": 0})
+
+
+async def _application_notification_configured() -> bool:
+    cfg = await _get_email_settings()
+    if not cfg.get("configured"):
+        return False
+    webmaster = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
+    return bool(_user_email(webmaster or {}))
+
+
+async def _send_club_application_verification(to_email: str, applicant_name: str,
+                                              club_name: str, token: str,
+                                              cfg: dict) -> bool:
+    if not cfg.get("smtp_host"):
+        return False
+    link = f"{_public_web_base()}/club-registration?token={token}"
+    msg = EmailMessage()
+    msg["Subject"] = "SailScore — verify your club registration"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = to_email
+    msg.set_content(
+        f"Hello {applicant_name},\n\n"
+        f"Verify your email to continue the registration for {club_name}:\n{link}\n\n"
+        f"This link expires in {CLUB_APPLICATION_VERIFY_MINUTES // 60} hours and can be used once. "
+        "You will choose your club admin passcode after verifying. The club stays private until the SailScore Webmaster approves it.\n"
+        "If you did not request this, ignore this email.\n"
+    )
+    msg.add_alternative(
+        f"<p>Hello {html_lib.escape(applicant_name)},</p>"
+        f"<p>Verify your email to continue registering <strong>{html_lib.escape(club_name)}</strong>:</p>"
+        f"<p><a href=\"{html_lib.escape(link, quote=True)}\">Verify email and continue</a></p>"
+        f"<p>This link expires in {CLUB_APPLICATION_VERIFY_MINUTES // 60} hours and can be used once. "
+        "You will choose your club admin passcode after verifying. The club stays private until the SailScore Webmaster approves it.</p>"
+        "<p>If you did not request this, ignore this email.</p>", subtype="html")
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as smtp:
+            smtp.starttls()
+            if cfg.get("smtp_user"):
+                smtp.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            smtp.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("CLUB APPLICATION VERIFICATION EMAIL FAILED to=%s error=%s", to_email, exc)
+        return False
+
+
+async def _notify_webmaster_club_application(application: dict) -> bool:
+    cfg = await _get_email_settings()
+    if not cfg.get("smtp_host"):
+        return False
+    webmaster = await db.users.find_one({"role": "webmaster", "club_id": None}, {"_id": 0})
+    to_email = _user_email(webmaster or {})
+    if not to_email:
+        return False
+    url = f"{_public_web_base()}/webmaster"
+    msg = EmailMessage()
+    msg["Subject"] = f"SailScore — club application ready for review: {application.get('club_name')}"
+    msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
+    msg["To"] = to_email
+    msg.set_content(
+        f"A new club application has been verified and is ready for review.\n\n"
+        f"Club: {application.get('club_name')}\n"
+        f"Applicant: {application.get('applicant_name')} ({application.get('email')})\n"
+        f"Submitted: {application.get('submitted_at')}\n\n"
+        f"Review applications in the Webmaster console: {url}\n"
+    )
+    msg.add_alternative(
+        "<p>A new club application has been verified and is ready for review.</p>"
+        f"<p><strong>Club:</strong> {html_lib.escape(str(application.get('club_name') or ''))}<br>"
+        f"<strong>Applicant:</strong> {html_lib.escape(str(application.get('applicant_name') or ''))} "
+        f"({html_lib.escape(str(application.get('email') or ''))})<br>"
+        f"<strong>Submitted:</strong> {html_lib.escape(str(application.get('submitted_at') or ''))}</p>"
+        f"<p><a href=\"{html_lib.escape(url, quote=True)}\">Review in the Webmaster console</a></p>",
+        subtype="html")
+    try:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as smtp:
+            smtp.starttls()
+            if cfg.get("smtp_user"):
+                smtp.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            smtp.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.error("WEBMASTER CLUB APPLICATION EMAIL FAILED to=%s error=%s", to_email, exc)
+        return False
 
 
 WEAK_JWT_SECRETS = {"change-me-to-a-long-random-string", "changeme", "secret",
@@ -470,9 +655,19 @@ async def get_current_user(request: Request):
     tv = payload.get("tv")
     if int(tv if tv is not None else -1) != int(user.get("token_version") or 0):
         return None  # token predates a passcode reset / role change / deactivation
+    # Pending/rejected clubs are private workspaces for the verified applicant
+    # only. A Webmaster may still manage every account; other staff accounts
+    # cannot use a Webmaster-created login to inspect a private application.
+    if user.get("club_id") and user.get("role") != "webmaster":
+        club = await db.clubs.find_one({"id": user.get("club_id")},
+                                       {"_id": 0, "approval_status": 1, "application_owner_id": 1})
+        if (club and not _club_is_approved(club)
+                and club.get("application_owner_id") != user.get("id")):
+            return None
     result = {"role": user.get("role"), "club_id": user.get("club_id"),
               "user_id": user["id"], "username": user.get("username"),
-              "name": user.get("name")}
+              "name": user.get("name"),
+              "club_registration_owner": bool(user.get("club_registration_owner"))}
     # First-login forced password change: carry the flag through so /auth/me
     # (page refresh, session restore) keeps prompting until the passcode is
     # actually changed.
@@ -544,17 +739,20 @@ async def _resolve_club_id(request: Request, club_id: Optional[str] = None,
     """
     user = await get_current_user(request)
     if not user:
+        if club_id:
+            await _require_club_visible(club_id, None)
         return club_id
     if user.get("role") == "webmaster":
         return club_id
     if honor_param:
-        # Public read endpoint: honour an explicit club_id — the data it
-        # serves is already visible to anonymous callers, so a staff member
-        # browsing another club's public page must see that club rather than
-        # being pinned to their own. Fall back to the caller's own club when
-        # no club_id is given, so staff management views keep working.
-        return club_id if club_id else user.get("club_id")
-    return user.get("club_id")
+        # Public read endpoint: honour an explicit public club_id — private
+        # clubs are visible only to their verified application owner.
+        resolved = club_id if club_id else user.get("club_id")
+    else:
+        resolved = user.get("club_id")
+    if resolved:
+        await _require_club_visible(resolved, user)
+    return resolved
 
 
 async def _club_class_ids(club_id: Optional[str]):
@@ -571,11 +769,13 @@ async def _class_club_id(class_id) -> Optional[str]:
 
 
 async def _class_of_club(class_id: str, user: dict):
-    """Return the class if it belongs to the user's club, else raise."""
+    """Return a class only when it belongs to the caller's visible club."""
     cls = await db.classes.find_one({"id": class_id}, {"_id": 0})
     if not cls:
         raise HTTPException(status_code=404, detail="Class not found")
     _ensure_club(user, cls.get("club_id"))
+    if user.get("role") != "webmaster" and not await _club_visible_to_user(cls.get("club_id"), user):
+        raise HTTPException(status_code=404, detail="Class not found")
     return cls
 
 
@@ -585,6 +785,26 @@ async def _class_visible_or_404(class_id: str, user: dict):
     cid = await _class_club_id(class_id)
     if cid is None or (user.get("role") != "webmaster" and cid != user.get("club_id")):
         raise HTTPException(status_code=404, detail="Class not found")
+    if user.get("role") != "webmaster" and not await _club_visible_to_user(cid, user):
+        raise HTTPException(status_code=404, detail="Class not found")
+
+
+async def _public_class_or_404(class_id: str, request: Request):
+    """Guard a public class lookup, allowing only the owner to preview a
+    pending/rejected club while preserving public reads of approved clubs."""
+    cid = await _class_club_id(class_id)
+    user = await get_current_user(request)
+    if cid is None or not await _club_visible_to_user(cid, user):
+        raise HTTPException(status_code=404, detail="Class not found")
+    return cid
+
+
+async def _public_series_or_404(series: dict, request: Request):
+    user = await get_current_user(request)
+    cid = await _class_club_id(series.get("class_id"))
+    if cid is None or not await _club_visible_to_user(cid, user):
+        raise HTTPException(status_code=404, detail="Series not found")
+    return cid
 
 
 async def _series_visible_or_404(series_id: str, user: dict):
@@ -599,7 +819,10 @@ async def _series_of_club(series_id: str, user: dict):
     series = await db.series.find_one({"id": series_id}, {"_id": 0})
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
-    _ensure_club(user, await _class_club_id(series.get("class_id")))
+    class_club_id = await _class_club_id(series.get("class_id"))
+    _ensure_club(user, class_club_id)
+    if user.get("role") != "webmaster" and not await _club_visible_to_user(class_club_id, user):
+        raise HTTPException(status_code=404, detail="Series not found")
     return series
 
 
@@ -607,7 +830,10 @@ async def _boat_of_club(boat_id: str, user: dict):
     boat = await db.boats.find_one({"id": boat_id}, {"_id": 0})
     if not boat:
         raise HTTPException(status_code=404, detail="Boat not found")
-    _ensure_club(user, await _class_club_id(boat.get("class_id")))
+    class_club_id = await _class_club_id(boat.get("class_id"))
+    _ensure_club(user, class_club_id)
+    if user.get("role") != "webmaster" and not await _club_visible_to_user(class_club_id, user):
+        raise HTTPException(status_code=404, detail="Boat not found")
     return boat
 
 
@@ -702,7 +928,10 @@ async def _race_of_club(race_id: str, user: dict):
     race = await db.races.find_one({"id": race_id}, {"_id": 0})
     if not race:
         raise HTTPException(status_code=404, detail="Race not found")
-    _ensure_club(user, await _class_club_id(race.get("class_id")))
+    class_club_id = await _class_club_id(race.get("class_id"))
+    _ensure_club(user, class_club_id)
+    if user.get("role") != "webmaster" and not await _club_visible_to_user(class_club_id, user):
+        raise HTTPException(status_code=404, detail="Race not found")
     return race
 
 
@@ -823,6 +1052,26 @@ class ClubInput(BaseModel):
     # is the highest-priority match when linking free-text club labels.
     abbr: Optional[str] = None
     # No PIN fields: logins are individual user accounts managed per club.
+
+
+class ClubApplicationInput(BaseModel):
+    club_name: str = Field(..., min_length=2, max_length=120)
+    applicant_name: str = Field(..., min_length=2, max_length=120)
+    email: EmailStr
+
+
+class ClubApplicationVerifyInput(BaseModel):
+    token: str = Field(..., min_length=20, max_length=200)
+    passcode: str = Field(..., min_length=6, max_length=128)
+
+
+class ClubApplicationReviewInput(BaseModel):
+    status: Literal["approved", "rejected"]
+
+
+class ClubApplicationResendInput(BaseModel):
+    club_name: str = Field(..., min_length=2, max_length=120)
+    email: EmailStr
 
 
 class ClubSettingsInput(BaseModel):
@@ -1515,7 +1764,8 @@ async def login(data: LoginInput, request: Request):
                          "AUTH_LOGIN_SUCCESS", description="Webmaster signed in")
         logger.info("LOGIN OK user=%s role=webmaster ip=%s", u.get("username"), ip)
         resp_body = {"role": "webmaster", "club_id": None, "club_name": None,
-                     "username": u.get("username"), "name": u.get("name")}
+                     "username": u.get("username"), "name": u.get("name"),
+                     "club_registration_owner": False}
         if u.get("must_change_passcode"):
             resp_body["must_change_passcode"] = True
         response = JSONResponse(resp_body)
@@ -1528,18 +1778,43 @@ async def login(data: LoginInput, request: Request):
     if data.club_id:
         club = await db.clubs.find_one({"id": data.club_id}, {"_id": 0})
     else:
-        # No club chosen: only unambiguous if exactly one club exists.
-        clubs = await db.clubs.find({}, {"_id": 0}).to_list(100)
+        # No club chosen: only unambiguous if exactly one public club exists.
+        clubs = await db.clubs.find(_club_is_public_query(), {"_id": 0}).to_list(100)
         if len(clubs) == 1:
             club = clubs[0]
-    if not club or not data.username:
+    if not data.username:
         await _log_audit(request, None, "AUTH_LOGIN_FAILED",
-                         description=f"Login rejected for username {data.username or ''}")
+                         description="Login rejected for an empty username")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    user = await db.users.find_one({"club_id": club["id"], "username": data.username.strip().lower()}, {"_id": 0})
+    username = data.username.strip().lower()
+    user = (await db.users.find_one({"club_id": club["id"], "username": username}, {"_id": 0})
+            if club else None)
+    if (user and user.get("club_registration_owner")
+            and club.get("application_owner_id") != user.get("id")):
+        user = None
     if not user:
+        # A verified club applicant's workspace is intentionally absent from
+        # the public club picker. Resolve their private account by email + the
+        # passcode they know, never by exposing pending clubs to anonymous
+        # /clubs or login-picker responses.
+        owners = await db.users.find({"username": username, "club_registration_owner": True},
+                                     {"_id": 0}).to_list(20)
+        owner_matches = []
+        for candidate in owners:
+            candidate_club = await db.clubs.find_one(
+                {"id": candidate.get("club_id")}, {"_id": 0})
+            if candidate_club and candidate_club.get("application_owner_id") == candidate.get("id"):
+                owner_matches.append((candidate, candidate_club))
+        if len(owner_matches) == 1:
+            user, club = owner_matches[0]
+        if not user or not club:
+            await _log_audit(request, None, "AUTH_LOGIN_FAILED",
+                             description=f"Login rejected: unknown account {username}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    if (not _club_is_approved(club)
+            and club.get("application_owner_id") != user.get("id")):
         await _log_audit(request, None, "AUTH_LOGIN_FAILED",
-                         description=f"Login rejected: unknown account {data.username.strip().lower()}")
+                         description=f"Login rejected for private club account {username}", success=False)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     try:
         u = await _login_user(user, passcode, ip)
@@ -1578,7 +1853,12 @@ async def login(data: LoginInput, request: Request):
     logger.info("LOGIN OK user=%s role=%s club=%s ip=%s", u.get("username"), role, club["id"], ip)
     resp_body = {"role": role, "club_id": club["id"],
                  "club_name": club.get("name"), "username": u.get("username"),
-                 "name": u.get("name")}
+                 "name": u.get("name"),
+                 "club_registration_owner": bool(u.get("club_registration_owner"))}
+    application = await _club_application_for_owner({"user_id": u["id"],
+                                                      "club_registration_owner": u.get("club_registration_owner")})
+    if application:
+        resp_body["club_application"] = _club_application_session(application)
     if u.get("must_change_passcode"):
         resp_body["must_change_passcode"] = True
     response = JSONResponse(resp_body)
@@ -1661,7 +1941,12 @@ async def login_2fa(data: Login2faInput, request: Request):
     logger.info("LOGIN OK user=%s role=%s club=%s 2fa=%s ip=%s",
                 u.get("username"), role, club_id, method, ip)
     resp_body = {"role": role, "club_id": club_id, "club_name": club_name,
-                 "username": u.get("username"), "name": u.get("name")}
+                 "username": u.get("username"), "name": u.get("name"),
+                 "club_registration_owner": bool(u.get("club_registration_owner"))}
+    application = await _club_application_for_owner({"user_id": u["id"],
+                                                      "club_registration_owner": u.get("club_registration_owner")})
+    if application:
+        resp_body["club_application"] = _club_application_session(application)
     if u.get("must_change_passcode"):
         resp_body["must_change_passcode"] = True
     response = JSONResponse(resp_body)
@@ -2039,15 +2324,27 @@ async def forgot_password(data: ForgotInput, request: Request):
     if data.club_id:
         user = await db.users.find_one({"club_id": data.club_id, "username": email}, {"_id": 0})
     if not user:
+        # The verified owner can reset their passcode even though their private
+        # club is intentionally omitted from the public picker.
+        owners = await db.users.find({"username": email, "club_registration_owner": True},
+                                     {"_id": 0}).to_list(20)
+        if len(owners) == 1:
+            user = owners[0]
+    if not user:
         # The webmaster account has no club and a fixed username, so the club
         # lookup can never match it — its reset link goes to the backup email
         # stored on the account (the same address used for 2FA fallback codes).
         user = await db.users.find_one({"role": "webmaster", "email": email}, {"_id": 0})
     if not user and not data.club_id:
         # No club chosen: unambiguous only when exactly one club exists.
-        clubs = await db.clubs.find({}, {"_id": 0}).to_list(100)
+        clubs = await db.clubs.find(_club_is_public_query(), {"_id": 0}).to_list(100)
         if len(clubs) == 1:
             user = await db.users.find_one({"username": email}, {"_id": 0})
+    if user:
+        if user.get("club_registration_owner") and user.get("club_id"):
+            club = await db.clubs.find_one({"id": user["club_id"]}, {"_id": 0})
+            if not _club_is_approved(club) and (not club or club.get("application_owner_id") != user.get("id")):
+                user = None
     if user:
         token = secrets.token_urlsafe(32)
         await db.users.update_one({"id": user["id"]}, {"$set": {
@@ -2192,7 +2489,11 @@ async def me(request: Request):
         club_name = (club or {}).get("name")
     result = {"role": user.get("role"), "club_id": user.get("club_id"),
               "club_name": club_name, "username": user.get("username"),
-              "name": user.get("name")}
+              "name": user.get("name"),
+              "club_registration_owner": bool(user.get("club_registration_owner"))}
+    application = await _club_application_for_owner(user)
+    if application:
+        result["club_application"] = _club_application_session(application)
     if user.get("must_change_passcode"):
         result["must_change_passcode"] = True
     return result
@@ -2473,17 +2774,68 @@ def slugify(name: str) -> str:
 
 
 def _club_public(club: dict) -> dict:
-    """Club without credential material (legacy plaintext PIN fields are
-    stripped even if a pre-migration document still carries them)."""
-    return {k: v for k, v in club.items() if k not in ("officer_pin", "admin_pin")}
+    """Public-safe club payload. Approval state is safe for the applicant's
+    authenticated preview, but internal ownership/application references and
+    any applicant contact fields must never leave the server."""
+    private = {"officer_pin", "admin_pin", "application_owner_id", "application_id",
+               "applicant_name", "applicant_email", "owner_email", "reviewed_by",
+               "reviewed_at", "approved_at"}
+    return {k: v for k, v in club.items() if k not in private}
+
+
+def _club_application_rate_limited(email: str, ip: str) -> bool:
+    now = time.time()
+    buckets = ((f"club-application-email:{email}", CLUB_APPLICATION_EMAIL_LIMIT),
+               (f"club-application-ip:{ip}", CLUB_APPLICATION_IP_LIMIT))
+    limited = False
+    for key, limit in buckets:
+        attempts = _login_attempts[key]
+        while attempts and attempts[0] < now - CLUB_APPLICATION_RATE_WINDOW_SECONDS:
+            attempts.popleft()
+        limited = limited or len(attempts) >= limit
+    # Don't extend a lockout every time a caller retries while already limited.
+    if not limited:
+        for key, _ in buckets:
+            _login_attempts[key].append(now)
+    return limited
+
+
+def _club_application_verification_limited(ip: str) -> bool:
+    now = time.time()
+    attempts = _login_attempts[f"club-application-verify-ip:{ip}"]
+    while attempts and attempts[0] < now - CLUB_APPLICATION_VERIFY_WINDOW_SECONDS:
+        attempts.popleft()
+    if len(attempts) >= CLUB_APPLICATION_VERIFY_IP_LIMIT:
+        return True
+    attempts.append(now)
+    return False
+
+
+async def _new_club_application_slug(name: str) -> str:
+    base = slugify(name)[:90].strip("-") or "club"
+    slug = base
+    while (await db.clubs.find_one({"slug": slug}, {"_id": 0, "id": 1})
+           or await db.club_applications.find_one({"club_slug": slug}, {"_id": 0, "id": 1})):
+        slug = f"{base[:80]}-{new_id()[:6]}"
+    return slug
 
 
 async def _club_map_for_display():
-    """id -> {name, slug} for every registered club, for resolving a boat's
-    linked home club in standings rows. Tolerant of stub DBs (unit tests)
-    that have no clubs collection — those simply skip the linking."""
+    """id -> public-safe club display data for standings. Keep a redacted id
+    marker for unapproved clubs so an old free-text boat home-club label cannot
+    reveal a private club name in an otherwise public result."""
     try:
-        return {c["id"]: c for c in await db.clubs.find({}, {"_id": 0, "id": 1, "name": 1, "slug": 1}).to_list(1000)}
+        clubs = await db.clubs.find({}, {"_id": 0, "id": 1, "name": 1, "slug": 1,
+                                        "abbr": 1, "approval_status": 1}).to_list(5000)
+        hidden_labels = {str(value).strip().casefold()
+                         for club in clubs if not _club_is_approved(club)
+                         for value in (club.get("name"), club.get("abbr"), club.get("slug"))
+                         if value}
+        result = {club["id"]: (club if _club_is_approved(club)
+                               else {"id": club["id"], "name": "", "slug": ""})
+                  for club in clubs if club.get("id")}
+        result["__hidden_labels__"] = hidden_labels
+        return result
     except (AttributeError, TypeError):
         return {}
 
@@ -2496,7 +2848,8 @@ async def _resolve_home_club(home_club: str, context_club_id: Optional[str] = No
     label = (home_club or "").strip()
     if not label:
         return None
-    clubs = await db.clubs.find({}, {"_id": 0, "id": 1, "name": 1, "slug": 1, "abbr": 1}).to_list(2000)
+    clubs = await db.clubs.find(_club_is_public_query(),
+                                {"_id": 0, "id": 1, "name": 1, "slug": 1, "abbr": 1}).to_list(2000)
     m = match_club(label, clubs, context_club_id=context_club_id)
     if not m:
         return None
@@ -2511,12 +2864,300 @@ def _home_club_display(boat: dict, fallback: str, club_map: dict):
     c = club_map.get(hid) if hid else None
     if c:
         return c.get("name") or fallback, c.get("slug") or ""
-    return (boat.get("home_club") or fallback), ""
+    label = (boat.get("home_club") or "").strip()
+    hidden_labels = club_map.get("__hidden_labels__", set())
+    if label and label.casefold() in hidden_labels:
+        return fallback, ""
+    return label or fallback, ""
+
+
+@api_router.post("/club-applications")
+async def submit_club_application(data: ClubApplicationInput, request: Request):
+    """Start a self-service registration. No account, club or passcode exists
+    until the applicant proves control of their email address."""
+    ip = _client_ip(request)
+    if _login_ip_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many requests — please try again shortly")
+    email = str(data.email).strip().lower()
+    if _club_application_rate_limited(email, ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many registration requests — please try again shortly")
+    applicant_name = " ".join(data.applicant_name.split())
+    club_name = " ".join(data.club_name.split())
+    if len(applicant_name) < 2 or len(club_name) < 2:
+        raise HTTPException(status_code=400, detail="Applicant and club names must contain at least two characters")
+    cfg = await _get_email_settings()
+    if APP_ENV == "production" and not cfg.get("configured"):
+        raise HTTPException(status_code=503,
+                            detail="Club registration email is not configured yet")
+    # A still-pending application for the same email is reissued rather than
+    # creating a duplicate. Completed/rejected applications remain in history;
+    # a new club request from the same verified person is allowed.
+    prior = await db.club_applications.find_one(
+        {"email": email, "status": CLUB_APPLICATION_PENDING_VERIFICATION}, {"_id": 0})
+    application_id = prior.get("id") if prior else new_id()
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    application = {
+        "id": application_id,
+        "club_name": club_name,
+        "club_slug": prior.get("club_slug") if prior else await _new_club_application_slug(club_name),
+        "applicant_name": applicant_name,
+        "email": email,
+        "status": CLUB_APPLICATION_PENDING_VERIFICATION,
+        "verification_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "verification_expires_at": (now + timedelta(minutes=CLUB_APPLICATION_VERIFY_MINUTES)).isoformat(),
+        "submitted_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "webmaster_notification_sent": False,
+    }
+    if prior:
+        await db.club_applications.update_one({"id": application_id}, {"$set": application})
+    else:
+        try:
+            await db.club_applications.insert_one(application)
+        except DuplicateKeyError:
+            raise HTTPException(status_code=409, detail="A club registration request is already in progress for this email")
+    await _log_audit(request, None, "CLUB_APPLICATION_SUBMITTED",
+                     description=f"Club registration submitted for {club_name}",
+                     resource_type="club_application", resource_id=application_id)
+    sent = await _send_club_application_verification(email, applicant_name, club_name, token, cfg)
+    if not sent and APP_ENV == "production":
+        raise HTTPException(status_code=502,
+                            detail="Your request was saved, but the verification email could not be sent. Use Resend verification to try again.")
+    body = {"ok": True,
+            "message": "Check your email for a secure link to verify your address and continue registration."}
+    if not sent and APP_ENV != "production":
+        body["dev_verification_token"] = token
+    return body
+
+
+@api_router.post("/club-applications/resend")
+async def resend_club_application_verification(data: ClubApplicationResendInput,
+                                               request: Request):
+    ip = _client_ip(request)
+    if _login_ip_limited(ip) or _club_application_verification_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many requests — please try again shortly")
+    email = str(data.email).strip().lower()
+    if _club_application_rate_limited(email, ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many registration requests — please try again shortly")
+    generic = {"ok": True, "message": "If a matching unverified request exists, a new verification email has been sent."}
+    app = await db.club_applications.find_one({
+        "email": email,
+        "club_name": " ".join(data.club_name.split()),
+        "status": {"$in": [CLUB_APPLICATION_PENDING_VERIFICATION, CLUB_APPLICATION_EXPIRED]},
+    }, {"_id": 0})
+    if not app:
+        return generic
+    cfg = await _get_email_settings()
+    if APP_ENV == "production" and not cfg.get("configured"):
+        raise HTTPException(status_code=503, detail="Club registration email is not configured yet")
+    token = secrets.token_urlsafe(32)
+    await db.club_applications.update_one({
+        "id": app["id"],
+        "status": {"$in": [CLUB_APPLICATION_PENDING_VERIFICATION, CLUB_APPLICATION_EXPIRED]},
+    }, {"$set": {"status": CLUB_APPLICATION_PENDING_VERIFICATION,
+                 "verification_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                 "verification_expires_at": (datetime.now(timezone.utc)
+                                              + timedelta(minutes=CLUB_APPLICATION_VERIFY_MINUTES)).isoformat(),
+                 "updated_at": now_iso()}})
+    sent = await _send_club_application_verification(email, app.get("applicant_name") or "SailScore applicant",
+                                                     app["club_name"], token, cfg)
+    if not sent and APP_ENV == "production":
+        raise HTTPException(status_code=502, detail="The verification email could not be sent. Please try again later.")
+    if not sent:
+        generic["dev_verification_token"] = token
+    return generic
+
+
+@api_router.get("/club-applications/verify")
+async def inspect_club_application_verification(token: str, request: Request):
+    ip = _client_ip(request)
+    if _login_ip_limited(ip) or _club_application_verification_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many verification attempts — please try again shortly")
+    token_hash = hashlib.sha256((token or "").strip().encode("utf-8")).hexdigest()
+    application = await db.club_applications.find_one({
+        "verification_token_hash": token_hash,
+        "status": CLUB_APPLICATION_PENDING_VERIFICATION,
+    }, {"_id": 0})
+    if not application:
+        raise HTTPException(status_code=404, detail="This verification link is invalid or has already been used")
+    try:
+        expires = datetime.fromisoformat(application.get("verification_expires_at", ""))
+    except (TypeError, ValueError):
+        expires = datetime.min.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        await db.club_applications.update_one({"id": application["id"]}, {"$set": {"status": CLUB_APPLICATION_EXPIRED},
+                                                                          "$unset": {"verification_token_hash": "", "verification_expires_at": ""}})
+        raise HTTPException(status_code=410, detail="This verification link has expired. Request a new email to continue.")
+    return {"valid": True, "club_name": application.get("club_name"),
+            "applicant_name": application.get("applicant_name"), "email": application.get("email")}
+
+
+@api_router.post("/club-applications/verify")
+async def verify_club_application(data: ClubApplicationVerifyInput, request: Request):
+    ip = _client_ip(request)
+    if _login_ip_limited(ip) or _club_application_verification_limited(ip):
+        raise HTTPException(status_code=429,
+                            detail="Too many verification attempts — please try again shortly")
+    passcode = data.passcode.strip()
+    policy_error = validate_password_policy(passcode)
+    if policy_error:
+        raise HTTPException(status_code=400, detail=policy_error)
+    token_hash = hashlib.sha256(data.token.strip().encode("utf-8")).hexdigest()
+    application = await db.club_applications.find_one({
+        "verification_token_hash": token_hash,
+        "status": CLUB_APPLICATION_PENDING_VERIFICATION,
+    }, {"_id": 0})
+    if not application:
+        raise HTTPException(status_code=404, detail="This verification link is invalid or has already been used")
+    try:
+        expires = datetime.fromisoformat(application.get("verification_expires_at", ""))
+    except (TypeError, ValueError):
+        expires = datetime.min.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        await db.club_applications.update_one({"id": application["id"]}, {"$set": {"status": CLUB_APPLICATION_EXPIRED},
+                                                                          "$unset": {"verification_token_hash": "", "verification_expires_at": ""}})
+        raise HTTPException(status_code=410, detail="This verification link has expired. Request a new email to continue.")
+    if await db.users.find_one({"username": application["email"], "club_registration_owner": True},
+                               {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=409,
+                            detail="An owner account already exists for this email address. Sign in or use a different address.")
+    claimed = await db.club_applications.update_one({
+        "id": application["id"], "status": CLUB_APPLICATION_PENDING_VERIFICATION,
+        "verification_token_hash": token_hash,
+        "verification_expires_at": {"$gt": datetime.now(timezone.utc).isoformat()},
+    }, {"$set": {"status": CLUB_APPLICATION_CREATING, "verification_claimed_at": now_iso()}})
+    if not claimed.modified_count:
+        raise HTTPException(status_code=409, detail="This verification link has already been used")
+    club_id, owner_id = new_id(), new_id()
+    club = {"id": club_id, "name": application["club_name"], "slug": application["club_slug"],
+            "color": "#0A369D", "abbr": None, "created_at": now_iso(),
+            "approval_status": APPROVAL_PENDING, "application_id": application["id"],
+            "application_owner_id": owner_id}
+    owner = {"id": owner_id, "club_id": club_id, "role": "admin",
+             "username": application["email"], "name": application["applicant_name"],
+             "passcode_hash": hash_passcode(passcode), "active": True,
+             "created_by": "club_registration", "created_at": now_iso(),
+             "failed_attempts": 0, "token_version": 0,
+             "club_registration_owner": True}
+    try:
+        await db.clubs.insert_one(club)
+        await db.users.insert_one(owner)
+        await db.club_applications.update_one({"id": application["id"], "status": CLUB_APPLICATION_CREATING}, {
+            "$set": {"status": APPROVAL_PENDING, "club_id": club_id, "owner_user_id": owner_id,
+                     "club_slug": club["slug"], "verified_at": now_iso(), "updated_at": now_iso()},
+            "$unset": {"verification_token_hash": "", "verification_expires_at": "",
+                       "verification_claimed_at": ""}})
+    except Exception as exc:
+        await db.users.delete_one({"id": owner_id})
+        await db.clubs.delete_one({"id": club_id})
+        await db.club_applications.update_one({"id": application["id"], "status": CLUB_APPLICATION_CREATING}, {
+            "$set": {"status": CLUB_APPLICATION_PENDING_VERIFICATION},
+            "$unset": {"verification_claimed_at": ""}})
+        if isinstance(exc, DuplicateKeyError):
+            raise HTTPException(status_code=409, detail="That club name or web address has just been registered. Request a new verification email to continue.")
+        logger.exception("CLUB APPLICATION ACTIVATION FAILED id=%s", application["id"])
+        raise HTTPException(status_code=500, detail="Could not finish registration — please try again")
+    application.update({"status": APPROVAL_PENDING, "club_id": club_id, "owner_user_id": owner_id,
+                        "club_slug": club["slug"], "verified_at": now_iso()})
+    await _log_audit(request, owner, "CLUB_APPLICATION_VERIFIED",
+                     description=f"Verified email and created private club workspace for {club['name']}",
+                     resource_type="club_application", resource_id=application["id"], club_id=club_id)
+    notified = await _notify_webmaster_club_application(application)
+    await db.club_applications.update_one({"id": application["id"]},
+                                          {"$set": {"webmaster_notification_sent": notified,
+                                                     "updated_at": now_iso()}})
+    response = JSONResponse({"role": "admin", "club_id": club_id,
+                             "club_name": club["name"], "username": owner["username"],
+                             "name": owner["name"], "club_registration_owner": True,
+                             "club_application": _club_application_session(application)})
+    response.set_cookie(value=create_token("admin", club_id, owner_id, owner["username"], 0),
+                        **_session_cookie_kwargs())
+    return response
+
+
+@api_router.get("/club-applications/mine")
+async def my_club_application(request: Request, user: dict = Depends(require_user)):
+    application = await _club_application_for_owner(user)
+    return {"application": _club_application_session(application)}
+
+
+@api_router.get("/club-applications/manage")
+async def club_applications_manage(user: dict = Depends(require_webmaster)):
+    applications = await db.club_applications.find(
+        {}, {"_id": 0}).sort([("submitted_at", -1), ("club_name", 1)]).to_list(1000)
+    return {"items": [_club_application_public(item) for item in applications],
+            "notification_configured": await _application_notification_configured()}
+
+
+@api_router.post("/club-applications/{application_id}/notify")
+async def retry_club_application_notification(application_id: str, request: Request,
+                                              user: dict = Depends(require_webmaster)):
+    application = await db.club_applications.find_one(
+        {"id": application_id, "club_id": {"$exists": True}, "status": APPROVAL_PENDING},
+        {"_id": 0})
+    if not application:
+        raise HTTPException(status_code=404, detail="Pending club application not found")
+    sent = await _notify_webmaster_club_application(application)
+    await db.club_applications.update_one({"id": application_id},
+                                          {"$set": {"webmaster_notification_sent": sent,
+                                                     "updated_at": now_iso()}})
+    await _log_audit(request=request, user=user, action="CLUB_APPLICATION_NOTIFICATION_RETRIED",
+                     description=f"Retried email notification for {application.get('club_name')}",
+                     resource_type="club_application", resource_id=application_id,
+                     club_id=application.get("club_id"))
+    if not sent:
+        raise HTTPException(status_code=503,
+                            detail="The Webmaster email could not be sent. The request remains available in this queue.")
+    return {"ok": True, "webmaster_notification_sent": True}
+
+
+@api_router.put("/club-applications/{application_id}")
+async def review_club_application(application_id: str, data: ClubApplicationReviewInput,
+                                  request: Request,
+                                  user: dict = Depends(require_webmaster)):
+    application = await db.club_applications.find_one({"id": application_id}, {"_id": 0})
+    if not application or application.get("status") not in (APPROVAL_PENDING, APPROVAL_REJECTED, APPROVAL_PUBLIC):
+        raise HTTPException(status_code=404, detail="Club application not found")
+    if not application.get("club_id"):
+        raise HTTPException(status_code=409, detail="The applicant must verify their email before review")
+    now = now_iso()
+    club = await db.clubs.find_one({"id": application["club_id"]}, {"_id": 0})
+    if not club:
+        raise HTTPException(status_code=404, detail="The applicant's club no longer exists")
+    await db.clubs.update_one({"id": club["id"]}, {"$set": {
+        "approval_status": data.status,
+        "approved_at": now if data.status == APPROVAL_PUBLIC else club.get("approved_at"),
+        "reviewed_at": now, "reviewed_by": user.get("username"),
+    }})
+    await db.club_applications.update_one({"id": application_id}, {"$set": {
+        "status": data.status, "reviewed_at": now, "reviewed_by": user.get("username"),
+        "updated_at": now,
+    }})
+    action = "CLUB_APPLICATION_APPROVED" if data.status == APPROVAL_PUBLIC else "CLUB_APPLICATION_REJECTED"
+    await _log_audit(request=request, user=user, action=action,
+                     description=f"{data.status.title()} club application for {application.get('club_name')}",
+                     resource_type="club_application", resource_id=application_id,
+                     target_user_id=application.get("owner_user_id"),
+                     target_username=application.get("email"), club_id=club["id"])
+    application.update({"status": data.status, "reviewed_at": now, "reviewed_by": user.get("username")})
+    return _club_application_public(application)
 
 
 @api_router.get("/clubs")
-async def get_clubs():
-    clubs = await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
+async def get_clubs(request: Request):
+    user = await get_current_user(request)
+    query = _club_is_public_query()
+    if user and user.get("role") == "webmaster":
+        query = {}
+    elif user and user.get("club_registration_owner") and user.get("club_id"):
+        query = {"$or": [*_club_is_public_query()["$or"], {"id": user["club_id"]}]}
+    clubs = await db.clubs.find(query, {"_id": 0}).sort("name", 1).to_list(100)
     return [_club_public(c) for c in clubs]
 
 
@@ -2536,7 +3177,10 @@ async def clubs_directory(year: Optional[int] = None):
     year, and a club is included when any of its classes has either published
     results or a series set up ("planned") for that year — so clubs with a
     pre-arranged future season appear before any racing has happened."""
-    clubs = await db.clubs.find({}, {"_id": 0}).sort("name", 1).to_list(100)
+    # This is the public directory, not the owner's private preview: always
+    # exclude unapproved applications, even when the Webmaster or applicant
+    # is signed in.
+    clubs = await db.clubs.find(_club_is_public_query(), {"_id": 0}).sort("name", 1).to_list(100)
     out = []
     for club in clubs:
         classes = await db.classes.find({"club_id": club["id"]}, {"_id": 0}).sort("name", 1).to_list(200)
@@ -2647,15 +3291,18 @@ async def clubs_directory(year: Optional[int] = None):
 
 
 @api_router.get("/seasons")
-async def seasons(club_id: Optional[str] = None):
-    """Distinct years that have any series set up. Public — the front page
-    uses it to show only the future-year buttons that actually have a
-    planned season (optionally scoped to one club's series)."""
+async def seasons(request: Request, club_id: Optional[str] = None):
+    """Distinct years that have any public series set up. A private owner may
+    preview their club's years when explicitly scoping the request."""
     q = {}
-    if club_id:
-        ids = await _club_class_ids(club_id)
+    club = await _resolve_club_id(request, club_id, honor_param=True)
+    if club:
+        ids = await _club_class_ids(club)
+    else:
+        ids = await _visible_class_ids(request, public_only=True)
+    if ids is not None:
         if not ids:
-            return {"years": []}  # club has no classes, so no series
+            return {"years": []}
         q["class_id"] = {"$in": ids}
     years = await db.series.distinct("year", q)
     return {"years": sorted(y for y in years if isinstance(y, int))}
@@ -3060,6 +3707,11 @@ async def get_classes(request: Request, club_id: Optional[str] = None):
     club = await _resolve_club_id(request, club_id, honor_param=True)
     if club:
         q["club_id"] = club
+    else:
+        visible_ids = await _visible_club_ids(request)
+        if not visible_ids:
+            return []
+        q["club_id"] = {"$in": visible_ids}
     items = await db.classes.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
     for item in items:
         # A class split into rating divisions is not one one-design fleet, so
@@ -3110,8 +3762,10 @@ async def _class_directory_items(class_ids: list[str]):
 
 
 @api_router.get("/classes/{class_id}/directory")
-async def get_class_directory(class_id: str):
-    """Public class hub for a single club's class."""
+async def get_class_directory(class_id: str, request: Request):
+    """Public class hub; the verified owner can also preview their own
+    unapproved club's private racing site."""
+    await _public_class_or_404(class_id, request)
     cls = await db.classes.find_one({"id": class_id}, {"_id": 0})
     if not cls:
         raise HTTPException(status_code=404, detail="Class not found")
@@ -3121,12 +3775,24 @@ async def get_class_directory(class_id: str):
 
 
 @api_router.get("/classes/group/{class_key}/directory")
-async def get_class_group_directory(class_key: str):
+async def get_class_group_directory(class_key: str, request: Request):
     """Public cross-club hub for a one-design class identity. Matching is
     case-insensitive and ignores punctuation/spaces in the display name, so
     separate club-owned Sonata records resolve to one shared fleet page."""
     wanted = class_group_key(class_key)
-    classes = await db.classes.find({"scoring_mode": "one_design"}, {"_id": 0}).to_list(5000)
+    # The class-group route is a cross-club public aggregation: an applicant's
+    # private preview must not affect the set of participating clubs, and even
+    # a Webmaster sees only the public projection here.
+    visible_ids = await _visible_club_ids(request, public_only=True)
+    class_query = {"scoring_mode": "one_design"}
+    if visible_ids is not None:
+        if not visible_ids:
+            classes = []
+        else:
+            class_query["club_id"] = {"$in": visible_ids}
+            classes = await db.classes.find(class_query, {"_id": 0}).to_list(5000)
+    else:
+        classes = await db.classes.find(class_query, {"_id": 0}).to_list(5000)
     matching = [c for c in classes
                 if class_group_key(c.get("name")) == wanted and not _class_divisions(c)]
     if not matching:
@@ -3223,14 +3889,21 @@ async def get_boats(request: Request, class_id: Optional[str] = None, year: Opti
                    active_only: bool = False, club_id: Optional[str] = None):
     q = {}
     user = await get_current_user(request)
-    if user and user.get("role") != "webmaster" and class_id:
-        # Staff may never enumerate another club's boats via a class_id param.
-        await _class_visible_or_404(class_id, user)
+    if class_id:
+        if user and user.get("role") != "webmaster" and not club_id:
+            await _class_visible_or_404(class_id, user)
+        else:
+            await _public_class_or_404(class_id, request)
     club = await _resolve_club_id(request, club_id)
     if class_id:
         q["class_id"] = class_id
     elif club:
         ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
+    else:
+        ids = await _visible_class_ids(request)
         if not ids:
             return []
         q["class_id"] = {"$in": ids}
@@ -3351,16 +4024,21 @@ async def get_series(request: Request, class_id: Optional[str] = None, year: Opt
                     club_id: Optional[str] = None):
     q = {}
     user = await get_current_user(request)
-    # When the request names a club explicitly it's a public page view, so the
-    # class belongs to that club and the staff-scope check does not apply.
-    if user and user.get("role") != "webmaster" and class_id and not club_id:
-        # Staff may never enumerate another club's series via a class_id param.
-        await _class_visible_or_404(class_id, user)
+    if class_id:
+        if user and user.get("role") != "webmaster" and not club_id:
+            await _class_visible_or_404(class_id, user)
+        else:
+            await _public_class_or_404(class_id, request)
     club = await _resolve_club_id(request, club_id, honor_param=True)
     if class_id:
         q["class_id"] = class_id
     elif club:
         ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
+    else:
+        ids = await _visible_class_ids(request)
         if not ids:
             return []
         q["class_id"] = {"$in": ids}
@@ -4136,12 +4814,23 @@ async def get_regattas(request: Request, year: Optional[int] = None, club_id: Op
     q = {"year": year} if year else {}
     if club:
         q["club_id"] = club
+    else:
+        visible_ids = await _visible_club_ids(request)
+        if visible_ids is not None:
+            if not visible_ids:
+                return []
+            q["club_id"] = {"$in": visible_ids}
     docs = await db.regattas.find(q, {"_id": 0}).sort([("year", -1), ("start_date", 1)]).to_list(1000) if hasattr(db, "regattas") else []
     for regatta in docs:
         series = await _series_for_regatta(regatta)
         class_ids = {s.get("class_id") for s in series if s.get("class_id")}
-        classes = await db.classes.find({"id": {"$in": list(class_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000) if class_ids else []
-        races = await db.races.find({"series_id": {"$in": [s.get("id") for s in series]}}, {"_id": 0, "series_id": 1, "status": 1}).to_list(5000)
+        classes = await db.classes.find({"id": {"$in": list(class_ids)},
+                                         "club_id": regatta.get("club_id")},
+                                        {"_id": 0, "id": 1, "name": 1}).to_list(1000) if class_ids else []
+        public_series_ids = [s.get("id") for s in series
+                             if s.get("class_id") in {c.get("id") for c in classes}]
+        races = await db.races.find({"series_id": {"$in": public_series_ids}}, {"_id": 0, "series_id": 1, "status": 1}).to_list(5000)
+        series = [s for s in series if s.get("id") in public_series_ids]
         regatta["classes"] = [c.get("name") for c in classes]
         regatta["class_count"] = len(class_ids)
         regatta["race_count"] = len([r for r in races if r.get("status") == "published"])
@@ -4273,10 +4962,13 @@ async def delete_regatta(regatta_id: str, request: Request, user: dict = Depends
 
 
 @api_router.get("/regattas/{regatta_id}/notice-board")
-async def get_regatta_notice_board(regatta_id: str, club_id: Optional[str] = None):
+async def get_regatta_notice_board(regatta_id: str, request: Request,
+                                   club_id: Optional[str] = None):
     """Read legacy competition-board metadata without provisioning a new board."""
     competition = await db.regattas.find_one({"id": regatta_id}, {"_id": 0})
-    if not competition or (club_id and competition.get("club_id") != club_id):
+    user = await get_current_user(request)
+    if (not competition or (club_id and competition.get("club_id") != club_id)
+            or not await _club_visible_to_user(competition.get("club_id"), user)):
         raise HTTPException(status_code=404, detail="Competition not found")
     board = await _competition_notice_board(competition, create=False)
     if not board:
@@ -4312,12 +5004,19 @@ async def get_races(request: Request, status: Optional[str] = None, class_id: Op
                     club_id: Optional[str] = None):
     q = {}
     user = await get_current_user(request)
-    if user and user.get("role") != "webmaster":
-        # Staff may never enumerate another club's races via class/series ids.
-        if class_id:
+    if class_id:
+        if user and user.get("role") != "webmaster" and not club_id:
             await _class_visible_or_404(class_id, user)
-        if series_id:
+        else:
+            await _public_class_or_404(class_id, request)
+    if series_id:
+        series_doc = await db.series.find_one({"id": series_id}, {"_id": 0})
+        if not series_doc:
+            raise HTTPException(status_code=404, detail="Series not found")
+        if user and user.get("role") != "webmaster" and not club_id:
             await _series_visible_or_404(series_id, user)
+        else:
+            await _public_series_or_404(series_doc, request)
     club = await _resolve_club_id(request, club_id)
     if status:
         q["status"] = status
@@ -4325,6 +5024,11 @@ async def get_races(request: Request, status: Optional[str] = None, class_id: Op
         q["class_id"] = class_id
     elif club:
         ids = await _club_class_ids(club)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
+    else:
+        ids = await _visible_class_ids(request)
         if not ids:
             return []
         q["class_id"] = {"$in": ids}
@@ -4354,9 +5058,11 @@ async def get_race(race_id: str, request: Request):
     user = await get_current_user(request)
     if not user and race.get("status") != "published":
         raise HTTPException(status_code=404, detail="Race not found")
-    if user and user.get("role") != "webmaster":
-        if user.get("club_id") != await _class_club_id(race.get("class_id")):
-            raise HTTPException(status_code=404, detail="Race not found")
+    race_club_id = await _class_club_id(race.get("class_id"))
+    if user and user.get("role") != "webmaster" and user.get("club_id") != race_club_id:
+        raise HTTPException(status_code=404, detail="Race not found")
+    if not await _club_visible_to_user(race_club_id, user):
+        raise HTTPException(status_code=404, detail="Race not found")
     if race.get("status") == "published":
         return (await _decorate_races_scoring_positions([race]))[0]
     return race
@@ -4917,6 +5623,11 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
                             detail=f"Backup passphrase must be at least {MIN_BACKUP_PASSPHRASE} characters")
     clubs = await db.clubs.find({"id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     users = await db.users.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
+    # Applicant PII is needed to restore a verified owner's workspace. A
+    # club-scoped export includes only its own application; full-system backup
+    # includes all application records. Verification material is hash-only.
+    application_query = {"club_id": scope_club_id} if scope_club_id else {}
+    club_applications = await db.club_applications.find(application_query, {"_id": 0}).to_list(5000)
     classes = await db.classes.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     boats = await db.boats.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
     series = await db.series.find({"class_id": {"$in": class_ids}} if scope_club_id else {}, {"_id": 0}).to_list(5000)
@@ -4980,6 +5691,7 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
             ("metadata.json", meta),
             ("clubs.json", clubs),
             ("users.json", [_strip_backup_secrets(u, keep_credentials=encrypted) for u in users]),
+            ("club_applications.json", club_applications),
             ("classes.json", classes),
             ("boats.json", boats),
             ("series.json", series),
@@ -5078,7 +5790,7 @@ async def club_backup_post(request: Request,
 # carries every collection, so it is a complete logical image of the server
 # (the mongodump "full image" endpoint is the byte-exact equivalent).
 BACKUP_COLLECTIONS = (
-    "clubs", "users", "classes", "boats", "series", "races",
+    "clubs", "users", "club_applications", "classes", "boats", "series", "races",
     "season_snapshots", "notices", "race_reports", "notice_boards", "notice_sections",
     "subscriptions", "subscription_deliveries",
     "adverts", "audit_logs", "settings",
@@ -5217,7 +5929,7 @@ async def _restore_zip_core(raw: bytes, passphrase: str) -> dict:
         if fname not in names:
             # Race reports were added after the original backup format; old
             # archives remain valid and simply restore without that collection.
-            if coll_name != "race_reports":
+            if coll_name not in ("race_reports", "club_applications"):
                 errors.append(f"{coll_name}: not in backup (skipped)")
             continue
         try:
@@ -5272,6 +5984,8 @@ async def _restore_zip_core(raw: bytes, passphrase: str) -> dict:
                     del_q = {"class_id": {"$in": list(backup_class_ids)}}
                 elif coll_name == "season_snapshots":
                     del_q = {"series_id": {"$in": list(backup_series_ids)}}
+                elif coll_name == "club_applications":
+                    del_q = {"club_id": scope_club_id}
                 elif coll_name == "notice_sections":
                     del_q = {"board_id": {"$in": list(backup_board_ids)}}
                 elif coll_name == "subscription_deliveries":
@@ -5410,12 +6124,22 @@ async def full_image_backup(request: Request, user: dict = Depends(require_webma
 @api_router.get("/notifications")
 async def get_notifications(request: Request, club_id: Optional[str] = None):
     q = {"status": {"$in": ["setup", "provisional"]}}
-    club = await _resolve_club_id(request, club_id, honor_param=True)
-    if club:
-        ids = await _club_class_ids(club)
-        if not ids:
-            return []
-        q["class_id"] = {"$in": ids}
+    user = await get_current_user(request)
+    public_scope = not club_id or not user or user.get("role") == "webmaster" or club_id != user.get("club_id")
+    if public_scope:
+        # The banner is public-facing, even when an applicant asks for their
+        # own club: preview-only notices belong in the authenticated consoles.
+        if club_id and not await _club_visible_to_user(club_id, user):
+            raise HTTPException(status_code=404, detail="Club not found")
+        ids = await (_club_class_ids(club_id) if club_id else
+                     _visible_class_ids(request, public_only=True))
+    else:
+        # Applicant console may inspect only their own private club.
+        await _require_club_visible(club_id, user)
+        ids = await _club_class_ids(club_id)
+    if not ids:
+        return []
+    q["class_id"] = {"$in": ids}
     races = await db.races.find(q, {"_id": 0}).to_list(500)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
     # Clubs that switched race-day notices off hide their notices from the
@@ -6010,9 +6734,9 @@ def _a8_tiebreak(entries, drop):
 
 
 async def _club_name_of_class(class_id):
-    """Name of the club that owns a class (for defaulting a boat's home club).
-    Defensive about missing collections so pure scoring unit tests with a
-    stubbed DB still work."""
+    """Name of a public club that owns a class (for scoring projections).
+    Hidden application names must not escape through a boat's home-club
+    fallback. Defensive about absent collections for scoring unit tests."""
     cls_col = getattr(db, "classes", None)
     if cls_col is None:
         return ""
@@ -6022,8 +6746,9 @@ async def _club_name_of_class(class_id):
     club_col = getattr(db, "clubs", None)
     if club_col is None:
         return ""
-    club = await club_col.find_one({"id": cls.get("club_id")}, {"_id": 0, "name": 1})
-    return (club or {}).get("name", "")
+    club = await club_col.find_one({"id": cls.get("club_id")}, {"_id": 0, "name": 1,
+                                                                 "approval_status": 1})
+    return (club or {}).get("name", "") if _club_is_approved(club) else ""
 
 
 def _mini_group_stamp(series, race_number):
@@ -7175,6 +7900,7 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     series = await db.series.find_one({"id": series_id}, {"_id": 0})
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
+    await _public_series_or_404(series, request)
     club = await _resolve_club_id(request, club_id, honor_param=True)
     if club and (await _class_club_id(series.get("class_id"))) != club:
         raise HTTPException(status_code=404, detail="Series not found")
@@ -7414,6 +8140,7 @@ async def _overall_standings_payload(class_id: str, year: int):
 
 @api_router.get("/standings/overall")
 async def overall_standings(class_id: str, year: int, request: Request, club_id: Optional[str] = None):
+    await _public_class_or_404(class_id, request)
     club = await _resolve_club_id(request, club_id, honor_param=True)
     if club and (await _class_club_id(class_id)) != club:
         raise HTTPException(status_code=404, detail="Class not found")
@@ -7421,7 +8148,7 @@ async def overall_standings(class_id: str, year: int, request: Request, club_id:
 
 
 @api_router.get("/fleet/search")
-async def fleet_search(q: Optional[str] = None, limit: int = 25):
+async def fleet_search(q: Optional[str] = None, limit: int = 25, *, request: Request):
     """Public boat search across every club: records whose boat name or sail
     number contains any query token are grouped by fleet identity, so one
     physical boat appears once with the clubs and classes it races for."""
@@ -7438,9 +8165,20 @@ async def fleet_search(q: Optional[str] = None, limit: int = 25):
     clean_q = _clean_fleet_part(q)
     if clean_q:
         cond.append({"fleet_key": {"$regex": re.escape(clean_q), "$options": "i"}})
-    docs = await db.boats.find({"$or": cond}, {"_id": 0}).to_list(2000)
-    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
-    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    visible_club_ids = await _visible_club_ids(request, public_only=True)
+    if not visible_club_ids:
+        return []
+    public_classes = await db.classes.find({"club_id": {"$in": visible_club_ids}},
+                                           {"_id": 0}).to_list(5000)
+    classes = {c["id"]: c for c in public_classes if c.get("id")}
+    public_class_ids = list(classes)
+    if not public_class_ids:
+        return []
+    docs = await db.boats.find({"$and": [{"$or": cond},
+                                        {"class_id": {"$in": public_class_ids}}]},
+                                {"_id": 0}).to_list(2000)
+    clubs = {c["id"]: c for c in await db.clubs.find(
+        {"id": {"$in": visible_club_ids}}, {"_id": 0}).to_list(5000)}
     groups = {}
     order = []
     for b in docs:
@@ -7474,7 +8212,7 @@ def _search_rx(q: str):
 
 
 @api_router.get("/search")
-async def unified_search(q: Optional[str] = None, limit: int = 8):
+async def unified_search(q: Optional[str] = None, limit: int = 8, *, request: Request):
     """Public site search: clubs, classes and series (by name) plus boats (by
     name or sail number). Each type returns the fields needed to link straight
     to its page — the club landing page for clubs/classes/series, the boat
@@ -7484,11 +8222,20 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
         return {"clubs": [], "classes": [], "series": [], "boats": []}
     lim = max(1, min(limit, 25))
 
-    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
-    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
+    visible_club_ids = await _visible_club_ids(request, public_only=True)
+    if not visible_club_ids:
+        return {"clubs": [], "classes": [], "series": [], "boats": []}
+    clubs = {c["id"]: c for c in await db.clubs.find(
+        {"id": {"$in": visible_club_ids}}, {"_id": 0}).to_list(5000)}
+    classes = {c["id"]: c for c in await db.classes.find(
+        {"club_id": {"$in": visible_club_ids}}, {"_id": 0}).to_list(5000)}
+    public_class_ids = list(classes)
 
     # Clubs: name, slug or configured abbreviation.
-    club_rows = await db.clubs.find({"$or": [{"name": rx}, {"slug": rx}, {"abbr": rx}]}, {"_id": 0}).to_list(100)
+    club_rows = await db.clubs.find({"$and": [
+        {"$or": [{"name": rx}, {"slug": rx}, {"abbr": rx}]},
+        {"id": {"$in": visible_club_ids}},
+    ]}, {"_id": 0}).to_list(100)
     # Plus abbreviation-by-initials: "MYC" finds "Medway Yacht Club" even
     # when no abbreviation is configured (initials of the registered name).
     q_letters = re.sub(r"[^a-z0-9]+", "", (q or "").lower())
@@ -7509,7 +8256,8 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
     # Classes: name (club context attached). Orphaned classes (whose club no
     # longer exists) can't link anywhere, so they're skipped — otherwise the
     # search popup offers a dead "/club/" link.
-    class_rows = await db.classes.find({"name": rx}, {"_id": 0}).to_list(1000)
+    class_rows = await db.classes.find({"name": rx, "club_id": {"$in": visible_club_ids}},
+                                       {"_id": 0}).to_list(1000)
     class_out = []
     for c in class_rows:
         club = clubs.get(c.get("club_id"), {})
@@ -7523,7 +8271,8 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
 
     # Series: name (class + club context attached). Series whose class or club
     # is gone are skipped for the same reason.
-    series_rows = await db.series.find({"name": rx}, {"_id": 0}).to_list(1000)
+    series_rows = await db.series.find({"name": rx, "class_id": {"$in": public_class_ids}},
+                                        {"_id": 0}).to_list(1000)
     series_out = []
     for s in series_rows:
         cls = classes.get(s.get("class_id"), {})
@@ -7543,7 +8292,9 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
     clean_q = _clean_fleet_part(q)
     if clean_q:
         boat_cond.append({"fleet_key": {"$regex": re.escape(clean_q), "$options": "i"}})
-    boat_docs = await db.boats.find({"$or": boat_cond}, {"_id": 0}).to_list(2000)
+    boat_docs = await db.boats.find({"$and": [
+        {"$or": boat_cond}, {"class_id": {"$in": public_class_ids}},
+    ]}, {"_id": 0}).to_list(2000)
     groups = {}
     order = []
     for b in boat_docs:
@@ -7568,7 +8319,7 @@ async def unified_search(q: Optional[str] = None, limit: int = 8):
 
 
 @api_router.get("/fleet/{fleet_id}")
-async def fleet_profile(fleet_id: str):
+async def fleet_profile(fleet_id: str, *, request: Request):
     """A boat's career: every series (across clubs and classes) it has
     published results in, its final position in each, plus the club/class
     records that make up its shared identity and its overall-championship
@@ -7577,15 +8328,27 @@ async def fleet_profile(fleet_id: str):
                                   {"_id": 0}).to_list(2000)
     if not members:
         raise HTTPException(status_code=404, detail="Boat not found")
-    # The public career spans every record sharing the boat's normalized
-    # name+sail key too — so a boat that races under two clubs groups into one
-    # profile even when its club records were never explicitly linked.
+    # Fleet identity can span clubs. Filter its records before loading results
+    # so a pending/rejected club cannot contribute boats, names, history or
+    # standings to a public profile, even if another record shares the fleet.
+    visible_club_ids = await _visible_club_ids(request, public_only=True)
+    if not visible_club_ids:
+        raise HTTPException(status_code=404, detail="Boat not found")
+    class_docs = await db.classes.find({"club_id": {"$in": visible_club_ids}},
+                                       {"_id": 0}).to_list(5000)
+    classes = {c["id"]: c for c in class_docs if c.get("id")}
+    public_class_ids = set(classes)
+    if not public_class_ids:
+        raise HTTPException(status_code=404, detail="Boat not found")
     key = next((m.get("fleet_key") for m in members if m.get("fleet_key")), None)
     if key:
-        known = {m["id"] for m in members}
-        more = await db.boats.find({"fleet_key": key, "id": {"$nin": list(known)}},
-                                   {"_id": 0}).to_list(2000)
-        members.extend(more)
+        more = await db.boats.find({"fleet_key": key}, {"_id": 0}).to_list(2000)
+        known = {m.get("id") for m in members}
+        members.extend(m for m in more if m.get("id") not in known)
+    members = [m for m in members if m.get("class_id") in public_class_ids]
+    if not members:
+        raise HTTPException(status_code=404, detail="Boat not found")
+    # Public career aggregation uses only the public member ids selected above.
     ids = [m["id"] for m in members]
     races = await db.races.find({"status": "published", "results.boat_id": {"$in": ids},
                                  "abandoned": {"$ne": True}}, {"_id": 0}).to_list(5000)
@@ -7602,8 +8365,8 @@ async def fleet_profile(fleet_id: str):
         for res in race.get("results", []):
             if res.get("boat_id") in ids:
                 boat_results_by_series.setdefault(sid, []).append(res)
-    classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
-    clubs = {c["id"]: c for c in await db.clubs.find({}, {"_id": 0}).to_list(100)}
+    clubs = {c["id"]: c for c in await db.clubs.find(
+        {"id": {"$in": visible_club_ids}}, {"_id": 0}).to_list(5000)}
     series_payloads = {}
     series_out = []
     for sid in sorted(series_ids):
@@ -7900,6 +8663,11 @@ async def scheduled_races(request: Request, date: Optional[str] = None, club_id:
         if not ids:
             return []
         q["class_id"] = {"$in": ids}
+    else:
+        ids = await _visible_class_ids(request, public_only=True)
+        if not ids:
+            return []
+        q["class_id"] = {"$in": ids}
     all_series = await db.series.find(q, {"_id": 0}).to_list(1000)
     classes = {c["id"]: c for c in await db.classes.find({}, {"_id": 0}).to_list(1000)}
     out = []
@@ -7980,8 +8748,12 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
         target = await db.classes.find_one({"id": target_id}, {"_id": 0})
         if not target:
             raise HTTPException(status_code=404, detail="Class not found")
-        club = await db.clubs.find_one({"id": target.get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
-        return {"club_id": target["club_id"], "target_name": target.get("name"),
+        club_id = target.get("club_id")
+        if not club_id:
+            raise HTTPException(status_code=404, detail="Class not found")
+        await _require_club_visible(club_id, None, "Class not found")
+        club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
+        return {"club_id": club_id, "target_name": target.get("name"),
                 "class_id": target["id"], "class_name": target.get("name"),
                 "club_name": (club or {}).get("name"), "club_slug": (club or {}).get("slug")}
     if subscription_type == "series":
@@ -7992,6 +8764,7 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
         club = await db.clubs.find_one({"id": (cls or {}).get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
         if not cls or not cls.get("club_id"):
             raise HTTPException(status_code=404, detail="Series not found")
+        await _require_club_visible(cls["club_id"], None, "Series not found")
         return {"club_id": cls["club_id"], "target_name": target.get("name"),
                 "series_id": target["id"], "series_name": target.get("name"),
                 "class_id": target.get("class_id"), "class_name": cls.get("name"),
@@ -8002,6 +8775,7 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
         target = await db.clubs.find_one({"id": target_id}, {"_id": 0, "id": 1, "name": 1, "slug": 1})
         if not target:
             raise HTTPException(status_code=404, detail="Club not found")
+        await _require_club_visible(target["id"], None, "Club not found")
         return {"club_id": target["id"],
                 "target_name": f"{target.get('name', 'Club')} Official Notice Board",
                 "club_name": target.get("name"), "club_slug": target.get("slug")}
@@ -8023,6 +8797,7 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
         club = await db.clubs.find_one({"id": board["club_id"]}, {"_id": 0, "name": 1, "slug": 1})
         if not club:
             raise HTTPException(status_code=404, detail="Competition notice board not found")
+        await _require_club_visible(board["club_id"], None, "Competition notice board not found")
         return {
             "club_id": board["club_id"], "notice_board_id": board["id"],
             "competition_id": board["competition_id"],
@@ -8038,6 +8813,7 @@ async def _subscription_target(subscription_type: str, target_id: str) -> dict:
         club = await db.clubs.find_one({"id": (cls or {}).get("club_id")}, {"_id": 0, "name": 1, "slug": 1})
         if not cls or not cls.get("club_id"):
             raise HTTPException(status_code=404, detail="Boat not found")
+        await _require_club_visible(cls["club_id"], None, "Boat not found")
         return {"club_id": cls["club_id"], "target_name": target.get("name"),
                 "boat_id": target["id"], "boat_name": target.get("name"),
                 "sail_no": target.get("sail_no"), "class_id": target.get("class_id"),
@@ -8366,9 +9142,13 @@ async def _notify_published_results(race: dict) -> dict:
     """Deliver each newly published race once to matching active subscribers."""
     series = await db.series.find_one({"id": race.get("series_id")}, {"_id": 0}) or {}
     cls = await db.classes.find_one({"id": race.get("class_id") or series.get("class_id")}, {"_id": 0}) or {}
+    club_id = cls.get("club_id")
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0}) if club_id else None
+    if not club or not _club_is_approved(club):
+        return {"matched": 0, "sent": 0, "skipped": 0}
     boat_ids = [row.get("boat_id") for row in race.get("results") or [] if row.get("boat_id")]
     target_ids = [value for value in (race.get("series_id"), cls.get("id")) if value]
-    query = {"active": True, "verified": True, "$or": [
+    query = {"club_id": club_id, "active": True, "verified": True, "$or": [
         {"subscription_type": "series", "target_id": {"$in": target_ids}},
         {"subscription_type": "class", "target_id": cls.get("id")},
         {"subscription_type": "boat", "target_id": {"$in": boat_ids}},
@@ -8944,12 +9724,14 @@ async def _race_report_target(series_id: str, user: dict) -> tuple:
             raise HTTPException(status_code=400, detail="Series does not belong to this club")
     club_id = class_doc.get("club_id")
     _ensure_club(user, club_id)
+    await _require_club_visible(club_id, user)
     return series, class_doc, club_id
 
 
 @api_router.get("/classes/{class_id}/race-reports")
-async def list_class_race_reports(class_id: str):
-    """Public uploaded reports for every series in one class."""
+async def list_class_race_reports(class_id: str, request: Request):
+    """Public uploaded reports for every series in one visible class."""
+    await _public_class_or_404(class_id, request)
     cls = await db.classes.find_one({"id": class_id}, {"_id": 0, "id": 1, "name": 1})
     if not cls:
         raise HTTPException(status_code=404, detail="Class not found")
@@ -8965,6 +9747,7 @@ async def list_admin_race_reports(club_id: Optional[str] = None,
                                  user: dict = Depends(require_admin)):
     scope = club_id or user.get("club_id")
     _ensure_club(user, scope)
+    await _require_club_visible(scope, user)
     query = {"club_id": scope}
     if class_id:
         cls = await db.classes.find_one({"id": class_id}, {"_id": 0, "club_id": 1})
@@ -9046,6 +9829,8 @@ async def get_race_report(report_id: str, request: Request):
     if not report:
         raise HTTPException(status_code=404, detail="Race report not found")
     user = await get_current_user(request)
+    if not await _club_visible_to_user(report.get("club_id"), user):
+        raise HTTPException(status_code=404, detail="Race report not found")
     if report.get("status") != "published":
         if not user:
             raise HTTPException(status_code=404, detail="Race report not found")
@@ -9161,6 +9946,8 @@ async def list_notice_boards(request: Request, club_id: Optional[str] = None):
     scope = await _resolve_club_id(request, club_id, honor_param=True)
     if not scope:
         raise HTTPException(status_code=400, detail="club_id is required")
+    user = await get_current_user(request)
+    await _require_club_visible(scope, user)
     club = await db.clubs.find_one({"id": scope}, {"_id": 0, "official_notice_board": 1})
     if club and club.get("official_notice_board") is False:
         return []
@@ -9183,6 +9970,9 @@ async def create_notice_board(data: NoticeBoardInput, request: Request,
 async def list_notice_sections(board_id: str, request: Request):
     board = await db.notice_boards.find_one({"id": board_id, "status": "active"}, {"_id": 0})
     if not board:
+        raise HTTPException(status_code=404, detail="Notice board not found")
+    user = await get_current_user(request)
+    if not await _club_visible_to_user(board.get("club_id"), user):
         raise HTTPException(status_code=404, detail="Notice board not found")
     club = await db.clubs.find_one({"id": board.get("club_id")}, {"_id": 0, "official_notice_board": 1})
     if club and club.get("official_notice_board") is False:
@@ -9305,6 +10095,7 @@ async def list_notices(request: Request, club_id: Optional[str] = None,
     drafts and can filter by status / root, for the management views."""
     user = await get_current_user(request)
     scope = await _resolve_club_id(request, club_id, honor_param=True)
+    await _require_club_visible(scope, user)
     club_settings = await db.clubs.find_one({"id": scope}, {"_id": 0, "official_notice_board": 1}) if scope else None
     onb_enabled = not club_settings or club_settings.get("official_notice_board") is not False
     if not scope:
@@ -9386,6 +10177,8 @@ async def notice_context(request: Request, race_id: Optional[str] = None,
         _ensure_club(user, club_id)
         series = await db.series.find_one({"id": race.get("series_id")}, {"_id": 0, "name": 1})
         cls = await db.classes.find_one({"id": race.get("class_id")}, {"_id": 0, "name": 1})
+        if not await _club_visible_to_user(club_id, user):
+            raise HTTPException(status_code=404, detail="Race not found")
         club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
         return {
             "club_id": club_id, "club_name": (club or {}).get("name"),
@@ -9402,6 +10195,8 @@ async def notice_context(request: Request, race_id: Optional[str] = None,
     club_id = await _class_club_id(series.get("class_id"))
     _ensure_club(user, club_id)
     cls = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0, "name": 1})
+    if not await _club_visible_to_user(club_id, user):
+        raise HTTPException(status_code=404, detail="Series not found")
     club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1, "slug": 1})
     return {
         "club_id": club_id, "club_name": (club or {}).get("name"),
@@ -9634,6 +10429,8 @@ async def get_notice(notice_id: str, request: Request, club_id: Optional[str] = 
     own_staff = bool(user) and not webmaster and user.get("club_id") == notice.get("club_id")
     public_own_club = (not user and club_id == notice.get("club_id")
                        and notice.get("status") in ("published", "superseded", "withdrawn"))
+    if not await _club_visible_to_user(notice.get("club_id"), user):
+        raise HTTPException(status_code=404, detail="Notice not found")
     if not (webmaster or own_staff or public_own_club):
         raise HTTPException(status_code=404, detail="Notice not found")
     if notice.get("content_type") == "uploaded" and notice.get("file_data_url"):
@@ -10418,6 +11215,10 @@ async def _ensure_db_constraints():
         db.users: [([("id", 1)], {"unique": True}),
                    ([("club_id", 1), ("username", 1)],
                     {"unique": True, "partialFilterExpression": {"club_id": {"$exists": True}}})],
+        db.club_applications: [([("id", 1)], {"unique": True}),
+                               ([ ("verification_token_hash", 1) ],
+                                {"unique": True, "sparse": True}),
+                               ([ ("email", 1), ("status", 1) ], {})],
         db.audit_logs: [([("id", 1)], {"unique": True})],
         db.subscriptions: [([("id", 1)], {"unique": True}),
                            ([("email_hash", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {})],

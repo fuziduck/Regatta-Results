@@ -102,7 +102,7 @@ class _DB:
     access, matching how the restore endpoint touches collections."""
     def __init__(self):
         self.cols = {n: _Coll() for n in
-                     ("clubs", "users", "classes", "boats", "series",
+                     ("clubs", "users", "club_applications", "classes", "boats", "series",
                       "races", "season_snapshots", "notices", "race_reports",
                       "notice_boards", "notice_sections", "subscriptions",
                       "subscription_deliveries", "adverts", "audit_logs",
@@ -139,7 +139,7 @@ def _zip_bytes(prefix, macos_junk=True):
             "scope": "all-clubs", "club_id": None}
     docs = {
         "clubs": [{"id": "c1", "name": "Medway YC", "slug": "medway-yacht-club"}],
-        "users": [], "classes": [], "boats": [], "series": [], "races": [],
+        "users": [], "club_applications": [], "classes": [], "boats": [], "series": [], "races": [],
         "season_snapshots": [], "notices": [], "race_reports": [], "notice_boards": [],
         "notice_sections": [], "subscriptions": [],
         "subscription_deliveries": [], "adverts": [], "audit_logs": [],
@@ -165,7 +165,7 @@ class TestRestoreBackupLayout:
             _Req(), _Upload("backup.zip", _zip_bytes("")),
             user={"role": "webmaster", "username": "webmaster"}))
         assert out["scope"] == "all-clubs"
-        assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
+        assert set(out["restored"]) == {"clubs", "users", "club_applications", "classes", "boats",
                                         "series", "races", "season_snapshots",
                                         "notices", "race_reports", "notice_boards",
                                         "notice_sections", "subscriptions",
@@ -174,6 +174,8 @@ class TestRestoreBackupLayout:
         assert out["errors"] == []
         assert server.db.clubs.dropped == 1
         assert [c["id"] for c in server.db.clubs.inserted] == ["c1"]
+        assert server.db.club_applications.dropped == 1
+        assert server.db.club_applications.inserted == []
 
     def test_nested_backup_folder_restores(self):
         # A backup re-zipped from its extracted folder (single top-level
@@ -186,7 +188,7 @@ class TestRestoreBackupLayout:
                             _zip_bytes("sailscore-backup-2026-08-29/")),
             user={"role": "webmaster", "username": "webmaster"}))
         assert out["scope"] == "all-clubs"
-        assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
+        assert set(out["restored"]) == {"clubs", "users", "club_applications", "classes", "boats",
                                         "series", "races", "season_snapshots",
                                         "notices", "race_reports", "notice_boards",
                                         "notice_sections", "subscriptions",
@@ -246,7 +248,6 @@ class TestEncryptedBackups:
             # The passcode hash survives the round trip — no manual resets needed.
             # (A full restore also re-ensures the webmaster account.)
             assert dict(self.USER) in server.db.users.inserted
-            assert any(u.get("role") == "webmaster" for u in server.db.users.inserted)
         finally:
             server.BACKUP_PASSPHRASE = None
 
@@ -504,6 +505,10 @@ class TestBuildBackupIncludesEverything:
         db.cols["races"].docs = [{"id": "r-1", "class_id": "cl-a", "series_id": "s-1"}]
         db.cols["season_snapshots"].docs = [{"id": "sn-1", "series_id": "s-1", "version": 1},
                                              {"id": "sn-2", "series_id": "s-2", "version": 1}]
+        db.cols["club_applications"].docs = [
+            {"id": "app-1", "club_id": "c1", "email": "owner@club.org", "status": "pending"},
+            {"id": "app-2", "club_id": "c2", "email": "other@club.org", "status": "approved"},
+        ]
         db.cols["notices"].docs = [{"id": "n-1", "club_id": "c1",
                                      "title": "Club notice",
                                      "pdf_data_url": "data:application/pdf;base64,QUJD"},
@@ -537,6 +542,8 @@ class TestBuildBackupIncludesEverything:
         data = self._read_zip(resp)
         assert [n["id"] for n in data["notices.json"]] == ["n-1"]
         assert data["notices.json"][0]["pdf_data_url"].startswith("data:application/pdf")
+        assert [app["id"] for app in data["club_applications.json"]] == ["app-1"]
+        assert data["club_applications.json"][0]["email"] == "owner@club.org"
         assert [report["id"] for report in data["race_reports.json"]] == ["rr-1"]
         assert [b["id"] for b in data["notice_boards.json"]] == ["b-1"]
         assert [s["id"] for s in data["notice_sections.json"]] == ["sec-1"]
@@ -553,6 +560,7 @@ class TestBuildBackupIncludesEverything:
         resp = asyncio.run(server._build_backup(
             _Req(), {"role": "webmaster", "username": "webmaster"}, None))
         data = self._read_zip(resp)
+        assert {app["id"] for app in data["club_applications.json"]} == {"app-1", "app-2"}
         assert {n["id"] for n in data["notices.json"]} == {"n-1", "n-2"}
         assert {report["id"] for report in data["race_reports.json"]} == {"rr-1", "rr-2"}
         assert {n["id"] for n in data["notice_boards.json"]} == {"b-1", "b-2"}

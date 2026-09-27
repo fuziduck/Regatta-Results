@@ -334,10 +334,15 @@ export default function Login() {
             <Button type="submit" data-testid="login-submit-btn" disabled={loading || !passcode} className="w-full h-12 text-base bg-ocean hover:bg-ocean-dark transition-transform active:scale-[0.98]">
               {loading ? "Signing in…" : "Sign In"}
             </Button>
-            <div className="text-center">
+            <div className="flex flex-col items-center gap-2">
               <Link to="/forgot-password" data-testid="forgot-passcode-link" className="text-sm text-ocean hover:underline font-semibold">
                 Forgot your passcode?
               </Link>
+              {!isWebmaster && !forceChangeStep && (
+                <Link to="/club-registration" data-testid="club-registration-link" className="text-sm text-ocean hover:underline font-semibold">
+                  Register a new club
+                </Link>
+              )}
             </div>
           </form>
           )}

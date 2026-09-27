@@ -102,14 +102,18 @@ def app(monkeypatch):
         clubs=FakeCollection([
             {"id": "c1", "name": "Medway Yacht Club", "slug": "medway-yacht-club", "icon": "data:image/png;base64,SECRET", "admin_pin": "do-not-leak"},
             {"id": "empty", "name": "Empty Club", "slug": "empty-club"},
+            {"id": "pending-club", "name": "Secret Pending Sailing Club", "slug": "secret-pending-club", "approval_status": "pending"},
+            {"id": "rejected-club", "name": "Secret Rejected Sailing Club", "slug": "secret-rejected-club", "approval_status": "rejected"},
         ]),
         classes=FakeCollection([
             {"id": "cl1", "club_id": "c1", "name": "Sonata", "scoring_mode": "one_design"},
             {"id": "cl2", "club_id": "c1", "name": "Laser", "scoring_mode": "one_design"},
+            {"id": "private-class", "club_id": "pending-club", "name": "Secret Private Fleet", "scoring_mode": "one_design"},
         ]),
         series=FakeCollection([
             {"id": "s1", "class_id": "cl1", "name": "Summer Series", "year": 2026, "schedule": ["2026-05-01"]},
             {"id": "s2", "class_id": "cl2", "name": "Winter Series", "year": 2027},
+            {"id": "private-series", "class_id": "private-class", "name": "Private Winter Series", "year": 2027, "schedule": ["2099-01-01"]},
             {"id": "orphan-series", "class_id": "deleted-class", "name": "Orphan Series", "year": 2026},
         ]),
         regattas=FakeCollection([
@@ -132,10 +136,13 @@ def app(monkeypatch):
              "status": "published", "results": [{"boat_id": "b1", "code": "FINISHED", "position": 1}]},
             {"id": "cross-linked-race", "class_id": "cl1", "series_id": "s2", "race_number": 99, "year": 2027,
              "status": "published", "results": [{"boat_id": "b1", "code": "FINISHED", "position": 1}]},
+            {"id": "private-race", "class_id": "private-class", "series_id": "private-series", "race_number": 1, "year": 2027,
+             "status": "published", "results": [{"boat_id": "private-boat", "code": "FINISHED", "position": 1}]},
         ]),
         boats=FakeCollection([
             {"id": "b1", "fleet_id": "f1", "fleet_key": "8420|watersong", "class_id": "cl1", "name": "Watersong", "sail_no": "8420", "created_at": "2025-01-01", "helm": "Private Helm"},
             {"id": "b2", "fleet_id": "f2", "class_id": "cl1", "name": "DNC Boat", "sail_no": "2"},
+            {"id": "private-boat", "fleet_id": "f-private", "class_id": "private-class", "name": "Secret Private Boat", "sail_no": "99"},
         ]),
     )
     application = FastAPI()
@@ -185,12 +192,13 @@ def test_boat_and_class_pages_are_only_indexable_with_published_results(app):
 
 
 def test_private_pages_unknown_paths_and_notice_board_are_noindex(app):
-    for uri in ("/admin", "/subscriptions/manage?token=secret", "/unknown/path", "/club/medway-yacht-club/notice-board"):
+    for uri in ("/admin", "/subscriptions/manage?token=secret", "/club-registration?token=secret", "/unknown/path", "/club/medway-yacht-club/notice-board"):
         metadata = _metadata(app, uri)
         assert metadata["robots"] == "noindex,nofollow"
     robots = asyncio.run(seo.robots_txt(_request(app))).body.decode()
     assert "Disallow: /admin" in robots
     assert "Disallow: /subscriptions/" in robots
+    assert "Disallow: /club-registration" in robots
     assert "Sitemap: https://www.sailscore.co.uk/sitemap.xml" in robots
     assert seo._public_base(_request(app)) == "https://www.sailscore.co.uk"
 
@@ -226,3 +234,31 @@ def test_sitemap_only_contains_published_and_public_entities(app):
     assert "cross-linked-race" not in sitemap
     assert "/series/s2/" not in sitemap
     assert "year=2027" not in sitemap
+    assert "secret-pending-club" not in sitemap
+    assert "secret-rejected-club" not in sitemap
+    assert "Private Fleet" not in sitemap
+    assert "private-race" not in sitemap
+    assert "private-boat" not in sitemap
+
+
+def test_private_club_routes_never_return_applicant_details(app):
+    for uri in (
+        "/club/secret-pending-club",
+        "/club/secret-pending-club/calendar",
+        "/club/secret-pending-club?class=private-class&series=private-series&year=2027",
+        "/club/secret-pending-club/series/private-series/private-winter-series-2027",
+        "/club/secret-pending-club/race/private-race/private-winter-series-race-1-2027",
+        "/class/private-class/secret-private-fleet",
+        "/class/group/secret-private-fleet/secret-private-fleet",
+        "/boat/f-private/secret-private-boat",
+    ):
+        page = _metadata(app, uri)
+        assert page["robots"] == "noindex,nofollow", uri
+        assert page["title"] == "Page not found | SailScore", uri
+        assert "Secret Pending" not in str(page), uri
+        assert "Private Winter" not in str(page), uri
+
+    response = asyncio.run(seo.seo_html(_request(app, "/club/secret-pending-club")))
+    assert response.status_code == 404
+    assert "Secret Pending" not in response.body.decode()
+    assert asyncio.run(seo.seo_html(_request(app, "/boat/f-private/secret-private-boat"))).status_code == 404

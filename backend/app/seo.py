@@ -311,11 +311,16 @@ def _event_datetime(day: Any, time: Any = None) -> str | None:
     return value
 
 
+def _is_public_club(club: dict | None) -> bool:
+    """Legacy clubs remain public; applicant-created clubs require approval."""
+    return bool(club and club.get("approval_status", "approved") == "approved")
+
+
 def _private_path(path: str) -> bool:
     private_prefixes = (
         r"^/(?:admin|officer|webmaster)(?:/|$)",
         r"^/notice/new(?:/|$)",
-        r"^/(?:login|forgot-password|reset-password)(?:/|$)",
+        r"^/(?:login|forgot-password|reset-password|club-registration)(?:/|$)",
         r"^/subscriptions(?:/|$)",
     )
     return any(re.match(pattern, path) for pattern in private_prefixes)
@@ -428,7 +433,7 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
 
     if len(parts) == 3 and parts[0] == "club" and parts[2] in ("calendar", "notice-board"):
         club = await _find_one(db, "clubs", {"slug": parts[1]})
-        if not club:
+        if not club or not _is_public_club(club):
             return _not_found(base, path)
         club_name = club.get("name") or "Sailing Club"
         club_path = f"/club/{quote(str(club.get('slug')), safe='')}"
@@ -458,7 +463,7 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
 
     if len(parts) == 2 and parts[0] == "club":
         club = await _find_one(db, "clubs", {"slug": parts[1]})
-        if not club:
+        if not club or not _is_public_club(club):
             return _not_found(base, path)
         club_name = club.get("name") or "Sailing Club"
         year = _valid_year(query.get("year", [None])[0])
@@ -566,7 +571,8 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
         club = await _find_one(db, "clubs", {"slug": parts[1]})
         series = await _find_one(db, "series", {"id": parts[3]})
         class_doc = await _find_one(db, "classes", {"id": (series or {}).get("class_id")})
-        if not club or not series or not class_doc or class_doc.get("club_id") != club.get("id"):
+        if (not club or not _is_public_club(club) or not series or not class_doc
+                or class_doc.get("club_id") != club.get("id")):
             return _not_found(base, path)
         count = await _published_count(db, str(series.get("id")))
         if count <= 0:
@@ -593,7 +599,7 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
     if len(parts) in (4, 5) and parts[0] == "club" and parts[2] in ("regatta", "competition"):
         club = await _find_one(db, "clubs", {"slug": parts[1]})
         event = await _find_one(db, "regattas", {"id": parts[3]})
-        if not club or not event or event.get("club_id") != club.get("id"):
+        if not club or not _is_public_club(club) or not event or event.get("club_id") != club.get("id"):
             return _not_found(base, path)
         canonical_path = _competition_path(str(club.get("slug")), event)
         event_type = event.get("competition_type") or "regatta"
@@ -697,7 +703,7 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
             if race.get("series_id")
             else None
         )
-        if not class_doc or not club or club.get("slug") != parts[1]:
+        if not class_doc or not _is_public_club(club) or club.get("slug") != parts[1]:
             return _not_found(base, path, "Published race results could not be found for this club.")
         if race.get("series_id") and (
             not series or series.get("class_id") != class_doc.get("id")
@@ -794,6 +800,31 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
             if item.get("class_id") and item.get("id"):
                 member_ids_by_class.setdefault(str(item["class_id"]), set()).add(str(item["id"]))
         member_class_ids = list(member_ids_by_class)
+        class_rows = await _to_list(
+            db,
+            "classes",
+            {"id": {"$in": member_class_ids}},
+            5000,
+            {"_id": 0, "id": 1, "club_id": 1},
+        ) if member_class_ids else []
+        public_club_ids = {
+            str(item.get("id"))
+            for item in await _to_list(db, "clubs", {}, 10000, {"_id": 0, "id": 1, "approval_status": 1})
+            if item.get("id") and _is_public_club(item)
+        }
+        public_class_ids = {
+            str(item.get("id")) for item in class_rows
+            if item.get("id") and str(item.get("club_id")) in public_club_ids
+        }
+        members = [item for item in members if str(item.get("class_id")) in public_class_ids]
+        if not members:
+            return _not_found(base, path, "Boat profile could not be found.")
+        member_ids = [str(item.get("id")) for item in members if item.get("id")]
+        member_ids_by_class = {}
+        for item in members:
+            if item.get("class_id") and item.get("id"):
+                member_ids_by_class.setdefault(str(item["class_id"]), set()).add(str(item["id"]))
+        member_class_ids = list(public_class_ids)
         member_series = await _to_list(
             db,
             "series",
@@ -833,12 +864,15 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
         name = boat.get("name") or "Boat"
         sail_no = boat.get("sail_no")
         canonical_fleet_id = boat.get("fleet_id") or boat.get("id") or requested_id
-        canonical_members = await _to_list(
-            db,
-            "boats",
-            {"$or": [{"fleet_id": str(canonical_fleet_id)}, {"id": str(canonical_fleet_id)}]},
-            2000,
-        )
+        canonical_members = [
+            item for item in await _to_list(
+                db,
+                "boats",
+                {"$or": [{"fleet_id": str(canonical_fleet_id)}, {"id": str(canonical_fleet_id)}]},
+                2000,
+            )
+            if str(item.get("class_id")) in public_class_ids
+        ]
         if canonical_members:
             boat = min(canonical_members, key=lambda item: item.get("created_at") or "")
             name = boat.get("name") or name
@@ -859,11 +893,37 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
         body = f"{name}{f' · Sail No. {sail_no}' if sail_no else ''}. {description}"
         return _page(base, canonical_path, title, description, image=logo, schema=schema, body=body)
 
+    if len(parts) == 4 and parts[:2] == ["class", "group"]:
+        public_club_ids = {
+            str(item.get("id"))
+            for item in await _to_list(db, "clubs", {}, 10000, {"_id": 0, "id": 1, "approval_status": 1})
+            if item.get("id") and _is_public_club(item)
+        }
+        grouped_classes = await _to_list(
+            db, "classes", {"scoring_mode": "one_design", "club_id": {"$in": list(public_club_ids)}}, 5000
+        ) if public_club_ids else []
+        matching_ids = [
+            item.get("id") for item in grouped_classes
+            if not item.get("divisions")
+            and _class_group_key(item.get("name")) == _class_group_key(parts[2])
+        ]
+        if not matching_ids or await _published_class_count(db, matching_ids[0]) == 0:
+            return _not_found(base, path, "Sailing class could not be found.")
+
     if parts and parts[0] == "class" and len(parts) in (2, 3, 4):
         grouped = parts[1] == "group" and len(parts) in (3, 4)
         if grouped:
             class_key = parts[2]
-            classes = await _to_list(db, "classes", {"scoring_mode": "one_design"}, 5000)
+            public_club_ids = {
+                str(item.get("id"))
+                for item in await _to_list(db, "clubs", {}, 10000, {"_id": 0, "id": 1, "approval_status": 1})
+                if item.get("id") and _is_public_club(item)
+            }
+            classes = await _to_list(
+                db, "classes",
+                {"scoring_mode": "one_design", "club_id": {"$in": list(public_club_ids)}},
+                5000,
+            ) if public_club_ids else []
             matching = [
                 item for item in classes
                 if _class_group_key(item.get("name")) == _class_group_key(class_key)
@@ -886,6 +946,9 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
             class_doc = await _find_one(db, "classes", {"id": class_id})
             if not class_doc:
                 return _not_found(base, path, "Sailing class could not be found.")
+            class_club = await _find_one(db, "clubs", {"id": class_doc.get("club_id")})
+            if not _is_public_club(class_club):
+                return _not_found(base, path, "Sailing class could not be found.")
             class_name = class_doc.get("name") or "Sailing Class"
             canonical_path = _class_path(class_id, class_name)
             series_rows = await _to_list(db, "series", {"class_id": class_id}, 5000)
@@ -894,7 +957,7 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
                 item for item in series_rows
                 if series_race_counts.get(str(item.get("id")), 0) > 0
             ]
-            club = await _find_one(db, "clubs", {"id": class_doc.get("club_id")})
+            club = class_club
             club_phrase = f"at {club.get('name')}" if club else ""
         if not public_series:
             return _noindex_page(
@@ -948,6 +1011,7 @@ async def robots_txt(request: Request):
         "Disallow: /login\n"
         "Disallow: /forgot-password\n"
         "Disallow: /reset-password\n"
+        "Disallow: /club-registration\n"
         "Disallow: /subscriptions/\n"
         "Disallow: /notice/new\n"
         f"Sitemap: {base}/sitemap.xml\n"
@@ -975,9 +1039,20 @@ async def sitemap_xml(request: Request):
             urls[absolute] = modified
 
     add("/")
-    clubs = await _to_list(db, "clubs", {}, 10000)
-    classes = await _to_list(db, "classes", {}, 10000)
-    series_rows = await _to_list(db, "series", {}, 50000)
+    clubs = [
+        item for item in await _to_list(db, "clubs", {}, 10000)
+        if _is_public_club(item)
+    ]
+    public_club_ids = {item.get("id") for item in clubs if item.get("id")}
+    classes = [
+        item for item in await _to_list(db, "classes", {}, 10000)
+        if item.get("club_id") in public_club_ids
+    ]
+    public_class_ids = {item.get("id") for item in classes if item.get("id")}
+    series_rows = [
+        item for item in await _to_list(db, "series", {}, 50000)
+        if item.get("class_id") in public_class_ids
+    ]
     live_class_ids = [item.get("id") for item in classes if item.get("id")]
     live_series_ids = [item.get("id") for item in series_rows if item.get("id")]
     races = await _to_list(
@@ -1129,8 +1204,9 @@ async def sitemap_xml(request: Request):
         "boats",
         {"id": {"$in": list(boat_ids)}},
         50000,
-        {"_id": 0, "id": 1, "fleet_id": 1, "fleet_key": 1, "name": 1, "created_at": 1},
+        {"_id": 0, "id": 1, "class_id": 1, "fleet_id": 1, "fleet_key": 1, "name": 1, "created_at": 1},
     ) if boat_ids else []
+    raced_boats = [boat for boat in raced_boats if str(boat.get("class_id")) in public_class_ids]
     identities: dict[str, dict] = {}
     for boat in raced_boats:
         identity = str(boat.get("fleet_key") or boat.get("fleet_id") or boat.get("id") or "")

@@ -16,6 +16,7 @@ import Race from "@/pages/Race";
 import Boats from "@/pages/Boats";
 import Boat from "@/pages/Boat";
 import Login from "@/pages/Login";
+import ClubRegistration from "@/pages/ClubRegistration";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import Officer from "@/pages/Officer";
@@ -45,7 +46,7 @@ function Protected({ children, allow }) {
 const PRIVATE_ROUTES = [
   /^\/(admin|officer|webmaster)(?:\/[^/]+)*\/?$/,
   /^\/notice\/new(?:\/[^/]+)*\/?$/,
-  /^\/(login|forgot-password|reset-password)(?:\/[^/]+)*\/?$/,
+  /^\/(login|forgot-password|reset-password|club-registration)(?:\/[^/]+)*\/?$/,
   /^\/subscriptions(?:\/[^/]+)*\/?$/,
 ];
 
@@ -117,6 +118,7 @@ function App() {
             <Route path="/boats" element={<Boats />} />
             <Route path="/boat/:fleetId/:boatName?" element={<Boat />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/club-registration" element={<ClubRegistration />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/officer" element={<Protected allow={["officer", "admin", "webmaster"]}><Officer /></Protected>} />

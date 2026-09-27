@@ -9,13 +9,14 @@ import AdvertsManager from "@/components/AdvertsManager";
 import EmailSettingsManager from "@/components/EmailSettingsManager";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
 import AuditLog from "@/components/AuditLog";
+import ClubApplicationsQueue from "@/components/ClubApplicationsQueue";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock, Eye, EyeOff, Copy } from "lucide-react";
+import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock, Eye, EyeOff, Copy, ClipboardCheck } from "lucide-react";
 
 const blank = { name: "", color: "#0A369D", abbr: "" };
 const slugify = (name) => (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "club";
@@ -458,6 +459,15 @@ export default function Webmaster() {
               <Building2 className="w-4 h-4" /> Club management
             </button>
             <button
+              data-testid="nav-applications"
+              onClick={() => setSection("applications")}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
+                section === "applications" ? "bg-ocean text-white" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <ClipboardCheck className="w-4 h-4" /> Club applications
+            </button>
+            <button
               data-testid="nav-adverts"
               onClick={() => setSection("adverts")}
               className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-semibold whitespace-nowrap transition-colors ${
@@ -572,6 +582,7 @@ export default function Webmaster() {
         </Dialog>
         </>
         )}
+        {section === "applications" && <ClubApplicationsQueue onOpenEmailSettings={() => setSection("email")} />}
         {section === "adverts" && <AdvertsManager />}
         {section === "email" && <EmailSettingsManager />}
         {section === "subscriptions" && <SubscriptionOverview webmaster />}

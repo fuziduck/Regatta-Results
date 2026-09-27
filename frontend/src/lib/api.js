@@ -88,6 +88,14 @@ export const api = {
   resetPassword: (token, new_passcode) =>
     client.post("/auth/reset-password", { token, new_passcode }).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
+  applyForClub: (data) => client.post("/club-applications", data).then((r) => r.data),
+  resendClubVerification: (data) => client.post("/club-applications/resend", data).then((r) => r.data),
+  inspectClubApplication: (token) => client.get("/club-applications/verify", { params: { token } }).then((r) => r.data),
+  verifyClubApplication: (token, passcode) => client.post("/club-applications/verify", { token, passcode }).then((r) => r.data),
+  getMyClubApplication: () => client.get("/club-applications/mine").then((r) => r.data),
+  getClubApplicationsManage: () => client.get("/club-applications/manage").then((r) => r.data),
+  reviewClubApplication: (id, status) => client.put(`/club-applications/${id}`, { status }).then((r) => r.data),
+  retryClubApplicationNotification: (id) => client.post(`/club-applications/${id}/notify`).then((r) => r.data),
 
   getAudit: (params = {}) => client.get("/audit", { params }).then((r) => r.data),
   // Backup downloads POST (never a GET with the passphrase in the URL), so an
