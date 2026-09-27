@@ -12,6 +12,7 @@ jest.mock("react-router-dom", () => ({
 }));
 jest.mock("@/lib/api", () => ({ api: {
   getClubs: jest.fn(), getClasses: jest.fn(), getSeries: jest.fn(), getRegattas: jest.fn(), getRaces: jest.fn(),
+  getClassRaceReports: jest.fn(), getRaceReport: jest.fn(),
 } }));
 jest.mock("@/components/HeaderMenu", () => () => <span />);
 jest.mock("@/components/Logo", () => () => <span />);
@@ -66,6 +67,8 @@ beforeEach(() => {
   mockApi.getSeries.mockResolvedValue(series);
   mockApi.getRegattas.mockResolvedValue(competitions);
   mockApi.getRaces.mockResolvedValue(races);
+  mockApi.getClassRaceReports.mockResolvedValue([]);
+  mockApi.getRaceReport.mockResolvedValue({ id: "report-1", file_data_url: "data:application/pdf;base64,JVBER" });
 });
 
 afterEach(() => {
@@ -185,6 +188,42 @@ test("gives each series its own mark and uses the class image when one is set", 
   const cruiserMarks = [...groupFor("Cruiser Class 1").querySelectorAll('[data-testid="club-result-card"] span[aria-hidden="true"]')];
   expect(cruiserMarks.length).toBeGreaterThan(0);
   expect(cards.every((card) => card.querySelector('img, span[aria-hidden="true"]') !== null)).toBe(true);
+});
+
+test("adds a race report column that only shows a button where a report exists", async () => {
+  mockApi.getClassRaceReports.mockImplementation((classId) => Promise.resolve(
+    classId === "class-sonata"
+      ? [{ id: "report-early-autumn", series_id: "linked-event", title: "Regatta report" },
+         { id: "report-second", series_id: "linked-event", title: "Sailing instructions" }]
+      : [],
+  ));
+  await render();
+  const year = container.querySelector('[data-testid="club-results-year"]');
+  act(() => {
+    year.value = "all";
+    year.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  // Reports are fetched per class, once each.
+  expect(mockApi.getClassRaceReports).toHaveBeenCalledWith("class-sonata");
+  expect(mockApi.getClassRaceReports).toHaveBeenCalledWith("class-cruiser");
+
+  // The table carries a dedicated column...
+  const headers = [...container.querySelectorAll('[data-testid="club-result-row"]')].length
+    ? [...container.querySelectorAll("thead th")].map((th) => th.textContent)
+    : [];
+  expect(headers).toContain("Race report");
+
+  // ...with a button only on the series that has documents, showing the count.
+  // The card layout and the table both render, hence one button each.
+  const buttons = [...container.querySelectorAll('[data-testid^="report-button-"]')];
+  expect(buttons.map((b) => b.textContent.trim())).toEqual(["Report ×2", "Report ×2"]);
+  expect(buttons.every((b) => b.getAttribute("data-testid") === "report-button-report-early-autumn")).toBe(true);
+
+  // A series with no report reads as an em dash, not an empty control.
+  const noReportCells = [...container.querySelectorAll('[data-testid^="club-result-report-cell-"]')]
+    .filter((cell) => cell.textContent.trim() === "—");
+  expect(noReportCells.length).toBe(series.length - 1);
 });
 
 test("orders series inside a class oldest-first regardless of the order selector", async () => {

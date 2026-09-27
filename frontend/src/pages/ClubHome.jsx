@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import HeaderMenu from "@/components/HeaderMenu";
 import Logo from "@/components/Logo";
 import ClubBadge from "@/components/ClubBadge";
+import { RaceReportButton } from "@/components/RaceReports";
 import Landing from "@/pages/Landing";
 
 const typeOrder = ["Club Championship", "Class Championship", "Open Championship", "Championship", "Regatta", "Class results"];
@@ -94,6 +95,20 @@ export function groupResultsByClass(rows, classes = [], sortMode = "newest") {
     : b.latestDate.localeCompare(a.latestDate) || a.className.localeCompare(b.className));
 }
 
+// Reports are scoped to a class, so a series' report count is the number of
+// documents its class has uploaded against that series. The index reads the
+// same per-class endpoints the class archive uses, keyed by series id.
+export function groupReportsBySeries(reports = []) {
+  const grouped = new Map();
+  reports.forEach((report) => {
+    if (!report?.series_id) return;
+    const items = grouped.get(report.series_id) || [];
+    items.push(report);
+    grouped.set(report.series_id, items);
+  });
+  return grouped;
+}
+
 export function buildClubResultsRows({ classes = [], series = [], competitions = [], races = [], slug = "" }) {
   const classById = new Map(classes.map((item) => [item.id, item]));
   const competitionById = new Map(competitions.map((item) => [item.id, item]));
@@ -118,6 +133,7 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
       className: classData?.name || "Class",
       classId: item.class_id,
       classData,
+      seriesId: item.id,
       typeLabel: competition ? competitionTypeLabel({ competition }) : competitionTypeLabel(item),
       title,
       year: item.year || competition?.year,
@@ -144,6 +160,7 @@ function ClubHomeIndex({ club }) {
   const [series, setSeries] = useState([]);
   const [competitions, setCompetitions] = useState([]);
   const [races, setRaces] = useState([]);
+  const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortMode, setSortMode] = useState("newest");
   const [selectedYear, setSelectedYear] = useState(String(CURRENT_YEAR));
@@ -170,6 +187,24 @@ function ClubHomeIndex({ club }) {
     }).finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
   }, [club.id]);
+
+  // Race reports hang off classes, so they are fetched per class once the
+  // class list lands. A class that cannot be read contributes no reports
+  // rather than failing the page — the rest of the index is still useful.
+  const classIds = useMemo(() => classes.map((item) => item.id).filter(Boolean), [classes]);
+  useEffect(() => {
+    let current = true;
+    if (!classIds.length) {
+      setReports([]);
+      return undefined;
+    }
+    Promise.all(classIds.map((id) => api.getClassRaceReports(id).catch(() => [])))
+      .then((lists) => { if (current) setReports(lists.flat()); })
+      .catch(() => { if (current) setReports([]); });
+    return () => { current = false; };
+  }, [classIds]);
+
+  const reportsBySeries = useMemo(() => groupReportsBySeries(reports), [reports]);
 
   const rows = useMemo(() => buildClubResultsRows({ classes, series, competitions, races, slug: club.slug }),
     [classes, series, competitions, races, club.slug]);
@@ -299,7 +334,11 @@ function ClubHomeIndex({ club }) {
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-card/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">{sortMode === "alphabetical" ? "A–Z" : <><Clock3 className="h-3.5 w-3.5 text-ocean" />Newest activity</>}</span>
                   </div>
                   <div className="space-y-3 p-3 sm:p-4">
-                    {classGroups.map((group) => (
+                    {classGroups.map((group) => {
+                      // One lookup per rendered row; reports are keyed by series
+                      // id, so a row without a document reads as empty.
+                      const seriesReports = (row) => reportsBySeries.get(row.seriesId) || [];
+                      return (
                       <section key={group.key} data-testid="club-result-class-group" className="overflow-hidden rounded-2xl border border-border/80 bg-background/70">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 bg-muted/25 px-3 py-3 sm:px-4">
                           <div className="flex min-w-0 items-center gap-3">
@@ -317,6 +356,12 @@ function ClubHomeIndex({ club }) {
                             <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-safety via-ocean to-cyan-500 opacity-75 transition-opacity group-hover/card:opacity-100" />
                             <SeriesMark classData={row.classData || group.classData} typeLabel={row.typeLabel} />
                             <span className="min-w-0 flex-1 font-heading text-base uppercase leading-tight tracking-tight text-foreground transition-colors group-hover/card:text-ocean">{row.title}</span>
+                            {seriesReports(row).length > 0 && (
+                              <span className="shrink-0" onClick={(event) => event.preventDefault()}>
+                                <RaceReportButton report={seriesReports(row)[0]}
+                                  label={seriesReports(row).length > 1 ? `Report ×${seriesReports(row).length}` : "Report"} />
+                              </span>
+                            )}
                             <span className="flex shrink-0 items-center gap-2">
                               <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground">{row.year || "All seasons"}</span>
                               <span className="grid h-7 w-7 place-items-center rounded-full bg-ocean/5 text-ocean transition-all group-hover/card:bg-ocean group-hover/card:text-white"><ChevronRight className="h-4 w-4" /></span>
@@ -329,6 +374,7 @@ function ClubHomeIndex({ club }) {
                               <tr>
                                 <th scope="col" className="px-3 py-2.5 font-semibold">Series</th>
                                 <th scope="col" className="px-3 py-2.5 font-semibold">Season</th>
+                                <th scope="col" className="px-3 py-2.5 font-semibold">Race report</th>
                                 <th scope="col" className="px-3 py-2.5"><span className="sr-only">Open results</span></th>
                               </tr>
                             </thead>
@@ -345,6 +391,11 @@ function ClubHomeIndex({ club }) {
                                     </span>
                                   </td>
                                   <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{row.year || "—"}</td>
+                                  <td className="whitespace-nowrap px-3 py-2.5" data-testid={`club-result-report-cell-${row.key}`}>
+                                    {seriesReports(row).length > 0
+                                      ? <RaceReportButton report={seriesReports(row)[0]} label={seriesReports(row).length > 1 ? `Report ×${seriesReports(row).length}` : "Report"} />
+                                      : <span className="text-muted-foreground/60">—</span>}
+                                  </td>
                                   <td className="px-3 py-2.5 text-right">
                                     <Link to={row.href} aria-label={`Open ${row.className} ${row.title} results`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors group-hover:bg-ocean group-hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean">
                                       <ChevronRight className="h-4 w-4" />
@@ -356,7 +407,8 @@ function ClubHomeIndex({ club }) {
                           </table>
                         </div>
                       </section>
-                    ))}
+                      );
+                    })}
                   </div>
                 </section>
               );

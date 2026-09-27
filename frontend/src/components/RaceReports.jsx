@@ -66,6 +66,39 @@ function ReportLink({ report, admin = false }) {
   );
 }
 
+// A single report as one compact control, for lists where each row is a
+// different series and only some of them have a document. The document is
+// fetched on click rather than linked, because the bytes are served as a data
+// URL from the API and never as a stable public file.
+export function RaceReportButton({ report, label = "Report" }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const view = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const full = await api.getRaceReport(report.id);
+      if (!full?.file_data_url) throw new Error("The report document is unavailable.");
+      openReportDocument(full.file_data_url);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Could not load the report.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="inline-flex flex-col items-start gap-0.5">
+      <Button type="button" size="sm" variant="outline"
+        className="h-8 gap-1.5 border-ocean/40 px-2.5 text-ocean hover:bg-ocean hover:text-white"
+        onClick={view} disabled={busy} data-testid={`report-button-${report.id}`}
+        title={report.title || report.original_filename || "Open race report"}>
+        <FileText className="h-3.5 w-3.5" /> {busy ? "Opening…" : label}
+      </Button>
+      {error && <span className="text-[10px] text-red-600">{error}</span>}
+    </span>
+  );
+}
+
 export function ClassRaceReports({ series = [], classIds = [] }) {
   const [reports, setReports] = useState(null);
   const classIdKey = classIds.filter(Boolean).join("|");
