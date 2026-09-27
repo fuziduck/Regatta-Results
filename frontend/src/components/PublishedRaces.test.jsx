@@ -76,6 +76,23 @@ test("shows every scheduled slot in race-number order and links only completed r
   expect(rows[4].querySelector("a")).toBeNull();
 });
 
+test("keeps an abandoned scheduled race visible and marks it excluded from the series", async () => {
+  mockApi.getRaces.mockResolvedValue([
+    { id: "r1", race_number: 1, date: "2026-04-04", status: "published", results: [] },
+    { id: "r2-abandoned", race_number: 2, date: "2026-04-11", scheduled_start_time: "11:15", status: "published", abandoned: true, results: [] },
+  ]);
+
+  await renderSchedule();
+
+  const row = container.querySelector('[data-testid="schedule-row-2"]');
+  expect(row).not.toBeNull();
+  expect(row.textContent).toContain("R2");
+  expect(row.textContent).toContain("Abandoned");
+  expect(row.textContent).toContain("Not included in series");
+  expect(row.textContent).toContain("Apr 11, 2026");
+  expect(row.querySelector("a")).toBeNull();
+});
+
 test("a YTC series shows the YTC column and corrects by the boat's YTC number", async () => {
   mockApi.getRaces.mockResolvedValue([{
     id: "r1", race_number: 1, date: "2026-05-02", start_time: "10:00",

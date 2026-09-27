@@ -216,6 +216,8 @@ export default function PublishedRaces({
                   <td className="px-3 py-2">
                     {row.status === "Completed" && row.race && clubSlug ? (
                       <Link to={raceResultPath(clubSlug, row.race.id, `${classInfo?.name || "Sailing"} ${series?.name || "Series"} race ${row.number} ${series?.year || ""}`)} className="font-semibold text-ocean hover:underline">View Results</Link>
+                    ) : row.status === "Abandoned" ? (
+                      <span className="text-xs font-semibold text-red-700 dark:text-red-300" data-testid={`schedule-excluded-${row.race?.id || row.number}`}>Not included in series</span>
                     ) : <span className="text-xs text-muted-foreground">Results not yet available</span>}
                   </td>
                 </tr>
