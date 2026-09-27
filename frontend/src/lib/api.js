@@ -26,7 +26,7 @@ const client = axios.create({ baseURL: API, withCredentials: true });
 // NB: the homepage (exact "/") is matched explicitly below — a bare "/"
 // prefix would match every path via startsWith. These are prefixes only.
 const PUBLIC_ROUTE_PREFIXES = [
-  "/login", "/forgot-password", "/reset-password",
+  "/login", "/forgot-password", "/reset-password", "/club-registration",
   "/boats", "/boat/", "/class/", "/club/", "/subscriptions/",
 ];
 

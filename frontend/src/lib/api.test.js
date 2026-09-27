@@ -9,6 +9,8 @@ describe("isPublicRoute", () => {
     expect(isPublicRoute("/login")).toBe(true);
     expect(isPublicRoute("/forgot-password")).toBe(true);
     expect(isPublicRoute("/reset-password")).toBe(true);
+    expect(isPublicRoute("/club-registration")).toBe(true);
+    expect(isPublicRoute("/club-registration?token=verification-token")).toBe(true);
     expect(isPublicRoute("/boats")).toBe(true);
     expect(isPublicRoute("/boat/abc-123")).toBe(true);
     expect(isPublicRoute("/club/medway-yacht-club")).toBe(true);
