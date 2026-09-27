@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Clubs from "@/pages/Clubs";
 import Landing from "@/pages/Landing";
+import ClubHome from "@/pages/ClubHome";
 import ClubCalendar from "@/pages/ClubCalendar";
 import Class from "@/pages/Class";
 import Regatta from "@/pages/Regatta";
@@ -97,7 +98,7 @@ function App() {
           <RouteMetadata />
           <Routes>
             <Route path="/" element={<Clubs />} />
-            <Route path="/club/:slug" element={<Landing />} />
+            <Route path="/club/:slug" element={<ClubHome />} />
             <Route path="/club/:slug/calendar" element={<ClubCalendar />} />
             <Route path="/club/:slug/series/:seriesId/:seriesName?" element={<Landing />} />
             <Route path="/class/group/:classKey/:className?" element={<Class />} />
