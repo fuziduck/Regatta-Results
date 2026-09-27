@@ -85,8 +85,9 @@ test("builds a recent-first index grouped by championship type with class-level 
   expect(rows.map((row) => row.latestRace?.date)).toEqual(["2026-08-10", "2025-10-04", "2025-10-03", "2024-05-12"]);
   expect(rows.map((row) => row.typeLabel)).toEqual(["Regatta", "Club Championship", "Club Championship", "Class Championship"]);
   expect(rows.map((row) => row.title)).toEqual(["Harbour Regatta · Sonata", "Summer Series", "Autumn Series", "Autumn Series"]);
-  expect(rows[0]).toMatchObject({ className: "Sonata", href: "/club/harbour-club/series/linked-event" });
-  expect(rows.find((row) => row.key === "series:club-2025").href).toBe("/club/harbour-club/series/club-2025");
+  expect(rows[0]).toMatchObject({ className: "Sonata", href: "/club/harbour-club/series/linked-event/harbour-regatta-sonata-2026?class=class-sonata&year=2026" });
+  expect(rows.find((row) => row.key === "series:club-2025").href)
+    .toBe("/club/harbour-club/series/club-2025/summer-series-2025?class=class-sonata&year=2025");
   expect(rows[3].className).toBe("Cruiser Class 1");
 });
 
@@ -129,10 +130,10 @@ test("renders grouped tables newest first and lets visitors open result pages", 
   expect(marks.every((mark) => mark !== null)).toBe(true);
   expect(container.querySelectorAll('[data-testid="club-result-row"] img, [data-testid="club-result-row"] span[aria-hidden="true"]').length)
     .toBe(series.length);
-  expect(container.querySelector('a[href="/club/harbour-club/series/club-2025"]')).not.toBeNull();
-  expect(container.querySelector('a[href="/club/harbour-club/series/club-cruiser-2025"]')).not.toBeNull();
-  expect(container.querySelector('a[href="/club/harbour-club/series/class-2024"]')).not.toBeNull();
-  expect(container.querySelector('a[href="/club/harbour-club/series/linked-event"]')).not.toBeNull();
+  expect(container.querySelector('a[href="/club/harbour-club/series/club-2025/summer-series-2025?class=class-sonata&year=2025"]')).not.toBeNull();
+  expect(container.querySelector('a[href="/club/harbour-club/series/club-cruiser-2025/autumn-series-2025?class=class-cruiser&year=2025"]')).not.toBeNull();
+  expect(container.querySelector('a[href="/club/harbour-club/series/class-2024/autumn-series-2024?class=class-cruiser&year=2024"]')).not.toBeNull();
+  expect(container.querySelector('a[href="/club/harbour-club/series/linked-event/harbour-regatta-sonata-2026?class=class-sonata&year=2026"]')).not.toBeNull();
   expect(container.querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(series.length);
 
   const sort = container.querySelector('[data-testid="club-results-sort"]');
@@ -253,7 +254,7 @@ test("sends a website race report straight out to its host from the index", asyn
   const card = container.querySelector('[data-testid="club-result-card"]');
   const cardLink = links.find((link) => card.contains(link));
   expect(cardLink.closest("a")).toBe(cardLink);
-  expect(card.querySelector('a[href="/club/harbour-club/series/linked-event"]')).not.toBeNull();
+  expect(card.querySelector('a[href^="/club/harbour-club/series/linked-event/"]')).not.toBeNull();
 });
 
 test("orders series inside a class oldest-first regardless of the order selector", async () => {

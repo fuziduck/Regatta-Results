@@ -1,13 +1,16 @@
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+let mockRoute = { slug: "harbour-club", seriesId: undefined, seriesName: undefined };
+let mockSearch = "";
+
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
-  useParams: () => ({ slug: "harbour-club", seriesId: undefined }),
-  useSearchParams: () => [new URLSearchParams(), jest.fn()],
+  useParams: () => mockRoute,
+  useSearchParams: () => [new URLSearchParams(mockSearch), jest.fn()],
 }));
 jest.mock("@/lib/api", () => ({ api: {
   getClubs: jest.fn(),
@@ -109,6 +112,8 @@ function click(testId) {
 }
 
 beforeEach(() => {
+  mockRoute = { slug: "harbour-club", seriesId: undefined, seriesName: undefined };
+  mockSearch = "";
   mockApi.getClubs.mockResolvedValue([club]);
   mockApi.getClasses.mockResolvedValue(classes);
   mockApi.getNotifications.mockResolvedValue([]);
@@ -131,6 +136,31 @@ afterEach(() => {
   container = null;
   document.body.innerHTML = "";
   jest.clearAllMocks();
+});
+
+test("a deep link from Browse Results opens the requested championship series", async () => {
+  const championship = {
+    id: "club-summer-series", class_id: "sonata", year: CURRENT_YEAR,
+    name: "Summer Series", series_type: "club_championship",
+  };
+  mockRoute = {
+    slug: "harbour-club", seriesId: championship.id,
+    seriesName: `summer-series-${CURRENT_YEAR}`,
+  };
+  mockSearch = `class=sonata&year=${CURRENT_YEAR}`;
+  mockApi.getSeries.mockImplementation((params) => {
+    if (params.class_id === "sonata") return Promise.resolve([championship]);
+    if (params.class_id === "dragon") return Promise.resolve(dragonSeries);
+    return Promise.resolve([...allSeries, championship]);
+  });
+
+  await renderPage();
+
+  expect(container.querySelector("main h3")?.textContent).toBe("Summer Series Series");
+  click("browse-tree-toggle");
+  expect(container.querySelector('[data-testid="view-club_championship-btn"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="series-tab-Summer Series"]')?.getAttribute("aria-current"))
+    .toBe("true");
 });
 
 test("the club crumb and header button lead back to the club's results index", async () => {

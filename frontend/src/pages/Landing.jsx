@@ -536,11 +536,35 @@ export default function Landing() {
   const nav = seriesNavModel(displaySeries, hasOverall);
   useEffect(() => {
     if (seriesScope !== currentSeriesScope || series.length === 0) return;
-    // Deep link from the site search: land on the requested series once.
+    // A deep link must select both the requested series and its category.
+    // Otherwise a club-championship link can land on the Championship view,
+    // where its series isn't rendered and the page falls back to Overall.
     const wanted = seriesParamRef.current;
     if (wanted) {
+      const requestedSeries = series.find((item) => item.id === wanted);
       seriesParamRef.current = null;
-      if (series.some((s) => s.id === wanted)) { setActiveSeries(wanted); return; }
+      if (requestedSeries?.regatta_id) {
+        const className = classes.find((item) => item.id === requestedSeries.class_id)?.name;
+        setView("regattas");
+        setRegattaId(requestedSeries.regatta_id);
+        if (className) {
+          pendingRegattaSelection.current = {
+            regattaId: requestedSeries.regatta_id,
+            className,
+            seriesId: requestedSeries.id,
+          };
+          setActiveRegattaClass(className);
+          setActiveRegattaSeries(requestedSeries.id);
+        }
+        return;
+      }
+      if (requestedSeries) {
+        setView(competitionType(requestedSeries) === "club_championship"
+          ? "club_championship"
+          : "championship");
+        setActiveSeries(wanted);
+        return;
+      }
     }
     // Single-series year: land straight on the series, whatever the overall
     // payload says (it would only repeat the same standings).

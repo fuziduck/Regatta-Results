@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, CalendarDays, ChevronRight, Clock3, Sailboat, Trophy } from "lucide-react";
 import { api } from "@/lib/api";
 import { competitionTypeLabel, DEFAULT_COMPETITION_IMAGE } from "@/lib/competition";
+import { seriesResultsPath } from "@/lib/seo";
 import { CURRENT_YEAR, classDivisions, scoringModeLabel, seriesScoringModes } from "@/lib/helpers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -158,7 +159,7 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
       year: item.year || competition?.year,
       firstRace,
       latestRace,
-      href: `/club/${slug}/series/${item.id}`,
+      href: seriesResultsPath(slug, item.id, item.name, item.year || competition?.year, item.class_id),
     };
   });
 
