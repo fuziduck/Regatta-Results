@@ -429,7 +429,17 @@ export default function Webmaster() {
             menuLabel={`Webmaster · ${clubs.length} club${clubs.length === 1 ? "" : "s"}`}
             onChangedPasscode={updateSession}
             logoutTestId="webmaster-logout-btn"
-            items={[]}
+            // The webmaster console has no club of its own, so the way back to
+            // the public site is the clubs home page — the same "View site"
+            // entry the officer and admin consoles offer.
+            items={[{
+              key: "site",
+              label: "View site",
+              icon: <Globe className="w-4 h-4 mr-1" />,
+              onClick: () => navigate("/"),
+              testId: "webmaster-site-btn",
+              menuTestId: "menu-view-site",
+            }]}
             />
           </div>
         </div>

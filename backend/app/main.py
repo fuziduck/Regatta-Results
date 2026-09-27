@@ -8905,18 +8905,46 @@ async def _notice_of_club(notice_id: str, user: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Race reports — uploaded files attached to a class series. Unlike formal
-# ONB notices, reports are immediately public once an officer uploads them.
+# Race reports — a document or an external web link attached to a class
+# series. Unlike formal ONB notices, reports are immediately public once an
+# officer uploads or links them.
 # ---------------------------------------------------------------------------
 RACE_REPORT_MAX = 10 * 1024 * 1024
 
 
 def _race_report_summary(report: dict) -> dict:
+    """List shape for reports. ``link_url`` is set for reports that live on
+    another website; those carry no file fields and are never fetched."""
     return {key: report.get(key) for key in (
         "id", "club_id", "class_id", "class_name", "series_id", "series_name",
         "year", "title", "original_filename", "file_type", "file_size",
-        "uploaded_at", "uploaded_by",
+        "link_url", "uploaded_at", "uploaded_by",
     )}
+
+
+class RaceReportLinkInput(BaseModel):
+    """A report whose report document is hosted elsewhere on the web."""
+    series_id: str
+    title: str
+    url: str
+
+
+async def _race_report_target(series_id: str, user: dict) -> tuple:
+    """Resolve a series to (series, class, club_id), refusing reports for a
+    series that does not exist or belongs to another club."""
+    series = await db.series.find_one({"id": series_id}, {"_id": 0})
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    class_doc = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0})
+    if not class_doc:
+        raise HTTPException(status_code=400, detail="Series class not found")
+    if series.get("regatta_id"):
+        regatta = await db.regattas.find_one({"id": series.get("regatta_id")}, {"_id": 0, "club_id": 1}) if hasattr(db, "regattas") else None
+        if regatta and regatta.get("club_id") and regatta.get("club_id") != class_doc.get("club_id"):
+            raise HTTPException(status_code=400, detail="Series does not belong to this club")
+    club_id = class_doc.get("club_id")
+    _ensure_club(user, club_id)
+    return series, class_doc, club_id
 
 
 @api_router.get("/classes/{class_id}/race-reports")
@@ -8952,18 +8980,7 @@ async def list_admin_race_reports(club_id: Optional[str] = None,
 async def upload_race_report(request: Request, series_id: str = Form(...),
                              title: str = Form(...), file: UploadFile = File(...),
                              user: dict = Depends(require_admin)):
-    series = await db.series.find_one({"id": series_id}, {"_id": 0})
-    if not series:
-        raise HTTPException(status_code=404, detail="Series not found")
-    class_doc = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0})
-    if not class_doc:
-        raise HTTPException(status_code=400, detail="Series class not found")
-    if series.get("regatta_id"):
-        regatta = await db.regattas.find_one({"id": series.get("regatta_id")}, {"_id": 0, "club_id": 1}) if hasattr(db, "regattas") else None
-        if regatta and regatta.get("club_id") and regatta.get("club_id") != class_doc.get("club_id"):
-            raise HTTPException(status_code=400, detail="Series does not belong to this club")
-    club_id = class_doc.get("club_id")
-    _ensure_club(user, club_id)
+    series, class_doc, club_id = await _race_report_target(series_id, user)
     title = (title or "").strip()[:200]
     if not title:
         raise HTTPException(status_code=400, detail="Report title is required")
@@ -8990,6 +9007,35 @@ async def upload_race_report(request: Request, series_id: str = Form(...),
     await db.race_reports.insert_one(report)
     await _log_audit(request=request, user=user, action="RACE_REPORT_UPLOADED",
                      description=f"Uploaded race report '{title}' for {series.get('name')}",
+                     resource_type="race_report", resource_id=report_id, club_id=club_id)
+    return _race_report_summary(report)
+
+
+@api_router.post("/race-reports/link")
+async def link_race_report(payload: RaceReportLinkInput, request: Request,
+                           user: dict = Depends(require_admin)):
+    """Publish a report whose document already lives on another website — a
+    club-hosted PDF, a results page, a regatta report on the open web. Nothing
+    is copied into our storage, so the link is validated and stored as given."""
+    series, class_doc, club_id = await _race_report_target(payload.series_id, user)
+    title = (payload.title or "").strip()[:200]
+    if not title:
+        raise HTTPException(status_code=400, detail="Report title is required")
+    link_url = _valid_link_url(payload.url)
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1}) or {}
+    report_id = new_id()
+    report = {
+        "id": report_id, "club_id": club_id,
+        "class_id": class_doc["id"], "class_name": class_doc.get("name"),
+        "series_id": series["id"], "series_name": series.get("name"),
+        "year": series.get("year"), "club_name": club.get("name"),
+        "title": title, "link_url": link_url,
+        "status": "published", "uploaded_at": now_iso(),
+        "uploaded_by": user.get("username"),
+    }
+    await db.race_reports.insert_one(report)
+    await _log_audit(request=request, user=user, action="RACE_REPORT_LINKED",
+                     description=f"Linked race report '{title}' to {link_url} for {series.get('name')}",
                      resource_type="race_report", resource_id=report_id, club_id=club_id)
     return _race_report_summary(report)
 

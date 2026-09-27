@@ -214,7 +214,9 @@ export default function Boat() {
     );
   }
 
-  const standingsHref = season ? `/club/${season.club_slug}${season.class_id ? `?class=${season.class_id}` : ""}${season.year && season.year !== CURRENT_YEAR ? `&year=${season.year}` : ""}` : "/clubs";
+  // The club home is the fallback: "/clubs" is not a route, so a boat with no
+  // season would previously fall through the catch-all redirect.
+  const standingsHref = season ? `/club/${season.club_slug}${season.class_id ? `?class=${season.class_id}` : ""}${season.year && season.year !== CURRENT_YEAR ? `&year=${season.year}` : ""}` : "/";
   const shareLink = () => {
     if (navigator.share) navigator.share({ title: `${profile.name} — ${profile.sail_no}`, url: window.location.href }).catch(() => {});
     else navigator.clipboard?.writeText(window.location.href).catch(() => {});
@@ -475,7 +477,7 @@ export default function Boat() {
               <div className="rounded-xl border border-border p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm uppercase tracking-widest font-semibold">Upcoming Races</h3>
-                  <Link to={`/club/${season?.club_slug || ""}`} className="inline-flex items-center gap-1 text-xs font-semibold text-ocean dark:text-ocean-light hover:underline">View calendar <ArrowRight className="w-3 h-3" /></Link>
+                  <Link to={season?.club_slug ? `/club/${season.club_slug}/calendar` : "/"} className="inline-flex items-center gap-1 text-xs font-semibold text-ocean dark:text-ocean-light hover:underline">View calendar <ArrowRight className="w-3 h-3" /></Link>
                 </div>
                 {(season?.upcoming || []).length === 0 ? (
                   <p className="text-sm text-muted-foreground">No upcoming races scheduled.</p>

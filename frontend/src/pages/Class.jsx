@@ -133,7 +133,9 @@ export default function Class() {
           <div className="flex min-w-0 items-center gap-3">
             <Link to="/"><Logo className="h-11 w-auto shrink-0" /></Link>
             <span className="hidden h-6 w-px bg-border sm:block" />
-            <span className="hidden truncate font-heading text-lg uppercase tracking-tight sm:block">{groupedView ? "One-design fleet" : club.name}</span>
+            {groupedView || !club.slug
+              ? <span className="hidden truncate font-heading text-lg uppercase tracking-tight sm:block">One-design fleet</span>
+              : <Link to={`/club/${club.slug}`} data-testid="class-back-to-club" className="hidden truncate font-heading text-lg uppercase tracking-tight hover:text-ocean sm:block">{club.name}</Link>}
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
@@ -145,7 +147,11 @@ export default function Class() {
       <section className="relative overflow-hidden bg-ocean-dark text-white">
         <div className="absolute -right-16 -top-24 h-72 w-72 rounded-full bg-safety/20 blur-3xl" />
         <div className="relative mx-auto max-w-6xl px-4 py-10 sm:py-14">
-          <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: classData.name || "Class" }]} className="mb-4 text-white/70 [&_a]:text-white/80 [&_span]:text-white" />
+          <Breadcrumbs
+            items={groupedView || !club.slug
+              ? [{ label: "Home", href: "/" }, { label: classData.name || "Class" }]
+              : [{ label: "Home", href: "/" }, { label: club.name || "Club", href: `/club/${club.slug}` }, { label: classData.name || "Class" }]}
+            className="mb-4 text-white/70 [&_a]:text-white/80 [&_span]:text-white" />
           <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">
             <ClassMark classData={classData} />
             <div>

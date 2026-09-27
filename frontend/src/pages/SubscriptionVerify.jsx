@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { Check, Loader2 } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import { ArrowLeft, Check, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 
 export default function SubscriptionVerify() {
@@ -13,5 +13,18 @@ export default function SubscriptionVerify() {
     api.verifyResultsSubscription(token).then(() => setState("done")).catch((e) => { setState("error"); setMessage(e?.response?.data?.detail || "This confirmation link is invalid or has expired."); });
   }, [token]);
   if (state === "loading") return <div className="min-h-screen grid place-items-center text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin" /></div>;
-  return <div className="min-h-screen grid place-items-center bg-background px-4"><div className="max-w-md text-center rounded-xl border border-border bg-card p-8">{state === "done" ? <><Check className="mx-auto w-12 h-12 text-emerald-600" /><h1 className="text-xl font-semibold mt-3">Subscription confirmed</h1><p className="text-sm text-muted-foreground mt-2">You'll now receive published results by email.</p></> : <><h1 className="text-xl font-semibold">Confirmation unavailable</h1><p className="text-sm text-muted-foreground mt-2">{message}</p></>}</div></div>;
+  // Reached from an email link, so there is no previous screen in the app —
+  // always offer a way through to the public results home.
+  return (
+    <div className="min-h-screen grid place-items-center bg-background px-4">
+      <div className="max-w-md text-center rounded-xl border border-border bg-card p-8">
+        {state === "done"
+          ? <><Check className="mx-auto w-12 h-12 text-emerald-600" /><h1 className="text-xl font-semibold mt-3">Subscription confirmed</h1><p className="text-sm text-muted-foreground mt-2">You'll now receive published results by email.</p></>
+          : <><h1 className="text-xl font-semibold">Confirmation unavailable</h1><p className="text-sm text-muted-foreground mt-2">{message}</p></>}
+        <Link to="/" data-testid="subscription-back-to-site" className="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-ocean hover:underline">
+          <ArrowLeft className="w-4 h-4" /> Go to SailScore results
+        </Link>
+      </div>
+    </div>
+  );
 }

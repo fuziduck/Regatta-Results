@@ -41,7 +41,15 @@ jest.mock("@/components/Logo", () => () => <span />);
 jest.mock("@/components/BoatSearchBox", () => () => null);
 jest.mock("@/components/ResultsSubscription", () => () => null);
 jest.mock("@/components/PublishedRaces", () => () => null);
-jest.mock("@/components/Breadcrumbs", () => () => null);
+// Rendered rather than stubbed out, so the page hierarchy can be asserted:
+// every crumb that has a destination must stay a working link.
+jest.mock("@/components/Breadcrumbs", () => ({ items = [] }) => (
+  <nav data-testid="breadcrumbs">
+    {items.map((item, index) => (item.href
+      ? <a key={index} href={item.href} data-testid={`crumb-${item.label}`}>{item.label}</a>
+      : <span key={index} data-testid={`crumb-${item.label}`}>{item.label}</span>))}
+  </nav>
+));
 jest.mock("@/lib/exportPdf", () => ({ exportSeriesPdf: jest.fn(), exportOverallPdf: jest.fn() }));
 jest.mock("@/lib/analytics", () => ({
   SAILSCORE_EVENTS: { VIEW_CLASS: "view-class", VIEW_SERIES: "view-series", VIEW_RESULTS: "view-results", VIEW_REGATTA: "view-regatta", DOWNLOAD_RESULTS_PDF: "download-results-pdf", DOWNLOAD_SERIES_PDF: "download-series-pdf" },
@@ -123,6 +131,17 @@ afterEach(() => {
   container = null;
   document.body.innerHTML = "";
   jest.clearAllMocks();
+});
+
+test("the club crumb and header button lead back to the club's results index", async () => {
+  await renderPage();
+
+  // A series opened from the club home is otherwise a one-way trip: the club
+  // step of the breadcrumb must stay clickable.
+  expect(container.querySelector('[data-testid="crumb-Harbour Club"]').getAttribute("href"))
+    .toBe("/club/harbour-club");
+  expect(container.querySelector('[data-testid="club-home-btn"]').closest("a").getAttribute("href"))
+    .toBe("/club/harbour-club");
 });
 
 test("selecting a different class and then its series keeps the requested series", async () => {

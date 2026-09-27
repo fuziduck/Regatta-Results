@@ -7,7 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { exportSeriesPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
-import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
+import { competitionImage, competitionStatusClass, competitionStatusLabel, competitionTagClass } from "@/lib/competition";
 import { ArrowLeft, ArrowRight, CalendarDays, Download, Flag, MapPin, Medal, Trophy, Users, Sailboat } from "lucide-react";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import PublishedRaces from "@/components/PublishedRaces";
@@ -137,7 +137,9 @@ export default function Regatta() {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <Link to={competitionPath(regatta, slug)}>
+          {/* The club's results index — competitionPath() points back at this
+              very page, so it was a dead "back" button. */}
+          <Link to={`/club/${slug}`} data-testid="regatta-back-to-results">
             <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean">
               <ArrowLeft className="w-4 h-4" /> Back to results
             </Button>

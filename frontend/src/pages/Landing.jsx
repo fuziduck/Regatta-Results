@@ -798,7 +798,10 @@ export default function Landing() {
   const treeHasChoices = categoryNodes.length > 0;
   const crumbs = [
     { label: "Home", href: "/" },
-    { label: club.name },
+    // The club's own results index is the parent screen of every series/class
+    // view, so it stays clickable — otherwise a series reached from the club
+    // home is a one-way trip.
+    { label: club.name, href: `/club/${club.slug}` },
     ...selectedPath.map((item) => ({ label: item.label })),
   ];
   // A regatta needs its series metadata before showing its standings. Every
@@ -818,6 +821,11 @@ export default function Landing() {
           </div>
           <div className="flex items-center gap-2">
             <BoatSearchBox variant="header" className="" />
+            <Link to={`/club/${club.slug}`}>
+              <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="club-home-btn">
+                <ArrowLeft className="w-4 h-4" /> Club
+              </Button>
+            </Link>
             <Link to="/">
               <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="all-clubs-btn">
                 <ArrowLeft className="w-4 h-4" /> All clubs

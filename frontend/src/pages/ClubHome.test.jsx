@@ -226,6 +226,36 @@ test("adds a race report column that only shows a button where a report exists",
   expect(noReportCells.length).toBe(series.length - 1);
 });
 
+test("sends a website race report straight out to its host from the index", async () => {
+  mockApi.getClassRaceReports.mockImplementation((classId) => Promise.resolve(
+    classId === "class-sonata"
+      ? [{ id: "report-linked", series_id: "linked-event", title: "Regatta report", link_url: "https://medwayyc.org/reports/2026" }]
+      : [],
+  ));
+  await render();
+  const year = container.querySelector('[data-testid="club-results-year"]');
+  act(() => {
+    year.value = "all";
+    year.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  // Table and card layouts each render one control, and both are links out.
+  const links = [...container.querySelectorAll('[data-testid="report-button-report-linked"]')];
+  expect(links).toHaveLength(2);
+  expect(links.every((link) => link.tagName === "A")).toBe(true);
+  expect(links.every((link) => link.getAttribute("href") === "https://medwayyc.org/reports/2026")).toBe(true);
+  expect(links.every((link) => link.getAttribute("target") === "_blank")).toBe(true);
+  expect(links.every((link) => link.getAttribute("rel") === "noopener noreferrer")).toBe(true);
+  // Nothing is fetched: the address in the response is all the browser needs.
+  expect(mockApi.getRaceReport).not.toHaveBeenCalled();
+  // The card's report link is a sibling of the series link, not nested inside
+  // it, so the browser never has to untangle two anchors.
+  const card = container.querySelector('[data-testid="club-result-card"]');
+  const cardLink = links.find((link) => card.contains(link));
+  expect(cardLink.closest("a")).toBe(cardLink);
+  expect(card.querySelector('a[href="/club/harbour-club/series/linked-event"]')).not.toBeNull();
+});
+
 test("orders series inside a class oldest-first regardless of the order selector", async () => {
   const clubSeries = [
     { id: "spring", class_id: "class-sonata", name: "Spring Series", year: 2026, series_type: "club_championship" },

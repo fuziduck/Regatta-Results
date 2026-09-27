@@ -375,22 +375,28 @@ function ClubHomeIndex({ club }) {
                           )}
                         </div>
                         <div className="grid gap-3 p-3 sm:grid-cols-2 sm:p-4 xl:hidden">{group.rows.map((row) => (
-                          <Link key={row.key} to={row.href} data-testid="club-result-card" data-first-race={row.firstRace?.date || ""}
-                            className="group/card relative flex min-h-16 items-center gap-3 overflow-hidden rounded-xl border border-border bg-card py-2.5 pl-3 pr-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean sm:pl-3.5">
+                          // The report control sits beside the series link rather
+                          // than inside it: a website report is an anchor too, and
+                          // one link cannot be nested in another.
+                          <div key={row.key} data-testid="club-result-card" data-first-race={row.firstRace?.date || ""}
+                            className="group/card relative flex min-h-16 items-center overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-md">
                             <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-safety via-ocean to-cyan-500 opacity-75 transition-opacity group-hover/card:opacity-100" />
-                            <SeriesMark classData={row.classData || group.classData} typeLabel={row.typeLabel} />
-                            <span className="min-w-0 flex-1 font-heading text-base uppercase leading-tight tracking-tight text-foreground transition-colors group-hover/card:text-ocean">{row.title}</span>
+                            <Link to={row.href}
+                              className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-3 pr-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean sm:pl-3.5">
+                              <SeriesMark classData={row.classData || group.classData} typeLabel={row.typeLabel} />
+                              <span className="min-w-0 flex-1 font-heading text-base uppercase leading-tight tracking-tight text-foreground transition-colors group-hover/card:text-ocean">{row.title}</span>
+                              <span className="flex shrink-0 items-center gap-2">
+                                <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground">{row.year || "All seasons"}</span>
+                                <span className="grid h-7 w-7 place-items-center rounded-full bg-ocean/5 text-ocean transition-all group-hover/card:bg-ocean group-hover/card:text-white"><ChevronRight className="h-4 w-4" /></span>
+                              </span>
+                            </Link>
                             {seriesReports(row).length > 0 && (
-                              <span className="shrink-0" onClick={(event) => event.preventDefault()}>
+                              <span className="flex shrink-0 items-center pr-2">
                                 <RaceReportButton report={seriesReports(row)[0]}
                                   label={seriesReports(row).length > 1 ? `Report ×${seriesReports(row).length}` : "Report"} />
                               </span>
                             )}
-                            <span className="flex shrink-0 items-center gap-2">
-                              <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground">{row.year || "All seasons"}</span>
-                              <span className="grid h-7 w-7 place-items-center rounded-full bg-ocean/5 text-ocean transition-all group-hover/card:bg-ocean group-hover/card:text-white"><ChevronRight className="h-4 w-4" /></span>
-                            </span>
-                          </Link>
+                          </div>
                         ))}</div>
                         <div className="hidden overflow-x-auto xl:block">
                           <table className="w-full min-w-[640px] text-left text-sm">

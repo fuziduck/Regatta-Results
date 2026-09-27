@@ -209,6 +209,7 @@ export const api = {
     fd.append("file", file);
     return client.post("/race-reports/upload", fd).then((r) => r.data);
   },
+  createRaceReportLink: (payload) => client.post("/race-reports/link", payload).then((r) => r.data),
   deleteRaceReport: (id) => client.delete(`/race-reports/${id}`).then((r) => r.data),
   createClass: (d) => client.post("/classes", d).then((r) => r.data),
   updateClass: (id, d) => client.put(`/classes/${id}`, d).then((r) => r.data),
