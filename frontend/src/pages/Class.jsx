@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import OfficialsLink from "@/components/OfficialsLink";
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, Sailboat, Trophy } from "lucide-react";
 import { SAILSCORE_EVENTS, useTrackView } from "@/lib/analytics";
 import Breadcrumbs from "@/components/Breadcrumbs";
+import { ClassRaceReports } from "@/components/RaceReports";
 
 const DEFAULT_CLASS_COLOUR = "#0A369D";
 
@@ -69,6 +70,7 @@ function SeriesCard({ item, clubSlug }) {
 
 export default function Class() {
   const { classId, classKey } = useParams();
+  const location = useLocation();
   const groupedView = Boolean(classKey);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +81,12 @@ export default function Class() {
     const request = groupedView ? api.getClassGroupDirectory(classKey) : api.getClassDirectory(classId);
     request.then(setData).catch(() => setMissing(true)).finally(() => setLoading(false));
   }, [classId, classKey, groupedView]);
+
+  useEffect(() => {
+    if (!loading && data && location.hash === "#race-reports") {
+      document.getElementById("race-reports")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [loading, data, location.hash]);
 
   const grouped = useMemo(() => {
     const byYear = new Map();
@@ -170,6 +178,8 @@ export default function Class() {
             </div>
           </section>
         ))}
+        <ClassRaceReports series={data.series || []}
+          classIds={groupedView ? (data.classes || []).map((item) => item.id) : [classData.id || classId]} />
       </main>
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground"><Logo className="mx-auto h-8 w-auto" /><p className="mt-2">SailScore · {groupedView ? classData.name : club.name}</p></footer>
     </div>

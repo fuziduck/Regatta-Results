@@ -103,7 +103,7 @@ class _DB:
     def __init__(self):
         self.cols = {n: _Coll() for n in
                      ("clubs", "users", "classes", "boats", "series",
-                      "races", "season_snapshots", "notices",
+                      "races", "season_snapshots", "notices", "race_reports",
                       "notice_boards", "notice_sections", "subscriptions",
                       "subscription_deliveries", "adverts", "audit_logs",
                       "settings")}
@@ -140,7 +140,7 @@ def _zip_bytes(prefix, macos_junk=True):
     docs = {
         "clubs": [{"id": "c1", "name": "Medway YC", "slug": "medway-yacht-club"}],
         "users": [], "classes": [], "boats": [], "series": [], "races": [],
-        "season_snapshots": [], "notices": [], "notice_boards": [],
+        "season_snapshots": [], "notices": [], "race_reports": [], "notice_boards": [],
         "notice_sections": [], "subscriptions": [],
         "subscription_deliveries": [], "adverts": [], "audit_logs": [],
         "settings": [],
@@ -167,7 +167,7 @@ class TestRestoreBackupLayout:
         assert out["scope"] == "all-clubs"
         assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
                                         "series", "races", "season_snapshots",
-                                        "notices", "notice_boards",
+                                        "notices", "race_reports", "notice_boards",
                                         "notice_sections", "subscriptions",
                                         "subscription_deliveries", "adverts",
                                         "audit_logs", "settings"}
@@ -188,7 +188,7 @@ class TestRestoreBackupLayout:
         assert out["scope"] == "all-clubs"
         assert set(out["restored"]) == {"clubs", "users", "classes", "boats",
                                         "series", "races", "season_snapshots",
-                                        "notices", "notice_boards",
+                                        "notices", "race_reports", "notice_boards",
                                         "notice_sections", "subscriptions",
                                         "subscription_deliveries", "adverts",
                                         "audit_logs", "settings"}
@@ -382,6 +382,8 @@ class TestClubRestoreReplacesRacingData:
                                    "version": 1, "status": "locked"}],
             "notices": [{"id": "n-new", "club_id": "c1", "title": "Club notice",
                           "pdf_data_url": "data:application/pdf;base64,AAAA"}],
+            "race_reports": [{"id": "rr-new", "club_id": "c1", "class_id": "cl-a",
+                              "series_id": "s-new", "file_data_url": "data:application/pdf;base64,BBBB"}],
             "notice_boards": [{"id": "b-new", "club_id": "c1", "title": "ONB"}],
             "notice_sections": [{"id": "sec-new", "board_id": "b-new",
                                   "title": "General"}],
@@ -415,6 +417,8 @@ class TestClubRestoreReplacesRacingData:
                                               "version": 1, "status": "locked"}]
         db.cols["notices"].docs = [{"id": "n-old", "club_id": "c1",
                                      "title": "Old notice"}]
+        db.cols["race_reports"].docs = [{"id": "rr-old", "club_id": "c1",
+                                         "class_id": "cl-a", "series_id": "s-old"}]
         db.cols["notice_boards"].docs = [{"id": "b-old", "club_id": "c1",
                                            "title": "Old ONB"}]
         db.cols["notice_sections"].docs = [{"id": "sec-old", "board_id": "b-old",
@@ -438,8 +442,9 @@ class TestClubRestoreReplacesRacingData:
         # club_id filter would have matched nothing on these collections).
         assert db.cols["series"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
         assert db.cols["races"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
-        # Frozen snapshots are scoped by the backup's series ids.
+        # Frozen snapshots are scoped by series id; race reports by class id.
         assert db.cols["season_snapshots"].deleted == [{"series_id": {"$in": ["s-new"]}}]
+        assert db.cols["race_reports"].deleted == [{"class_id": {"$in": ["cl-a"]}}]
         # ONB + subscriptions are scoped by club_id / board_id / sub id.
         assert db.cols["notices"].deleted == [{"club_id": "c1"}]
         assert db.cols["notice_boards"].deleted == [{"club_id": "c1"}]
@@ -450,6 +455,7 @@ class TestClubRestoreReplacesRacingData:
         assert [s["id"] for s in db.cols["series"].inserted] == ["s-new"]
         assert [r["id"] for r in db.cols["races"].inserted] == ["r-new"]
         assert [n["id"] for n in db.cols["notices"].inserted] == ["n-new"]
+        assert [r["id"] for r in db.cols["race_reports"].inserted] == ["rr-new"]
         assert [n["pdf_data_url"] for n in db.cols["notices"].inserted] \
             == ["data:application/pdf;base64,AAAA"]
         assert [b["id"] for b in db.cols["notice_boards"].inserted] == ["b-new"]
@@ -462,6 +468,8 @@ class TestClubRestoreReplacesRacingData:
                                           if d["id"] != "r-old"]
         assert db.cols["notices"].docs == [d for d in db.cols["notices"].docs
                                             if d["id"] != "n-old"]
+        assert db.cols["race_reports"].docs == [d for d in db.cols["race_reports"].docs
+                                                 if d["id"] != "rr-old"]
         # The webmaster is never touched by a club restore.
         assert not any(d.get("role") == "webmaster" for d in db.cols["users"].inserted)
 
@@ -500,6 +508,10 @@ class TestBuildBackupIncludesEverything:
                                      "title": "Club notice",
                                      "pdf_data_url": "data:application/pdf;base64,QUJD"},
                                     {"id": "n-2", "club_id": "c2", "title": "Other"}]
+        db.cols["race_reports"].docs = [{"id": "rr-1", "club_id": "c1", "class_id": "cl-a",
+                                         "series_id": "s-1", "file_data_url": "data:application/pdf;base64,QUJD"},
+                                        {"id": "rr-2", "club_id": "c2", "class_id": "cl-b",
+                                         "series_id": "s-2"}]
         db.cols["notice_boards"].docs = [{"id": "b-1", "club_id": "c1", "title": "ONB"},
                                           {"id": "b-2", "club_id": "c2", "title": "Other"}]
         db.cols["notice_sections"].docs = [{"id": "sec-1", "board_id": "b-1"},
@@ -525,6 +537,7 @@ class TestBuildBackupIncludesEverything:
         data = self._read_zip(resp)
         assert [n["id"] for n in data["notices.json"]] == ["n-1"]
         assert data["notices.json"][0]["pdf_data_url"].startswith("data:application/pdf")
+        assert [report["id"] for report in data["race_reports.json"]] == ["rr-1"]
         assert [b["id"] for b in data["notice_boards.json"]] == ["b-1"]
         assert [s["id"] for s in data["notice_sections.json"]] == ["sec-1"]
         assert [s["id"] for s in data["subscriptions.json"]] == ["sub-1"]
@@ -541,6 +554,7 @@ class TestBuildBackupIncludesEverything:
             _Req(), {"role": "webmaster", "username": "webmaster"}, None))
         data = self._read_zip(resp)
         assert {n["id"] for n in data["notices.json"]} == {"n-1", "n-2"}
+        assert {report["id"] for report in data["race_reports.json"]} == {"rr-1", "rr-2"}
         assert {n["id"] for n in data["notice_boards.json"]} == {"b-1", "b-2"}
         assert {s["id"] for s in data["notice_sections.json"]} == {"sec-1", "sec-2"}
         assert {s["id"] for s in data["subscriptions.json"]} == {"sub-1", "sub-2"}
@@ -610,7 +624,7 @@ class TestWebmasterRedundancy:
                 "users": [{"id": "wm1", "club_id": None, "username": "webmaster",
                             "role": "webmaster", "active": True}],
                 "classes": [], "boats": [], "series": [], "races": [],
-                "season_snapshots": [], "notices": [], "notice_boards": [],
+                "season_snapshots": [], "notices": [], "race_reports": [], "notice_boards": [],
                 "notice_sections": [], "subscriptions": [],
                 "subscription_deliveries": [], "adverts": [], "audit_logs": [],
                 "settings": [],

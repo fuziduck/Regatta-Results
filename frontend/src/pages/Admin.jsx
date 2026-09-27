@@ -13,6 +13,7 @@ import { classGroupKey, normalizeSeriesType } from "@/lib/competition";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel, classDivisions, seriesScoringModes } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
+import { RaceReportsAdmin } from "@/components/RaceReports";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
@@ -2395,6 +2396,7 @@ export default function Admin() {
               <TabsTrigger value="club_championship" data-testid="tab-club-championship" className="gap-1.5 py-1.5"><Building2 className="w-4 h-4" /> Club Championship</TabsTrigger>
               <TabsTrigger value="regattas" data-testid="tab-regattas" className="gap-1.5 py-1.5"><CalendarDays className="w-4 h-4" /> Regattas</TabsTrigger>
               <TabsTrigger value="notices" data-testid="tab-notices" className="gap-1.5 py-1.5"><FileText className="w-4 h-4" /> Notice Board</TabsTrigger>
+              <TabsTrigger value="race-reports" data-testid="tab-race-reports" className="gap-1.5 py-1.5"><FileText className="w-4 h-4" /> Race Reports</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
               <TabsTrigger value="historic" data-testid="tab-historic" className="gap-1.5 py-1.5"><Archive className="w-4 h-4" /> Historic Results</TabsTrigger>
               <div className="w-px h-5 bg-border mx-1 shrink-0" aria-hidden />
@@ -2416,6 +2418,7 @@ export default function Admin() {
           <TabsContent value="club_championship" className="pt-6"><SeriesTab classes={classes} clubId={clubId} seriesType="club_championship" /></TabsContent>
           <TabsContent value="regattas" className="pt-6"><RegattasTab clubId={clubId} classes={classes} /></TabsContent>
           <TabsContent value="notices" className="pt-6"><NoticeManagementTab clubId={clubId} /></TabsContent>
+          <TabsContent value="race-reports" className="pt-6"><RaceReportsAdmin clubId={clubId} classes={classes} /></TabsContent>
           <TabsContent value="subscriptions" className="pt-6"><SubscriptionOverview clubId={clubId} /></TabsContent>
           {/* Club identity and the notice-board switches used to sit above the
               tab bar on every visit; they live here so the default view stays

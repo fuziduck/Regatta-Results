@@ -3177,6 +3177,7 @@ async def update_class(class_id: str, data: ClassInput, user: dict = Depends(req
 @api_router.delete("/classes/{class_id}")
 async def delete_class(class_id: str, user: dict = Depends(require_admin)):
     cls = await _class_of_club(class_id, user)
+    await db.race_reports.delete_many({"class_id": class_id})
     await db.classes.delete_one({"id": class_id})
     await _log_audit(request=None, user=user, action="CLASS_DELETED",
                      description=f"Deleted class {cls.get('name')}",
@@ -3987,6 +3988,10 @@ async def merge_series(series_id: str, target_id: str, data: SeriesMergeInput,
     # cannot be violated because the overlap was rejected above.
     await db.races.update_many({"series_id": series_id}, {"$set": {"series_id": target_id}})
     await db.season_snapshots.update_many({"series_id": series_id}, {"$set": {"series_id": target_id}})
+    await db.race_reports.update_many({"series_id": series_id}, {"$set": {
+        "series_id": target_id, "series_name": target.get("name"),
+        "year": target.get("year"),
+    }})
     # Move explicit fleet membership without duplicates.
     moved = set(source.get("member_boat_ids") or [])
     if moved:
@@ -4012,6 +4017,8 @@ async def delete_series(series_id: str, request: Request,
     result = await db.series.delete_one(_version_filter(series_id, expected))
     if result.deleted_count == 0:
         _raise_stale(expected)
+    # Uploaded reports belong to the series and should not become orphaned.
+    await db.race_reports.delete_many({"series_id": series_id})
     club_id = await _class_club_id(series.get("class_id"))
     await _log_audit(request=None, user=user, action="SERIES_DELETED",
                      description=f"Deleted series {series.get('name')}",
@@ -4922,16 +4929,17 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
     adverts = await db.adverts.find({}, {"_id": 0}).to_list(5000) if not scope_club_id else []
     settings = await db.settings.find({}, {"_id": 0}).to_list(1000) if not scope_club_id else []
     audit_logs = await db.audit_logs.find({"club_id": scope_club_id} if scope_club_id else {}, {"_id": 0}).to_list(20000)
-    # Official Notice Board + subscriptions: every document carries its club,
-    # so a club backup carries exactly that club's notices (with their
-    # embedded PDF/data-URL attachments), boards, sections, subscriptions and
-    # delivery records. Frozen season snapshots are scoped by series.
+    # Official Notice Board + race reports + subscriptions: every document
+    # carries its club or series/class scope, so a club backup carries exactly
+    # that club's uploaded material. Frozen season snapshots are scoped by series.
     if scope_club_id:
         boards = await db.notice_boards.find({"club_id": scope_club_id}, {"_id": 0}).to_list(5000)
         board_ids = [b["id"] for b in boards]
         subs = await db.subscriptions.find({"club_id": scope_club_id}, {"_id": 0}).to_list(20000)
         sub_ids = [s["id"] for s in subs]
         notices = await db.notices.find({"club_id": scope_club_id}, {"_id": 0}).to_list(20000)
+        race_reports = (await db.race_reports.find(
+            {"series_id": {"$in": series_ids}}, {"_id": 0}).to_list(20000) if series_ids else [])
         notice_sections = (await db.notice_sections.find(
             {"board_id": {"$in": board_ids}}, {"_id": 0}).to_list(50000) if board_ids else [])
         subscriptions = subs
@@ -4943,6 +4951,7 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
         boards = await db.notice_boards.find({}, {"_id": 0}).to_list(5000)
         board_ids = [b["id"] for b in boards]
         notices = await db.notices.find({}, {"_id": 0}).to_list(50000)
+        race_reports = await db.race_reports.find({}, {"_id": 0}).to_list(50000)
         notice_sections = await db.notice_sections.find({}, {"_id": 0}).to_list(50000)
         subscriptions = await db.subscriptions.find({}, {"_id": 0}).to_list(50000)
         subscription_deliveries = await db.subscription_deliveries.find({}, {"_id": 0}).to_list(50000)
@@ -4978,6 +4987,7 @@ async def _build_backup(request: Request, user: dict, scope_club_id: Optional[st
             ("results.json", results),
             ("season_snapshots.json", season_snapshots),
             ("notices.json", notices),
+            ("race_reports.json", race_reports),
             ("notice_boards.json", boards),
             ("notice_sections.json", notice_sections),
             ("subscriptions.json", subscriptions),
@@ -5069,7 +5079,7 @@ async def club_backup_post(request: Request,
 # (the mongodump "full image" endpoint is the byte-exact equivalent).
 BACKUP_COLLECTIONS = (
     "clubs", "users", "classes", "boats", "series", "races",
-    "season_snapshots", "notices", "notice_boards", "notice_sections",
+    "season_snapshots", "notices", "race_reports", "notice_boards", "notice_sections",
     "subscriptions", "subscription_deliveries",
     "adverts", "audit_logs", "settings",
 )
@@ -5205,7 +5215,10 @@ async def _restore_zip_core(raw: bytes, passphrase: str) -> dict:
             continue
         fname = zp(f"{coll_name}.json")
         if fname not in names:
-            errors.append(f"{coll_name}: not in backup (skipped)")
+            # Race reports were added after the original backup format; old
+            # archives remain valid and simply restore without that collection.
+            if coll_name != "race_reports":
+                errors.append(f"{coll_name}: not in backup (skipped)")
             continue
         try:
             docs = read_json(fname)
@@ -5249,13 +5262,13 @@ async def _restore_zip_core(raw: bytes, passphrase: str) -> dict:
                 if docs:
                     await db.classes.insert_many(docs, ordered=False)
             else:
-                # Races/series/boats are scoped by class_id; season snapshots
-                # by series_id; notice sections by board_id; subscription
+                # Races/series/boats/reports are scoped by class_id; season
+                # snapshots by series_id; notice sections by board_id; subscription
                 # deliveries by subscription_id — only classes and notices/
                 # boards/subscriptions carry club_id directly. Delete by the
                 # backup's ids so the club's existing data is replaced, then
                 # insert the backup's documents.
-                if coll_name in ("boats", "series", "races"):
+                if coll_name in ("boats", "series", "races", "race_reports"):
                     del_q = {"class_id": {"$in": list(backup_class_ids)}}
                 elif coll_name == "season_snapshots":
                     del_q = {"series_id": {"$in": list(backup_series_ids)}}
@@ -8871,6 +8884,126 @@ async def _notice_of_club(notice_id: str, user: dict) -> dict:
     return notice
 
 
+# ---------------------------------------------------------------------------
+# Race reports — uploaded files attached to a class series. Unlike formal
+# ONB notices, reports are immediately public once an officer uploads them.
+# ---------------------------------------------------------------------------
+RACE_REPORT_MAX = 10 * 1024 * 1024
+
+
+def _race_report_summary(report: dict) -> dict:
+    return {key: report.get(key) for key in (
+        "id", "club_id", "class_id", "class_name", "series_id", "series_name",
+        "year", "title", "original_filename", "file_type", "file_size",
+        "uploaded_at", "uploaded_by",
+    )}
+
+
+@api_router.get("/classes/{class_id}/race-reports")
+async def list_class_race_reports(class_id: str):
+    """Public uploaded reports for every series in one class."""
+    cls = await db.classes.find_one({"id": class_id}, {"_id": 0, "id": 1, "name": 1})
+    if not cls:
+        raise HTTPException(status_code=404, detail="Class not found")
+    reports = await db.race_reports.find(
+        {"class_id": class_id, "status": "published"}, {"_id": 0}
+    ).sort([("year", -1), ("uploaded_at", -1)]).to_list(1000)
+    return [_race_report_summary(report) for report in reports]
+
+
+@api_router.get("/admin/race-reports")
+async def list_admin_race_reports(club_id: Optional[str] = None,
+                                 class_id: Optional[str] = None,
+                                 user: dict = Depends(require_admin)):
+    scope = club_id or user.get("club_id")
+    _ensure_club(user, scope)
+    query = {"club_id": scope}
+    if class_id:
+        cls = await db.classes.find_one({"id": class_id}, {"_id": 0, "club_id": 1})
+        if not cls or cls.get("club_id") != scope:
+            raise HTTPException(status_code=404, detail="Class not found in this club")
+        query["class_id"] = class_id
+    reports = await db.race_reports.find(query, {"_id": 0}).sort(
+        [("year", -1), ("uploaded_at", -1)]).to_list(1000)
+    return [_race_report_summary(report) for report in reports]
+
+
+@api_router.post("/race-reports/upload")
+async def upload_race_report(request: Request, series_id: str = Form(...),
+                             title: str = Form(...), file: UploadFile = File(...),
+                             user: dict = Depends(require_admin)):
+    series = await db.series.find_one({"id": series_id}, {"_id": 0})
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    class_doc = await db.classes.find_one({"id": series.get("class_id")}, {"_id": 0})
+    if not class_doc:
+        raise HTTPException(status_code=400, detail="Series class not found")
+    if series.get("regatta_id"):
+        regatta = await db.regattas.find_one({"id": series.get("regatta_id")}, {"_id": 0, "club_id": 1}) if hasattr(db, "regattas") else None
+        if regatta and regatta.get("club_id") and regatta.get("club_id") != class_doc.get("club_id"):
+            raise HTTPException(status_code=400, detail="Series does not belong to this club")
+    club_id = class_doc.get("club_id")
+    _ensure_club(user, club_id)
+    title = (title or "").strip()[:200]
+    if not title:
+        raise HTTPException(status_code=400, detail="Report title is required")
+    raw = await file.read(RACE_REPORT_MAX + 1)
+    if len(raw) > RACE_REPORT_MAX:
+        raise HTTPException(status_code=400, detail="Report must be 10 MB or smaller")
+    content_type = _detect_notice_doc_type(raw)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Report must be a PDF, PNG, JPEG or WebP file")
+    club = await db.clubs.find_one({"id": club_id}, {"_id": 0, "name": 1}) or {}
+    report_id = new_id()
+    report = {
+        "id": report_id, "club_id": club_id,
+        "class_id": class_doc["id"], "class_name": class_doc.get("name"),
+        "series_id": series["id"], "series_name": series.get("name"),
+        "year": series.get("year"), "club_name": club.get("name"),
+        "title": title, "original_filename": (file.filename or "race-report")[:255],
+        "file_type": content_type, "file_size": len(raw),
+        "file_hash": hashlib.sha256(raw).hexdigest(),
+        "file_data_url": f"data:{content_type};base64,{base64.b64encode(raw).decode()}",
+        "status": "published", "uploaded_at": now_iso(),
+        "uploaded_by": user.get("username"),
+    }
+    await db.race_reports.insert_one(report)
+    await _log_audit(request=request, user=user, action="RACE_REPORT_UPLOADED",
+                     description=f"Uploaded race report '{title}' for {series.get('name')}",
+                     resource_type="race_report", resource_id=report_id, club_id=club_id)
+    return _race_report_summary(report)
+
+
+@api_router.get("/race-reports/{report_id}")
+async def get_race_report(report_id: str, request: Request):
+    report = await db.race_reports.find_one({"id": report_id}, {"_id": 0})
+    if not report:
+        raise HTTPException(status_code=404, detail="Race report not found")
+    user = await get_current_user(request)
+    if report.get("status") != "published":
+        if not user:
+            raise HTTPException(status_code=404, detail="Race report not found")
+        _ensure_club(user, report.get("club_id"))
+    elif user and user.get("role") != "webmaster":
+        _ensure_club(user, report.get("club_id"))
+    return {**_race_report_summary(report), "file_data_url": report.get("file_data_url")}
+
+
+@api_router.delete("/race-reports/{report_id}")
+async def delete_race_report(report_id: str, request: Request,
+                             user: dict = Depends(require_admin)):
+    report = await db.race_reports.find_one({"id": report_id}, {"_id": 0})
+    if not report:
+        raise HTTPException(status_code=404, detail="Race report not found")
+    _ensure_club(user, report.get("club_id"))
+    await db.race_reports.delete_one({"id": report_id})
+    await _log_audit(request=request, user=user, action="RACE_REPORT_REMOVED",
+                     description=f"Removed race report '{report.get('title')}'",
+                     resource_type="race_report", resource_id=report_id,
+                     club_id=report.get("club_id"))
+    return {"ok": True}
+
+
 class NoticeBoardInput(BaseModel):
     club_id: str
     title: str = "Official Notice Board"
@@ -10193,6 +10326,8 @@ async def _ensure_db_constraints():
     - unique (club_id, username) per club user.
     All idempotent (create_index is a no-op if the index already exists)."""
     plans = {
+        db.race_reports: [([("id", 1)], {"unique": True}),
+                          ([("class_id", 1), ("year", -1), ("uploaded_at", -1)], {})],
         db.races: [([("id", 1)], {"unique": True}),
                    # Unique on (series_id, race_number) for non-mini races.
                    # Mini-series sub-races share the same race_number with different

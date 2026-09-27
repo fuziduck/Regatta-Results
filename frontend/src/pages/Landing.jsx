@@ -15,7 +15,7 @@ import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
-import { LifeBuoy, Clock, Flag, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
+import { LifeBuoy, Clock, Flag, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy, FileText } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
@@ -23,6 +23,7 @@ import ResultsBrowseTree from "@/components/ResultsBrowseTree";
 import PublishedRaces from "@/components/PublishedRaces";
 import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Breadcrumbs from "@/components/Breadcrumbs";
+import { classProfilePath, groupedClassPath } from "@/lib/seo";
 
 function CompetitionCard({ competition, clubSlug, onSelect, selected = false, compact = false }) {
   const isChampionship = competitionType(competition) !== "regatta";
@@ -91,7 +92,7 @@ function NotificationBanner({ items }) {
 // Presentational: renders the standings content for the class/series chosen
 // in the hero. All fetching lives in the Landing page so the selector tabs can
 // sit in the banner.
-function ClassResults({ classId, clubId, clubSlug, year, clubName, className, clubIcon, series, activeSeries, overall, seriesData, adverts }) {
+function ClassResults({ classId, clubId, clubSlug, year, clubName, className, classKey, clubIcon, series, activeSeries, overall, seriesData, adverts }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
 
   // Shareable permalink for the results currently shown. The class/series
@@ -120,6 +121,9 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
   }
 
   const active = series.find((s) => s.id === activeSeries);
+  const reportsPath = `${classKey
+    ? groupedClassPath(className)
+    : classProfilePath(classId, className)}#race-reports`;
 
   if (activeSeries === "overall" || !active) {
     return (
@@ -153,15 +157,20 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
 
   return (
     <div className="pt-5">
-      <div className="flex items-center justify-between gap-3 mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h3 className="text-xl uppercase tracking-tight">{active.name} Series</h3>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <CopyLinkButton url={shareUrl} />
+          <Link to={reportsPath}>
+            <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid="series-race-reports-link">
+              <FileText className="h-4 w-4" /> Race Reports
+            </Button>
+          </Link>
           <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
             disabled={!miniData?.standings?.length}
             onClick={() => {
-              exportSeriesPdf({ clubName, className,                seriesName: active.name, year: active.year || year, data: miniData, icon: clubIcon, adverts });
+              exportSeriesPdf({ clubName, className, seriesName: active.name, year: active.year || year, data: miniData, icon: clubIcon, adverts });
               trackEvent(SAILSCORE_EVENTS.DOWNLOAD_SERIES_PDF, {
                 series_id: active.id,
                 series_name: active.name,
@@ -178,21 +187,13 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
         const tables = divisionTables(miniData);
         // Scoring-mode tables show the same fleet twice; class rating divisions
         // contain separate boats and should continue to be counted separately.
-        const boats = tables.some((table) => table.table_kind === "scoring_mode")
-          ? Math.max(0, ...tables.map((table) => (table.standings || []).length))
-          : tables.reduce((n, table) => n + (table.standings || []).length, 0);
         const leader = tables[0]?.standings?.[0];
         return (
-          <div className="mb-4 grid grid-cols-3 gap-3" data-testid="series-stats">
+          <div className="mb-4 grid grid-cols-2 gap-3" data-testid="series-stats">
             <div className="rounded-xl border border-border bg-card p-3 text-center">
               <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Races</div>
               <div className="font-heading text-2xl text-ocean">{completed}{remaining > 0 && <span className="text-sm text-muted-foreground"> / {planned}</span>}</div>
               <div className="text-[10px] text-muted-foreground">{completed} sailed · {remaining} remaining</div>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-3 text-center">
-              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Boats</div>
-              <div className="font-heading text-2xl text-ocean">{boats}</div>
-              <div className="text-[10px] text-muted-foreground">competing</div>
             </div>
             <div className="rounded-xl border border-border bg-card p-3 text-center">
               <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Leader</div>
@@ -891,6 +892,7 @@ export default function Landing() {
               ) : (
                 <ClassResults
                   classId={activeClass}
+                  classKey={(visibleClasses.find((c) => c.id === activeClass) || {}).class_group_key}
                   clubId={clubId}
                   clubSlug={club.slug}
                   year={year}

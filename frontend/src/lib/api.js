@@ -200,6 +200,16 @@ export const api = {
   getClasses: (params = {}) => client.get("/classes", { params }).then((r) => r.data),
   getClassDirectory: (id) => client.get(`/classes/${id}/directory`).then((r) => r.data),
   getClassGroupDirectory: (name) => client.get(`/classes/group/${encodeURIComponent(name)}/directory`).then((r) => r.data),
+  getClassRaceReports: (classId) => client.get(`/classes/${classId}/race-reports`).then((r) => r.data),
+  getAdminRaceReports: (params = {}) => client.get("/admin/race-reports", { params }).then((r) => r.data),
+  getRaceReport: (id) => client.get(`/race-reports/${id}`).then((r) => r.data),
+  uploadRaceReport: (meta, file) => {
+    const fd = new FormData();
+    Object.entries(meta || {}).forEach(([key, value]) => { if (value != null && value !== "") fd.append(key, value); });
+    fd.append("file", file);
+    return client.post("/race-reports/upload", fd).then((r) => r.data);
+  },
+  deleteRaceReport: (id) => client.delete(`/race-reports/${id}`).then((r) => r.data),
   createClass: (d) => client.post("/classes", d).then((r) => r.data),
   updateClass: (id, d) => client.put(`/classes/${id}`, d).then((r) => r.data),
   deleteClass: (id) => client.delete(`/classes/${id}`).then((r) => r.data),
