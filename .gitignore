@@ -78,6 +78,13 @@ agenthub/agents/youtube/db
 
 memory/test_credentials.md
 
+# Freebuff agent scratch: preview helpers, logs and — importantly — the Mongo
+# database backups kept here. Those archives hold real club data (members,
+# boats, results) and this repository is public, so nothing in this directory
+# is committed except .freebuff/run.md, which is added explicitly.
+.freebuff/*
+!.freebuff/run.md
+
 # Mobile development
 android-sdk/
 .env
