@@ -6411,11 +6411,11 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
 
 async def _series_scores(series, race_numbers=None, fold_combined=False, division=None,
                          scoring_mode=None):
-    """Return (agg, boat_map, race_meta, cfg, races). agg: boat_id -> list of
-    per-race entry dicts, aligned to race_meta; cfg: the series' effective
-    scoring config; races: the published races in view. If race_numbers is
-    given (a set/list of the series' race numbers), only those races are
-    returned.
+    """Return scored race data plus the count of published abandoned races.
+    agg: boat_id -> list of per-race entry dicts, aligned to race_meta; cfg:
+    the series' effective scoring config; races: the published, scored races
+    in view. If race_numbers is given (a set/list of the series' race
+    numbers), only those races are returned.
 
     The whole series is scored first and the view is sliced out of those
     columns afterwards, so a duty (OOD) score — the boat's average over every
@@ -6431,8 +6431,11 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
 
     division: score one rating division of the class only — its own boats,
     with a non-finish scored against that division's fleet."""
-    races = await db.races.find({"series_id": series["id"], "status": "published",
-                                 "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
+    series_races = await db.races.find(
+        {"series_id": series["id"]}, {"_id": 0}).to_list(1000)
+    abandoned_race_count = sum(1 for race in series_races if race.get("abandoned"))
+    races = [race for race in series_races
+             if race.get("status") == "published" and not race.get("abandoned")]
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     keep = None if race_numbers is None else {int(n) for n in race_numbers}
     # A view shows a subset of the series' columns in the series' own order;
@@ -6508,7 +6511,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     if fold_combined:
         agg, race_meta = _fold_combined_mini_groups(series, agg, race_meta)
-    return agg, boat_map, race_meta, cfg, races
+    return agg, boat_map, race_meta, cfg, races, abandoned_race_count
 
 
 async def compute_series_standings(series, race_numbers=None, discards=None, division=None,
@@ -6520,7 +6523,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
     # The full series folds "combined" mini groups into one daily result each;
     # a mini-series view (race_numbers given) always shows the individual
     # races, so folding never applies there.
-    agg, boat_map, race_meta, cfg, races = await _series_scores(
+    agg, boat_map, race_meta, cfg, races, abandoned_race_count = await _series_scores(
         series, race_numbers, fold_combined=(race_numbers is None), division=division,
         scoring_mode=scoring_mode)
     club_name = await _club_name_of_class(series.get("class_id"))
@@ -6617,6 +6620,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
         r.pop("_mini_tb", None)
         r.pop("_combined_avg", None)
     payload = {"race_count": race_count, "races_scored": race_count,
+               "abandoned_race_count": abandoned_race_count,
                "scoring_mode": scoring_mode or _series_scoring_modes(series)[0],
                "scoring_modes": _series_scoring_modes(series),
                "discards": discards, "discards_applied": discards,
@@ -6721,7 +6725,7 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     recomputing it: final standings payload, per-race raw results with their
     computed points, duty/TLE/penalty/redress decisions, discards, tie-breaks,
     the ratings used, the scoring-rule configuration and who locked it."""
-    agg, boat_map, race_meta, cfg, races = await _series_scores(series)
+    agg, boat_map, race_meta, cfg, races, _abandoned_race_count = await _series_scores(series)
     payload = await _series_standings_payload(series)
     modes = _series_scoring_modes(series)
     cls_snapshot = (await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}) \

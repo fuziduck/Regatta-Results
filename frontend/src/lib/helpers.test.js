@@ -15,6 +15,7 @@ import {
   boatDivision,
   boatScoringMode,
   divisionTables,
+  seriesRaceStats,
   boatStanding,
 } from "./helpers";
 
@@ -49,6 +50,29 @@ describe("rating divisions (a class racing under two rating systems)", () => {
     expect(boatScoringMode({ ytc: 1020 }, divisions, "one_design")).toBe("ytc");
     expect(boatScoringMode({ tcc: 1.015 }, divisions, "one_design")).toBe("irc");
     expect(boatScoringMode({}, [], "py")).toBe("py");
+  });
+
+  it("removes abandoned races from the series total and sailed count", () => {
+    expect(seriesRaceStats({ planned_races: 6 }, {
+      race_count: 5,
+      abandoned_race_count: 1,
+      races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3 }, { race_number: 4 }, { race_number: 5 }],
+    })).toEqual({ completed: 5, planned: 5, remaining: 0 });
+    expect(seriesRaceStats({ planned_races: 7 }, {
+      race_count: 4,
+      abandoned_race_count: 1,
+      races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3 }, { race_number: 4 }],
+    })).toEqual({ completed: 4, planned: 6, remaining: 2 });
+    // Already-published races remain represented even if the schedule count
+    // wasn't configured correctly.
+    expect(seriesRaceStats({ planned_races: 3 }, { race_count: 4, abandoned_race_count: 1 }))
+      .toEqual({ completed: 4, planned: 4, remaining: 0 });
+  });
+
+  it("derives race totals for older payloads containing abandoned race metadata", () => {
+    expect(seriesRaceStats({ planned_races: 6 }, {
+      races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3, abandoned: true }],
+    })).toEqual({ completed: 2, planned: 5, remaining: 3 });
   });
 
   it("reads divisions out of a standings payload, with the boat's own table", () => {

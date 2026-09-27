@@ -184,10 +184,23 @@ export function boatScoringMode(boat, divisions, fallback) {
   return (divisions.find((d) => d.name === name) || {}).scoring_mode || fallback;
 }
 
+// Race totals for the public series summary. Abandoned races reduce the
+// planned series size as well as being excluded from the sailed count.
+export const seriesRaceStats = (series, data) => {
+  const races = data?.races || [];
+  const abandoned = Number.isInteger(data?.abandoned_race_count)
+    ? data.abandoned_race_count
+    : races.filter((race) => race?.abandoned).length;
+  const completed = Number.isInteger(data?.race_count)
+    ? data.race_count
+    : races.filter((race) => !race?.abandoned).length;
+  const planned = Math.max(completed, (Number(series?.planned_races) || 0) - abandoned);
+  return { completed, planned, remaining: Math.max(0, planned - completed) };
+};
+
 // The standings tables a payload holds: one per rating division when the class
 // is split, else the single combined table.
 export const divisionTables = (data) => (data?.divisions?.length ? data.divisions : data ? [data] : []);
-
 // A boat's row in whichever table she is scored in, with that table.
 export function boatStanding(data, boatId) {
   for (const table of divisionTables(data)) {

@@ -321,17 +321,19 @@ class _Coll:
 
 
 class _FilterColl:
-    """Filter-aware collection applying the abandoned-exclusion query the
-    scoring engine uses (`abandoned != true`), so abandoned races are dropped
-    exactly as MongoDB would."""
+    """Filter-aware races collection, matching the scoring pipeline's Mongo queries."""
 
     def __init__(self, items):
         self.items = list(items)
 
     def find(self, filt=None, projection=None):
         out = self.items
-        if filt and filt.get("abandoned") == {"$ne": True}:
-            out = [d for d in out if not d.get("abandoned")]
+        if filt:
+            for key, value in filt.items():
+                if isinstance(value, dict) and "$ne" in value:
+                    out = [item for item in out if item.get(key) != value["$ne"]]
+                else:
+                    out = [item for item in out if item.get(key) == value]
         return _Cursor(out)
 
     async def find_one(self, filt=None, projection=None):
@@ -339,8 +341,8 @@ class _FilterColl:
 
 
 def _standings_filtered(series, boats, races):
-    """Compute standings with the races collection applying the abandoned
-    filter (races keeps its published status in every fixture)."""
+    """Compute standings with the scoring pipeline filtering published
+    races and separately counting abandoned ones."""
     server.db = types.SimpleNamespace(
         races=_FilterColl(races), boats=_Coll(boats),
         classes=_Coll([{"id": "c1", "club_id": "club-1"}]), clubs=_Coll([]))
@@ -416,6 +418,7 @@ class TestAbandonedRaces:
         ]
         st = _standings_filtered(series, boats, races)
         assert st["race_count"] == 4           # abandoned race not counted
+        assert st["abandoned_race_count"] == 1  # still reported for public schedule totals
         assert st["discards"] == 1             # 4 races scored -> 1 discard
         by_id = {r["boat_id"]: r for r in st["standings"]}
         assert len(by_id["b1"]["scores"]) == 4  # no score row for the abandoned race
@@ -436,6 +439,7 @@ class TestAbandonedRaces:
         ]
         st = _standings_filtered(series, boats, races)
         assert st["race_count"] == 3
+        assert st["abandoned_race_count"] == 1
         assert st["discards"] == 0             # threshold (4 races) not reached
         by_id = {r["boat_id"]: r for r in st["standings"]}
         assert by_id["b1"]["net"] == 3.0        # 1+1+1, nothing discarded

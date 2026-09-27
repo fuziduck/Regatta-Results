@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Marquee from "react-fast-marquee";
 import { api } from "@/lib/api";
-import { fmtDate, CURRENT_YEAR, MAX_YEAR, divisionTables } from "@/lib/helpers";
+import { fmtDate, CURRENT_YEAR, MAX_YEAR, divisionTables, seriesRaceStats } from "@/lib/helpers";
 import YearSwitcher from "@/components/YearSwitcher";
 import { SeriesStandings, OverallStandings } from "@/components/StandingsTable";
 import { Button } from "@/components/ui/button";
@@ -173,10 +173,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
         </div>
       </div>
       {miniData && miniData.standings?.length > 0 && (() => {
-        const races = miniData.races || [];
-        const planned = active.planned_races || 0;
-        const completed = races.length;
-        const remaining = Math.max(0, planned - completed);
+        const { planned, completed, remaining } = seriesRaceStats(active, miniData);
         const tables = divisionTables(miniData);
         // Scoring-mode tables show the same fleet twice; class rating divisions
         // contain separate boats and should continue to be counted separately.
@@ -421,11 +418,26 @@ export default function Landing() {
 
   useEffect(() => {
     if (!clubId || !activeClass || activeSeries === "overall") return;
-    if (seriesData[activeSeries]) return;
-    api.seriesStandings(activeSeries, clubId)
-      .then((d) => setSeriesData((prev) => ({ ...prev, [activeSeries]: d })))
-      .catch(() => {});
-  }, [clubId, activeClass, activeSeries, seriesData]);
+    let current = true;
+    const loadStandings = () => {
+      api.seriesStandings(activeSeries, clubId)
+        .then((d) => {
+          if (current) setSeriesData((prev) => ({ ...prev, [activeSeries]: d }));
+        })
+        .catch(() => {});
+    };
+    loadStandings();
+    // Race status changes (including abandonment) affect the scored race total.
+    // Refresh the selected series alongside the page's other live data.
+    const timer = setInterval(loadStandings, 20000);
+    const onVisible = () => { if (document.visibilityState === "visible") loadStandings(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [clubId, activeClass, activeSeries]);
 
   // Series linked to a regatta are that regatta's racing, not a championship:
   // they stay out of the championship tabs below (the regatta section and its
