@@ -15,7 +15,7 @@ import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
-import { LifeBuoy, Clock, Flag, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy, FileText } from "lucide-react";
+import { LifeBuoy, Clock, Flag, Sailboat, AlertTriangle, ArrowLeft, Download, CalendarDays, MapPin, ArrowRight, Trophy } from "lucide-react";
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
@@ -94,6 +94,33 @@ function NotificationBanner({ items }) {
 // sit in the banner.
 function ClassResults({ classId, clubId, clubSlug, year, clubName, className, classKey, clubIcon, series, activeSeries, overall, seriesData, adverts }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
+  const active = series.find((s) => s.id === activeSeries);
+  const [raceReports, setRaceReports] = useState(null);
+
+  useEffect(() => {
+    let current = true;
+    if (!classId) {
+      setRaceReports({ classId, reports: [] });
+      return () => { current = false; };
+    }
+    setRaceReports(null);
+    api.getClassRaceReports(classId)
+      .then((reports) => {
+        if (current) setRaceReports({ classId, reports: reports || [] });
+      })
+      .catch(() => {
+        if (current) setRaceReports({ classId, reports: [] });
+      });
+    return () => { current = false; };
+  }, [classId]);
+
+  const currentRaceReports = raceReports?.classId === classId
+    ? raceReports.reports.filter((report) => report.series_id === active?.id)
+    : [];
+
+  const reportsPath = `${classKey
+    ? groupedClassPath(className)
+    : classProfilePath(classId, className)}#race-reports`;
 
   // Shareable permalink for the results currently shown. The class/series
   // tabs keep their choice in component state only, so the canonical deep
@@ -119,11 +146,6 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
       </div>
     );
   }
-
-  const active = series.find((s) => s.id === activeSeries);
-  const reportsPath = `${classKey
-    ? groupedClassPath(className)
-    : classProfilePath(classId, className)}#race-reports`;
 
   if (activeSeries === "overall" || !active) {
     return (
@@ -161,11 +183,6 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
         <h3 className="text-xl uppercase tracking-tight">{active.name} Series</h3>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <CopyLinkButton url={shareUrl} />
-          <Link to={reportsPath}>
-            <Button variant="outline" size="sm" className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white" data-testid="series-race-reports-link">
-              <FileText className="h-4 w-4" /> Race Reports
-            </Button>
-          </Link>
           <Button variant="outline" size="sm" data-testid={`export-pdf-${active.id}`}
             className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
             disabled={!miniData?.standings?.length}
@@ -182,24 +199,40 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
           </Button>
         </div>
       </div>
-      {miniData && miniData.standings?.length > 0 && (() => {
-        const { planned, completed, remaining } = seriesRaceStats(active, miniData);
-        const tables = divisionTables(miniData);
+      {((miniData?.standings?.length > 0) || currentRaceReports.length > 0) && (() => {
+        const hasStandings = miniData?.standings?.length > 0;
+        const { planned, completed, remaining } = hasStandings ? seriesRaceStats(active, miniData) : {};
+        const tables = hasStandings ? divisionTables(miniData) : [];
         // Scoring-mode tables show the same fleet twice; class rating divisions
         // contain separate boats and should continue to be counted separately.
         const leader = tables[0]?.standings?.[0];
+        const reportTitle = currentRaceReports.length > 1
+          ? `${currentRaceReports.length} reports`
+          : currentRaceReports[0]?.title || currentRaceReports[0]?.original_filename || "View report";
         return (
-          <div className="mb-4 grid grid-cols-2 gap-3" data-testid="series-stats">
-            <div className="rounded-xl border border-border bg-card p-3 text-center">
-              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Races</div>
-              <div className="font-heading text-2xl text-ocean">{completed}{remaining > 0 && <span className="text-sm text-muted-foreground"> / {planned}</span>}</div>
-              <div className="text-[10px] text-muted-foreground">{completed} sailed · {remaining} remaining</div>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-3 text-center">
-              <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Leader</div>
-              <div className="font-heading text-lg text-ocean truncate" title={leader?.boat_name}>{leader?.boat_name || "—"}</div>
-              <div className="text-[10px] text-muted-foreground">{tables.length > 1 ? `${tables[0].division_name} · ` : ""}{leader?.net != null ? `${leader.net} pts` : ""}</div>
-            </div>
+          <div className={`mb-4 grid ${currentRaceReports.length ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2"} gap-3`} data-testid="series-stats">
+            {hasStandings && <>
+              <div className="rounded-xl border border-border bg-card p-3 text-center">
+                <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Races</div>
+                <div className="font-heading text-2xl text-ocean">{completed}{remaining > 0 && <span className="text-sm text-muted-foreground"> / {planned}</span>}</div>
+                <div className="text-[10px] text-muted-foreground">{completed} sailed · {remaining} remaining</div>
+              </div>
+              <div className="rounded-xl border border-border bg-card p-3 text-center">
+                <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Leader</div>
+                <div className="font-heading text-lg text-ocean truncate" title={leader?.boat_name}>{leader?.boat_name || "—"}</div>
+                <div className="text-[10px] text-muted-foreground">{tables.length > 1 ? `${tables[0].division_name} · ` : ""}{leader?.net != null ? `${leader.net} pts` : ""}</div>
+              </div>
+            </>}
+            {currentRaceReports.length > 0 && (
+              <Link to={reportsPath} data-testid="series-race-reports-link"
+                aria-label={`View ${currentRaceReports.length === 1 ? "race report" : "race reports"} for ${active.name}`}>
+                <div className="h-full rounded-xl border border-border bg-card p-3 text-center transition-colors hover:border-ocean/40 hover:bg-ocean/[0.025]">
+                  <div className="text-xs uppercase tracking-widest font-semibold text-muted-foreground mb-1">Race Report{currentRaceReports.length === 1 ? "" : "s"}</div>
+                  <div className="font-heading text-lg text-ocean truncate" title={reportTitle}>{reportTitle}</div>
+                  <div className="text-[10px] text-muted-foreground">Open report archive</div>
+                </div>
+              </Link>
+            )}
           </div>
         );
       })()}
@@ -239,6 +272,8 @@ export default function Landing() {
   const { adverts, roll } = useAdverts();
   const [series, setSeries] = useState([]);
   const [activeSeries, setActiveSeries] = useState("overall");
+  const [seriesScope, setSeriesScope] = useState(null);
+  const currentSeriesScope = JSON.stringify([activeClass, year]);
   // Deep link from the site search: a ?series= id preselects that series on
   // first load (applied once the series list arrives; consumed after).
   const seriesParamRef = useRef(seriesId || searchParams.get("series"));
@@ -295,16 +330,18 @@ export default function Landing() {
     }).catch(() => {});
   }, [seriesId, clubId, setYearParamFromSeries]);
 
+  const requestedClassId = searchParams.get("class");
   useEffect(() => {
     if (!clubId) return;
+    let current = true;
     api.getClasses({ club_id: clubId }).then((c) => {
+      if (!current) return;
       setClasses(c);
       // A ?class= param (e.g. from a boat career page) preselects that class;
       // otherwise the first class is the default.
-      const wanted = searchParams.get("class");
-      if (wanted && c.some((x) => x.id === wanted)) setActiveClass(wanted);
+      if (requestedClassId && c.some((x) => x.id === requestedClassId)) setActiveClass(requestedClassId);
       else if (c[0]) setActiveClass(c[0].id);
-    });
+    }).catch(() => {});
     const load = () => {
       api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
       // Keep the future-year buttons current when the admin sets up a new season.
@@ -314,24 +351,48 @@ export default function Landing() {
     const t = setInterval(load, 20000);
     const onVis = () => { if (document.visibilityState === "visible") load(); };
     document.addEventListener("visibilitychange", onVis);
-    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
-  }, [clubId, searchParams]);
+    return () => {
+      current = false;
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [clubId, requestedClassId]);
 
   // Series + standings for the active class drive the results content below.
   useEffect(() => {
-    if (!clubId || !activeClass) return;
-    setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall");
+    if (!clubId || !activeClass) return undefined;
+    let current = true;
+    const requestedScope = currentSeriesScope;
+    setSeriesScope(null);
+    setSeries([]); setOverall(null); setSeriesData({});
+    const pendingSelection = pendingSeriesSelection.current;
+    const selectionMatchesScope = pendingSelection?.classId === activeClass && pendingSelection?.year === year;
+    if (pendingSelection && !selectionMatchesScope) pendingSeriesSelection.current = null;
+    setActiveSeries(selectionMatchesScope ? pendingSelection.seriesId : "overall");
     api.getSeries({ class_id: activeClass, year, club_id: clubId }).then((items) => {
+      if (!current) return;
       const nextSeries = items || [];
       setSeries(nextSeries);
+      setSeriesScope(requestedScope);
       const pending = pendingSeriesSelection.current;
-      if (pending?.classId === activeClass) {
-        if (nextSeries.some((item) => item.id === pending.seriesId)) setActiveSeries(pending.seriesId);
+      if (pending?.classId === activeClass && pending?.year === year) {
+        if (pending.seriesId === "overall" || nextSeries.some((item) => item.id === pending.seriesId)) {
+          setActiveSeries(pending.seriesId);
+        }
         pendingSeriesSelection.current = null;
       }
-    }).catch(() => {});
-    api.overallStandings(activeClass, year, clubId).then(setOverall).catch(() => setOverall(null));
-  }, [clubId, activeClass, year]);
+    }).catch(() => {
+      if (!current) return;
+      setSeries([]);
+      setSeriesScope(requestedScope);
+      if (pendingSeriesSelection.current?.classId === activeClass
+        && pendingSeriesSelection.current?.year === year) pendingSeriesSelection.current = null;
+    });
+    api.overallStandings(activeClass, year, clubId)
+      .then((data) => { if (current) setOverall(data); })
+      .catch(() => { if (current) setOverall(null); });
+    return () => { current = false; };
+  }, [clubId, activeClass, year, currentSeriesScope]);
 
   // Regattas are club-wide racing occasions (across classes), independent of
   // the active class; load them for the selected year once.
@@ -474,7 +535,7 @@ export default function Landing() {
   const hasOverall = !!(overall && overall.standings && overall.standings.length > 0);
   const nav = seriesNavModel(displaySeries, hasOverall);
   useEffect(() => {
-    if (series.length === 0) return;
+    if (seriesScope !== currentSeriesScope || series.length === 0) return;
     // Deep link from the site search: land on the requested series once.
     const wanted = seriesParamRef.current;
     if (wanted) {
@@ -494,7 +555,7 @@ export default function Landing() {
       ? ["overall", ...displaySeries.map((s) => s.id)]
       : displaySeries.map((s) => s.id);
     if (!valid.includes(activeSeries)) setActiveSeries(nav.defaultTab);
-  }, [series, displaySeries, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
+  }, [seriesScope, currentSeriesScope, series, displaySeries, overall, hasOverall, activeSeries, nav.single, nav.showOverall, nav.defaultTab]);
 
   // Past/future years are data-driven: any year this club has seasons for.
   // The switcher sorts and de-dupes; old years collapse into a More dropdown.
@@ -662,7 +723,12 @@ export default function Landing() {
           testId: `series-tab-${item.name}`,
           selectable: true,
           onSelect: () => {
-            if (cls.id !== activeClass) pendingSeriesSelection.current = { classId: cls.id, seriesId: item.id };
+            const selectedSeriesIsLoaded = cls.id === activeClass
+              && seriesScope === currentSeriesScope
+              && series.some((loaded) => loaded.id === item.id);
+            pendingSeriesSelection.current = selectedSeriesIsLoaded
+              ? null
+              : { classId: cls.id, seriesId: item.id, year };
             setView(category);
             setActiveClass(cls.id);
             setActiveSeries(item.id);
@@ -675,7 +741,10 @@ export default function Landing() {
             testId: "series-tab-Overall",
             selectable: true,
             onSelect: () => {
-              if (cls.id !== activeClass) pendingSeriesSelection.current = { classId: cls.id, seriesId: "overall" };
+              pendingSeriesSelection.current = cls.id === activeClass
+                && seriesScope === currentSeriesScope
+                ? null
+                : { classId: cls.id, seriesId: "overall", year };
               setActiveClass(cls.id);
               setActiveSeries("overall");
               setView(category);
@@ -690,7 +759,7 @@ export default function Landing() {
           detail: cls.id === activeClass ? "Selected" : null,
           selectable: true,
           onSelect: () => {
-            if (cls.id !== activeClass) pendingSeriesSelection.current = null;
+            pendingSeriesSelection.current = null;
             setView(category);
             setActiveClass(cls.id);
             setActiveSeries(classNav.defaultTab);
