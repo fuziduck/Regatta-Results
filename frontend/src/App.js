@@ -26,6 +26,7 @@ import NoticeBoardPage from "@/pages/NoticeBoardPage";
 import Admin from "@/pages/Admin";
 import Webmaster from "@/pages/Webmaster";
 import Help from "@/pages/Help";
+import HelpSidebar from "@/components/HelpSidebar";
 
 function Protected({ children, allow }) {
   const { role } = useAuth();
@@ -88,6 +89,11 @@ function RouteMetadata() {
   return null;
 }
 
+function PersistentHelpSidebar() {
+  const location = useLocation();
+  return <HelpSidebar showTrigger={false} pathname={location.pathname} />;
+}
+
 function App() {
   return (
     <div className="App">
@@ -96,6 +102,7 @@ function App() {
       <AuthProvider>
         <BrowserRouter>
           <RouteMetadata />
+          <PersistentHelpSidebar />
           <Routes>
             <Route path="/" element={<Clubs />} />
             <Route path="/club/:slug" element={<ClubHome />} />

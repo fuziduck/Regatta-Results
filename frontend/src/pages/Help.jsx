@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import HeaderMenu from "@/components/HeaderMenu";
 import Logo from "@/components/Logo";
-import HelpSidebar from "@/components/HelpSidebar";
 import { FAQS, QUICK_STARTS } from "@/lib/helpContent";
 
 function HelpHeader({ title }) {
@@ -21,7 +20,6 @@ function HelpHeader({ title }) {
         <div className="flex items-center gap-1">
           <Link to="/help" className="hidden sm:block"><Button variant="ghost" size="sm">Help home</Button></Link>
           <Link to="/faq" className="hidden sm:block"><Button variant="ghost" size="sm">FAQs</Button></Link>
-          <HelpSidebar />
         </div>
       </div>
     </header>
@@ -119,7 +117,7 @@ export default function Help() {
           <Link to="/help/quick-start/admin" className="group rounded-2xl border border-border bg-card p-5 transition hover:-translate-y-0.5 hover:border-ocean/50 hover:shadow-lg" data-testid="help-admin-card"><BookOpen className="mb-4 h-6 w-6 text-ocean" /><h2 className="font-heading text-xl uppercase">Race Admin</h2><p className="mt-2 text-sm text-muted-foreground">Set up fleets, boats, season scoring, notices and account access in the right order.</p><span className="mt-4 inline-block text-sm font-bold text-ocean group-hover:underline">Start admin guide →</span></Link>
         </div>
         <section className="mt-10 rounded-2xl border border-ocean/20 bg-ocean/5 p-5 sm:p-7">
-          <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="font-heading text-2xl uppercase tracking-tight">Need help on a specific page?</h2><p className="mt-1 max-w-xl text-sm text-muted-foreground">Open the Help button in a page header or console. The side panel explains the current page's options and controls.</p></div><HelpSidebar buttonClassName="bg-ocean text-white hover:bg-ocean/90" buttonLabel="Try contextual help" /></div>
+          <div><h2 className="font-heading text-2xl uppercase tracking-tight">Need help on a specific page?</h2><p className="mt-1 max-w-xl text-sm text-muted-foreground">Open Help from the page menu to see options and actions relevant to the current page.</p></div>
         </section>
       </main>
     </>

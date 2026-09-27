@@ -17,8 +17,10 @@ jest.mock("@/context/AuthContext", () => ({
 }));
 jest.mock("react-router-dom", () => ({ useNavigate: () => mockNavigate }));
 jest.mock("@/components/ThemeToggle", () => () => <button type="button" data-testid="theme-toggle" />);
+jest.mock("@/components/HelpSidebar", () => ({ openHelpSidebar: jest.fn() }));
 
 import ConsoleNav from "./ConsoleNav";
+import { openHelpSidebar } from "@/components/HelpSidebar";
 
 // jsdom lacks the browser APIs Radix popper/portal rely on.
 if (typeof globalThis.ResizeObserver === "undefined") {
@@ -152,7 +154,7 @@ describe("ConsoleNav mobile menu", () => {
       document.body.querySelector('[data-testid="menu-help"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(document.body.querySelector('[data-testid="menu-help"]')).toBeNull();
-    expect(document.body.querySelector('[data-testid="help-sidebar"]')).not.toBeNull();
+    expect(openHelpSidebar).toHaveBeenCalledTimes(1);
   });
 
   it("closes the menu with Escape", () => {

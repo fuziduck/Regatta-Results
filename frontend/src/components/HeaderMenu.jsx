@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Menu, Share2, Smartphone, Sun, Moon } from "lucide-react";
+import { LifeBuoy, Menu, Share2, Smartphone, Sun, Moon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useTheme } from "@/context/ThemeContext";
+import { openHelpSidebar } from "@/components/HelpSidebar";
 import { toast } from "sonner";
 
 // Compact burger menu for the public headers. Keeps the interface clean by
@@ -46,7 +47,9 @@ export default function HeaderMenu({ title, text, light = false, className = "",
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-56">
-          <DropdownMenuItem asChild><a href="/help" className="flex w-full items-center gap-2" data-testid="header-menu-help">Help and quick starts</a></DropdownMenuItem>
+          {showHelp && <DropdownMenuItem onSelect={openHelpSidebar} data-testid="header-menu-help">
+            <LifeBuoy className="w-4 h-4" /> Help and quick starts
+          </DropdownMenuItem>}
           <DropdownMenuItem onSelect={share} data-testid="header-menu-share">
             <Share2 className="w-4 h-4" /> Share this page
           </DropdownMenuItem>

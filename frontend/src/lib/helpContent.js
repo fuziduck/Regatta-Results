@@ -1,7 +1,7 @@
 export const HELP_TOPICS = [
   {
     id: "help", title: "Help centre", match: (path) => path === "/help", intro: "Find page-specific instructions, searchable answers and role-based walkthroughs.", items: [
-      ["Contextual help", "Open Help from a page header or console to see options and actions relevant to that page."],
+      ["Contextual help", "Open Help from a page menu or console menu to see options and actions relevant to that page. On a tablet or computer, pin the panel to keep it beside the results while you work."],
       ["Quick starts", "The Officer and Admin guides are interactive checklists. Mark steps complete as you work through them."],
       ["FAQ search", "Search the full FAQ for topics such as scoring, race-day workflow, subscriptions, security and backups."]
     ]

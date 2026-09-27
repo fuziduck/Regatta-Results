@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 jest.mock("sonner", () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
-jest.mock("@/components/HelpSidebar", () => () => <button type="button" data-testid="help-sidebar" />);
+jest.mock("@/components/HelpSidebar", () => ({ openHelpSidebar: jest.fn() }));
 
 jest.mock("@/components/ui/dropdown-menu", () => {
   const React = require("react");
@@ -36,6 +36,7 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 }
 
 import HeaderMenu from "@/components/HeaderMenu";
+import { openHelpSidebar } from "@/components/HelpSidebar";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { toast } from "sonner";
 
@@ -54,9 +55,10 @@ beforeEach(() => {
   window.localStorage.removeItem("sailscore-theme");
 });
 
-it("links to the help centre from the public menu", () => {
+it("requests contextual help from the public menu", () => {
   const container = renderMenu();
-  expect(container.querySelector('[data-testid="header-menu-help"]').getAttribute("href")).toBe("/help");
+  act(() => container.querySelector('[data-testid="header-menu-help"]').click());
+  expect(openHelpSidebar).toHaveBeenCalledTimes(1);
 });
 
 it("copies the page link from the Share item with a toast", async () => {

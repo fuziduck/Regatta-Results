@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
-import HelpSidebar from "@/components/HelpSidebar";
+import { openHelpSidebar } from "@/components/HelpSidebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,7 +38,6 @@ export default function ConsoleNav({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [passcodeOpen, setPasscodeOpen] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
   const { logout } = useAuth();
   const navigate = useNavigate();
 
@@ -57,7 +56,6 @@ export default function ConsoleNav({
   return (
     <div className="flex items-center gap-2">
       <ThemeToggle light />
-      <HelpSidebar open={helpOpen} onOpenChange={setHelpOpen} showTrigger={false} />
       {meta && <span className="hidden lg:inline text-xs text-white/70 mr-1">{meta}</span>}
 
       {/* Desktop: full item row (unchanged behaviour at lg and up). The
@@ -85,7 +83,7 @@ export default function ConsoleNav({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
           {menuLabel && <DropdownMenuLabel>{menuLabel}</DropdownMenuLabel>}
-          <DropdownMenuItem data-testid="menu-help" onSelect={() => { setMenuOpen(false); setHelpOpen(true); }}>
+          <DropdownMenuItem data-testid="menu-help" onSelect={() => { setMenuOpen(false); openHelpSidebar(); }}>
             <LifeBuoy className="w-4 h-4" /> Help
           </DropdownMenuItem>
           <DropdownMenuSeparator />

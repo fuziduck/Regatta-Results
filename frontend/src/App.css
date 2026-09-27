@@ -2,6 +2,12 @@
     min-height: 100vh;
 }
 
+@media (min-width: 700px) {
+    html.help-sidebar-pinned #root {
+        padding-right: min(38vw, 24rem);
+    }
+}
+
 ::selection {
     background: #FF4500;
     color: #fff;
