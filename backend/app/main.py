@@ -6806,6 +6806,7 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
         "version": version, "status": LOCK_LOCKED,
         "locked_at": now_iso(), "locked_by": user.get("username"),
         "locked_by_user_id": user.get("user_id"),
+        "lock_reason": reason or "",
         "engine_version": SCORING_ENGINE_VERSION,
         "scoring_config": cfg,
         "nor_si_settings": {
@@ -6946,15 +6947,17 @@ async def unlock_series(series_id: str, data: LockSeriesInput, request: Request,
     if series.get("lock_status") not in (LOCK_LOCKED, LOCK_ARCHIVED):
         raise HTTPException(status_code=400, detail="This season is not locked")
     expected = _expected_version(data)
+    unlocked_at = now_iso()
     result = await db.series.update_one(_version_filter(series_id, expected), {"$set": {
-        "lock_status": LOCK_OPEN, "unlocked_at": now_iso(),
+        "lock_status": LOCK_OPEN, "unlocked_at": unlocked_at,
         "unlocked_by": user.get("username"), "unlock_reason": data.reason,
     }, "$inc": {"version": 1}})
     if result.modified_count == 0:
         _raise_stale(expected)
     await db.season_snapshots.update_many(
         {"series_id": series_id, "status": {"$in": [LOCK_LOCKED, LOCK_ARCHIVED]}},
-        {"$set": {"status": "superseded"}})
+        {"$set": {"status": "superseded", "unlocked_at": unlocked_at,
+                  "unlocked_by": user.get("username"), "unlock_reason": data.reason}})
     club_id = await _class_club_id(series.get("class_id"))
     await _log_audit(request=request, user=user, action="SEASON_UNLOCKED",
                      description=f"Season opened for correction: {series.get('name')}. Reason: {data.reason}",
@@ -6993,17 +6996,141 @@ async def archive_series(series_id: str, data: LockSeriesInput, request: Request
     return {"ok": True, "archived_at": now_iso()}
 
 
+@api_router.get("/series/{series_id}/snapshots/{snapshot_version}")
+async def series_snapshot_detail(series_id: str, snapshot_version: int, request: Request,
+                                 user: dict = Depends(require_admin)):
+    """Read one preserved snapshot's standings for administrator review."""
+    await _series_of_club(series_id, user)
+    snapshot = await db.season_snapshots.find_one(
+        {"series_id": series_id, "version": snapshot_version}, {"_id": 0})
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    payload = dict(snapshot.get("payload") or {})
+    if not payload:
+        raise HTTPException(status_code=404, detail="Snapshot standings are unavailable")
+    payload.update({
+        "locked": True, "snapshot_version": snapshot.get("version"),
+        "locked_at": snapshot.get("locked_at"), "locked_by": snapshot.get("locked_by"),
+        "engine_version": snapshot.get("engine_version", payload.get("engine_version")),
+        "scoring_engine_version": snapshot.get("scoring_engine_version", SCORING_ENGINE_VERSION),
+        "scoring_rules_version": snapshot.get("scoring_rules_version"),
+    })
+    return {"version": snapshot.get("version"), "status": snapshot.get("status"),
+            "restored_from_version": snapshot.get("restored_from_version"), "payload": payload}
+
+
+@api_router.post("/series/{series_id}/snapshots/{snapshot_version}/restore")
+async def restore_series_snapshot(series_id: str, snapshot_version: int, data: LockSeriesInput,
+                                  request: Request, user: dict = Depends(require_admin)):
+    """Restore a preserved result as a new immutable, locked snapshot version."""
+    series = await _series_of_club(series_id, user)
+    if not data.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation is required to restore a snapshot")
+    if not (data.reason or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required when restoring a snapshot")
+    if series.get("lock_status") == LOCK_ARCHIVED:
+        raise HTTPException(status_code=400, detail="Archived seasons cannot be restored")
+    if series.get("lock_status") == LOCK_LOCKED and int(series.get("lock_version") or 0) == snapshot_version:
+        raise HTTPException(status_code=400, detail="This snapshot is already the active season result")
+
+    previous = await db.season_snapshots.find_one(
+        {"series_id": series_id, "version": snapshot_version}, {"_id": 0})
+    if not previous:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    if not previous.get("payload"):
+        raise HTTPException(status_code=400, detail="Snapshot standings are unavailable")
+    expected = _expected_version(data)
+    version_filter = {"id": series_id}
+    if expected is not None:
+        version_filter["version"] = expected
+    current_series = await db.series.find_one(version_filter, {"_id": 0})
+    if not current_series:
+        _raise_stale(expected)
+    if current_series.get("lock_status") == LOCK_LOCKED and int(current_series.get("lock_version") or 0) == snapshot_version:
+        raise HTTPException(status_code=400, detail="This snapshot is already the active season result")
+    if current_series.get("lock_status") == LOCK_ARCHIVED:
+        raise HTTPException(status_code=400, detail="Archived seasons cannot be restored")
+    latest = await db.season_snapshots.find({"series_id": series_id}, {"_id": 0}).sort("version", -1).to_list(1)
+    new_version = int((latest[0] if latest else {}).get("version", 0)) + 1
+    restored_at = now_iso()
+    restored = dict(previous)
+    restored.update({
+        "id": new_id(), "version": new_version, "status": LOCK_LOCKED,
+        "locked_at": restored_at, "locked_by": user.get("username"),
+        "locked_by_user_id": user.get("user_id"), "lock_reason": data.reason,
+        "unlocked_at": "", "unlocked_by": "", "unlock_reason": "",
+        "restored_from_version": snapshot_version, "restore_reason": data.reason,
+    })
+    try:
+        await db.season_snapshots.insert_one(restored)
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="This season changed while restoring. Reload and try again.")
+
+    result = await db.series.update_one(_version_filter(series_id, expected), {"$set": {
+        "lock_status": LOCK_LOCKED, "lock_version": new_version,
+        "locked_at": restored_at, "locked_by": user.get("username"),
+        "unlocked_at": "", "unlocked_by": "", "unlock_reason": "",
+    }, "$inc": {"version": 1}})
+    if result.modified_count == 0:
+        await db.season_snapshots.delete_one({"series_id": series_id, "version": new_version})
+        _raise_stale(expected)
+
+    await db.season_snapshots.update_many(
+        {"series_id": series_id, "version": {"$ne": new_version},
+         "status": {"$in": [LOCK_LOCKED, LOCK_ARCHIVED]}},
+        {"$set": {"status": "superseded"}})
+    if current_series.get("lock_status") == LOCK_LOCKED:
+        await db.season_snapshots.update_many(
+            {"series_id": series_id, "version": current_series.get("lock_version")},
+            {"$set": {"unlocked_at": restored_at, "unlocked_by": user.get("username"),
+                      "unlock_reason": f"Rolled back to preserved version {snapshot_version}: {data.reason}"}})
+    club_id = await _class_club_id(series.get("class_id"))
+    await _log_audit(request=request, user=user, action="SEASON_ROLLED_BACK",
+                     description=(f"Restored series {series.get('name')} from preserved snapshot "
+                                  f"version {snapshot_version} as version {new_version}. Reason: {data.reason}"),
+                     resource_type="series", resource_id=series_id, club_id=club_id)
+    return {"ok": True, "version": new_version, "series_version": (series.get("version") or 0) + 1,
+            "restored_from_version": snapshot_version}
+
+
+
 @api_router.get("/series/{series_id}/snapshots")
 async def series_snapshots(series_id: str, request: Request,
                            user: dict = Depends(require_admin)):
-    """Version history of a season: every locked snapshot and its amendment
-    record, newest first (payload kept — the UI shows the standings via the
-    regular standings endpoint, which serves the locked snapshot)."""
+    """Version history of a season, including lock and unlock comments."""
     series = await _series_of_club(series_id, user)
     snaps = await db.season_snapshots.find({"series_id": series_id}, {"_id": 0})\
         .sort("version", -1).to_list(100)
+
+    # Older snapshots predate reason fields. Recover their comments from the
+    # persistent audit log so history remains useful after an upgrade.
+    events = await db.audit_logs.find({
+        "resource_type": "series", "resource_id": series_id,
+        "action": {"$in": ["SERIES_LOCKED", "SEASON_AMENDED", "SEASON_UNLOCKED"]},
+    }, {"_id": 0}).sort("timestamp", 1).to_list(1000)
+    by_lock_time = [(snap, _parse_iso(snap.get("locked_at"))) for snap in snaps]
+    for event in events:
+        event_time = _parse_iso(event.get("timestamp"))
+        candidates = [(snap, locked_at) for snap, locked_at in by_lock_time
+                      if event_time is not None and locked_at is not None and locked_at <= event_time]
+        if not candidates:
+            continue
+        snap, _ = max(candidates, key=lambda item: item[1])
+        description = event.get("description") or ""
+        reason = description.split(". Reason: ", 1)[1] if ". Reason: " in description else ""
+        if event.get("action") in ("SERIES_LOCKED", "SEASON_AMENDED"):
+            if reason and not snap.get("lock_reason"):
+                snap["lock_reason"] = reason
+        elif event.get("action") == "SEASON_UNLOCKED" and reason and not snap.get("unlock_reason"):
+            snap["unlocked_at"] = event.get("timestamp")
+            snap["unlocked_by"] = event.get("username")
+            snap["unlock_reason"] = reason
+
     for s in snaps:
+        s["payload_available"] = bool(s.get("payload"))
         s.pop("payload", None)
+        s.pop("races", None)
+        s.pop("ratings", None)
         s.pop("races", None)
         s.pop("ratings", None)
     return snaps

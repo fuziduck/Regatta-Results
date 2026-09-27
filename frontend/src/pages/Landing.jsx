@@ -19,6 +19,7 @@ import { LifeBuoy, Clock, Flag, Sailboat, AlertTriangle, ArrowLeft, Download, Ca
 import Logo from "@/components/Logo";
 import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
+import ResultsBrowseTree from "@/components/ResultsBrowseTree";
 import PublishedRaces from "@/components/PublishedRaces";
 import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Breadcrumbs from "@/components/Breadcrumbs";
@@ -216,9 +217,6 @@ const VIEW_LEVELS = {
 
 // The hero's tab strip: the siblings at the level being browsed. The same
 // trigger styling the rest of the page uses, on the hero photo.
-const HERO_CHIP = "px-5 py-2 rounded-xl border font-heading uppercase tracking-wide transition-colors";
-const HERO_CHIP_REST = "border-black/50 dark:border-white/40 bg-white/60 text-black hover:bg-white/80 dark:bg-white/15 dark:text-white dark:hover:bg-white/25";
-const HERO_CHIP_CURRENT = "border-safety bg-safety text-white";
 
 export default function Landing() {
   const { slug, seriesId, seriesName } = useParams();
@@ -249,6 +247,7 @@ export default function Landing() {
   }, [seriesId, searchParams]);
   const [overall, setOverall] = useState(null);
   const [seriesData, setSeriesData] = useState({});
+  const pendingSeriesSelection = useRef(null);
   const [regattas, setRegattas] = useState([]);
   const [clubSeries, setClubSeries] = useState([]);
   // Two ways to browse the year: the club's championships (class → series →
@@ -259,10 +258,10 @@ export default function Landing() {
   const [activeRegattaClass, setActiveRegattaClass] = useState(null);
   const [activeRegattaSeries, setActiveRegattaSeries] = useState(null);
   const [regattaSeriesData, setRegattaSeriesData] = useState({});
-  // Category, class and series choices stay visible together; the initial
-  // selection is already enough to show current results without drilling down.
-  // Both above are the browse path: category → class → series (or regatta →
-  // class → series), with each selector available for direct switching.
+  const pendingRegattaSelection = useRef(null);
+  const loadedRegattaId = useRef(null);
+  // The selected hierarchy stays compact until the user opens its tree.
+  // Choosing any category, class or series continues to drive the same views.
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -317,26 +316,31 @@ export default function Landing() {
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, [clubId, searchParams]);
 
-  // Series + standings for the active class (drives the selector tabs in the
-  // hero and the results content below).
+  // Series + standings for the active class drive the results content below.
   useEffect(() => {
     if (!clubId || !activeClass) return;
     setSeries([]); setOverall(null); setSeriesData({}); setActiveSeries("overall");
-    api.getSeries({ class_id: activeClass, year, club_id: clubId }).then(setSeries).catch(() => {});
+    api.getSeries({ class_id: activeClass, year, club_id: clubId }).then((items) => {
+      const nextSeries = items || [];
+      setSeries(nextSeries);
+      const pending = pendingSeriesSelection.current;
+      if (pending?.classId === activeClass) {
+        if (nextSeries.some((item) => item.id === pending.seriesId)) setActiveSeries(pending.seriesId);
+        pendingSeriesSelection.current = null;
+      }
+    }).catch(() => {});
     api.overallStandings(activeClass, year, clubId).then(setOverall).catch(() => setOverall(null));
   }, [clubId, activeClass, year]);
 
   // Regattas are club-wide racing occasions (across classes), independent of
-  // the active class — load them for the selected year once.
+  // the active class; load them for the selected year once.
   useEffect(() => {
     if (!clubId) return;
     api.getRegattas({ year, club_id: clubId }).then(setRegattas).catch(() => setRegattas([]));
   }, [clubId, year]);
 
-  // Club-wide series for the year: tells us whether this club runs
-  // championships at all (vs. racing only regattas). Independent of the
-  // active class, since a single class may only race regattas while others
-  // race championships.
+  // Club-wide series for the year identify which competition categories are
+  // available, independent of the active class.
   useEffect(() => {
     if (!clubId) return;
     api.getSeries({ year, club_id: clubId }).then(setClubSeries).catch(() => setClubSeries([]));
@@ -358,7 +362,6 @@ export default function Landing() {
     hasChampionships && "championship",
     hasRegattas && "regattas",
   ].filter(Boolean);
-  const showViewToggle = availableViews.length > 1;
   useEffect(() => {
     if (!availableViews.includes(view)) setView(availableViews[0] || "championship");
   }, [hasClubChampionships, hasChampionships, hasRegattas]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -377,36 +380,43 @@ export default function Landing() {
     api.getRegatta(regattaId, { club_id: clubId }).then(setRegattaDetail).catch(() => setRegattaDetail(null));
   }, [view, clubId, regattaId]);
 
+  const currentRegattaDetail = regattaDetail?.id === regattaId ? regattaDetail : null;
   const regattaClasses = useMemo(() => {
     const seen = [];
-    (regattaDetail?.series || []).forEach((s) => {
+    (currentRegattaDetail?.series || []).forEach((s) => {
       if (s.class_name && !seen.includes(s.class_name)) seen.push(s.class_name);
     });
     return seen;
-  }, [regattaDetail]);
-  const seriesOf = (cn) => (regattaDetail?.series || []).filter((s) => s.class_name === cn);
+  }, [currentRegattaDetail]);
+  const seriesOf = (cn) => (currentRegattaDetail?.series || []).filter((s) => s.class_name === cn);
 
-  // Regatta navigation mirrors the championship display: choose a class,
-  // then its series, then read the normal detailed standings table.
+  // Retain requested tree selections while regatta details load.
   useEffect(() => {
-    if (!regattaDetail) {
-      setActiveRegattaClass(null);
-      setActiveRegattaSeries(null);
+    if (!regattaDetail || regattaDetail.id !== regattaId) return;
+    if (loadedRegattaId.current !== regattaDetail.id) {
+      loadedRegattaId.current = regattaDetail.id;
       setRegattaSeriesData({});
-      return;
     }
-    setActiveRegattaClass((prev) => (prev && regattaClasses.includes(prev) ? prev : regattaClasses[0] || null));
-    setRegattaSeriesData({});
-  }, [regattaDetail, regattaClasses]);
+    const pending = pendingRegattaSelection.current?.regattaId === regattaDetail.id
+      ? pendingRegattaSelection.current
+      : null;
+    const nextClass = pending?.className && regattaClasses.includes(pending.className)
+      ? pending.className
+      : activeRegattaClass && regattaClasses.includes(activeRegattaClass)
+        ? activeRegattaClass
+        : regattaClasses[0] || null;
+    const seriesForClass = (regattaDetail.series || []).filter((item) => item.class_name === nextClass);
+    const nextSeries = pending?.seriesId && seriesForClass.some((item) => item.id === pending.seriesId)
+      ? pending.seriesId
+      : activeRegattaSeries && seriesForClass.some((item) => item.id === activeRegattaSeries)
+        ? activeRegattaSeries
+        : seriesForClass[0]?.id || null;
+    setActiveRegattaClass(nextClass);
+    setActiveRegattaSeries(nextSeries);
+    if (pending) pendingRegattaSelection.current = null;
+  }, [regattaDetail, regattaClasses, regattaId, activeRegattaClass, activeRegattaSeries]);
 
   const activeRegattaSeriesList = seriesOf(activeRegattaClass);
-  useEffect(() => {
-    setActiveRegattaSeries((prev) => (
-      prev && activeRegattaSeriesList.some((s) => s.id === prev)
-        ? prev
-        : activeRegattaSeriesList[0]?.id || null
-    ));
-  }, [activeRegattaClass, regattaDetail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (view !== "regattas" || !clubId || !activeRegattaSeries) return;
@@ -439,11 +449,8 @@ export default function Landing() {
     };
   }, [clubId, activeClass, activeSeries]);
 
-  // Series linked to a regatta are that regatta's racing, not a championship:
-  // they stay out of the championship tabs below (the regatta section and its
-  // own page show them instead). A class whose series are ALL regattas still
-  // shows its standings in the results block — the nav model just sees the
-  // full series list for that case.
+  // Series linked to a regatta are shown in the Regattas tree, separate from
+  // the standalone championship categories.
   const championshipSeries = series.filter((s) => !s.regatta_id);
   const displaySeries = view === "club_championship"
     ? championshipSeries.filter((s) => competitionType(s) === "club_championship")
@@ -562,86 +569,168 @@ export default function Landing() {
   const selectedRegatta = regattaComps.find((r) => r.id === regattaId);
   const heroPhoto = competitionImage(view === "regattas" ? selectedRegatta : null);
 
-  // The browse hierarchy as a set of direct selectors. Only real choices
-  // appear: a level with a single option is already decided by the defaults,
-  // while every multi-option level stays visible so results never require a
-  // click-through just to reveal the next selector.
-  const navLevels = [];
-  if (showViewToggle) {
-    navLevels.push({
-      key: "category", label: "Category", value: view, onPick: setView,
-      options: availableViews.map((v) => ({ value: v, ...VIEW_LEVELS[v], testId: `view-${v}-btn` })),
-    });
+  const selectedCategory = availableViews.find((item) => item === view) || availableViews[0];
+  const categoryNodes = availableViews.map((category) => {
+    const categoryNode = {
+      key: `category:${category}`,
+      label: VIEW_LEVELS[category].label,
+      Icon: VIEW_LEVELS[category].Icon,
+      testId: `view-${category}-btn`,
+      detail: category === view ? "Selected" : null,
+      children: [],
+    };
+    if (category === "regattas") {
+      categoryNode.children = regattaComps.map((regatta) => {
+        const regattaNode = {
+          key: `regatta:${regatta.id}`,
+          label: regatta.name,
+          Icon: CalendarDays,
+          testId: `regatta-tab-${regatta.name}`,
+          detail: view === "regattas" && regatta.id === regattaId ? "Selected" : null,
+          children: [],
+          onSelect: () => { setView("regattas"); setRegattaId(regatta.id); },
+        };
+        const linkedSeries = clubSeries.filter((item) => item.regatta_id === regatta.id);
+        const detail = currentRegattaDetail?.id === regatta.id ? currentRegattaDetail : null;
+        const classNames = [...new Set([
+          ...(detail?.series || []).map((item) => item.class_name).filter(Boolean),
+          ...linkedSeries.map((item) => classes.find((c) => c.id === item.class_id)?.name).filter(Boolean),
+        ])];
+        regattaNode.children = classNames.map((className) => {
+          const classNode = {
+            key: `regatta-class:${regatta.id}:${className}`,
+            label: className,
+            Icon: Trophy,
+            testId: `regatta-class-tab-${className}`,
+            children: [],
+          };
+          const detailSeries = (detail?.series || []).filter((item) => item.class_name === className);
+          const linkedClassSeries = linkedSeries
+            .filter((item) => classes.find((c) => c.id === item.class_id)?.name === className)
+            .map((item) => ({ ...item, class_name: className }));
+          const classSeries = Array.from(new Map([...detailSeries, ...linkedClassSeries].map((item) => [item.id, item])).values());
+          classNode.detail = regatta.id === regattaId && className === activeRegattaClass ? "Selected" : null;
+          classNode.onSelect = () => {
+            setView("regattas");
+            setRegattaId(regatta.id);
+            setActiveRegattaClass(className);
+            if (classSeries[0]) {
+              pendingRegattaSelection.current = {
+                regattaId: regatta.id, className, seriesId: classSeries[0].id,
+              };
+              setActiveRegattaSeries(classSeries[0].id);
+            } else {
+              setActiveRegattaSeries(null);
+            }
+          };
+          classNode.children = classSeries.map((item) => ({
+            key: `regatta-series:${regatta.id}:${item.id}`,
+            label: item.name === regatta.name ? "Overall" : item.name,
+            testId: `regatta-series-tab-${item.name}`,
+            selectable: true,
+            onSelect: () => {
+              setView("regattas");
+              setRegattaId(regatta.id);
+              setActiveRegattaClass(className);
+              if (currentRegattaDetail?.id === regatta.id && seriesOf(className).some((s) => s.id === item.id)) {
+                pendingRegattaSelection.current = null;
+                setActiveRegattaSeries(item.id);
+              } else {
+                pendingRegattaSelection.current = { regattaId: regatta.id, className, seriesId: item.id };
+                setActiveRegattaSeries(null);
+              }
+            },
+          }));
+          return classNode;
+        });
+        return regattaNode;
+      });
+    } else {
+      const categoryClasses = category === "club_championship"
+        ? classes.filter((c) => clubChampionshipSeries.some((s) => s.class_id === c.id))
+        : classes.filter((c) => championshipSeriesForClub.some((s) => s.class_id === c.id));
+      categoryNode.children = categoryClasses.map((cls) => {
+        const clsSeries = clubSeries.filter((s) => !s.regatta_id && s.class_id === cls.id && competitionType(s) === category);
+        const classNav = seriesNavModel(clsSeries, cls.id === activeClass
+          ? hasOverall
+          : clsSeries.length > 1 && clsSeries.some((item) => item.included_in_overall !== false));
+        const seriesNodes = clsSeries.map((item) => ({
+          key: `series:${item.id}`,
+          label: <>{item.name}{classNav.showExcl(item) && <span className="ml-1 text-xs opacity-70">(excl.)</span>}</>,
+          plainLabel: item.name,
+          testId: `series-tab-${item.name}`,
+          selectable: true,
+          onSelect: () => {
+            if (cls.id !== activeClass) pendingSeriesSelection.current = { classId: cls.id, seriesId: item.id };
+            setView(category);
+            setActiveClass(cls.id);
+            setActiveSeries(item.id);
+          },
+        }));
+        if (classNav.showOverall) {
+          seriesNodes.unshift({
+            key: `series-overall:${cls.id}`,
+            label: "Overall",
+            testId: "series-tab-Overall",
+            selectable: true,
+            onSelect: () => {
+              if (cls.id !== activeClass) pendingSeriesSelection.current = { classId: cls.id, seriesId: "overall" };
+              setActiveClass(cls.id);
+              setActiveSeries("overall");
+              setView(category);
+            },
+          });
+        }
+        return {
+          key: `class:${category}:${cls.id}`,
+          label: cls.name,
+          Icon: Trophy,
+          testId: `class-tab-${cls.name}`,
+          detail: cls.id === activeClass ? "Selected" : null,
+          selectable: true,
+          onSelect: () => {
+            if (cls.id !== activeClass) pendingSeriesSelection.current = null;
+            setView(category);
+            setActiveClass(cls.id);
+            setActiveSeries(classNav.defaultTab);
+          },
+          children: seriesNodes,
+        };
+      });
+    }
+    categoryNode.selectable = true;
+    categoryNode.onSelect = () => setView(category);
+    return categoryNode;
+  });
+  const activeRegattaClassName = activeRegattaClass || null;
+  const selectedPath = [];
+  if (selectedCategory) {
+    selectedPath.push({ key: `category:${selectedCategory}`, label: VIEW_LEVELS[selectedCategory].label });
+    if (selectedCategory === "regattas") {
+      if (selectedRegatta) selectedPath.push({ key: `regatta:${selectedRegatta.id}`, label: selectedRegatta.name });
+      if (activeRegattaClassName) selectedPath.push({ key: `regatta-class:${regattaId}:${activeRegattaClassName}`, label: activeRegattaClassName });
+      const selectedRegattaSeries = activeRegattaSeriesList.find((item) => item.id === activeRegattaSeries);
+      if (selectedRegattaSeries) selectedPath.push({
+        key: `regatta-series:${regattaId}:${selectedRegattaSeries.id}`,
+        label: selectedRegattaSeries.name === currentRegattaDetail?.name ? "Overall" : selectedRegattaSeries.name,
+      });
+    } else {
+      const selectedClass = visibleClasses.find((item) => item.id === activeClass);
+      if (selectedClass) selectedPath.push({ key: `class:${selectedCategory}:${selectedClass.id}`, label: selectedClass.name });
+      if (activeSeries === "overall" && nav.showOverall) {
+        selectedPath.push({ key: `series-overall:${activeClass}`, label: "Overall" });
+      } else if (activeSeries !== "overall") {
+        const selectedSeries = displaySeries.find((item) => item.id === activeSeries);
+        if (selectedSeries) selectedPath.push({ key: `series:${selectedSeries.id}`, label: selectedSeries.name });
+      }
+    }
   }
-  if (view === "regattas") {
-    if (regattaComps.length > 1) {
-      navLevels.push({
-        key: "regatta", label: "Regatta", value: regattaId, onPick: setRegattaId,
-        options: regattaComps.map((r) => ({ value: r.id, label: r.name, testId: `regatta-tab-${r.name}` })),
-      });
-    }
-    if (regattaClasses.length > 1) {
-      navLevels.push({
-        key: "class", label: "Class", value: activeRegattaClass, onPick: setActiveRegattaClass,
-        options: regattaClasses.map((n) => ({ value: n, label: n, Icon: Trophy, testId: `regatta-class-tab-${n}` })),
-      });
-    }
-    if (activeRegattaSeriesList.length > 1) {
-      navLevels.push({
-        key: "series", label: "Series", value: activeRegattaSeries, onPick: setActiveRegattaSeries,
-        options: activeRegattaSeriesList.map((s) => ({
-          value: s.id, label: s.name === regattaDetail?.name ? "Overall" : s.name,
-          testId: `regatta-series-tab-${s.name}`,
-        })),
-      });
-    }
-  } else {
-    if (visibleClasses.length > 1) {
-      navLevels.push({
-        key: "class", label: "Class", value: activeClass, onPick: setActiveClass,
-        options: visibleClasses.map((c) => ({ value: c.id, label: c.name, testId: `class-tab-${c.name}` })),
-        subscription: activeClass && <ResultsSubscription subscriptionType="class" targetId={activeClass}
-          targetName={activeClassObj.name || "this class"} />,
-      });
-    }
-    const seriesOptions = [
-      ...(nav.showOverall ? [{ value: "overall", label: "Overall", testId: "series-tab-Overall" }] : []),
-      ...displaySeries.map((s) => ({
-        value: s.id, testId: `series-tab-${s.name}`,
-        label: <>{s.name}{nav.showExcl(s) && <span className="ml-1 text-[10px] opacity-70">(excl.)</span>}</>,
-      })),
-    ];
-    if (seriesOptions.length > 1) {
-      navLevels.push({
-        key: "series", label: "Series", value: activeSeries, onPick: setActiveSeries, options: seriesOptions,
-        subscription: activeSeries !== "overall" && activeSeries && (
-          <ResultsSubscription subscriptionType="series" targetId={activeSeries}
-            targetName={activeSeriesObj?.name || "this series"} />),
-      });
-    }
-  }
-  // Breadcrumb trail mirrors the selected path; direct selectors above it
-  // handle changing any level without needing Back/next steps.
+  const treeHasChoices = categoryNodes.length > 0;
   const crumbs = [
     { label: "Home", href: "/" },
     { label: club.name },
+    ...selectedPath.map((item) => ({ label: item.label })),
   ];
-  navLevels.forEach((level) => {
-    const chosen = level.options.find((o) => o.value === level.value);
-    crumbs.push({ label: chosen ? chosen.label : "—" });
-
-    // A single class is intentionally omitted from the selector row, but it
-    // still belongs in the path so choosing a category never leaves the user
-    // wondering which class the results represent.
-    const implicitClass = level.key === "category" && (
-      view === "regattas" ? regattaClasses.length === 1 : visibleClasses.length === 1
-    );
-    if (implicitClass) {
-      crumbs.push({
-        label: view === "regattas" ? activeRegattaClass : activeClassObj.name,
-      });
-    }
-  });
   // A regatta needs its series metadata before showing its standings. Every
   // other view always shows the selected results beneath the direct selectors.
   const showResults = view !== "regattas" || !!regattaDetail || regattaComps.length === 0;
@@ -699,30 +788,22 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* Keep every available level visible. Picking a category, class,
-              regatta or series updates its results directly; no Back/next drill-down. */}
-          {navLevels.length > 0 && (
-            <div className="mt-4 w-full max-w-5xl space-y-3 rounded-2xl border border-white/25 bg-white/10 px-4 py-3 backdrop-blur-sm"
-              data-testid="browse-nav">
-              {navLevels.map((browseLevel) => (
-                <div key={browseLevel.key} data-testid={`nav-level-${browseLevel.key}`} className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                  <span className="text-white/70 text-[11px] uppercase tracking-widest font-semibold sm:w-24 sm:shrink-0">
-                    {browseLevel.label}
-                  </span>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {browseLevel.options.map((option) => (
-                      <button key={option.value} type="button" data-testid={option.testId}
-                        aria-current={option.value === browseLevel.value ? "true" : undefined}
-                        onClick={() => browseLevel.onPick(option.value)}
-                        className={`${HERO_CHIP} ${option.value === browseLevel.value ? HERO_CHIP_CURRENT : HERO_CHIP_REST}`}>
-                        {option.Icon && <option.Icon className="w-4 h-4 inline -mt-0.5 mr-1.5" />}{option.label}
-                      </button>
-                    ))}
-                    {browseLevel.subscription}
-                  </div>
-                </div>
-              ))}
-            </div>
+          {treeHasChoices && (
+            <ResultsBrowseTree
+              nodes={categoryNodes}
+              selectedPath={selectedPath}
+              onSelect={(node) => node.onSelect?.()}
+              actions={view !== "regattas" && activeClass ? (
+                <>
+                  <ResultsSubscription subscriptionType="class" targetId={activeClass}
+                    targetName={activeClassObj.name || "this class"} buttonLabel="Class alerts" />
+                  {activeSeries !== "overall" && activeSeries && activeSeriesObj && (
+                    <ResultsSubscription subscriptionType="series" targetId={activeSeries}
+                      targetName={activeSeriesObj.name} buttonLabel="Series alerts" />
+                  )}
+                </>
+              ) : null}
+            />
           )}
         </div>
       </section>

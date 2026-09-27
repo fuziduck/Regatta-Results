@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle";
 import ChangePasscodeDialog from "@/components/ChangePasscodeDialog";
+import HelpSidebar from "@/components/HelpSidebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,7 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LogOut, KeyRound, Menu } from "lucide-react";
+import { LogOut, KeyRound, LifeBuoy, Menu } from "lucide-react";
 
 // Console top-bar navigation, shared by the Race Officer, Race Admin and
 // Webmaster consoles.
@@ -24,10 +25,10 @@ import { LogOut, KeyRound, Menu } from "lucide-react";
 // toggle and the club badge) measures ~943px, so below the lg breakpoint
 // (1024px) the items would be pushed off the right edge of the viewport.
 // Below lg they therefore collapse into a menu instead: the theme toggle
-// stays in the bar and every other item — including Exit — stays one tap
-// away inside the menu, so nothing is ever lost or pushed off-screen and no
-// horizontal scrolling is needed. The menu is a standard Radix dropdown, so
-// it is keyboard accessible (arrow keys, Escape) and opens/closes cleanly.
+// stays in the bar and every other item — including Exit and contextual Help
+// — stays one tap away inside the menu. The menu remains available at all
+// sizes so Help has a single home on both desktop and mobile. It is a standard
+// Radix dropdown, so it is keyboard accessible (arrow keys, Escape).
 export default function ConsoleNav({
   items = [],
   meta = null,
@@ -37,6 +38,7 @@ export default function ConsoleNav({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [passcodeOpen, setPasscodeOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const { logout } = useAuth();
   const navigate = useNavigate();
 
@@ -55,6 +57,7 @@ export default function ConsoleNav({
   return (
     <div className="flex items-center gap-2">
       <ThemeToggle light />
+      <HelpSidebar open={helpOpen} onOpenChange={setHelpOpen} showTrigger={false} />
       {meta && <span className="hidden lg:inline text-xs text-white/70 mr-1">{meta}</span>}
 
       {/* Desktop: full item row (unchanged behaviour at lg and up). The
@@ -73,15 +76,19 @@ export default function ConsoleNav({
         </Button>
       </div>
 
-      {/* Mobile / tablet: menu keeps every item accessible, Exit included. */}
+      {/* Overflow menu keeps every item — including Help — accessible at all sizes. */}
       <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="ghost" className="lg:hidden text-white hover:bg-white/15 px-2" aria-label="Open menu" data-testid="console-menu-btn">
+          <Button size="sm" variant="ghost" className="text-white hover:bg-white/15 px-2" aria-label="Open menu" data-testid="console-menu-btn">
             <Menu className="w-5 h-5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
           {menuLabel && <DropdownMenuLabel>{menuLabel}</DropdownMenuLabel>}
+          <DropdownMenuItem data-testid="menu-help" onSelect={() => { setMenuOpen(false); setHelpOpen(true); }}>
+            <LifeBuoy className="w-4 h-4" /> Help
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           {visible.map((i) => (
             <DropdownMenuItem key={i.key} data-testid={i.menuTestId} onSelect={() => { setMenuOpen(false); i.onClick(); }}>
               {i.icon}{i.label}

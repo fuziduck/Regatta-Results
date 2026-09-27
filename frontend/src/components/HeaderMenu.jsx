@@ -11,7 +11,7 @@ import { toast } from "sonner";
 // Compact burger menu for the public headers. Keeps the interface clean by
 // folding the share link, the "install as a web app" guide, and the day/night
 // theme toggle into one little dropdown on the left.
-export default function HeaderMenu({ title, text, light = false, className = "" }) {
+export default function HeaderMenu({ title, text, light = false, className = "", showHelp = true }) {
   const [installOpen, setInstallOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
   const dark = theme === "dark";
@@ -46,6 +46,7 @@ export default function HeaderMenu({ title, text, light = false, className = "" 
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-56">
+          <DropdownMenuItem asChild><a href="/help" className="flex w-full items-center gap-2" data-testid="header-menu-help">Help and quick starts</a></DropdownMenuItem>
           <DropdownMenuItem onSelect={share} data-testid="header-menu-share">
             <Share2 className="w-4 h-4" /> Share this page
           </DropdownMenuItem>
@@ -58,7 +59,6 @@ export default function HeaderMenu({ title, text, light = false, className = "" 
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
       <Dialog open={installOpen} onOpenChange={setInstallOpen}>
         <DialogContent data-testid="install-help-dialog">
           <DialogHeader><DialogTitle className="font-heading uppercase">Install SailScore as an app</DialogTitle></DialogHeader>

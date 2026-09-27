@@ -86,6 +86,8 @@ class TestSeasonLockApi:
             assert r.status_code == 200, r.text
             assert r.json()["version"] == 1
             sid = series["id"]
+            snaps = requests.get(f"{API}/series/{sid}/snapshots", headers=h(club_admin_token)).json()
+            assert snaps[0]["lock_reason"] == "Season finalised"
 
             frozen = requests.get(f"{API}/standings/series/{sid}").json()
             assert frozen.get("locked") is True and frozen["snapshot_version"] == 1
@@ -136,6 +138,10 @@ class TestSeasonLockApi:
                               json={"confirm": True, "reason": "Position error in race 2"},
                               headers=h(club_admin_token))
             assert r.status_code == 200
+            snaps = requests.get(f"{API}/series/{sid}/snapshots", headers=h(club_admin_token)).json()
+            assert snaps[0]["unlock_reason"] == "Position error in race 2"
+            assert snaps[0]["unlocked_by"]
+            assert snaps[0]["unlocked_at"]
             # fix race 2: swap positions of boats 1 and 2, and re-score with no
             # discard (a 1-discard / 2-race series discards any single-race
             # change, so the amendment must also change the discard rule to
@@ -162,9 +168,29 @@ class TestSeasonLockApi:
             assert by_version[1]["status"] == "superseded"   # preserved, never overwritten
             assert by_version[2]["status"] == "locked"
             assert by_version[2]["locked_by"]
+            assert by_version[1]["lock_reason"] == "Final"
+            assert by_version[1]["unlock_reason"] == "Position error in race 2"
+            assert by_version[2]["lock_reason"] == "Corrected"
 
             served = requests.get(f"{API}/standings/series/{sid}").json()
             assert served["snapshot_version"] == 2
+
+            # An admin can restore the original preserved snapshot; restore is
+            # a new immutable version and the amended active snapshot remains
+            # in history rather than being overwritten.
+            r = requests.post(f"{API}/series/{sid}/snapshots/1/restore",
+                              json={"confirm": True, "reason": "Reinstate original approved results",
+                                    "expected_version": 5}, headers=h(club_admin_token))
+            assert r.status_code == 200, r.text
+            assert r.json()["version"] == 3
+            restored = requests.get(f"{API}/standings/series/{sid}").json()
+            assert restored["snapshot_version"] == 3
+            assert {row["boat_id"]: row["net"] for row in restored["standings"]} == frozen_nets
+            history = requests.get(f"{API}/series/{sid}/snapshots", headers=h(club_admin_token)).json()
+            by_version = {item["version"]: item for item in history}
+            assert by_version[3]["restored_from_version"] == 1
+            assert by_version[2]["status"] == "superseded"
+            assert by_version[1]["status"] == "superseded"
         finally:
             requests.post(f"{API}/series/{sid}/unlock", json={"confirm": True, "reason": "test cleanup"},
                           headers=h(club_admin_token))

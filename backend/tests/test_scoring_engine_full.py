@@ -800,8 +800,8 @@ class _FakeColl:
                 _apply_update(d, update)
 
     async def delete_one(self, filt):
-        for i, d in enumerate(self.docs):
-            if _matches(d, filt):
+        for i, doc in enumerate(self.docs):
+            if _matches(doc, filt):
                 del self.docs[i]
                 return types.SimpleNamespace(deleted_count=1)
         return types.SimpleNamespace(deleted_count=0)
@@ -1116,6 +1116,7 @@ class TestSeasonLocking:
         assert snap["version"] == 1 and snap["status"] == "locked"
         assert snap["locked_by"] == "admin@medway"
         assert snap["locked_at"]
+        assert snap["lock_reason"] == "Season finalised"
         assert snap["engine_version"] == server.SCORING_ENGINE_VERSION
         assert snap["scoring_config"]["tle"]["method"] == "finishers_plus_1"
         assert snap["payload"]["race_count"] == 2
@@ -1216,7 +1217,9 @@ class TestSeasonLocking:
         # v1 is preserved (superseded, payload intact); v2 is the active lock.
         assert snaps[0]["status"] == "superseded"
         assert snaps[0]["payload"]["standings"][2]["boat_id"] == "b3"
+        assert snaps[0]["unlock_reason"] == "Correction required"
         assert snaps[1]["status"] == "locked"
+        assert snaps[1]["lock_reason"] == "Season finalised"
         assert snaps[1]["amendment"]["changes"]
 
         # Served standings now come from v2.
@@ -1224,12 +1227,50 @@ class TestSeasonLocking:
         assert served["snapshot_version"] == 2
         assert served["standings"][1]["boat_id"] == "b3"
 
-    def test_snapshots_history_endpoint_shape(self):
+    def test_restore_preserved_snapshot_creates_new_locked_version(self):
+        series, db, resp, series_doc = self._make_locked_season()
+        original = db.season_snapshots.docs[0]
+        original_payload = original["payload"]
+        _unlock_series(series, db)
+        # A correction changes the live race, but the previous immutable record stays intact.
+        db.races.docs[0]["results"][0]["position"] = 3
+        restore_input = server.LockSeriesInput(confirm=True, reason="Reinstate approved results")
+        restored = asyncio.run(server.restore_series_snapshot("s1", 1, restore_input, None, ADMIN_USER))
+
+        assert restored["version"] == 2
+        assert restored["restored_from_version"] == 1
+        assert series_doc["lock_status"] == server.LOCK_LOCKED
+        assert series_doc["lock_version"] == 2
+        assert db.season_snapshots.docs[0]["status"] == "superseded"
+        assert db.season_snapshots.docs[1]["status"] == "locked"
+        assert db.season_snapshots.docs[1]["restored_from_version"] == 1
+        assert db.season_snapshots.docs[1]["payload"] == original_payload
+        assert _standings_for(series_doc, db)["snapshot_version"] == 2
+
+    def test_snapshot_detail_returns_frozen_standings(self):
         series, db, resp, series_doc = self._make_locked_season()
         server.db = db
+        result = asyncio.run(server.series_snapshot_detail("s1", 1, None, ADMIN_USER))
+        assert result["version"] == 1
+        assert result["payload"]["locked"] is True
+        assert result["payload"]["standings"] == db.season_snapshots.docs[0]["payload"]["standings"]
+
+    def test_snapshots_history_endpoint_includes_lock_and_unlock_comments(self):
+        series, db, resp, series_doc = self._make_locked_season()
+        _unlock_series(series, db)
+
+        # Simulate snapshots created before reason fields were added: the
+        # endpoint can recover the original comments from the audit trail.
+        for key in ("lock_reason", "unlock_reason", "unlocked_at", "unlocked_by"):
+            db.season_snapshots.docs[0].pop(key, None)
+
         snaps = asyncio.run(server.series_snapshots("s1", None, ADMIN_USER))
         assert len(snaps) == 1
         assert snaps[0]["version"] == 1
+        assert snaps[0]["lock_reason"] == "Season finalised"
+        assert snaps[0]["unlock_reason"] == "Correction required"
+        assert snaps[0]["unlocked_by"] == ADMIN_USER["username"]
+        assert snaps[0]["unlocked_at"]
         assert "payload" not in snaps[0]  # history list stays light
 
 

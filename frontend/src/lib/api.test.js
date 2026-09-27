@@ -14,6 +14,11 @@ describe("isPublicRoute", () => {
     expect(isPublicRoute("/club/medway-yacht-club")).toBe(true);
     expect(isPublicRoute("/club/medway-yacht-club/notice-board")).toBe(true);
     expect(isPublicRoute("/subscriptions/manage")).toBe(true);
+    expect(isPublicRoute("/help")).toBe(true);
+    expect(isPublicRoute("/faq")).toBe(true);
+    expect(isPublicRoute("/help/quick-start/officer")).toBe(true);
+    expect(isPublicRoute("/help/quick-start/admin")).toBe(true);
+    expect(isPublicRoute("/help/anything/nested")).toBe(true);
     expect(isPublicRoute("/subscriptions/verify?token=abc")).toBe(true);
   });
 

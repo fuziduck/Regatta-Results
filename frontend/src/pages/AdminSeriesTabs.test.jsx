@@ -23,6 +23,9 @@ jest.mock("@/lib/api", () => {
     getClasses: jest.fn(),
     getSeries: jest.fn(),
     getSeriesDuplicates: jest.fn(),
+    getSeriesSnapshots: jest.fn(),
+    getSeriesSnapshot: jest.fn(),
+    restoreSeriesSnapshot: jest.fn(),
     getRegattas: jest.fn(),
     getRaces: jest.fn(),
     scheduledRaces: jest.fn(),
@@ -109,6 +112,9 @@ beforeEach(() => {
   ]);
   mockApi.getSeries.mockResolvedValue(SERIES);
   mockApi.getSeriesDuplicates.mockResolvedValue([]);
+  mockApi.getSeriesSnapshots.mockResolvedValue([]);
+  mockApi.getSeriesSnapshot.mockResolvedValue({});
+  mockApi.restoreSeriesSnapshot.mockResolvedValue({ version: 3 });
   mockApi.getRegattas.mockResolvedValue(REGATTAS);
   mockApi.getRaces.mockResolvedValue([]);
   mockApi.scheduledRaces.mockResolvedValue([]);
@@ -209,6 +215,67 @@ describe("Admin competition tabs", () => {
     expect(inPage("tab-regattas")).not.toBeNull();
     // The old single Series tab is gone.
     expect(inPage("tab-series")).toBeNull();
+  });
+
+  it("shows lock and unlock comments in snapshot history", async () => {
+    mockApi.getSeriesSnapshots.mockResolvedValue([{
+      version: 1, status: "superseded", locked_at: "2026-09-01T10:00:00Z",
+      locked_by: "admin@example.com", lock_reason: "Final results approved",
+      unlocked_at: "2026-09-02T10:00:00Z", unlocked_by: "admin@example.com",
+      unlock_reason: "Correcting a race result", engine_version: "2.2.0",
+      scoring_config: { rrs_edition: "RRS 2025-2028" },
+    }]);
+    render(<Admin />);
+    await flush();
+    await openTab("tab-club-championship");
+
+    await act(async () => { inPage("snapshots-Early Spring").click(); });
+    await flush();
+
+    const dialog = query("snapshots-dialog");
+    expect(dialog.textContent).toContain("Lock comment: Final results approved");
+    expect(dialog.textContent).toContain("Unlock comment: Correcting a race result");
+    expect(dialog.textContent).toContain("by admin@example.com");
+  });
+
+  it("previews and restores a preserved snapshot, and has no archive action", async () => {
+    const preservedPayload = {
+      race_count: 2, planned_races: 2, discards: 0, races: [], schedule: [],
+      standings: [{ boat_id: "b1", boat_name: "Boat One", sail_no: "1", helm: "Sailor", rank: 1, total: 2, net: 2, scores: [] }],
+    };
+    mockApi.getSeriesSnapshots.mockResolvedValue([
+      { version: 2, status: "locked", locked_at: "2026-09-03T10:00:00Z", locked_by: "admin", payload_available: true, scoring_config: {} },
+      { version: 1, status: "superseded", locked_at: "2026-09-01T10:00:00Z", locked_by: "admin", lock_reason: "Original", payload_available: true, scoring_config: {} },
+    ]);
+    mockApi.getSeriesSnapshot.mockResolvedValue({ version: 1, payload: preservedPayload });
+    render(<Admin />);
+    await flush();
+    await openTab("tab-club-championship");
+
+    expect(inPage("archive-Early Spring")).toBeNull();
+    await act(async () => { inPage("snapshots-Early Spring").click(); });
+    await flush();
+    expect(query("snapshot-restore-1")).not.toBeNull();
+
+    await act(async () => { query("snapshot-view-1").click(); });
+    await flush();
+    expect(mockApi.getSeriesSnapshot).toHaveBeenCalledWith("s-club", 1, "c1");
+    expect(query("snapshot-preview").textContent).toContain("Preserved version 1 results");
+    expect(query("snapshot-preview").textContent).toContain("Boat One");
+
+    await act(async () => { query("snapshot-restore-1").click(); });
+    await flush();
+    const reason = query("snapshot-restore-reason");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(reason, "Restore approved original results");
+      reason.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { query("snapshot-restore-confirm").click(); });
+    await flush();
+
+    expect(mockApi.restoreSeriesSnapshot).toHaveBeenCalledWith("s-club", 1, "Restore approved original results", 1);
+    expect(query("snapshot-restore-dialog")).toBeNull();
   });
 
   it("shows only club championship series on the Club Championship tab", async () => {

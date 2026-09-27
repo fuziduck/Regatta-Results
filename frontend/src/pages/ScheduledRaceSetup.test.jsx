@@ -157,6 +157,27 @@ const clickScheduledRow = async () => {
 };
 
 describe("setting up a scheduled race (officer page)", () => {
+  it("shows abandoned races with completed races, including published races in locked series", async () => {
+    const published = { ...raceDoc("r4", 4), status: "published", results: [{ boat_id: "b1", code: "FINISHED", position: 1 }] };
+    const abandoned = { ...raceDoc("r5", 5), status: "published", abandoned: true, results: [{ boat_id: "b1", code: "FINISHED", position: 1 }] };
+    mockApi.getSeries.mockResolvedValue([{
+      id: "s1", name: "__LIVE_MS__", class_id: "c1", year: 2026,
+      lock_status: "locked", planned_races: 8, mini_series: false, mini_series_groups: [],
+    }]);
+    mockApi.getRaces.mockResolvedValue([published, abandoned]);
+    await render(<Officer />);
+
+    const group = container.querySelector('[data-testid="published-group-s1"]');
+    expect(group).not.toBeNull();
+    expect(group.textContent).toContain("1 published race · 1 abandoned");
+    await act(async () => {
+      container.querySelector('[data-testid="published-group-toggle-s1"]').click();
+    });
+
+    expect(container.querySelector('[data-testid="race-item-r4"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="race-item-r5"]').textContent).toContain("Abandoned");
+  });
+
   it("creates the race and opens its results console on the happy path", async () => {
     mockApi.scheduledRaces.mockResolvedValue([scheduledItem()]);
     await render(<Officer />);

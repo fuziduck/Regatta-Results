@@ -14,7 +14,7 @@ const client = axios.create({ baseURL: API, withCredentials: true });
 // back to the sign-in page so they can resume.
 //
 // The redirect is scoped to PROTECTED pages only. Public routes (the homepage,
-// club/class/series results, notice boards, boats) never redirect on 401 — an
+// help/FAQ, club/class/series results, notice boards, boats) never redirect on 401 — an
 // anonymous visitor's very first call (/auth/me) is unauth'd by design and must
 // not bounce the whole site to the login page. When a protected page's session
 // dies we carry the destination along (?from=) so the sign-in page can return
@@ -31,7 +31,8 @@ const PUBLIC_ROUTE_PREFIXES = [
 ];
 
 export function isPublicRoute(pathname) {
-  if (pathname === "/") return true;
+  if (pathname === "/" || pathname === "/help" || pathname === "/faq") return true;
+  if (pathname.startsWith("/help/")) return true;
   return PUBLIC_ROUTE_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
@@ -262,6 +263,8 @@ export const api = {
   unlockSeries: (id, reason, v) => client.post(`/series/${id}/unlock`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   archiveSeries: (id, reason, v) => client.post(`/series/${id}/archive`, withVer({ confirm: true, reason }, v)).then((r) => r.data),
   getSeriesSnapshots: (id, club_id) => client.get(`/series/${id}/snapshots`, { params: club_id ? { club_id } : {} }).then((r) => r.data),
+  getSeriesSnapshot: (id, version, club_id) => client.get(`/series/${id}/snapshots/${version}`, { params: club_id ? { club_id } : {} }).then((r) => r.data),
+  restoreSeriesSnapshot: (id, version, reason, expectedVersion) => client.post(`/series/${id}/snapshots/${version}/restore`, withVer({ confirm: true, reason }, expectedVersion)).then((r) => r.data),
 
   getRaces: (params = {}) => client.get("/races", { params }).then((r) => r.data),
   getRace: (id) => client.get(`/races/${id}`).then((r) => r.data),

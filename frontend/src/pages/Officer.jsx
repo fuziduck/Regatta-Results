@@ -27,6 +27,7 @@ const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
   provisional: "bg-amber-100 text-amber-800 animate-pulse dark:bg-amber-500/15 dark:text-amber-300",
   published: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+  abandoned: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
 };
 
 // Outcome codes a race officer can assign from the batch page, so a boat
@@ -80,7 +81,8 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
             </span>
           )}
         </div>
-        <ConsoleNav
+        <div className="flex items-center gap-1">
+          <ConsoleNav
           menuLabel={clubName ? `${clubName} · Race Officer` : "Race Officer"}
           onChangedPasscode={updateSession}
           logoutTestId="logout-btn"
@@ -110,7 +112,8 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
               onClick: () => navigate("/webmaster"),
             }] : []),
           ]}
-        />
+          />
+        </div>
       </div>
     </header>
   );
@@ -2054,15 +2057,11 @@ export default function Officer() {
   const dayCreated = dayItems.filter((i) => i.race_id);
   const dayUnpublished = dayCreated.filter((i) => i.status !== "published");
 
-  const active = races.filter((r) => r.status !== "published");
-  // Published results whose series is locked (or archived) are frozen — they're
-  // served from the season snapshot and can't be recalled or amended here — so
-  // keep them out of the Officer page's Published section.
-  const done = races.filter((r) => {
-    if (r.status !== "published") return false;
-    const ls = series[r.series_id]?.lock_status;
-    return ls !== "locked" && ls !== "archived";
-  });
+  const active = races.filter((r) => r.status !== "published" && !r.abandoned);
+  // Keep completed and abandoned races in the same history list, including
+  // frozen results from locked/archived seasons. The server still guards those
+  // races against changes; hiding them here made the history look incomplete.
+  const done = races.filter((r) => r.status === "published" || r.abandoned);
   const sortedDone = [...done].sort((a, b) => {
     const ka = `${a.date || ""}|${String(a.race_number || 0).padStart(4, "0")}`;
     const kb = `${b.date || ""}|${String(b.race_number || 0).padStart(4, "0")}`;
@@ -2112,8 +2111,7 @@ export default function Officer() {
         <div className="text-xs text-muted-foreground mt-1">{fmtDate(r.date)}{r.start_time ? ` · Start ${r.start_time}` : ""}</div>
         <MiniNote item={r} />
       </div>
-      <Badge className={STATUS_BADGE[r.status]}>{r.status}</Badge>
-      {r.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
+      <Badge className={STATUS_BADGE[r.abandoned ? "abandoned" : r.status] || "bg-muted text-muted-foreground"}>{r.abandoned ? "Abandoned" : r.status}</Badge>
     </button>
     );
   };
@@ -2128,7 +2126,10 @@ export default function Officer() {
         <div className="w-9 h-9 rounded-lg bg-ocean/10 grid place-items-center text-ocean"><Layers className="w-4 h-4" /></div>
         <div className="flex-1">
           <div className="font-semibold leading-none">{group.className} · {group.seriesName}{group.year ? ` · ${group.year}` : ""}</div>
-          <div className="text-xs text-muted-foreground mt-1">{group.races.length} published race{group.races.length === 1 ? "" : "s"}</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {group.races.filter((race) => !race.abandoned).length} published race{group.races.filter((race) => !race.abandoned).length === 1 ? "" : "s"}
+            {group.races.some((race) => race.abandoned) && <> · {group.races.filter((race) => race.abandoned).length} abandoned</>}
+          </div>
         </div>
         <span className="text-muted-foreground">{open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</span>
       </button>

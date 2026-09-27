@@ -10,6 +10,7 @@ import UsersManager from "@/components/UsersManager";
 import AuditLog from "@/components/AuditLog";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import { classGroupKey, normalizeSeriesType } from "@/lib/competition";
+import { SeriesStandings } from "@/components/StandingsTable";
 import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel, classDivisions, seriesScoringModes } from "@/lib/helpers";
 import NoticeBoard from "@/components/NoticeBoard";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
@@ -29,7 +30,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from "sonner";
-import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, LifeBuoy, FileText, Mail, X, CalendarDays, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Copy } from "lucide-react";
+import { ShieldCheck, Plus, Pencil, Trash2, Anchor, RotateCcw, Send, Globe, Building2, Upload, ImageOff, ImagePlus, Archive, Link2, Layers, Sailboat, Trophy, Users, ScrollText, Search, Check, ChevronsUpDown, Flag, FileText, Mail, X, CalendarDays, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Copy } from "lucide-react";
 
 function ClubIconField({ clubId }) {
   const [icon, setIcon] = useState(null);
@@ -255,7 +256,8 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
             </span>
           )}
         </div>
-        <ConsoleNav
+        <div className="flex items-center gap-1">
+          <ConsoleNav
           menuLabel={clubName ? `${clubName} · Race Admin` : "Race Admin"}
           onChangedPasscode={updateSession}
           logoutTestId="admin-logout-btn"
@@ -285,7 +287,8 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
               onClick: () => navigate("/webmaster"),
             }] : []),
           ]}
-        />
+          />
+        </div>
       </div>
     </header>
   );
@@ -1135,8 +1138,14 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
   const [lockDialog, setLockDialog] = useState(null); // {mode: "lock"|"unlock", series}
   const [lockReason, setLockReason] = useState("");
   const [lockBusy, setLockBusy] = useState(false);
+
   const [snapSeries, setSnapSeries] = useState(null); // series whose snapshot history is shown
   const [snapshots, setSnapshots] = useState([]);
+  const [snapshotPreview, setSnapshotPreview] = useState(null);
+  const [restoreSnapshot, setRestoreSnapshot] = useState(null);
+  const [restoreReason, setRestoreReason] = useState("");
+  const [restoreBusy, setRestoreBusy] = useState(false);
+
   // Series membership editor: which of the class's boats form part of this
   // series (drives the DNC scoring engine).
   const [boatsSeries, setBoatsSeries] = useState(null);
@@ -1221,8 +1230,14 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
   const load = useCallback(() => {
     if (!classFilter) return;
     const params = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...(clubId ? { club_id: clubId } : {}) };
-    if (classFilter !== "all") params.class_id = classFilter;
-    api.getSeries(params).then(setSeries);
+    if (classFilter !== "all") params.class_id = classFilter;      api.getSeries(params).then((items) => {
+        setSeries(items);
+        setSnapSeries((current) => {
+          if (!current) return current;
+          return items.find((item) => item.id === current.id) || current;
+        });
+      });
+
     // Duplicate scan is club-wide (not filtered) — a duplicate is only visible
     // as a problem when both rows are seen together. It belongs to the
     // standalone tabs, not to a single competition's panel.
@@ -1757,12 +1772,7 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
                 <Button size="icon" variant="ghost" disabled={locked} onClick={() => { setEditing(s.id); setForm({ name: s.name, class_id: s.class_id, year: s.year, scoring_mode: s.scoring_mode || "one_design", scoring_modes: seriesScoringModes(s), series_type: s.series_type || "championship", discards: s.discards, included_in_overall: s.included_in_overall, use_a5_3: !!s.use_a5_3, use_finishers: !!s.use_finishers, mini_series: !!s.mini_series, mini_series_groups: (s.mini_series_groups || []).map((g) => ({ name: g.name || "", race_numbers: g.race_numbers || [], discards: g.discards || 0, scoring: (g && (g.scoring === "combined" ? "combined" : "additional")) })), order: s.order, planned_races: s.planned_races || 0, schedule: s.schedule || [], scoring_config: scoringConfigFromSeries(s), regatta_id: s.regatta_id || "" }); setSchedStart((s.schedule || [])[0] || todayLocal()); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                 <Button size="icon" variant="ghost" title="Snapshot history" data-testid={`snapshots-${s.name}`} onClick={() => { setSnapSeries(s); api.getSeriesSnapshots(s.id, clubId).then(setSnapshots).catch(() => setSnapshots([])); }}><Archive className="w-4 h-4" /></Button>
                 {locked ? (
-                  <>
-                    {s.lock_status === "locked" && (
-                      <Button size="sm" variant="outline" className="text-slate-700 border-slate-400/60 h-8 dark:text-slate-300 dark:border-slate-500/60" data-testid={`archive-${s.name}`} onClick={() => { setLockDialog({ mode: "archive", series: s }); setLockReason(""); }}>Archive</Button>
-                    )}
-                    <Button size="sm" variant="outline" className="text-amber-700 border-amber-400/60 h-8" data-testid={`unlock-${s.name}`} onClick={() => { setLockDialog({ mode: "unlock", series: s }); setLockReason(""); }}>Unlock</Button>
-                  </>
+                  <Button size="sm" variant="outline" className="text-amber-700 border-amber-400/60 h-8" data-testid={`unlock-${s.name}`} onClick={() => { setLockDialog({ mode: "unlock", series: s }); setLockReason(""); }}>Unlock</Button>
                 ) : (
                   <Button size="sm" variant="outline" className="text-emerald-700 border-emerald-500/60 h-8" data-testid={`lock-${s.name}`} onClick={() => { setLockDialog({ mode: "lock", series: s }); setLockReason(""); }}>Lock season</Button>
                 )}
@@ -1780,41 +1790,40 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
       {/* Lock / unlock confirmation (admin-only, reason recorded in audit) */}
       <Dialog open={!!lockDialog} onOpenChange={(o) => { if (!o) setLockDialog(null); }}>
         <DialogContent data-testid="lock-dialog">
-          <DialogHeader><DialogTitle className="font-heading uppercase">{
-            lockDialog?.mode === "lock" ? "Lock season — results become final" :
-            lockDialog?.mode === "archive" ? "Archive season — results become permanent" :
-            "Open season for correction"
-          }</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle className="font-heading uppercase">
+            {lockDialog?.mode === "lock" ? "Lock season — results become final" : "Open season for correction"}
+          </DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
               {lockDialog?.mode === "lock"
                 ? <>This captures the season's results, scoring rules, TLE rule, discards, penalties and rankings into an immutable snapshot. Future rule or engine changes will never alter them. Re-locking after a correction creates a new version (the previous one is preserved).</>
-                : lockDialog?.mode === "archive"
-                ? <>This moves the locked season to the terminal ARCHIVED state. Archived results are served from their frozen snapshot forever; only the audited administrator unlock-for-correction flow can open them again.</>
                 : <>This opens the season for an administrator-only correction. The last locked snapshot is preserved; re-locking records exactly what changed in a new version.</>}
             </p>
             <div className="space-y-1.5"><Label>Reason (recorded in the audit trail)</Label><Input data-testid="lock-reason-input" value={lockReason} onChange={(e) => setLockReason(e.target.value)} placeholder="e.g. Season finalised — 2026 results" /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setLockDialog(null)}>Cancel</Button>
-            <Button className={lockDialog?.mode === "lock" ? "bg-emerald-600 hover:bg-emerald-700" : lockDialog?.mode === "archive" ? "bg-slate-700 hover:bg-slate-800" : "bg-amber-600 hover:bg-amber-700"} disabled={lockBusy || !lockReason.trim()} data-testid="lock-confirm-btn"
+            <Button className={lockDialog?.mode === "lock" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"} disabled={lockBusy || !lockReason.trim()} data-testid="lock-confirm-btn"
               onClick={async () => {
                 setLockBusy(true);
                 try {
                   const { mode, series: s2 } = lockDialog;
                   const body = mode === "lock" ? await api.lockSeries(s2.id, lockReason.trim(), s2.version)
-                    : mode === "archive" ? await api.archiveSeries(s2.id, lockReason.trim(), s2.version)
                     : await api.unlockSeries(s2.id, lockReason.trim(), s2.version);
                   toast.success(mode === "lock" ? `Season locked (version ${body.version || 1}) — results are final`
-                    : mode === "archive" ? "Season archived — results are now permanent"
                     : "Season opened for correction");
-                  setLockDialog(null); load();
+                  setLockDialog(null);
+                  if (snapSeries?.id === s2.id) {
+                    const updated = await api.getSeriesSnapshots(s2.id, clubId);
+                    setSnapshots(updated);
+                  }
+                  load();
                 } catch (e) {
                   if (e.response?.status === 409) toast.error("This season was changed by another user. Reload the series list before locking or unlocking again.");
                   else toast.error(e.response?.data?.detail || "Could not update season lock");
                 } finally { setLockBusy(false); }
               }}>
-              {lockDialog?.mode === "lock" ? "Lock season" : lockDialog?.mode === "archive" ? "Archive season" : "Open for correction"}
+              {lockDialog?.mode === "lock" ? "Lock season" : "Open for correction"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1822,17 +1831,30 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
 
       {/* Snapshot history */}
       <Dialog open={!!snapSeries} onOpenChange={(o) => { if (!o) setSnapSeries(null); }}>
-        <DialogContent data-testid="snapshots-dialog">
+        <DialogContent data-testid="snapshots-dialog" className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle className="font-heading uppercase">Snapshot history — {snapSeries?.name}</DialogTitle></DialogHeader>
-          <div className="space-y-2 max-h-80 overflow-y-auto">
+          <div className="space-y-2 max-h-[70vh] overflow-y-auto">
             {!snapshots.length && <p className="text-sm text-muted-foreground">This season has not been locked yet.</p>}
             {snapshots.map((s) => (
               <div key={s.version} className="rounded-lg border border-border p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-heading uppercase text-sm">Version {s.version} <Badge className={s.status === "locked" ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300"}>{s.status}</Badge></span>
+                  <span className="font-heading uppercase text-sm">Version {s.version} <Badge className={s.status === "locked" ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300"}>{s.status}</Badge>{s.restored_from_version && <Badge variant="outline" className="ml-1">Restored from v{s.restored_from_version}</Badge>}</span>
                   <span className="font-mono text-xs text-muted-foreground">{new Date(s.locked_at).toLocaleString()}</span>
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">Locked by <span className="font-semibold">{s.locked_by}</span> · engine {s.engine_version} · {s.scoring_config?.rrs_edition}</div>
+                {s.lock_reason && <p className="mt-2 text-sm"><span className="font-semibold">Lock comment:</span> {s.lock_reason}</p>}
+                {s.unlock_reason && <p className="mt-1 text-sm"><span className="font-semibold">Unlock comment:</span> {s.unlock_reason}{s.unlocked_by && <> · by <span className="font-semibold">{s.unlocked_by}</span></>}{s.unlocked_at && <> · {new Date(s.unlocked_at).toLocaleString()}</>}</p>}
+                {s.status === "superseded" && s.payload_available !== false && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" data-testid={`snapshot-view-${s.version}`}
+                      onClick={async () => {
+                        try { setSnapshotPreview(await api.getSeriesSnapshot(snapSeries.id, s.version, clubId)); }
+                        catch (e) { toast.error(e.response?.data?.detail || "Could not load preserved results"); }
+                      }}>View preserved results</Button>
+                    <Button size="sm" variant="outline" className="border-amber-500 text-amber-700" data-testid={`snapshot-restore-${s.version}`}
+                      onClick={() => { setRestoreSnapshot(s); setRestoreReason(""); }}>Restore this version</Button>
+                  </div>
+                )}
                 {s.amendment && s.amendment.changes?.length > 0 && (
                   <div className="mt-2 text-xs">
                     <div className="font-semibold text-amber-700">Amended — {s.amendment.changes.length} standings change{s.amendment.changes.length === 1 ? "" : "s"}:</div>
@@ -1847,6 +1869,50 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
               </div>
             ))}
           </div>
+          {snapshotPreview && (
+            <section className="mt-4 rounded-lg border border-ocean/30 bg-ocean/5 p-3" data-testid="snapshot-preview">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-heading uppercase">Preserved version {snapshotPreview.version} results</h3>
+                  <p className="text-xs text-muted-foreground">Frozen exactly as recorded {snapshotPreview.payload?.locked_at ? new Date(snapshotPreview.payload.locked_at).toLocaleString() : ""}</p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setSnapshotPreview(null)}>Close</Button>
+              </div>
+              <SeriesStandings data={snapshotPreview.payload} />
+            </section>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!restoreSnapshot} onOpenChange={(open) => { if (!open) setRestoreSnapshot(null); }}>
+        <DialogContent data-testid="snapshot-restore-dialog">
+          <DialogHeader><DialogTitle className="font-heading uppercase">Restore preserved version {restoreSnapshot?.version}?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This restores the frozen results as a new locked snapshot version. Current results remain preserved in history. Add a reason for the audit trail.</p>
+          <div className="space-y-1.5"><Label>Reason (required)</Label><Input data-testid="snapshot-restore-reason" value={restoreReason} onChange={(event) => setRestoreReason(event.target.value)} placeholder="e.g. Reinstate the original approved results" /></div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRestoreSnapshot(null)}>Cancel</Button>
+            <Button className="bg-amber-600 hover:bg-amber-700" data-testid="snapshot-restore-confirm" disabled={restoreBusy || !restoreReason.trim()}
+              onClick={async () => {
+                setRestoreBusy(true);
+                try {
+                  const body = await api.restoreSeriesSnapshot(snapSeries.id, restoreSnapshot.version, restoreReason.trim(), snapSeries.version);
+                  toast.success(`Restored preserved results as version ${body.version}`);
+                  setRestoreSnapshot(null);
+                  setSnapshotPreview(null);
+                  const updated = await api.getSeriesSnapshots(snapSeries.id, clubId);
+                  setSnapshots(updated);
+                  const seriesParams = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...(clubId ? { club_id: clubId } : {}) };
+                  if (classFilter !== "all") seriesParams.class_id = classFilter;
+                  const updatedSeries = await api.getSeries(seriesParams);
+                  setSeries(updatedSeries);
+                  const updatedSnapshotSeries = updatedSeries.find((item) => item.id === snapSeries.id);
+                  if (updatedSnapshotSeries) setSnapSeries(updatedSnapshotSeries);
+                } catch (error) {
+                  if (error.response?.status === 409) toast.error("This season changed while restoring. Reload the series list and try again.");
+                  else toast.error(error.response?.data?.detail || "Could not restore preserved results");
+                } finally { setRestoreBusy(false); }
+              }}>Restore results</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1976,6 +2042,7 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
   const [lockDialog, setLockDialog] = useState(null);
   const [lockReason, setLockReason] = useState("");
   const [lockBusy, setLockBusy] = useState(false);
+
   // RDG / DPI committee decision: the engine never infers these scores, so
   // the resulting points (and optional decision details) are collected here
   // before the code change is sent. null = panel closed.
@@ -2099,10 +2166,6 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
                 <div className="flex items-center gap-2">
                   {locked && (
                     <>
-                      {!archived && (
-                        <Button size="sm" variant="outline" className="border-slate-600 text-slate-700 h-8 dark:border-slate-500 dark:text-slate-300" data-testid="hist-archive-btn"
-                          onClick={() => { setLockDialog("archive"); setLockReason(""); }}>Archive</Button>
-                      )}
                       <Button size="sm" variant="outline" className="border-amber-500 text-amber-700 h-8" data-testid="hist-unlock-btn"
                         onClick={() => { setLockDialog("unlock"); setLockReason(""); }}>Open for correction</Button>
                     </>
@@ -2127,47 +2190,46 @@ function HistoricTab({ classes, rrsCodes, clubId }) {
         );
       })()}
 
-      {/* Lock / unlock / archive confirmation (historic results tab) */}
+      {/* Lock / unlock confirmation (historic results tab) */}
       <Dialog open={!!lockDialog} onOpenChange={(o) => { if (!o) setLockDialog(null); }}>
         <DialogContent>
           <DialogHeader><DialogTitle className="font-heading uppercase">{
-            lockDialog === "lock" ? "Lock season — results become final" :
-            lockDialog === "archive" ? "Archive season — results become permanent" :
-            "Open season for correction"
+            lockDialog === "lock" ? "Lock season — results become final" : "Open season for correction"
           }</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
               {lockDialog === "lock"
                 ? "The current results, scoring rules, discards, penalties and rankings are captured into an immutable snapshot. Re-locking after a correction creates a new version — the previous one is always preserved."
-                : lockDialog === "archive"
-                ? "The locked season moves to the terminal ARCHIVED state. Its results are served from the frozen snapshot forever; only the audited administrator unlock-for-correction flow can open them again."
                 : "Only continue to fix a genuine scoring error. The last locked snapshot is preserved; re-locking records exactly what changed."}
             </p>
             <div className="space-y-1.5"><Label>Reason (recorded in the audit trail)</Label><Input value={lockReason} onChange={(e) => setLockReason(e.target.value)} data-testid="hist-lock-reason" placeholder={lockDialog === "lock" ? "e.g. 2026 season finalised" : "e.g. Position error in race 4"} /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setLockDialog(null)}>Cancel</Button>
-            <Button className={lockDialog === "lock" ? "bg-emerald-600 hover:bg-emerald-700" : lockDialog === "archive" ? "bg-slate-700 hover:bg-slate-800" : "bg-amber-600 hover:bg-amber-700"} disabled={lockBusy || !lockReason.trim()} data-testid="hist-lock-confirm"
+            <Button className={lockDialog === "lock" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"} disabled={lockBusy || !lockReason.trim()} data-testid="hist-lock-confirm"
               onClick={async () => {
                 setLockBusy(true);
                 try {
                   const sel = seriesList.find((s) => s.id === seriesId);
                   const body = lockDialog === "lock" ? await api.lockSeries(seriesId, lockReason.trim(), sel?.version)
-                    : lockDialog === "archive" ? await api.archiveSeries(seriesId, lockReason.trim(), sel?.version)
                     : await api.unlockSeries(seriesId, lockReason.trim(), sel?.version);
                   toast.success(lockDialog === "lock" ? `Season locked (version ${body.version || 1})`
-                    : lockDialog === "archive" ? "Season archived — results are now permanent"
                     : "Season opened for correction — fix the results, then re-lock");
                   setLockDialog(null);
                   const refreshParams = { ...(yearFilter !== "all" ? { year: yearFilter } : {}), ...(clubId ? { club_id: clubId } : {}) };
                   if (classId !== "all") refreshParams.class_id = classId;
-                  api.getSeries(refreshParams).then(setSeriesList);
+                  const updatedSeries = await api.getSeries(refreshParams);
+                  setSeriesList(updatedSeries);
+                  if (snapSeries?.id === seriesId) {
+                    const updatedSnapshotSeries = updatedSeries.find((item) => item.id === seriesId);
+                    if (updatedSnapshotSeries) setSnapSeries(updatedSnapshotSeries);
+                  }
                 } catch (e) {
                   if (e.response?.status === 409) toast.error("This season was changed by another user. Reload the series list before locking or unlocking again.");
                   else toast.error(e.response?.data?.detail || "Could not update season lock");
                 } finally { setLockBusy(false); }
               }}>
-              {lockDialog === "lock" ? "Lock season" : lockDialog === "archive" ? "Archive season" : "Open for correction"}
+              {lockDialog === "lock" ? "Lock season" : "Open for correction"}
             </Button>
           </DialogFooter>
         </DialogContent>

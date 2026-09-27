@@ -423,13 +423,15 @@ export default function Webmaster() {
             <div className="w-9 h-9 rounded-lg bg-white/15 grid place-items-center"><Globe className="w-5 h-5" /></div>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">Webmaster</div>
           </div>
-          <ConsoleNav
+          <div className="flex items-center gap-1">
+            <ConsoleNav
             meta={`${clubs.length} club${clubs.length === 1 ? "" : "s"}`}
             menuLabel={`Webmaster · ${clubs.length} club${clubs.length === 1 ? "" : "s"}`}
             onChangedPasscode={updateSession}
             logoutTestId="webmaster-logout-btn"
             items={[]}
-          />
+            />
+          </div>
         </div>
       </header>
 

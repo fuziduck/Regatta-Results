@@ -2,6 +2,8 @@
 // row and the mobile menu both render from the same items list, so the tests
 // assert the two critical guarantees: every item (Exit included) is always
 // present, and the menu opens/closes cleanly.
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -135,8 +137,22 @@ describe("ConsoleNav mobile menu", () => {
     openMenu();
     expect(document.body.querySelector('[data-testid="menu-switch"]')).not.toBeNull();
     expect(document.body.querySelector('[data-testid="menu-webmaster"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="menu-help"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="help-sidebar-trigger"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="menu-change-passcode"]')).not.toBeNull();
     expect(document.body.querySelector('[data-testid="menu-logout-btn"]')).not.toBeNull();
+  });
+
+  it("opens contextual help from the menu without leaving a standalone help icon", () => {
+    renderNav(baseProps());
+    expect(container.querySelector('[data-testid="help-sidebar-trigger"]')).toBeNull();
+    expect(container.querySelector('[data-testid="console-menu-btn"]').classList.contains("lg:hidden")).toBe(false);
+    openMenu();
+    act(() => {
+      document.body.querySelector('[data-testid="menu-help"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-testid="menu-help"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="help-sidebar"]')).not.toBeNull();
   });
 
   it("closes the menu with Escape", () => {

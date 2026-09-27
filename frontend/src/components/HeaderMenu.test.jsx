@@ -1,16 +1,19 @@
 // Header burger menu: folds share, install-as-webapp, and day/night into one
 // dropdown on the left, keeping the public headers clean.
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 jest.mock("sonner", () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
+jest.mock("@/components/HelpSidebar", () => () => <button type="button" data-testid="help-sidebar" />);
 
 jest.mock("@/components/ui/dropdown-menu", () => {
   const React = require("react");
   const Root = ({ children }) => <div>{children}</div>;
-  const Trigger = ({ children, ...rest }) => <button type="button" {...rest}>{children}</button>;
+  const Trigger = ({ children, asChild, ...rest }) => asChild ? children : <button type="button" {...rest}>{children}</button>;
   const Content = ({ children }) => <div>{children}</div>;
-  const Item = ({ children, onSelect, ...rest }) => <div onClick={onSelect} {...rest}>{children}</div>;
+  const Item = ({ children, onSelect, asChild, ...rest }) => asChild ? React.cloneElement(children, { ...rest }) : <div onClick={onSelect} {...rest}>{children}</div>;
   return { DropdownMenu: Root, DropdownMenuTrigger: Trigger, DropdownMenuContent: Content, DropdownMenuItem: Item };
 });
 jest.mock("@/components/ui/dialog", () => {
@@ -49,6 +52,11 @@ beforeEach(() => {
   delete navigator.share;
   navigator.clipboard = { writeText: jest.fn().mockResolvedValue(undefined) };
   window.localStorage.removeItem("sailscore-theme");
+});
+
+it("links to the help centre from the public menu", () => {
+  const container = renderMenu();
+  expect(container.querySelector('[data-testid="header-menu-help"]').getAttribute("href")).toBe("/help");
 });
 
 it("copies the page link from the Share item with a toast", async () => {

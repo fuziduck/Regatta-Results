@@ -24,6 +24,7 @@ import SubscriptionVerify from "@/pages/SubscriptionVerify";
 import NoticeBoardPage from "@/pages/NoticeBoardPage";
 import Admin from "@/pages/Admin";
 import Webmaster from "@/pages/Webmaster";
+import Help from "@/pages/Help";
 
 function Protected({ children, allow }) {
   const { role } = useAuth();
@@ -60,6 +61,8 @@ function RouteMetadata() {
       /^\/class\/group\/[^/]+(?:\/[^/]+)?\/?$/,
       /^\/boat\/[^/]+(?:\/[^/]+)?\/?$/,
       /^\/boats\/?$/,
+      /^\/help(?:\/quick-start\/[^/]+)?\/?$/,
+      /^\/faq\/?$/,
     ].some((route) => route.test(path));
     let active = true;
     const applyFallback = () => {
@@ -114,6 +117,9 @@ function App() {
             <Route path="/subscriptions/verify" element={<SubscriptionVerify />} />
             <Route path="/admin" element={<Protected allow={["admin", "webmaster"]}><Admin /></Protected>} />
             <Route path="/webmaster" element={<Protected allow={["webmaster"]}><Webmaster /></Protected>} />
+            <Route path="/help" element={<Help />} />
+            <Route path="/faq" element={<Help />} />
+            <Route path="/help/quick-start/:guide" element={<Help />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
