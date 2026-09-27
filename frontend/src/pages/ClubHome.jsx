@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ChevronRight, Clock3, Sailboat, Trophy } from "lucide-react";
+import { ArrowLeft, CalendarDays, ChevronRight, Clock3, Sailboat, Trophy } from "lucide-react";
 import { api } from "@/lib/api";
 import { competitionTypeLabel, DEFAULT_COMPETITION_IMAGE } from "@/lib/competition";
 import { CURRENT_YEAR, scoringModeLabel } from "@/lib/helpers";
@@ -19,6 +19,23 @@ function ClassMark({ classData }) {
   ) : (
     <span aria-hidden="true" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-ocean/10 bg-gradient-to-br from-ocean/10 to-ocean/5 text-ocean shadow-sm">
       <Sailboat className="h-5 w-5" />
+    </span>
+  );
+}
+
+// Every series carries its own mark, so a class with five series reads as five
+// identifiable entries rather than five bare text links. The class's own boat
+// image is reused when it has one, since that is the artwork the club has
+// already chosen for the fleet; otherwise the mark is the glyph for the kind
+// of results the series holds — a regatta gets a calendar, a championship a
+// trophy — which is the same pairing the hero's category tabs use.
+function SeriesMark({ classData, typeLabel, size = "h-9 w-9" }) {
+  const Glyph = typeLabel === "Regatta" ? CalendarDays : Trophy;
+  return classData?.icon ? (
+    <img src={classData.icon} alt="" className={`${size} shrink-0 rounded-lg border border-border/70 bg-white object-cover shadow-sm`} />
+  ) : (
+    <span aria-hidden="true" className={`grid ${size} shrink-0 place-items-center rounded-lg border border-ocean/10 bg-gradient-to-br from-ocean/10 to-ocean/5 text-ocean shadow-sm`}>
+      <Glyph className="h-4 w-4" />
     </span>
   );
 }
@@ -100,6 +117,7 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
       key: `series:${item.id}`,
       className: classData?.name || "Class",
       classId: item.class_id,
+      classData,
       typeLabel: competition ? competitionTypeLabel({ competition }) : competitionTypeLabel(item),
       title,
       year: item.year || competition?.year,
@@ -295,9 +313,10 @@ function ClubHomeIndex({ club }) {
                         </div>
                         <div className="grid gap-3 p-3 sm:grid-cols-2 sm:p-4 xl:hidden">{group.rows.map((row) => (
                           <Link key={row.key} to={row.href} data-testid="club-result-card" data-first-race={row.firstRace?.date || ""}
-                            className="group/card relative flex min-h-16 items-center justify-between gap-3 overflow-hidden rounded-xl border border-border bg-card px-3 py-2.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean sm:px-3.5">
+                            className="group/card relative flex min-h-16 items-center gap-3 overflow-hidden rounded-xl border border-border bg-card py-2.5 pl-3 pr-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean sm:pl-3.5">
                             <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-safety via-ocean to-cyan-500 opacity-75 transition-opacity group-hover/card:opacity-100" />
-                            <span className="min-w-0 pl-1 font-heading text-base uppercase leading-tight tracking-tight text-foreground transition-colors group-hover/card:text-ocean">{row.title}</span>
+                            <SeriesMark classData={row.classData || group.classData} typeLabel={row.typeLabel} />
+                            <span className="min-w-0 flex-1 font-heading text-base uppercase leading-tight tracking-tight text-foreground transition-colors group-hover/card:text-ocean">{row.title}</span>
                             <span className="flex shrink-0 items-center gap-2">
                               <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground">{row.year || "All seasons"}</span>
                               <span className="grid h-7 w-7 place-items-center rounded-full bg-ocean/5 text-ocean transition-all group-hover/card:bg-ocean group-hover/card:text-white"><ChevronRight className="h-4 w-4" /></span>
@@ -318,9 +337,12 @@ function ClubHomeIndex({ club }) {
                                 <tr key={row.key} className="group transition-colors hover:bg-ocean/[0.035]" data-testid="club-result-row"
                                   data-result-date={row.latestRace?.date || ""} data-first-race={row.firstRace?.date || ""}>
                                   <td className="min-w-48 px-3 py-2.5">
-                                    <Link to={row.href} className="font-semibold text-ocean hover:text-safety hover:underline" data-testid={`club-result-link-${row.key}`}>
-                                      {row.title}
-                                    </Link>
+                                    <span className="flex items-center gap-2.5">
+                                      <SeriesMark classData={row.classData || group.classData} typeLabel={row.typeLabel} size="h-7 w-7" />
+                                      <Link to={row.href} className="min-w-0 truncate font-semibold text-ocean hover:text-safety hover:underline" data-testid={`club-result-link-${row.key}`}>
+                                        {row.title}
+                                      </Link>
+                                    </span>
                                   </td>
                                   <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{row.year || "—"}</td>
                                   <td className="px-3 py-2.5 text-right">

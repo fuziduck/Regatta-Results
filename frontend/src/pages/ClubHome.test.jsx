@@ -119,6 +119,13 @@ test("renders grouped tables newest first and lets visitors open result pages", 
   expect(container.querySelector('[data-testid="club-result-card"] .font-heading').textContent).toBe("Harbour Regatta · Sonata");
   expect(container.querySelector('[data-testid="club-result-card"]').textContent).not.toMatch(/Latest activity|No published races/);
   expect(container.querySelector('[data-testid="club-result-card"]').className).toContain("min-h-16");
+  // Every series entry carries its own mark, not just the class heading.
+  const marks = [...container.querySelectorAll('[data-testid="club-result-card"]')]
+    .map((card) => card.querySelector('img, span[aria-hidden="true"]'));
+  expect(marks).toHaveLength(series.length);
+  expect(marks.every((mark) => mark !== null)).toBe(true);
+  expect(container.querySelectorAll('[data-testid="club-result-row"] img, [data-testid="club-result-row"] span[aria-hidden="true"]').length)
+    .toBe(series.length);
   expect(container.querySelector('a[href="/club/harbour-club/series/club-2025"]')).not.toBeNull();
   expect(container.querySelector('a[href="/club/harbour-club/series/club-cruiser-2025"]')).not.toBeNull();
   expect(container.querySelector('a[href="/club/harbour-club/series/class-2024"]')).not.toBeNull();
@@ -150,6 +157,34 @@ test("renders grouped tables newest first and lets visitors open result pages", 
   expect([...container.querySelectorAll('[data-testid="club-result-card"] .font-heading')].map((title) => title.textContent)).toEqual([
     "Autumn Series", "Summer Series",
   ]);
+});
+
+test("gives each series its own mark and uses the class image when one is set", async () => {
+  const club = { id: "c1", name: "Harbour Sailing Club", slug: "harbour-club", color: "#123456" };
+  mockApi.getClasses.mockResolvedValue([
+    { id: "class-sonata", name: "Sonata", icon: "data:image/png;base64,SONATA" },
+    { id: "class-cruiser", name: "Cruiser Class 1" },
+  ]);
+  await render();
+  // The index opens on the current year; show every series in the fixture.
+  const year = container.querySelector('[data-testid="club-results-year"]');
+  act(() => {
+    year.value = "all";
+    year.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  const cards = [...container.querySelectorAll('[data-testid="club-result-card"]')];
+  expect(cards.length).toBe(series.length);
+  const groupFor = (className) => [...container.querySelectorAll('[data-testid="club-result-class-group"]')]
+    .find((group) => group.querySelector("h3").textContent === className);
+  // A class with an icon reuses it on each of its series...
+  const sonataImages = [...groupFor("Sonata").querySelectorAll('[data-testid="club-result-card"] img')];
+  expect(sonataImages.length).toBeGreaterThan(0);
+  expect(sonataImages.every((img) => img.getAttribute("src") === "data:image/png;base64,SONATA")).toBe(true);
+  // ...and a class without one falls back to a glyph mark, so no entry is bare.
+  const cruiserMarks = [...groupFor("Cruiser Class 1").querySelectorAll('[data-testid="club-result-card"] span[aria-hidden="true"]')];
+  expect(cruiserMarks.length).toBeGreaterThan(0);
+  expect(cards.every((card) => card.querySelector('img, span[aria-hidden="true"]') !== null)).toBe(true);
 });
 
 test("orders series inside a class oldest-first regardless of the order selector", async () => {
