@@ -18,7 +18,7 @@ jest.mock("@/components/HeaderMenu", () => () => <span />);
 jest.mock("@/components/Logo", () => () => <span />);
 jest.mock("@/pages/Landing", () => () => <div data-testid="legacy-results-page" />);
 
-import ClubHome, { buildClubResultsRows, groupResultsByClass } from "./ClubHome";
+import ClubHome, { buildClubResultsRows, groupResultsByClass, groupScoringModes } from "./ClubHome";
 import { CURRENT_YEAR } from "@/lib/helpers";
 const mockApi = require("@/lib/api").api;
 
@@ -276,4 +276,45 @@ test("keeps existing query and path-based results deep links on the standings pa
   mockRoute.seriesId = "club-2025";
   await render();
   expect(container.querySelector('[data-testid="legacy-results-page"]')).not.toBeNull();
+});
+
+test("shows a rating pill for every scoring system a class is scored under", async () => {
+  mockApi.getClasses.mockResolvedValue([
+    { id: "class-split", name: "Mixed Fleet", scoring_mode: "irc", divisions: [
+      { name: "IRC", scoring_mode: "irc" }, { name: "YTC", scoring_mode: "ytc" }] },
+    { id: "class-dual", name: "Dual Scored", scoring_mode: "irc" },
+    { id: "class-one", name: "Slow Fleet", scoring_mode: "one_design" },
+  ]);
+  mockApi.getSeries.mockResolvedValue([
+    { id: "s-split", class_id: "class-split", name: "Autumn Series", year: CURRENT_YEAR, series_type: "club_championship" },
+    { id: "s-dual", class_id: "class-dual", name: "Autumn Series", year: CURRENT_YEAR, series_type: "club_championship", scoring_mode: "irc", scoring_modes: ["irc", "ytc"] },
+    { id: "s-one", class_id: "class-one", name: "Autumn Series", year: CURRENT_YEAR, series_type: "club_championship", scoring_mode: "one_design" },
+  ]);
+  mockApi.getRegattas.mockResolvedValue([]);
+  mockApi.getRaces.mockResolvedValue([]);
+  await render();
+
+  const groupFor = (className) => [...container.querySelectorAll('[data-testid="club-result-class-group"]')]
+    .find((group) => group.querySelector("h3").textContent === className);
+  const ratingsFor = (className) => [...groupFor(className).querySelector('[data-testid="club-result-ratings"]').children]
+    .map((pill) => pill.textContent);
+
+  // A class split into rating divisions scores one table per rating.
+  expect(ratingsFor("Mixed Fleet")).toEqual(["IRC", "YTC"]);
+  // A series scored under two rates at once is the same multi-rate case, and
+  // its class must not advertise only its first rating.
+  expect(ratingsFor("Dual Scored")).toEqual(["IRC", "YTC"]);
+  // A single-rate class still reads as one pill.
+  expect(ratingsFor("Slow Fleet")).toEqual(["One-design"]);
+});
+
+test("keeps rating divisions ahead of series scoring modes, and shows nothing when no rating is declared", () => {
+  const split = [{ id: "c-split", name: "Mixed Fleet", scoring_mode: "irc",
+    divisions: [{ name: "IRC", scoring_mode: "irc" }, { name: "YTC", scoring_mode: "ytc" }] }];
+  const rows = buildClubResultsRows({ classes: split, competitions: [], races: [], slug: "harbour-club",
+    series: [{ id: "s1", class_id: "c-split", name: "Autumn", year: 2026, series_type: "club_championship" }] });
+  expect(groupResultsByClass(rows, split, "newest")[0].ratingLabels).toEqual(["IRC", "YTC"]);
+
+  // A class and its series that name no rating at all contribute no pill.
+  expect(groupScoringModes({ classData: { id: "c-none", name: "Unrated" }, rows: [] })).toEqual([]);
 });

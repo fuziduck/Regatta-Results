@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, CalendarDays, ChevronRight, Clock3, Sailboat, Trophy } from "lucide-react";
 import { api } from "@/lib/api";
 import { competitionTypeLabel, DEFAULT_COMPETITION_IMAGE } from "@/lib/competition";
-import { CURRENT_YEAR, scoringModeLabel } from "@/lib/helpers";
+import { CURRENT_YEAR, classDivisions, scoringModeLabel, seriesScoringModes } from "@/lib/helpers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import HeaderMenu from "@/components/HeaderMenu";
@@ -90,9 +90,25 @@ export function groupResultsByClass(rows, classes = [], sortMode = "newest") {
     rows: group.rows.sort(compareResultRows),
     classData: classDataById.get(group.classId),
     latestDate: group.rows.reduce((date, row) => row.latestRace?.date > date ? row.latestRace.date : date, ""),
-  })).sort((a, b) => sortMode === "alphabetical"
+  })).map((group) => ({ ...group, ratingLabels: groupScoringModes(group) })).sort((a, b) => sortMode === "alphabetical"
     ? a.className.localeCompare(b.className)
     : b.latestDate.localeCompare(a.latestDate) || a.className.localeCompare(b.className));
+}
+
+// The rating pills for a class group, in table order. A class that fields
+// rating divisions (IRC boats and YTC boats in one fleet, one table per rating)
+// is scored under each of them; a class without divisions follows its series,
+// which may itself be scored under several rating systems at once. Either way
+// every rate gets its own pill — the first one must not stand for the rest —
+// and a class that names no rating at all shows no pill, as before.
+export function groupScoringModes(group) {
+  const divisions = classDivisions(group?.classData);
+  const configured = divisions.length
+    ? divisions.map((division) => division.scoring_mode)
+    : (group?.rows || []).flatMap((row) => row.scoringModes || []);
+  const modes = [...new Set(configured.filter(Boolean))];
+  if (modes.length) return modes.map(scoringModeLabel);
+  return group?.classData?.scoring_mode ? [scoringModeLabel(group.classData.scoring_mode)] : [];
 }
 
 // Reports are scoped to a class, so a series' report count is the number of
@@ -134,6 +150,9 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
       classId: item.class_id,
       classData,
       seriesId: item.id,
+      // The rating systems this series is scored under, so the class header
+      // can show a pill per rate rather than only the first one.
+      scoringModes: seriesScoringModes(item),
       typeLabel: competition ? competitionTypeLabel({ competition }) : competitionTypeLabel(item),
       title,
       year: item.year || competition?.year,
@@ -338,6 +357,7 @@ function ClubHomeIndex({ club }) {
                       // One lookup per rendered row; reports are keyed by series
                       // id, so a row without a document reads as empty.
                       const seriesReports = (row) => reportsBySeries.get(row.seriesId) || [];
+                      const ratingPills = group.ratingLabels || groupScoringModes(group);
                       return (
                       <section key={group.key} data-testid="club-result-class-group" className="overflow-hidden rounded-2xl border border-border/80 bg-background/70">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 bg-muted/25 px-3 py-3 sm:px-4">
@@ -348,7 +368,11 @@ function ClubHomeIndex({ club }) {
                               <p className="mt-0.5 text-xs text-muted-foreground">{group.rows.length} result page{group.rows.length === 1 ? "" : "s"}</p>
                             </div>
                           </div>
-                          {group.classData?.scoring_mode && <Badge variant="outline" className="border-ocean/20 bg-card text-ocean">{scoringModeLabel(group.classData.scoring_mode)}</Badge>}
+                          {ratingPills.length > 0 && (
+                            <span className="flex shrink-0 flex-wrap items-center gap-1.5" data-testid="club-result-ratings">
+                              {ratingPills.map((label) => <Badge key={label} variant="outline" className="border-ocean/20 bg-card text-ocean">{label}</Badge>)}
+                            </span>
+                          )}
                         </div>
                         <div className="grid gap-3 p-3 sm:grid-cols-2 sm:p-4 xl:hidden">{group.rows.map((row) => (
                           <Link key={row.key} to={row.href} data-testid="club-result-card" data-first-race={row.firstRace?.date || ""}
