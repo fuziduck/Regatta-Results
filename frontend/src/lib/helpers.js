@@ -357,6 +357,69 @@ export function raceLabel(item, series) {
   return `R${item.race_number}`;
 }
 
+// The columns a series standings table shows, in order.
+//
+// Three kinds of column can appear:
+//  - scored: a race that counted. Carries scoreIndex, the position of its
+//    score in a boat's scores array.
+//  - abandoned: a race abandoned on the day. It has no score and must not
+//    affect any total, but hiding it would make a skipped race look like it
+//    never happened, so it keeps its own numbered, empty column.
+//  - planned: a race not yet sailed. Only padded while the raced numbers run
+//    contiguously; a genuine gap (never raced, never abandoned) would make an
+//    index-derived number invent a duplicate race, so padding stops there.
+//
+// Columns are ordered by date, not by race number: a combined mini-series day
+// is a single scoring unit whose own race_number is null, and a series can mix
+// numbered races with those folded days. Dates are always present on scored and
+// abandoned columns, so this keeps them in the order they were actually raced.
+export function standingsColumns(data) {
+  const races = data?.races || [];
+  const schedule = data?.schedule || [];
+  const abandoned = (data?.abandoned_races || []).filter((r) => r && r.race_number != null);
+  // A mini-series group's columns are the folded scoring units; the parent
+  // series' planned races and abandoned races are not part of that view.
+  if (data?.mini_combined) {
+    return races.map((race, i) => ({
+      key: `scored-${i}`, scoreIndex: i, abandoned: false, planned: false,
+      race_number: race.race_number, date: race.date, mini_name: race.mini_name,
+      combined: !!race.combined, mini_races: race.mini_races, mini_index: race.mini_index,
+    }));
+  }
+  const present = [...races.map((r) => Number(r.race_number)), ...abandoned.map((r) => Number(r.race_number))]
+    .filter((n) => Number.isFinite(n));
+  const sorted = [...present].sort((a, b) => a - b);
+  const contiguous = sorted.length === 0 || sorted.every((n, i) => i === 0 || n === sorted[i - 1] + 1);
+  const planned = contiguous ? Math.max(data?.planned_races || 0, schedule.length) : 0;
+  const highest = sorted.reduce((max, n) => Math.max(max, n), 0);
+  const scored = races.map((race, i) => ({
+    key: `scored-${i}`, scoreIndex: i, abandoned: false, planned: false,
+    race_number: race.race_number, date: race.date, mini_name: race.mini_name,
+    combined: !!race.combined, mini_races: race.mini_races, mini_index: race.mini_index,
+  }));
+  const skipped = abandoned.map((race) => ({
+    key: `abandoned-${race.race_number}`, scoreIndex: null, abandoned: true, planned: false,
+    race_number: race.race_number, date: race.date || null, mini_name: null,
+    combined: false, mini_races: null, mini_index: null,
+  }));
+  const upcoming = Array.from({ length: Math.max(0, planned - highest) }, (_, i) => ({
+    key: `planned-${highest + i + 1}`, scoreIndex: null, abandoned: false, planned: true,
+    race_number: highest + i + 1, date: schedule[highest + i] ?? null, mini_name: null,
+    combined: false, mini_races: null, mini_index: null,
+  }));
+  // Scored and abandoned columns sort by the date they were raced. A planned
+  // column with no scheduled date has not happened yet, so it belongs after
+  // every dated column even though its date compares as an empty string.
+  return [...scored, ...skipped, ...upcoming].sort((a, b) => {
+    const dateA = a.date || "";
+    const dateB = b.date || "";
+    if (dateA === dateB) return (Number(a.race_number) || 0) - (Number(b.race_number) || 0);
+    if (!dateA) return 1;
+    if (!dateB) return -1;
+    return dateA.localeCompare(dateB);
+  });
+}
+
 // Short note for the race officer console explaining how a mini-series race
 // is scored. "additional" groups count each race separately in the series;
 // "combined" groups fold their races into a single daily result.

@@ -23,30 +23,38 @@ function ClassMark({ classData }) {
   );
 }
 
-function latestRaceBySeries(races) {
-  const latest = new Map();
-  races.filter((race) => !race.abandoned).forEach((race) => {
-    const current = latest.get(race.series_id);
-    const date = `${race.date || ""}|${String(race.race_number || 0).padStart(4, "0")}`;
-    const currentDate = current && `${current.date || ""}|${String(current.race_number || 0).padStart(4, "0")}`;
-    if (!current || date > currentDate) latest.set(race.series_id, race);
-  });
-  return latest;
+function raceOrderKey(race) {
+  return `${race.date || ""}|${String(race.race_number || 0).padStart(4, "0")}`;
 }
 
-function compareResultRows(a, b, sortMode = "newest") {
-  if (sortMode === "alphabetical") {
-    const classOrder = a.className.localeCompare(b.className);
-    if (classOrder) return classOrder;
-    const titleOrder = a.title.localeCompare(b.title);
-    return titleOrder || (Number(b.year) || 0) - (Number(a.year) || 0);
+// First and most recent sailed race per series. Abandoned races are ignored
+// throughout, so they never decide a series' position in the list.
+function raceBoundsBySeries(races) {
+  const first = new Map();
+  const latest = new Map();
+  races.filter((race) => !race.abandoned).forEach((race) => {
+    const currentFirst = first.get(race.series_id);
+    if (!currentFirst || raceOrderKey(race) < raceOrderKey(currentFirst)) first.set(race.series_id, race);
+    const currentLatest = latest.get(race.series_id);
+    if (!currentLatest || raceOrderKey(race) > raceOrderKey(currentLatest)) latest.set(race.series_id, race);
+  });
+  return { first, latest };
+}
+
+// Series inside a class always read as a season's history: oldest racing at the
+// top, latest at the bottom. This is deliberately independent of the page's
+// Order by selector, which only rearranges the championship and class sections
+// around them. The sort date is the series' first sailed race, so a long season
+// keeps the place it started. A series that has not raced yet has no place in
+// the history at all, so it goes to the bottom rather than jumping to the top.
+function compareResultRows(a, b) {
+  const dateA = a.firstRace?.date || a.latestRace?.date || "";
+  const dateB = b.firstRace?.date || b.latestRace?.date || "";
+  if (dateA !== dateB) {
+    if (!dateA) return 1;
+    if (!dateB) return -1;
+    return dateA.localeCompare(dateB);
   }
-  const dateA = a.latestRace?.date || "";
-  const dateB = b.latestRace?.date || "";
-  if (dateA !== dateB) return dateB.localeCompare(dateA);
-  const yearA = Number(a.year) || 0;
-  const yearB = Number(b.year) || 0;
-  if (yearA !== yearB) return yearB - yearA;
   const classOrder = a.className.localeCompare(b.className);
   return classOrder || a.title.localeCompare(b.title);
 }
@@ -61,7 +69,7 @@ export function groupResultsByClass(rows, classes = [], sortMode = "newest") {
   });
   return [...grouped.values()].map((group) => ({
     ...group,
-    rows: group.rows.sort((a, b) => compareResultRows(a, b, sortMode)),
+    rows: group.rows.sort(compareResultRows),
     classData: classDataById.get(group.classId),
     latestDate: group.rows.reduce((date, row) => row.latestRace?.date > date ? row.latestRace.date : date, ""),
   })).sort((a, b) => sortMode === "alphabetical"
@@ -76,7 +84,7 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
   competitions.forEach((competition) => (competition.series || []).forEach((child) => {
     if (child.id) competitionBySeriesId.set(child.id, competition);
   }));
-  const latestBySeries = latestRaceBySeries(races);
+  const { first: firstBySeries, latest: latestBySeries } = raceBoundsBySeries(races);
 
   // The club index has one entry per series, regardless of how many races it
   // contains. Race dates are metadata for recent-first sorting, not race rows.
@@ -84,6 +92,7 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
     const competition = competitionBySeriesId.get(item.id) || competitionById.get(item.regatta_id);
     const classData = classById.get(item.class_id);
     const latestRace = latestBySeries.get(item.id) || null;
+    const firstRace = firstBySeries.get(item.id) || null;
     const title = competition && item.name === competition.name
       ? "Overall"
       : item.name || competition?.name || "Series results";
@@ -94,6 +103,7 @@ export function buildClubResultsRows({ classes = [], series = [], competitions =
       typeLabel: competition ? competitionTypeLabel({ competition }) : competitionTypeLabel(item),
       title,
       year: item.year || competition?.year,
+      firstRace,
       latestRace,
       href: `/club/${slug}/series/${item.id}`,
     };
@@ -284,7 +294,7 @@ function ClubHomeIndex({ club }) {
                           {group.classData?.scoring_mode && <Badge variant="outline" className="border-ocean/20 bg-card text-ocean">{scoringModeLabel(group.classData.scoring_mode)}</Badge>}
                         </div>
                         <div className="grid gap-3 p-3 sm:grid-cols-2 sm:p-4 xl:hidden">{group.rows.map((row) => (
-                          <Link key={row.key} to={row.href} data-testid="club-result-card"
+                          <Link key={row.key} to={row.href} data-testid="club-result-card" data-first-race={row.firstRace?.date || ""}
                             className="group/card relative flex min-h-16 items-center justify-between gap-3 overflow-hidden rounded-xl border border-border bg-card px-3 py-2.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-ocean/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean sm:px-3.5">
                             <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-safety via-ocean to-cyan-500 opacity-75 transition-opacity group-hover/card:opacity-100" />
                             <span className="min-w-0 pl-1 font-heading text-base uppercase leading-tight tracking-tight text-foreground transition-colors group-hover/card:text-ocean">{row.title}</span>
@@ -305,7 +315,8 @@ function ClubHomeIndex({ club }) {
                             </thead>
                             <tbody className="divide-y divide-border">
                               {group.rows.map((row) => (
-                                <tr key={row.key} className="group transition-colors hover:bg-ocean/[0.035]" data-testid="club-result-row" data-result-date={row.latestRace?.date || ""}>
+                                <tr key={row.key} className="group transition-colors hover:bg-ocean/[0.035]" data-testid="club-result-row"
+                                  data-result-date={row.latestRace?.date || ""} data-first-race={row.firstRace?.date || ""}>
                                   <td className="min-w-48 px-3 py-2.5">
                                     <Link to={row.href} className="font-semibold text-ocean hover:text-safety hover:underline" data-testid={`club-result-link-${row.key}`}>
                                       {row.title}

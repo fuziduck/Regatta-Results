@@ -6451,6 +6451,20 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
              if race.get("status") == "published" and not race.get("abandoned")]
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     keep = None if race_numbers is None else {int(n) for n in race_numbers}
+    # Abandoned races carry no score, but a series that skipped a race should
+    # still show that it happened. Their identity (number and date) travels
+    # with the standings so the table can render a marked column instead of
+    # silently closing the gap in the race sequence. An officer can abandon a
+    # race that was never published, so the status is not part of this filter —
+    # it matches abandoned_race_count, which counts the same set.
+    abandoned_races = sorted(
+        (race for race in series_races if race.get("abandoned")),
+        key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
+    if keep is not None:
+        abandoned_races = [race for race in abandoned_races
+                           if int(race.get("race_number") or 0) in keep]
+    abandoned_meta = [{"race_number": race.get("race_number"), "date": race.get("date")}
+                      for race in abandoned_races]
     # A view shows a subset of the series' columns in the series' own order;
     # view_idx records which, so the scored series can be sliced down to it.
     view_idx = [i for i, r in enumerate(races)
@@ -6524,7 +6538,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]
     if fold_combined:
         agg, race_meta = _fold_combined_mini_groups(series, agg, race_meta)
-    return agg, boat_map, race_meta, cfg, races, abandoned_race_count
+    return agg, boat_map, race_meta, cfg, races, abandoned_race_count, abandoned_meta
 
 
 async def compute_series_standings(series, race_numbers=None, discards=None, division=None,
@@ -6536,7 +6550,8 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
     # The full series folds "combined" mini groups into one daily result each;
     # a mini-series view (race_numbers given) always shows the individual
     # races, so folding never applies there.
-    agg, boat_map, race_meta, cfg, races, abandoned_race_count = await _series_scores(
+    (agg, boat_map, race_meta, cfg, races, abandoned_race_count,
+     abandoned_meta) = await _series_scores(
         series, race_numbers, fold_combined=(race_numbers is None), division=division,
         scoring_mode=scoring_mode)
     club_name = await _club_name_of_class(series.get("class_id"))
@@ -6634,6 +6649,10 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
         r.pop("_combined_avg", None)
     payload = {"race_count": race_count, "races_scored": race_count,
                "abandoned_race_count": abandoned_race_count,
+               # Which races were abandoned, so the standings table can show a
+               # struck-through column for each instead of a silent gap. They
+               # contribute no score to any total.
+               "abandoned_races": abandoned_meta,
                "scoring_mode": scoring_mode or _series_scoring_modes(series)[0],
                "scoring_modes": _series_scoring_modes(series),
                "discards": discards, "discards_applied": discards,
@@ -6738,7 +6757,8 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     recomputing it: final standings payload, per-race raw results with their
     computed points, duty/TLE/penalty/redress decisions, discards, tie-breaks,
     the ratings used, the scoring-rule configuration and who locked it."""
-    agg, boat_map, race_meta, cfg, races, _abandoned_race_count = await _series_scores(series)
+    (agg, boat_map, race_meta, cfg, races, _abandoned_race_count,
+     _abandoned_meta) = await _series_scores(series)
     payload = await _series_standings_payload(series)
     modes = _series_scoring_modes(series)
     cls_snapshot = (await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}) \

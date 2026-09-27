@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Layers, Trophy } from "lucide-react";
 import { podiumPlace } from "@/lib/resultCellStyle";
-import { divisionTables, scoringModeLabel, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { divisionTables, scoringModeLabel, shouldWrapBoatName, standingsColumns, wrapBoatName } from "@/lib/helpers";
 
 // Keep the rank (#) column pinned at the left edge and offset the sticky Boat
 // column by the rank column's ACTUAL rendered width, so the two sit
@@ -91,39 +91,11 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
     return <p data-testid="no-standings" className="text-muted-foreground text-sm py-6">No results published yet for this series.</p>;
   }
 
-  const races = data.races || [];
-  const schedule = data.schedule || [];
-  // The planned/TBC columns only make sense while the scored races run
-  // contiguously from race 1. When a race has been abandoned (or is otherwise
-  // missing), the remaining races no longer line up with their schedule index,
-  // so padding with an index-derived race number would invent a duplicate —
-  // show only the races actually scored instead.
-  // Check if published races are contiguous (no gaps between them), regardless
-  // of whether they start from race 1. This allows future planned races to
-  // be shown as TBC columns even when earlier races haven't been published yet.
-  const sortedRaceNums = races.map((r) => r.race_number).sort((a, b) => a - b);
-  const contiguous = sortedRaceNums.length === 0 ||
-    sortedRaceNums.every((n, i) => i === 0 || n === sortedRaceNums[i - 1] + 1);
-  // When viewing a mini-series group (combined or individual), the parent
-  // series' planned_races / schedule would pad phantom columns for races
-  // outside the group — cap at the actual race count so only the group's
-  // races are shown.
-  const isMiniGroupView = !!data.mini_combined;
-  const planned = isMiniGroupView ? races.length : (contiguous ? data.planned_races || 0 : races.length);
-  const totalCols = isMiniGroupView ? races.length : Math.max(races.length, planned, contiguous ? schedule.length : 0);
-  // A combined mini-series day is a single scoring unit: it carries the mini
-  // series' name instead of a race number (see _fold_combined_mini_groups).
-  const cols = Array.from({ length: totalCols }, (_, i) => {
-    const r = races[i];
-    return {
-      race_number: r ? r.race_number : i + 1,
-      date: r ? r.date : schedule[i] ?? null,
-      mini_name: r ? r.mini_name : null,
-      combined: r ? !!r.combined : false,
-      mini_races: r ? r.mini_races : null,
-      mini_index: r ? r.mini_index : null,
-    };
-  });
+  // Scored, abandoned and planned columns, in the order they were raced. See
+  // standingsColumns: an abandoned race keeps a numbered, empty column and
+  // contributes to no total.
+  const cols = standingsColumns(data);
+  const abandonedCols = cols.filter((col) => col.abandoned);
   const fmtScore = (s) => {
     const val = Number.isInteger(s.points) ? s.points : s.points.toFixed(1);
     const showCode = s.code && s.code !== "FINISHED" && s.code !== "MINI";
@@ -140,10 +112,11 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
             <TableHead className="text-white w-12 sticky left-0 z-20 bg-ocean">#</TableHead>
             <TableHead className="text-white sticky z-10 bg-ocean" style={{ left: "var(--rank-w, 3rem)" }}>Boat</TableHead>
             <TableHead className="text-white">Club</TableHead>
-            {cols.map((r, i) => (
-              <TableHead key={i} className="text-white text-center font-mono whitespace-nowrap align-bottom">
+            {cols.map((r) => (
+              <TableHead key={r.key} data-testid={r.abandoned ? `abandoned-race-head-${r.race_number}` : undefined}
+                className={`text-white text-center font-mono whitespace-nowrap align-bottom ${r.abandoned ? "bg-red-900/60" : ""}`}>
                 {r.combined && onOpenMini ? (
-                  <button onClick={() => onOpenMini(r.mini_index)} data-testid={`open-mini-${r.mini_index || i}`}
+                  <button onClick={() => onOpenMini(r.mini_index)} data-testid={`open-mini-${r.mini_index || r.key}`}
                     className="inline-flex items-center gap-1.5 underline decoration-dotted underline-offset-4 hover:text-safety transition-colors" title={`View the ${r.mini_races || ""} races that make up this combined result`}>
                     <Layers className="w-3.5 h-3.5 shrink-0" />
                     <span>{r.mini_name || `R${r.race_number}`}</span>
@@ -151,11 +124,13 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
                 ) : (
                   <div>{r.mini_name || `R${r.race_number}`}</div>
                 )}
-                {r.combined
-                  ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">combined{r.mini_races ? ` · ${r.mini_races} races` : ""}</div>
-                  : (r.date
-                    ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>
-                    : <div className="text-[10px] font-body font-normal text-white/40 mt-0.5">TBC</div>)}
+                {r.abandoned
+                  ? <div className="text-[10px] font-body font-semibold uppercase tracking-wide text-red-200 mt-0.5" title="Abandoned on the day — not raced and not counted towards the series or its scoring">Abandoned</div>
+                  : (r.combined
+                    ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">combined{r.mini_races ? ` · ${r.mini_races} races` : ""}</div>
+                    : (r.date
+                      ? <div className="text-[10px] font-body font-normal text-white/70 mt-0.5">{fmtDateShort(r.date)}</div>
+                      : <div className="text-[10px] font-body font-normal text-white/40 mt-0.5">TBC</div>))}
               </TableHead>
             ))}
             {miniCombined && <TableHead className="text-white text-center">Daily avg</TableHead>}
@@ -184,15 +159,23 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
               <TableCell className="text-muted-foreground whitespace-nowrap">
                 {row.home_club_slug ? <Link to={`/club/${row.home_club_slug}`} className="hover:text-ocean transition-colors">{row.home_club || "—"}</Link> : (row.home_club || "—")}
               </TableCell>
-              {cols.map((_, j) => {
-                const s = (row.scores || [])[j];
-                if (!s) return <TableCell key={j} className="text-center text-muted-foreground/30">–</TableCell>;
+              {cols.map((col) => {
+                // An abandoned race has no score to show, and nothing to
+                // count: every cell in the column is an em dash. A planned
+                // race is the same blank cell without the abandoned mark.
+                if (col.scoreIndex == null) {
+                  return <TableCell key={col.key}
+                    className={col.abandoned ? "bg-red-50/60 text-center text-muted-foreground/40 dark:bg-red-950/20" : "text-center text-muted-foreground/30"}
+                    data-testid={col.abandoned ? `abandoned-race-cell-${row.sail_no}-${col.race_number}` : undefined}>–</TableCell>;
+                }
+                const s = (row.scores || [])[col.scoreIndex];
+                if (!s) return <TableCell key={col.key} className="text-center text-muted-foreground/30">–</TableCell>;
                 // Discard beats podium: a discarded 1st/2nd/3rd keeps the grey
                 // italic discard style, never the medal fill.
                 const place = podiumPlace(s);
                 const podium = place ? PODIUM_CELL[place] : "";
                 return (
-                  <TableCell key={j} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : podium ? `${podium} font-bold` : ""} ${s.code && s.code !== "FINISHED" && s.code !== "MINI" ? "text-red-600 dark:text-red-400" : ""}`}>
+                  <TableCell key={col.key} className={`text-center font-mono text-sm ${s.discarded ? "text-muted-foreground/70 italic" : podium ? `${podium} font-bold` : ""} ${s.code && s.code !== "FINISHED" && s.code !== "MINI" ? "text-red-600 dark:text-red-400" : ""}`}>
                     {fmtScore(s)}
                   </TableCell>
                 );
@@ -211,6 +194,7 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
       <div className="text-xs text-muted-foreground px-3 py-2 bg-muted/30">
         {data.locked && <span className="font-semibold text-emerald-700">🔒 Season locked</span>}
         {data.race_count} race{data.race_count !== 1 ? "s" : ""} sailed
+        {abandonedCols.length > 0 ? ` · ${abandonedCols.length} abandoned (not counted)` : ""}
         {data.discards > 0 ? ` · ${data.discards} discard${data.discards !== 1 ? "s" : ""} applied (shown in brackets)` : " · no discards yet"}
         {combinedGroups.length > 0 ? ` · ${combinedGroups.length} combined mini-series day${combinedGroups.length !== 1 ? "s" : ""} (avg after mini discards)` : ""}
         {miniCombined ? ` · daily result = average of counting mini races after ${miniCombined.discards || 0} discard${(miniCombined.discards || 0) !== 1 ? "s" : ""}` : ""}

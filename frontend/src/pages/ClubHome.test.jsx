@@ -17,7 +17,7 @@ jest.mock("@/components/HeaderMenu", () => () => <span />);
 jest.mock("@/components/Logo", () => () => <span />);
 jest.mock("@/pages/Landing", () => () => <div data-testid="legacy-results-page" />);
 
-import ClubHome, { buildClubResultsRows } from "./ClubHome";
+import ClubHome, { buildClubResultsRows, groupResultsByClass } from "./ClubHome";
 import { CURRENT_YEAR } from "@/lib/helpers";
 const mockApi = require("@/lib/api").api;
 
@@ -150,6 +150,42 @@ test("renders grouped tables newest first and lets visitors open result pages", 
   expect([...container.querySelectorAll('[data-testid="club-result-card"] .font-heading')].map((title) => title.textContent)).toEqual([
     "Autumn Series", "Summer Series",
   ]);
+});
+
+test("orders series inside a class oldest-first regardless of the order selector", async () => {
+  const clubSeries = [
+    { id: "spring", class_id: "class-sonata", name: "Spring Series", year: 2026, series_type: "club_championship" },
+    { id: "autumn", class_id: "class-sonata", name: "Autumn Series", year: 2026, series_type: "club_championship" },
+    { id: "summer", class_id: "class-sonata", name: "Summer Series", year: 2026, series_type: "club_championship" },
+    { id: "unraced", class_id: "class-sonata", name: "Winter Series", year: 2026, series_type: "club_championship" },
+  ];
+  const clubRaces = [
+    { id: "a1", series_id: "autumn", date: "2026-09-20", race_number: 1, status: "published" },
+    { id: "s1", series_id: "spring", date: "2026-03-14", race_number: 1, status: "published" },
+    { id: "s2", series_id: "spring", date: "2026-05-02", race_number: 2, status: "published" },
+    { id: "u1", series_id: "summer", date: "2026-06-27", race_number: 1, status: "published" },
+    { id: "u2", series_id: "summer", date: "2026-08-15", race_number: 2, status: "published" },
+  ];
+  const rows = buildClubResultsRows({ classes, series: clubSeries, competitions: [], races: clubRaces, slug: "harbour-club" });
+  expect(rows.find((row) => row.key === "series:spring").firstRace.date).toBe("2026-03-14");
+
+  // A long season keeps the place it started rather than jumping to the end.
+  const [group] = groupResultsByClass(rows, classes, "newest");
+  expect(group.rows.map((row) => row.title)).toEqual(["Spring Series", "Summer Series", "Autumn Series", "Winter Series"]);
+  expect(group.rows.slice(0, 3).map((row) => row.firstRace.date)).toEqual(["2026-03-14", "2026-06-27", "2026-09-20"]);
+
+  // The A–Z selector rearranges the sections around the list, not the list.
+  const [alphabeticalGroup] = groupResultsByClass(rows, classes, "alphabetical");
+  expect(alphabeticalGroup.rows.map((row) => row.title)).toEqual(["Spring Series", "Summer Series", "Autumn Series", "Winter Series"]);
+
+  // Abandoned races do not decide a series' position.
+  const withAbandonment = buildClubResultsRows({
+    classes, series: clubSeries, competitions: [],
+    races: [...clubRaces, { id: "abandoned", series_id: "autumn", date: "2026-01-05", race_number: 0, abandoned: true }],
+    slug: "harbour-club",
+  });
+  expect(groupResultsByClass(withAbandonment, classes, "newest")[0].rows.map((row) => row.title))
+    .toEqual(["Spring Series", "Summer Series", "Autumn Series", "Winter Series"]);
 });
 
 test("keeps existing query and path-based results deep links on the standings page", async () => {

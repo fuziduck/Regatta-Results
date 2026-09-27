@@ -1,6 +1,6 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-import { divisionTables } from "./helpers";
+import { divisionTables, standingsColumns } from "./helpers";
 import { fmtScore, raceCellStyle } from "./resultCellStyle";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
 
@@ -177,14 +177,15 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
   const contentTop = header(doc, { clubName, className, title: `${seriesName} Series`, year, icon, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
-  const races = data.races || [];
-  const totalCols = Math.max(races.length, data.planned_races || 0, (data.schedule || []).length);
-  // A combined mini-series day is one column named after the mini series
-  // (race_number is null on those units).
-  const cols = Array.from({ length: totalCols }, (_, i) => {
-    const r = races[i];
-    return r ? (r.mini_name || `R${r.race_number}`) : `R${i + 1}`;
+  // The same columns the on-screen table shows (see standingsColumns), so the
+  // printed sheet never disagrees with the page. An abandoned race keeps its
+  // own numbered, empty column marked ABD.
+  const columns = standingsColumns(data);
+  const cols = columns.map((col) => {
+    const label = col.mini_name || (col.race_number != null ? `R${col.race_number}` : "");
+    return col.abandoned ? `${label} ABD` : label;
   });
+  const totalCols = cols.length;
 
   // Each division is rendered after the previous one: autotable paginates a
   // table on its own, and its finalY carries into the next table's startY.
@@ -209,7 +210,7 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
       String(row.rank),
       `${row.boat_name}\n${row.sail_no} · ${row.helm}`,
       row.home_club || "—",
-      ...cols.map((_, j) => (row.scores || [])[j] || ""),
+      ...columns.map((col) => (col.scoreIndex == null ? "" : (row.scores || [])[col.scoreIndex] || "")),
       String(row.total),
       String(row.net),
     ]),

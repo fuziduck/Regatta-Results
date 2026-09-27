@@ -143,6 +143,61 @@ describe("combined mini-series drill-down link", () => {
   });
 });
 
+describe("abandoned races", () => {
+  const withAbandoned = () => ({
+    race_count: 2,
+    abandoned_race_count: 1,
+    abandoned_races: [{ race_number: 2, date: "2026-05-09" }],
+    discards: 0,
+    planned_races: 4,
+    schedule: [],
+    // R1 and R3 are the only scored races; R2 was abandoned on the day.
+    races: [{ race_number: 1, date: "2026-04-25" }, { race_number: 3, date: "2026-05-23" }],
+    standings: [
+      { rank: 1, boat_id: "b1", boat_name: "Bluebell", sail_no: "1", helm: "H", home_club: "C", net: 3, total: 3, scores: [{ points: 1, code: "FINISHED", discarded: false }, { points: 2, code: "FINISHED", discarded: false }] },
+      { rank: 2, boat_id: "b2", boat_name: "Wren", sail_no: "2", helm: "H2", home_club: "C", net: 5, total: 5, scores: [{ points: 2, code: "FINISHED", discarded: false }, { points: 3, code: "FINISHED", discarded: false }] },
+    ],
+  });
+
+  // The header cell carries the race label plus a sub-label (date, TBC or
+  // Abandoned), so the race numbers are read from the label element alone.
+  const headLabels = (root) => [...root.querySelectorAll("thead th")]
+    .map((th) => (th.firstElementChild?.textContent || "").trim())
+    .filter((text) => /^R\d/.test(text));
+
+  it("shows a marked column for the abandoned race between the scored ones", () => {
+    renderTable(withAbandoned());
+    expect(headLabels(container)).toEqual(["R1", "R2", "R3", "R4"]);
+    expect(container.querySelector('[data-testid="abandoned-race-head-2"]').textContent).toContain("Abandoned");
+  });
+
+  it("scores nothing in the abandoned column and leaves totals untouched", () => {
+    renderTable(withAbandoned());
+    const cells = [...container.querySelectorAll('[data-testid^="abandoned-race-cell-"]')];
+    expect(cells).toHaveLength(2);
+    expect(cells.every((cell) => cell.textContent === "–")).toBe(true);
+    // The scored columns still line up with the series' own scores.
+    const row = container.querySelector('[data-testid="standing-row-1"]');
+    // #, Boat, Club come first, then one cell per column, then Total and Net.
+    const rowCells = [...row.querySelectorAll("td")].map((td) => td.textContent);
+    const columnCount = headLabels(container).length;
+    expect(rowCells.slice(3, 3 + columnCount)).toEqual(["1", "–", "2", "–"]);
+    expect(rowCells.slice(3 + columnCount)).toEqual(["3", "3"]);
+  });
+
+  it("keeps planned columns after an abandoned race instead of hiding them", () => {
+    // R1-R3 all exist (R2 abandoned), so the remaining planned R4 is shown.
+    renderTable(withAbandoned());
+    expect(container.querySelector("thead").textContent).toContain("R4");
+    expect(container.textContent).toContain("1 abandoned (not counted)");
+  });
+
+  it("does not invent a column for a race that is missing outright", () => {
+    renderTable({ ...withAbandoned(), abandoned_races: [] });
+    expect(headLabels(container)).toEqual(["R1", "R3"]);
+  });
+});
+
 describe("SeriesStandings (rating divisions)", () => {
   const renderSplit = (d) => {
     container = document.createElement("div");

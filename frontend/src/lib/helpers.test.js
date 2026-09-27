@@ -4,6 +4,7 @@ import {
   BOAT_NAME_WRAP_LIMIT,
   miniGroupForRace,
   miniSeriesNote,
+  standingsColumns,
   raceLabel,
   clockToIso,
   clockValueOf,
@@ -352,5 +353,59 @@ describe("handicap corrected time (IRC, PY and RYA YTC)", () => {
     // One-design is scored on finish order — it has no rating to correct by.
     expect(boatRating("one_design", boat)).toBeNull();
     expect(boatRating("ytc", {})).toBeNull();
+  });
+});
+
+describe("standingsColumns", () => {
+  const labels = (cols) => cols.map((col) => {
+    const base = col.mini_name || (col.race_number != null ? `R${col.race_number}` : "?");
+    return col.abandoned ? `${base} abandoned` : base;
+  });
+
+  it("interleaves an abandoned race without giving it a score", () => {
+    const cols = standingsColumns({
+      planned_races: 4, schedule: [],
+      races: [{ race_number: 1, date: "2026-04-25" }, { race_number: 3, date: "2026-05-23" }],
+      abandoned_races: [{ race_number: 2, date: "2026-05-09" }],
+    });
+    expect(labels(cols)).toEqual(["R1", "R2 abandoned", "R3", "R4"]);
+    expect(cols.find((c) => c.abandoned).scoreIndex).toBeNull();
+    // Scored columns keep pointing at their own score; nothing else does.
+    expect(cols.filter((c) => c.scoreIndex != null).map((c) => c.scoreIndex)).toEqual([0, 1]);
+  });
+
+  it("orders a combined mini-series day by date, not by its null race number", () => {
+    // A combined day is one scoring unit with race_number null; it must stay
+    // in the middle of the series rather than sorting to the front.
+    const cols = standingsColumns({
+      planned_races: 5, schedule: [],
+      races: [
+        { race_number: 1, date: "2026-08-29" },
+        { race_number: 2, date: "2026-09-05" },
+        { race_number: null, date: "2026-09-12", mini_name: "2 Races", combined: true },
+        { race_number: 4, date: "2026-09-19" },
+      ],
+      abandoned_races: [{ race_number: 5, date: "2026-09-26" }],
+    });
+    expect(labels(cols)).toEqual(["R1", "R2", "2 Races", "R4", "R5 abandoned"]);
+  });
+
+  it("stops padding at a race that was never raced and never abandoned", () => {
+    const cols = standingsColumns({
+      planned_races: 4, schedule: [],
+      races: [{ race_number: 1, date: "2026-04-25" }, { race_number: 3, date: "2026-05-23" }],
+      abandoned_races: [],
+    });
+    expect(labels(cols)).toEqual(["R1", "R3"]);
+  });
+
+  it("shows only the folded units inside a mini-series group view", () => {
+    const cols = standingsColumns({
+      planned_races: 5, schedule: [],
+      mini_combined: { name: "Day", discards: 1 },
+      races: [{ race_number: null, date: "2026-09-12", mini_name: "Day", combined: true }],
+      abandoned_races: [{ race_number: 5, date: "2026-09-26" }],
+    });
+    expect(labels(cols)).toEqual(["Day"]);
   });
 });
