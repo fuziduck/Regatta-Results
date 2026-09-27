@@ -150,7 +150,7 @@ export default function PublishedRaces({
                       <thead>
                         <tr className="text-left text-muted-foreground border-b">
                           <th className="py-2 w-10">Pos{multiScoring ? ` (${scoringModeLabel(activeMode)})` : ""}</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
-                          {activeMode !== "one_design" && <><th>{yardstick ? scoringModeLabel(activeMode) : "Type"}</th><th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
+                          {activeMode !== "one_design" && <><th>Type</th>{yardstick && <th>{scoringModeLabel(activeMode)}</th>}<th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
                         </tr>
                       </thead>
                       <tbody>
@@ -168,7 +168,8 @@ export default function PublishedRaces({
                               <td className="text-muted-foreground">{boat.helm || "—"}</td>
                               <td className="text-center"><Badge variant="outline" className={`${CODE_COLORS[result.code] || ""} text-[10px]`}>{result.code}</Badge></td>
                               {activeMode !== "one_design" && <>
-                                <td className="text-muted-foreground">{yardstick ? (rating ? Math.round(rating) : "—") : (boat.boat_type || "—")}</td>
+                                <td className="text-muted-foreground">{boat.boat_type || "—"}</td>
+                                {yardstick && <td className="text-muted-foreground">{rating ? Math.round(rating) : "—"}</td>}
                                 <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsedSecondsOf(result.finish_time, race)) : "—"}</td>
                                 <td className="text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(correctedSecondsOf(result.finish_time, race, rating, activeMode)) : "—"}</td>
                               </>}

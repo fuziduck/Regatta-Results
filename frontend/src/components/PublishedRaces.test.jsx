@@ -82,7 +82,7 @@ test("a YTC series shows the YTC column and corrects by the boat's YTC number", 
     start_tz_offset_minutes: 0, status: "published",
     results: [{ boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T10:30:00Z" }],
   }]);
-  mockApi.getBoats.mockResolvedValue([{ id: "b1", name: "Blue Note", sail_no: "GBR 1", py: 1100, ytc: 1013 }]);
+  mockApi.getBoats.mockResolvedValue([{ id: "b1", name: "Blue Note", sail_no: "GBR 1", boat_type: "Sonata", py: 1100, ytc: 1013 }]);
 
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -97,8 +97,10 @@ test("a YTC series shows the YTC column and corrects by the boat's YTC number", 
   act(() => { container.querySelector('[data-testid="race-folder-r1"]').click(); });
 
   const headers = [...container.querySelectorAll("th")].map((th) => th.textContent);
+  expect(headers).toContain("Type");
   expect(headers).toContain("YTC");
   const cells = [...container.querySelectorAll("tbody tr td")].map((td) => td.textContent);
+  expect(cells).toContain("Sonata");
   expect(cells).toContain("1013");              // the YTC certificate, not the PY one
   expect(cells).toContain("29:37");             // 1800 s x 1000 / 1013 = 1777 s corrected
 });
@@ -114,8 +116,8 @@ test("publishes one race in separate IRC and YTC orders using the same recorded 
     ],
   }]);
   mockApi.getBoats.mockResolvedValue([
-    { id: "b1", name: "Fast hull", sail_no: "1", tcc: 1.05, ytc: 1100 },
-    { id: "b2", name: "Slow hull", sail_no: "2", tcc: 0.95, ytc: 900 },
+    { id: "b1", name: "Fast hull", sail_no: "1", boat_type: "Fast 30", tcc: 1.05, ytc: 1100 },
+    { id: "b2", name: "Slow hull", sail_no: "2", boat_type: "Slow 30", tcc: 0.95, ytc: 900 },
   ]);
   const series = { scoring_mode: "irc", scoring_modes: ["irc", "ytc"] };
   container = document.createElement("div");
@@ -128,10 +130,14 @@ test("publishes one race in separate IRC and YTC orders using the same recorded 
   let rows = [...container.querySelectorAll("tbody tr")];
   expect(rows[0].textContent).toContain("Slow hull");
   expect(container.querySelector("thead").textContent).toContain("IRC");
+  expect(container.querySelector("thead").textContent).toContain("Type");
+  expect(rows[0].textContent).toContain("Slow 30");
   act(() => { container.querySelector('[data-testid="published-race-r-dual-ytc"]').click(); });
   rows = [...container.querySelectorAll("tbody tr")];
   expect(rows[0].textContent).toContain("Fast hull");
   expect(container.querySelector("thead").textContent).toContain("YTC");
+  expect(container.querySelector("thead").textContent).toContain("Type");
+  expect(rows[0].textContent).toContain("Fast 30");
   expect(rows[0].textContent).toContain("1100");
 });
 
