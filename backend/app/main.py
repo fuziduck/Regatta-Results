@@ -2263,6 +2263,7 @@ async def _send_welcome_email(to_email: str, username: str, temp_password: str, 
     if not cfg.get("smtp_host"):
         return False
     role_label = "Race Admin" if role == "admin" else "Race Officer"
+    login_url = f"{_public_web_base()}/login"
     msg = EmailMessage()
     msg["Subject"] = f"SailScore — your {role_label} login is ready"
     msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
@@ -2271,8 +2272,9 @@ async def _send_welcome_email(to_email: str, username: str, temp_password: str, 
         f"You have been set up as a {role_label} for {club_name} on SailScore.\n\n"
         f"Username: {username}\n"
         f"Temporary password: {temp_password}\n\n"
-        f"Log in at the SailScore website using these credentials. "
-        f"You will be prompted to change your password on first login.\n\n"
+        f"Log in at the SailScore website: {login_url}\n"
+        f"Use these credentials to sign in. You will be prompted to change your "
+        f"password on first login.\n\n"
         f"If you did not expect this email, please contact your club administrator.\n"
     )
     msg.add_alternative(
@@ -2285,8 +2287,9 @@ async def _send_welcome_email(to_email: str, username: str, temp_password: str, 
         f"<td style=\"padding:4px 12px;font-weight:bold;font-family:monospace\">"
         f"{html_lib.escape(temp_password)}</td></tr>"
         f"</table>"
-        f"<p>Log in at the SailScore website using these credentials. "
-        f"You will be prompted to change your password on first login.</p>"
+        f"<p><a href=\"{html_lib.escape(login_url, quote=True)}\">Log in to SailScore</a> "
+        f"using these credentials. You will be prompted to change your password "
+        f"on first login.</p>"
         f"<p style=\"color:#666;font-size:12px\">If you did not expect this email, "
         f"please contact your club administrator.</p>",
         subtype="html")

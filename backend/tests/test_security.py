@@ -7,6 +7,7 @@ lazily, so no database is required). Live tests exercise the deployed API
 inside a dedicated test club like the rest of the suite.
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -63,6 +64,42 @@ def _claims(srv, **over):
 
 
 class TestJwtUnit:
+    def test_welcome_email_includes_login_page_link(self, srv, monkeypatch):
+        from email.message import EmailMessage
+
+        sent_messages = []
+
+        class FakeSMTP:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def starttls(self):
+                pass
+
+            def send_message(self, message):
+                sent_messages.append(message)
+
+        monkeypatch.setattr(srv, "PUBLIC_APP_BASE_URL", "https://sailscore.example.org/")
+        monkeypatch.setattr(srv.smtplib, "SMTP", FakeSMTP)
+
+        assert asyncio.run(srv._send_welcome_email(
+            "new@example.org", "new@example.org", "Temp123!", "admin", "Harbour Club",
+            {"smtp_host": "smtp.example.org", "smtp_port": 587}))
+
+        assert len(sent_messages) == 1
+        message = sent_messages[0]
+        assert isinstance(message, EmailMessage)
+        assert "https://sailscore.example.org/login" in message.get_payload()[0].get_payload(decode=True).decode()
+        html_part = next(part for part in message.walk() if part.get_content_type() == "text/html")
+        html = html_part.get_payload(decode=True).decode()
+        assert '<a href="https://sailscore.example.org/login">Log in to SailScore</a>' in html
+
     def test_create_token_claims(self, srv):
         tok = srv.create_token("admin", "club1", "u1", "alice", 3)
         payload = pyjwt.decode(tok, srv.JWT_SECRET, algorithms=["HS256"],
