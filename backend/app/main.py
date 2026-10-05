@@ -9076,20 +9076,99 @@ async def delete_results_subscription(subscription_id: str, token: str, request:
 # Results notification rendering and delivery
 # ---------------------------------------------------------------------------
 
-def _results_email_html(title: str, cls: dict, race: dict, result_rows: list, manage_url: str) -> str:
-    rows = "".join(
-        f"<tr><td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(str(row['position']))}</td>"
-        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(row['name'])}</td>"
-        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(row['sail'])}</td>"
-        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb'>{html_lib.escape(row['code'])}</td></tr>"
-        for row in result_rows)
-    if not rows:
-        rows = "<tr><td colspan='4' style='padding:12px'>No classified boats</td></tr>"
-    return f"<html><body style='font-family:Arial,sans-serif;color:#172033'><h2>{html_lib.escape(title)}</h2><p><strong>Class:</strong> {html_lib.escape(str(cls.get('name') or '—'))} &nbsp; <strong>Race:</strong> {html_lib.escape(str(race.get('race_number') or '—'))}</p><table style='border-collapse:collapse;width:100%;max-width:680px'><thead><tr style='background:#0a369d;color:#fff'><th style='padding:8px;text-align:left'>Pos</th><th style='padding:8px;text-align:left'>Boat</th><th style='padding:8px;text-align:left'>Sail no.</th><th style='padding:8px;text-align:left'>Status</th></tr></thead><tbody>{rows}</tbody></table><p><a href='{html_lib.escape(_public_web_base(), quote=True)}'>View latest results</a> · <a href='{html_lib.escape(manage_url, quote=True)}'>Manage subscriptions</a></p></body></html>"
+def _results_email_tables(payload: dict) -> list:
+    """Flatten the canonical series standings into email-friendly tables."""
+    tables = []
+    for standings in _division_tables(payload):
+        races = standings.get("races") or []
+        columns = [{"race": race, "score_index": index}
+                   for index, race in enumerate(races)]
+        columns.extend({"race": race, "score_index": None}
+                       for race in standings.get("abandoned_races") or [])
+        columns.sort(key=lambda column: (
+            column["race"].get("date") or "",
+            column["race"].get("race_number") or 0))
+        headers = ["#", "Boat", "Sail no.", "Club"]
+        headers.extend(
+            race.get("mini_name") or f"Race {race.get('race_number') or '—'}"
+            for race in (column["race"] for column in columns))
+        if standings.get("mini_combined"):
+            headers.append("Daily avg")
+        headers.extend(["Total", "Net"])
+        rows = []
+        for row in standings.get("standings") or []:
+            cells = [row.get("rank") or "—", row.get("boat_name") or "Boat",
+                     row.get("sail_no") or "", row.get("home_club") or "—"]
+            scores = row.get("scores") or []
+            for column in columns:
+                index = column["score_index"]
+                score = scores[index] if index is not None and index < len(scores) else None
+                if score is None:
+                    cells.append("—")
+                    continue
+                points = score.get("points")
+                points = (str(int(points)) if isinstance(points, (int, float)) and float(points).is_integer()
+                          else str(points) if points is not None else "—")
+                code = score.get("code")
+                if code and code not in ("FINISHED", "MINI"):
+                    points += f" {code}"
+                cells.append(f"({points})" if score.get("discarded") else points)
+            if standings.get("mini_combined"):
+                cells.append(row.get("combined_average") if row.get("combined_average") is not None else "—")
+            cells.extend([row.get("total", "—"), row.get("net", "—")])
+            rows.append(cells)
+        tables.append({"title": standings.get("division_name"), "headers": headers, "rows": rows})
+    return tables
+
+
+def _results_email_text(title: str, cls: dict, race: dict, payload: dict,
+                        manage_url: str) -> str:
+    lines = [title, "", f"Class: {cls.get('name', '—')} · Race {race.get('race_number') or '—'}",
+             "", "Series standings"]
+    for table in _results_email_tables(payload):
+        if table["title"]:
+            lines.extend(["", str(table["title"])])
+        lines.extend([" | ".join(str(value) for value in table["headers"]),
+                      " | ".join("---" for _ in table["headers"])])
+        if table["rows"]:
+            lines.extend(" | ".join(str(value) for value in row) for row in table["rows"])
+        else:
+            lines.append("No results published yet.")
+    lines.extend(["", f"View the latest results at {_public_web_base()}.",
+                  f"Manage subscriptions: {manage_url}"])
+    return "\n".join(lines)
+
+
+def _results_email_html(title: str, cls: dict, race: dict, payload: dict,
+                        manage_url: str) -> str:
+    table_html = []
+    for table in _results_email_tables(payload):
+        heading = (f"<h3>{html_lib.escape(str(table['title']))}</h3>"
+                   if table["title"] else "")
+        headers = "".join(
+            f"<th style='padding:8px;text-align:left;white-space:nowrap'>{html_lib.escape(str(value))}</th>"
+            for value in table["headers"])
+        rows = "".join(
+            "<tr>" + "".join(
+                f"<td style='padding:8px;border-bottom:1px solid #e5e7eb;white-space:nowrap'>{html_lib.escape(str(value))}</td>"
+                for value in row) + "</tr>"
+            for row in table["rows"])
+        if not rows:
+            rows = f"<tr><td colspan='{len(table['headers'])}' style='padding:12px'>No results published yet.</td></tr>"
+        table_html.append(
+            f"{heading}<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%;margin-bottom:20px'>"
+            f"<thead><tr style='background:#0a369d;color:#fff'>{headers}</tr></thead><tbody>{rows}</tbody></table></div>")
+    return (f"<html><body style='font-family:Arial,sans-serif;color:#172033'><h2>{html_lib.escape(title)}</h2>"
+            f"<p><strong>Class:</strong> {html_lib.escape(str(cls.get('name') or '—'))} &nbsp; "
+            f"<strong>Latest race:</strong> {html_lib.escape(str(race.get('race_number') or '—'))}</p>"
+            f"<h3>Series standings</h3>{''.join(table_html)}"
+            f"<p><a href='{html_lib.escape(_public_web_base(), quote=True)}'>View latest results</a> · "
+            f"<a href='{html_lib.escape(manage_url, quote=True)}'>Manage subscriptions</a></p></body></html>")
 
 
 async def _send_published_results_email(email: str, race: dict, series: dict,
-                                        cls: dict, target: dict) -> bool:
+                                        cls: dict, target: dict,
+                                        standings_payload: dict) -> bool:
     """Send the published-results message for one active subscription.
 
     Delivery is deliberately best-effort: a bad subscriber address or a
@@ -9102,33 +9181,16 @@ async def _send_published_results_email(email: str, race: dict, series: dict,
     club = await db.clubs.find_one({"id": cls.get("club_id")}, {"_id": 0, "name": 1}) or {}
     race_no = race.get("race_number", "")
     title = f"{club.get('name', 'SailScore')} — {series.get('name', 'Race results')} — Race {race_no}"
-    rows = race.get("results") or []
-    lines = []
-    for row in sorted(rows, key=lambda item: (item.get("position") is None, item.get("position") or 9999))[:100]:
-        boat = await db.boats.find_one({"id": row.get("boat_id")}, {"_id": 0, "name": 1, "sail_no": 1})
-        name = (boat or {}).get("name") or row.get("boat_name") or "Boat"
-        sail = (boat or {}).get("sail_no") or row.get("sail_no") or ""
-        result = row.get("position") or row.get("code") or "—"
-        lines.append(f"{result}. {name} {sail}".rstrip())
-    result_text = "\\n".join(lines) or "Results were published without classified boats."
-    result_rows = []
-    for row in sorted(rows, key=lambda item: (item.get("position") is None, item.get("position") or 9999))[:100]:
-        boat = await db.boats.find_one({"id": row.get("boat_id")}, {"_id": 0, "name": 1, "sail_no": 1})
-        result_rows.append({"position": row.get("position") or "—", "name": (boat or {}).get("name") or row.get("boat_name") or "Boat", "sail": (boat or {}).get("sail_no") or row.get("sail_no") or "", "code": row.get("code") or "—"})
     manage_token = target.get("manage_token")
     links = _subscription_links(manage_token or "") if manage_token else {}
+    manage_url = links.get("manage", _public_web_base())
     msg = EmailMessage()
     msg["Subject"] = title
     msg["From"] = cfg.get("mail_from") or cfg.get("smtp_user") or "sailscore@localhost"
     msg["To"] = email
-    msg.set_content(
-        f"{title}\\n\\nClass: {cls.get('name', '—')}\\n\\n"
-        + "Position | Boat | Sail no. | Status\\n"
-        + "----------------------------------------\\n"
-        + "\\n".join(f"{r['position']} | {r['name']} | {r['sail']} | {r['code']}" for r in result_rows)
-        + f"\\n\\nView the latest results at {_public_web_base()}.\\nManage subscriptions: {links.get('manage', _public_web_base())}\\n"
-    )
-    msg.add_alternative(_results_email_html(title, cls, race, result_rows, links.get("manage", _public_web_base())), subtype="html")
+    msg.set_content(_results_email_text(title, cls, race, standings_payload, manage_url))
+    msg.add_alternative(
+        _results_email_html(title, cls, race, standings_payload, manage_url), subtype="html")
     try:
         with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as smtp:
             smtp.starttls()
@@ -9157,6 +9219,12 @@ async def _notify_published_results(race: dict) -> dict:
         {"subscription_type": "boat", "target_id": {"$in": boat_ids}},
     ]}
     subscribers = await db.subscriptions.find(query, {"_id": 0}).to_list(SUBSCRIPTION_MAX_EMAIL_ROWS)
+    standings_payload = None
+    if subscribers:
+        try:
+            standings_payload = await _series_results(series)
+        except Exception as exc:
+            logger.error("RESULTS EMAIL STANDINGS FAILED series=%s error=%s", series.get("id"), exc)
     event_id = race.get("publication_event_id") or f"race:{race.get('id')}:{race.get('published_at')}"
     sent = 0
     skipped = 0
@@ -9176,7 +9244,8 @@ async def _notify_published_results(race: dict) -> dict:
             continue
         sub = dict(sub)
         sub["manage_token"] = _decrypt_secret(sub.get("manage_token_enc", ""))
-        if await _send_published_results_email(email, race, series, cls, sub):
+        if standings_payload and await _send_published_results_email(
+                email, race, series, cls, sub, standings_payload):
             await db.subscription_deliveries.update_one({"delivery_key": delivery_key}, {"$set": {"sent_at": now_iso(), "status": "sent"}})
             sent += 1
         else:

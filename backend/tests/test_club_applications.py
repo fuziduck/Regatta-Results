@@ -246,6 +246,35 @@ def test_public_subscription_targets_reject_private_clubs_and_allow_legacy(monke
     assert visible["club_name"] == "Legacy Club"
 
 
+def test_published_results_email_contains_full_series_standings():
+    payload = {
+        "races": [{"race_number": 1, "date": "2026-05-01"},
+                  {"race_number": 2, "date": "2026-05-08"}],
+        "standings": [
+            {"rank": 1, "boat_name": "Bluebell", "sail_no": "42", "home_club": "Harbour YC",
+             "scores": [{"points": 1, "code": "FINISHED", "discarded": False},
+                        {"points": 4, "code": "DNC", "discarded": True}],
+             "total": 5, "net": 1},
+            {"rank": 2, "boat_name": "Wren", "sail_no": "7", "home_club": "Bay YC",
+             "scores": [{"points": 2, "code": "FINISHED", "discarded": False},
+                        {"points": 1, "code": "FINISHED", "discarded": False}],
+             "total": 3, "net": 3},
+        ],
+    }
+    race = {"race_number": 2}
+    cls = {"name": "Sonata"}
+    tables = server._results_email_tables(payload)
+    text = server._results_email_text("Harbour YC — Spring Series — Race 2", cls, race, payload, "https://example.test/manage")
+    html = server._results_email_html("Harbour YC — Spring Series — Race 2", cls, race, payload, "https://example.test/manage")
+
+    assert tables[0]["headers"] == ["#", "Boat", "Sail no.", "Club", "Race 1", "Race 2", "Total", "Net"]
+    assert tables[0]["rows"][0] == [1, "Bluebell", "42", "Harbour YC", "1", "(4 DNC)", 5, 1]
+    assert "Bluebell | 42 | Harbour YC | 1 | (4 DNC) | 5 | 1" in text
+    assert "Wren" in text and "Race 1" in text and "Race 2" in text
+    assert "\n" in text and "\\n" not in text
+    assert "<th" in html and "Net" in html and "(4 DNC)" in html
+
+
 def test_notification_delivery_skips_private_club_subscribers(monkeypatch):
     server.db = application_db(
         clubs=[{"id": "private", "name": "Private Club", "approval_status": "rejected"}],
