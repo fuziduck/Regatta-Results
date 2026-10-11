@@ -115,6 +115,42 @@ class TestA61Resequence:
         pos = {r["boat_id"]: r["position"] for r in results}
         assert pos == {"a": 2, "b": 1}
 
+    def test_resequence_preserves_the_officers_order_not_entry_order(self):
+        """One-design places are the officer's recorded order (rule A4). The
+        stored results array is in entry order, which is unrelated to the
+        finishing order (a boat tapped first may sit anywhere in the array).
+        Re-sequencing must never re-derive the fleet's places from that array
+        — which is what sorting by the (absent) finish time did, because every
+        one-design finish has no time and the sort fell back to entry order."""
+        results = [
+            {"boat_id": "d", "code": "FINISHED", "position": 4, "finish_time": None},
+            {"boat_id": "c", "code": "FINISHED", "position": 3, "finish_time": None},
+            {"boat_id": "b", "code": "FINISHED", "position": 2, "finish_time": None},
+            {"boat_id": "a", "code": "FINISHED", "position": 1, "finish_time": None},
+        ]
+        server._resequence_finished(results)
+        pos = {r["boat_id"]: r["position"] for r in results}
+        assert pos == {"a": 1, "b": 2, "c": 3, "d": 4}
+
+    def test_a_code_change_moves_up_only_the_boats_behind(self):
+        """RRS A6.1: retiring a boat moves up the boats with a worse finishing
+        place — and leaves the boats ahead untouched. It must not shuffle the
+        whole fleet, whatever order the results array happens to be in."""
+        results = [
+            {"boat_id": "e", "code": "FINISHED", "position": 5, "finish_time": None},
+            {"boat_id": "a", "code": "FINISHED", "position": 1, "finish_time": None},
+            {"boat_id": "d", "code": "FINISHED", "position": 4, "finish_time": None},
+            {"boat_id": "b", "code": "FINISHED", "position": 2, "finish_time": None},
+            {"boat_id": "c", "code": "FINISHED", "position": 3, "finish_time": None},
+        ]
+        for r in results:
+            if r["boat_id"] == "c":
+                r["code"] = "RET"
+                r["position"] = None
+        server._resequence_finished(results)
+        pos = {r["boat_id"]: r["position"] for r in results}
+        assert pos == {"a": 1, "b": 2, "c": None, "d": 3, "e": 4}
+
 
 class TestA8Tiebreak:
     """A8.1 — counting race scores best-to-worst; excluded scores not used.

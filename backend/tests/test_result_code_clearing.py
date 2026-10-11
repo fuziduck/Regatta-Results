@@ -82,7 +82,10 @@ def _db(races, series, classes, boats=()):
     return types.SimpleNamespace(
         races=_Coll(races), series=_Coll(series), classes=_Coll(classes),
         boats=_Coll(boats), audit_logs=_Coll([]), season_snapshots=_Coll([]),
-        users=_Coll([]))
+        users=_Coll([]),
+        # The race guard resolves the owning club's visibility; a minimal
+        # approved club keeps the endpoint reachable (as in the live app).
+        clubs=_Coll([{"id": "club-a", "name": "Club A", "approval_status": "approved"}]))
 
 
 ADMIN = {"user_id": "u1", "username": "a@b.c", "role": "admin", "club_id": "club-a"}
@@ -147,6 +150,23 @@ class TestRestoringANormalFinish:
         assert "rdg_reason" not in restored and "rdg_decision_maker" not in restored
         assert restored["finish_time"] == "2026-05-02T12:10:00Z"
         assert restored["position"] == 2
+
+    def test_one_design_code_change_keeps_the_officers_order(self):
+        """Retiring one boat in a one-design race must move up only the boats
+        behind her (A6.1). The stored results array is in entry order, which is
+        unrelated to the finishing order; changing a code must never re-derive
+        the fleet's places from it (a regression that reshuffled the whole
+        fleet whenever any boat was scored RET/TLE/DNF/...)."""
+        race = _race([_result("b4", "FINISHED", 4),
+                      _result("b2", "FINISHED", 2),
+                      _result("b5", "FINISHED", 5),
+                      _result("b1", "FINISHED", 1),
+                      _result("b3", "FINISHED", 3)])
+        server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+        asyncio.run(server.adjust_result(
+            "r1", "b4", server.ResultAdjustInput(code="RET"), ADMIN))
+
+        assert _places(race) == {"b1": 1, "b2": 2, "b3": 3, "b4": None, "b5": 4}
 
     def test_one_design_places_are_never_rederived_from_the_clock(self):
         race = _race([_result("b1", "FINISHED", 1),

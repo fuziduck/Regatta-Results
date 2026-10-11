@@ -5460,24 +5460,41 @@ async def delete_race(race_id: str, request: Request,
     result = await db.races.delete_one(_version_filter(race_id, expected))
     if result.deleted_count == 0:
         _raise_stale(expected)
-    # If the race belonged to a mini-series group, remove its number from
-    # the group's race_numbers list so the batch page and scoring engine
-    # don't reference a race that no longer exists.
+    # If the race belonged to a mini-series group, keep the group's race
+    # numbers consistent with what is still stored. Every sub-race of a group
+    # shares the group's ONE race number (R3A, R3B, … are all number 3), so a
+    # number may only be dropped once no sibling sub-race carrying it remains:
+    # dropping it while a sibling is still there would orphan that race — and
+    # the fleet signed on in it — with nothing referencing it.
     series_id = race.get("series_id")
     race_number = race.get("race_number")
     if series_id and race_number is not None:
         series = await db.series.find_one({"id": series_id}, {"_id": 0})
-        groups = list(series.get("mini_series_groups") or [])
-        changed = False
-        for g in groups:
-            nums = g.get("race_numbers") or []
-            if race_number in nums:
+        if series:
+            groups = list(series.get("mini_series_groups") or [])
+            changed = False
+            for group_index, g in enumerate(groups):
+                nums = g.get("race_numbers") or []
+                if race_number not in nums:
+                    continue
+                remaining = await db.races.count_documents(
+                    {"series_id": series_id, "race_number": race_number,
+                     "mini_group_id": group_index})
+                if remaining:
+                    # Sibling sub-races still use this shared number.
+                    continue
                 g["race_numbers"] = [n for n in nums if n != race_number]
                 changed = True
-        if changed:
-            await db.series.update_one(
-                {"id": series_id},
-                {"$set": {"mini_series_groups": groups, "version": (series.get("version") or 0) + 1}})
+            if changed:
+                # An emptied group must not linger: the batch page and the
+                # scoring engine read mini_series_groups, and a phantom empty
+                # group would keep showing after its last race is deleted.
+                groups = [g for g in groups if g.get("race_numbers")]
+                update = {"mini_series_groups": groups,
+                          "version": (series.get("version") or 0) + 1}
+                if not groups:
+                    update["mini_series"] = False
+                await db.series.update_one({"id": series_id}, {"$set": update})
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_DELETED",
                      description=f"Deleted race {race.get('race_number')} ({race.get('date')})",
@@ -6602,8 +6619,8 @@ async def _resolve_race_start(race):
 
 def _place_finished(finished, scoring_mode, start_time, boat_ratings):
     """Assign places 1..n across ONE fleet of finished boats: by corrected
-    time for a handicap mode (see RATING_FIELD), by the recorded finish time
-    for one-design.
+    time for a handicap mode (see RATING_FIELD), by the officer's recorded
+    finishing order for one-design.
 
     Handicap modes: boats with equal corrected time share a place, and RRS A7
     later splits the points of the tied places and the place immediately
@@ -6638,6 +6655,21 @@ def _place_finished(finished, scoring_mode, start_time, boat_ratings):
             for r in rs:
                 r["position"] = pos
             pos += len(rs) - 1
+    elif scoring_mode == "one_design":
+        # One-design: the recorded finishing order is the officer's order
+        # (rule A4) and is never re-derived from the clock. Order by the
+        # recorded place so a later score change (A6.1) only closes the gap
+        # and moves up the boats that were BEHIND the changed boat — it must
+        # never re-sort the whole fleet from a meaningless key. A boat with
+        # no place yet (a fresh finish tap) falls in after the placed boats,
+        # by its recorded finish time, and can be moved from there.
+        finished.sort(key=lambda x: (
+            x.get("position") is None,
+            x.get("position") if x.get("position") is not None else 0,
+            x.get("finish_time") or "",
+        ))
+        for i, r in enumerate(finished):
+            r["position"] = i + 1
     else:
         finished.sort(key=lambda x: x.get("finish_time") or "")
         for i, r in enumerate(finished):
