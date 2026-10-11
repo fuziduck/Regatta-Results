@@ -1474,6 +1474,21 @@ MANUAL_POINT_CODES = {"DPI", "RDG"}
 # log keeps the history).
 DECISION_FIELDS = ("dpi_reason", "dpi_decision_maker", "dpi_date", "dpi_notes",
                    "rdg_reason", "rdg_decision_maker", "rdg_date", "rdg_notes")
+
+
+def _clear_committee_decision(target: dict) -> None:
+    """Drop a committee-entered score (DPI/RDG) from a result.
+
+    The points and the decision record belong to the manual-points code, so
+    every way a result can LEAVE that code — a normal finish, an undone finish
+    or a bar being signed back to DNC — must take them with it. A finish must
+    never inherit a discretionary penalty's points (which the engine would add
+    straight onto the finishing place)."""
+    target["penalty_points"] = 0
+    for field in DECISION_FIELDS:
+        target.pop(field, None)
+
+
 # Version of this scoring engine. Every locked-season snapshot records the
 # engine version that produced it, so a future rewrite can never be mistaken
 # for the rules that actually applied to a historical season.
@@ -5197,6 +5212,11 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
             if r["code"] == "DNC":
                 r["code"] = "DNS"  # racing, not yet finished
         else:
+            if r.get("code") in MANUAL_POINT_CODES:
+                # The boat is signed off, so its committee decision no longer
+                # applies; clear it before the code becomes DNC (otherwise a
+                # later restore to a finish would add the penalty's points).
+                _clear_committee_decision(r)
             r["code"] = "DNC"
             r["finish_time"] = None
             r["position"] = None
@@ -5223,6 +5243,8 @@ async def record_finish(race_id: str, data: FinishInput, user: dict = Depends(re
     results = race["results"]
     for r in results:
         if r["boat_id"] == data.boat_id:
+            if r.get("code") in MANUAL_POINT_CODES:
+                _clear_committee_decision(r)
             r["code"] = "FINISHED"
             r["finish_time"] = data.finish_time or now_iso()
             r["position"] = None  # set by re-sequencing below
@@ -5248,6 +5270,8 @@ async def undo_finish(race_id: str, data: FinishInput, user: dict = Depends(requ
     results = race["results"]
     for r in results:
         if r["boat_id"] == data.boat_id:
+            if r.get("code") in MANUAL_POINT_CODES:
+                _clear_committee_decision(r)
             r["code"] = "DNS"
             r["finish_time"] = None
             r["position"] = None
@@ -5287,9 +5311,7 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
         # Leaving a manual-points code clears the committee's points so they
         # can never leak into a later finishing-place score.
         if prev_code in MANUAL_POINT_CODES and data.code not in MANUAL_POINT_CODES:
-            target["penalty_points"] = 0
-            for field in DECISION_FIELDS:
-                target.pop(field, None)
+            _clear_committee_decision(target)
     # DPI/RDG are decisions, never inferences: the resulting score must be
     # entered by the committee on THIS request rather than guessed. The stored
     # penalty_points default of 0 must never satisfy the requirement — a
@@ -5311,6 +5333,12 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
             raise HTTPException(status_code=400,
                                 detail=f"A boat scored {new_code} cannot carry a finishing position — {new_code} boats are not placed.")
         target["position"] = data.position
+        # One-design: changing a place reorders the fleet (the boat takes that
+        # place and the boats around it shift). Handicap places come from
+        # corrected time and are re-derived, never reordered by hand.
+        if (new_code == "FINISHED" and data.elapsed_seconds is None
+                and not await _race_corrected_order(race)):
+            _reorder_finished_by_position(results, boat_id, data.position)
     if data.finish_time is not None:
         target["finish_time"] = data.finish_time
     if data.elapsed_seconds is not None:
@@ -5332,12 +5360,13 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     if data.code is not None and prev_code == "FINISHED" and data.code in POST_FINISH_RETIRE_CODES:
         resequence = True
     # ... and the same in reverse: a boat released from a code back to a normal
-    # finish re-enters the finishing order from its recorded time, so the boats
-    # it was taken out of order ahead of move down again. Handicap places are
-    # derived from corrected time; one-design places are the officer's order and
-    # are never re-derived from the clock.
-    if new_code == "FINISHED" and prev_code != "FINISHED" and target.get("finish_time") \
-            and await _race_corrected_order(race):
+    # finish re-enters the finishing order, so the boats it was taken out of
+    # order ahead of move down again. This always re-sequences: a handicap boat
+    # is re-placed from its corrected time, and a one-design boat keeps the
+    # officer's order — a restored boat left without a place would otherwise be
+    # scored as a non-finish (the engine reads FINISHED + no place as the DNF
+    # value) even though it finished.
+    if new_code == "FINISHED" and prev_code != "FINISHED":
         resequence = True
     if resequence:
         await _resequence_race(race)
@@ -6241,7 +6270,12 @@ def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
         "tle": {"enabled": False, "time_limit_minutes": None, "method": "finishers_plus_1"},
         "scp": {"method": "percent", "value": 20.0, "cap_dnf": True},
         "zfp": {"method": "percent", "value": 20.0, "cap_dnf": True},
-        "duty": {"enabled": True, "method": "average_own_sailed", "round": 2},
+        # discards "without" (default): the duty average uses every non-duty
+        # race, before the series discards apply. "with": the boat's worst
+        # discardable races are dropped first, so the average is taken over the
+        # races that count toward her series score.
+        "duty": {"enabled": True, "method": "average_own_sailed", "round": 2,
+                 "discards": "without"},
     }
 
 
@@ -6676,6 +6710,25 @@ def _place_finished(finished, scoring_mode, start_time, boat_ratings):
             r["position"] = i + 1
 
 
+def _reorder_finished_by_position(results, boat_id, position) -> None:
+    """Move a finished boat to `position` and renumber the rest (one-design).
+
+    The finishing order is the officer's own (rule A4), so nudging a boat up or
+    down reorders the fleet — it must not leave two boats sharing one number,
+    which the scoring engine would treat as a dead heat on the water (rule A7)
+    and split their points."""
+    finished = [r for r in results if r.get("code") == "FINISHED"]
+    target = next((r for r in finished if r.get("boat_id") == boat_id), None)
+    if target is None:
+        return
+    others = sorted((r for r in finished if r is not target),
+                    key=lambda r: (r.get("position") is None, r.get("position") or 0))
+    index = max(0, min(int(position) - 1, len(others)))
+    order = others[:index] + [target] + others[index:]
+    for i, r in enumerate(order):
+        r["position"] = i + 1
+
+
 def _resequence_finished(results, scoring_mode="one_design", start_time=None,
                          boat_ratings=None, boat_modes=None):
     """Assign finishing places 1..n to finished boats (see _place_finished for
@@ -6967,20 +7020,26 @@ def _fold_combined_mini_groups(series, agg, race_meta):
     return new_agg, new_meta
 
 
-def _apply_duty_points(agg, entries_by_race, cfg=None):
+def _apply_duty_points(agg, entries_by_race, cfg=None, discards=0):
     """Duty races (OOD — Officer of the Day) score the boat's own average of
-    its scores across EVERY race in the series before discards — including
-    DNC (and DNS, RET, DNF, DSQ, etc.), each at its existing scoring-rule
-    value. Only the boat's other duty races are excluded from the average
-    (a duty score cannot average itself). A boat with no non-duty races
-    falls back to the DNC score (series entries + 1) so duty can never score
-    better than a finish in a tiny fleet.
+    its scores across the series — including DNC (and DNS, RET, DNF, DSQ,
+    etc.), each at its existing scoring-rule value. Only the boat's other duty
+    races are excluded from the average (a duty score cannot average itself).
+    A boat with no non-duty races falls back to the DNC score (series entries
+    + 1) so duty can never score better than a finish in a tiny fleet.
+
+    cfg["duty"]["discards"] chooses the average's basis:
+
+      "without" (default) — every non-duty race counts, i.e. the average is
+        taken before the series' discards are applied.
+      "with" — the boat's `discards` worst discardable non-duty races are
+        dropped first (the same discards her series net applies), so the
+        average is taken over the races that count toward her score.
 
     The duty rule comes from the series scoring config (cfg["duty"]); the
     rounding precision is configurable (default 2 dp). This runs on every
-    standings computation, so a duty score is always the average of the
-    races scored to date — it is dynamically recalculated after every race
-    until the series is completed, before discards are applied.
+    standings computation, so a duty score is always recalculated after every
+    race until the series is completed.
 
     `agg` must hold EVERY race of the series: it is the series average that is
     wanted, so a caller displaying one mini series scores the whole series
@@ -6991,11 +7050,25 @@ def _apply_duty_points(agg, entries_by_race, cfg=None):
         # Series opted out of duty scoring: OOD entries keep their base
         # non-finish score instead of the average.
         return
+    with_discards = str(duty_cfg.get("discards", "without")).lower() == "with"
     for entries in agg.values():
-        # Every race in the series contributes to the OOD average (DNC
-        # included, at its existing numerical score); only other duty races
-        # are left out — averaging a duty score into itself is circular.
-        counting = [e["points"] for e in entries if e["code"] not in DUTY_CODES]
+        # Every non-duty race contributes to the OOD average (DNC included, at
+        # its existing numerical score); duty races are left out — averaging a
+        # duty score into itself is circular.
+        others = [e for e in entries if e["code"] not in DUTY_CODES]
+        counting = [e["points"] for e in others]
+        if with_discards and discards > 0 and others:
+            # Drop the boat's worst discardable non-duty races (never all of
+            # them), exactly as the series net does.
+            drop_n = min(int(discards), max(0, len(others) - 1))
+            worst = sorted(range(len(others)), key=lambda k: others[k]["points"], reverse=True)
+            dropped = set()
+            for k in worst:
+                if len(dropped) >= drop_n:
+                    break
+                if others[k].get("discardable", True):
+                    dropped.add(k)
+            counting = [others[k]["points"] for k in range(len(others)) if k not in dropped]
         for i, e in enumerate(entries):
             if e["code"] in DUTY_CODES:
                 if counting:
@@ -7144,8 +7217,14 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
         else:
             series_entries = race.get("entries_count") or len(results)
         entries_by_race.append(series_entries)
-        start_entries = _start_area_entries(results)
-        finishers = len([r for r in results if r.get("code") == "FINISHED"])
+        # Only boats in the scored fleet count toward the A5 bases. A boat
+        # signed onto another series (or removed from this one) may still hold
+        # a line in this race; her presence must not inflate the
+        # "start-area entries + 1" / "finishers + 1" / TLE score of the fleet
+        # that IS being scored here.
+        fleet_results = [r for r in results if r.get("boat_id") in boat_map]
+        start_entries = _start_area_entries(fleet_results)
+        finishers = len([r for r in fleet_results if r.get("code") == "FINISHED"])
         present = {r["boat_id"]: r for r in results}
         per_boat = {}
         for bid in boat_map:
@@ -7292,7 +7371,25 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
         races, boat_map, cfg, member_ids, entries_base,
         scoring_mode=selected_mode, derive_positions=derive_positions,
         position_boat_map=position_boat_map)
-    _apply_duty_points(agg, entries_by_race, cfg)
+    # Duty "with discards": the OOD average drops the boat's worst results,
+    # so the duty score needs the same discard count the series net uses —
+    # measured over the whole series (a combined mini-series day folds into a
+    # single race, so it counts once).
+    duty_cfg = cfg.get("duty") or {}
+    duty_discards = 0
+    if duty_cfg.get("enabled", True) \
+            and str(duty_cfg.get("discards", "without")).lower() == "with":
+        full_race_count = len(races)
+        if fold_combined:
+            full_race_count -= sum(
+                max(0, g["race_count"] - 1)
+                for g in _normalize_mini_groups(series, races)
+                if g.get("scoring") == "combined")
+        configured_discards = int(series.get("discards") or 0)
+        if cfg.get("discard_policy") == "increasing":
+            configured_discards = _effective_discards(cfg, full_race_count, configured_discards)
+        duty_discards = min(configured_discards, max(0, full_race_count - 1))
+    _apply_duty_points(agg, entries_by_race, cfg, discards=duty_discards)
     agg = {bid: [entries[i] for i in view_idx] for bid, entries in agg.items()}
     races = view_races
     race_meta = [{"race_number": r.get("race_number"), "date": r.get("date")} for r in races]

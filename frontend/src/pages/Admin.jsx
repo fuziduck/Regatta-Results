@@ -1162,7 +1162,7 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
     tle: { enabled: false, time_limit_minutes: null, method: "finishers_plus_1" },
     scp: { method: "percent", value: 20, cap_dnf: true },
     zfp: { method: "percent", value: 20, cap_dnf: true },
-    duty: { enabled: true, method: "average_own_sailed", round: 2 },
+    duty: { enabled: true, method: "average_own_sailed", round: 2, discards: "without" },
   });
   // Rebuild a form scoring_config from a stored series (legacy flat flags are
   // normalised into the versioned config so old seasons keep their rules).
@@ -1545,9 +1545,25 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
                     <TooltipTrigger asChild>
                       <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={!!form.scoring_config?.duty?.enabled} onCheckedChange={(v) => patchCfgNested("duty", { enabled: v })} data-testid="series-duty-switch" /><Label className="text-xs font-semibold">Duty / Average Points (OOD)</Label></div>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-xs">A boat on duty (OOD) scores the average of her results across every race in the series — DNC included, at its normal score — recalculated after every race before discards apply.</TooltipContent>
+                    <TooltipContent side="top" className="max-w-xs">A boat on duty (OOD) scores the average of her results across every race in the series — DNC included, at its normal score — recalculated after every scored race. Choose whether that average is taken with or without discards.</TooltipContent>
                   </Tooltip>
-                  {form.scoring_config?.duty?.enabled && <p className="text-[11px] text-muted-foreground">A duty boat scores the average of her results across the series (DNC included), recalculated after every scored race before discards apply.</p>}
+                  {form.scoring_config?.duty?.enabled && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Average calculated</Label>
+                      <Select value={form.scoring_config?.duty?.discards || "without"} onValueChange={(v) => patchCfgNested("duty", { discards: v })}>
+                        <SelectTrigger className="h-8" data-testid="series-duty-discards"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="without">Without discards — every race counts (DNC included)</SelectItem>
+                          <SelectItem value="with">With discards — drop her worst results first</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[11px] text-muted-foreground">
+                        {form.scoring_config?.duty?.discards === "with"
+                          ? "A duty boat scores the average of her counting results (worst discardable races dropped), recalculated after every scored race."
+                          : "A duty boat scores the average of all her results across the series (DNC included), before discards apply."}
+                      </p>
+                    </div>
+                  )}
                 </div>
                 <div className="rounded-md border border-border/70 p-2.5 space-y-2">
                   <div className="flex items-center justify-between">

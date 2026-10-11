@@ -338,6 +338,35 @@ describe("Admin competition tabs", () => {
     }));
   });
 
+  it("lets an administrator choose how the OOD duty average is calculated", async () => {
+    render(<Harness />);
+    await flush();
+    await openTab("tab-club-championship");
+    await act(async () => { inPage("add-series-btn").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+
+    const dialog = document.querySelector('[role="dialog"]');
+    // Duty scoring is on by default, and its average can be taken with or
+    // without the series discards.
+    expect(dialog.querySelector('[data-testid="series-duty-switch"]').getAttribute("aria-checked")).toBe("true");
+    expect(dialog.querySelector('[data-testid="series-duty-discards"]')).not.toBeNull();
+
+    const nameInput = dialog.querySelector('[data-testid="series-name-input"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(nameInput, "Duty Option Series");
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    mockApi.createSeries = jest.fn().mockResolvedValue({ id: "new-series" });
+    await act(async () => { dialog.querySelector('[data-testid="save-series-btn"]').click(); });
+    await flush();
+    expect(mockApi.createSeries).toHaveBeenCalledWith(expect.objectContaining({
+      scoring_config: expect.objectContaining({
+        duty: expect.objectContaining({ discards: "without" }),
+      }),
+    }));
+  }, 30000);
+
   it("no longer asks for a series type in the Add series dialog", async () => {
     render(<Harness />);
     await flush();

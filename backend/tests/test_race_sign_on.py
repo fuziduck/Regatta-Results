@@ -98,7 +98,9 @@ def _line(boat_id, code):
 def _select(race, boat_ids):
     server.db = types.SimpleNamespace(
         races=_Coll([race]), series=_Coll(SERIES), classes=_Coll(CLASSES),
-        boats=_Coll(BOATS), audit_logs=_Coll([]), season_snapshots=_Coll([]))
+        boats=_Coll(BOATS), audit_logs=_Coll([]), season_snapshots=_Coll([]),
+        # The race guard resolves the owning club's visibility.
+        clubs=_Coll([{"id": "club-a", "name": "Club A", "approval_status": "approved"}]))
     return asyncio.run(server.select_boats(
         "r1", server.SelectBoatsInput(boat_ids=boat_ids), ADMIN))
 

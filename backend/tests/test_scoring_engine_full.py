@@ -388,6 +388,30 @@ class TestSeriesMembership:
         assert by_id["b2"]["scores"][0]["code"] == "DNC"
         assert by_id["b2"]["net"] == 3.0  # series fleet = 2 members + 1
 
+    def test_a_non_member_result_does_not_inflate_the_a5_bases(self):
+        """A race can hold a line for a boat outside the scored fleet (signed
+        onto another series, or removed from membership). Her finish must not
+        raise the "start-area entries + 1" / "finishers + 1" / TLE score of the
+        boats that ARE scored."""
+        # b4 races but is not a member. Members b1,b2 finish and b3 is TLE.
+        series = self._series(member_boat_ids=["b1", "b2", "b3"],
+                              scoring_config={"tle": {"enabled": True,
+                                                      "method": "finishers_plus_1"}})
+        boats = [_boat(i) for i in range(1, 5)]
+        races = [_race(1, [_fin("b1", 1), _fin("b2", 2), _fin("b3", None, "TLE"), _fin("b4", 3)])]
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert set(by_id) == {"b1", "b2", "b3"}
+        assert by_id["b3"]["net"] == 3.0  # member finishers (2) + 1, not 4
+
+        # A5.3: the start-area base counts the members that came to the line.
+        series_a53 = self._series(member_boat_ids=["b1", "b2", "b3"],
+                                  scoring_config={"a5_convention": "a5_3"})
+        races_a53 = [_race(1, [_fin("b1", 1), _fin("b2", 2), _fin("b3", None, "DNF"), _fin("b4", 3)])]
+        st2 = _standings(series_a53, boats, races_a53)
+        by2 = {r["boat_id"]: r for r in st2["standings"]}
+        assert by2["b3"]["net"] == 4.0  # member start-area entries (3) + 1, not 5
+
     def test_empty_membership_falls_back_to_auto_detected_fleet(self):
         """Clearing the explicit list returns to auto-detection: only boats
         that appear in a published race are entered."""
@@ -642,6 +666,51 @@ class TestDutyRecalculation:
         assert mini["b1"]["scores"][0]["points"] == 2.3
         # The mini view still only scores its own races.
         assert [s["points"] for s in mini["b1"]["scores"]] == [2.3, 4.0]
+
+    def test_duty_without_discards_is_the_default_and_unchanged(self):
+        # A stored config that predates the option keeps averaging every race.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 1,
+                  "scoring_config": {"duty": {"enabled": True}}}
+        assert server._series_scoring_config(series)["duty"]["discards"] == "without"
+
+    def test_duty_average_with_discards_drops_the_worst_results(self):
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b1", 5), _fin("b2", 6)]),
+            _race(3, [_fin("b1", code="OOD"), _fin("b2", 1)]),
+        ]
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 1,
+                  "scoring_config": {"duty": {"enabled": True, "round": 2,
+                                              "discards": "with"}}}
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        # b1 sailed 1st and 5th; her worst (5) is discarded from the average,
+        # so the duty score is the counting race alone: 1.0 (not (1+5)/2 = 3.0).
+        assert by_id["b1"]["scores"][2]["code"] == "OOD"
+        assert by_id["b1"]["scores"][2]["points"] == 1.0
+        assert by_id["b1"]["net"] == 2.0
+        # b2 was not on duty, so her own scores are untouched; the series
+        # discard still drops her 6: 2 + 1 = 3.
+        assert by_id["b2"]["scores"][2]["points"] == 1.0
+        assert by_id["b2"]["net"] == 3.0
+
+    def test_duty_with_discards_follows_the_increasing_schedule(self):
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b1", 5), _fin("b2", 4)]),
+            _race(3, [_fin("b1", code="OOD"), _fin("b2", 1)]),
+        ]
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {
+                      "discard_policy": "increasing",
+                      "discard_schedule": [{"after_races": 3, "discards": 1}],
+                      "duty": {"enabled": True, "round": 2, "discards": "with"}}}
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        # 1 discard applies from the 3rd race, so b1's average drops the 5.
+        assert by_id["b1"]["scores"][2]["points"] == 1.0
 
     def test_duty_applied_before_discard(self):
         # OOD average must feed the discard calculation: the duty race itself

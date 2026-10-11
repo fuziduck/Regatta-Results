@@ -168,6 +168,69 @@ class TestRestoringANormalFinish:
 
         assert _places(race) == {"b1": 1, "b2": 2, "b3": 3, "b4": None, "b5": 4}
 
+    def test_committee_points_never_leak_into_a_later_finish(self):
+        """A DPI/RDG score belongs to that code. Signing the boat off (DNC) and
+        back on, then marking it finished, must not leave the committee's
+        points attached — the engine would add them to the finishing place."""
+        race = _race([_result("b1", "FINISHED", 1),
+                      _result("b2", "FINISHED", 2),
+                      _result("b3", "FINISHED", 3)])
+        server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+        asyncio.run(server.adjust_result(
+            "r1", "b2", server.ResultAdjustInput(code="DPI", penalty_points=4), ADMIN))
+        asyncio.run(server.select_boats(
+            "r1", server.SelectBoatsInput(boat_ids=["b1", "b3"]), ADMIN))
+        asyncio.run(server.select_boats(
+            "r1", server.SelectBoatsInput(boat_ids=["b1", "b2", "b3"]), ADMIN))
+        asyncio.run(server.adjust_result(
+            "r1", "b2", server.ResultAdjustInput(code="FINISHED", position=2), ADMIN))
+
+        b2 = next(r for r in race["results"] if r["boat_id"] == "b2")
+        assert b2["code"] == "FINISHED" and b2["position"] == 2
+        assert (b2["penalty_points"] or 0) == 0
+        assert "dpi_reason" not in b2 and "dpi_decision_maker" not in b2
+
+    def test_a_finish_tap_supersedes_a_committee_decision(self):
+        race = _race([_result("b1", "FINISHED", 1),
+                      _result("b2", "RDG", None, "2026-05-02T12:10:00Z", penalty_points=5,
+                              rdg_reason="protest upheld", rdg_decision_maker="PC"),
+                      _result("b3", "FINISHED", 3)])
+        server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+        asyncio.run(server.record_finish(
+            "r1", server.FinishInput(boat_id="b2", finish_time="2026-05-02T12:10:00Z"), ADMIN))
+
+        b2 = next(r for r in race["results"] if r["boat_id"] == "b2")
+        assert b2["code"] == "FINISHED"
+        assert (b2["penalty_points"] or 0) == 0
+        assert "rdg_reason" not in b2 and "rdg_decision_maker" not in b2
+
+    def test_setting_a_place_reorders_the_one_design_fleet(self):
+        """One-design places are the officer's order: moving a boat to a place
+        takes that place and shifts the boats around it, instead of leaving two
+        boats on the same number (which A7 would split as a dead heat)."""
+        race = _race([_result("b1", "FINISHED", 1),
+                      _result("b2", "FINISHED", 2),
+                      _result("b3", "FINISHED", 3)])
+        server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+        asyncio.run(server.adjust_result(
+            "r1", "b3", server.ResultAdjustInput(position=2), ADMIN))
+
+        assert _places(race) == {"b1": 1, "b2": 3, "b3": 2}
+
+    def test_restoring_a_finish_with_a_score_time_gives_it_a_place(self):
+        """A boat released back to a finish must be placed, not left unplaced:
+        the engine reads a FINISHED result with no place as the DNF value."""
+        race = _race([_result("b1", "FINISHED", 1, "2026-05-02T12:00:00Z"),
+                      _result("b2", "RET", None, "2026-05-02T12:10:00Z"),
+                      _result("b3", "FINISHED", 2, "2026-05-02T12:20:00Z")])
+        server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+        asyncio.run(server.adjust_result(
+            "r1", "b2", server.ResultAdjustInput(code="FINISHED"), ADMIN))
+
+        b2 = next(r for r in race["results"] if r["boat_id"] == "b2")
+        assert b2["code"] == "FINISHED"
+        assert b2["position"] is not None
+
     def test_one_design_places_are_never_rederived_from_the_clock(self):
         race = _race([_result("b1", "FINISHED", 1),
                       _result("b2", "DNF", None, "2026-05-02T12:10:00Z"),
