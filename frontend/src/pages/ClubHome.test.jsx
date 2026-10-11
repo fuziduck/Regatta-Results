@@ -58,6 +58,15 @@ const render = async () => {
   });
 };
 
+// Class groups open on demand, so a test that inspects series rows first has
+// to open the class it cares about. This opens every group on the page.
+const expandAllClasses = () => {
+  act(() => {
+    container.querySelectorAll('[data-testid="club-class-toggle"]')
+      .forEach((toggle) => toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  });
+};
+
 beforeEach(() => {
   mockRoute.slug = "harbour-club";
   mockRoute.seriesId = undefined;
@@ -97,13 +106,20 @@ test("renders grouped tables newest first and lets visitors open result pages", 
   const initialYear = container.querySelector('[data-testid="club-results-year"]');
   expect(initialYear.value).toBe(String(CURRENT_YEAR));
   expect([...initialYear.options].map((option) => option.textContent)).toEqual(["All years", ...[...new Set([CURRENT_YEAR, ...series.map((item) => item.year)])].sort((a, b) => b - a).map(String)]);
-  expect(container.querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(series.filter((item) => item.year === CURRENT_YEAR).length);
+  // The index opens as a list of classes: every class's series are rolled up
+  // behind its own arrow, so no series rows are on screen until one is opened.
+  expect(container.querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(0);
+  expect(container.querySelectorAll('[data-testid="club-result-row"]')).toHaveLength(0);
+  expect(container.querySelectorAll('[data-testid="club-class-toggle"]').length).toBeGreaterThan(0);
+  expect([...container.querySelectorAll('[data-testid="club-class-toggle"]')]
+    .every((toggle) => toggle.getAttribute("aria-expanded") === "false")).toBe(true);
   expect([...container.querySelectorAll('[data-testid="club-results-tables"] > section[id^="results-"]')]
     .map((section) => section.querySelector("h2").textContent.replace(/\\d+ results pages?/, "").trim())).toEqual(["Regatta"]);
   act(() => {
     initialYear.value = "all";
     initialYear.dispatchEvent(new Event("change", { bubbles: true }));
   });
+  expandAllClasses();
 
   const sections = [...container.querySelectorAll('[data-testid="club-results-tables"] > section[id^="results-"]')];
   expect(sections.map((section) => section.querySelector("h2").textContent.replace(/\\d+ results pages?/, "").trim())).toEqual([
@@ -176,6 +192,7 @@ test("gives each series its own mark and uses the class image when one is set", 
     year.value = "all";
     year.dispatchEvent(new Event("change", { bubbles: true }));
   });
+  expandAllClasses();
 
   const cards = [...container.querySelectorAll('[data-testid="club-result-card"]')];
   expect(cards.length).toBe(series.length);
@@ -204,6 +221,8 @@ test("adds a race report column that only shows a button where a report exists",
     year.value = "all";
     year.dispatchEvent(new Event("change", { bubbles: true }));
   });
+
+  expandAllClasses();
 
   // Reports are fetched per class, once each.
   expect(mockApi.getClassRaceReports).toHaveBeenCalledWith("class-sonata");
@@ -239,6 +258,8 @@ test("sends a website race report straight out to its host from the index", asyn
     year.value = "all";
     year.dispatchEvent(new Event("change", { bubbles: true }));
   });
+
+  expandAllClasses();
 
   // Table and card layouts each render one control, and both are links out.
   const links = [...container.querySelectorAll('[data-testid="report-button-report-linked"]')];
@@ -363,4 +384,29 @@ test("hides the Official Notice Board link when the club has it switched off", a
   expect(container.querySelector('[data-testid="club-notice-board-link"]')).toBeNull();
   // The rest of the club page still renders.
   expect(container.querySelector('[data-testid="club-results-tables"]')).not.toBeNull();
+});
+
+test("rolls each class's series up behind its arrow until a visitor opens it", async () => {
+  await render();
+  const toggle = () => container.querySelector('[data-testid="club-class-toggle"]');
+  const group = () => toggle().closest('[data-testid="club-result-class-group"]');
+
+  // Collapsed by default: the class is listed, its series are not.
+  const toggles = [...container.querySelectorAll('[data-testid="club-class-toggle"]')];
+  expect(toggles.length).toBeGreaterThan(0);
+  expect(toggles.every((item) => item.getAttribute("aria-expanded") === "false")).toBe(true);
+  expect(group().querySelector('[data-testid="club-class-rows"]')).toBeNull();
+  expect(group().querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(0);
+  expect(group().querySelector("h3").textContent).toContain("Sonata");
+
+  // Opening the class reveals its series...
+  act(() => { toggle().dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  expect(group().querySelector('[data-testid="club-class-rows"]')).not.toBeNull();
+  expect(group().querySelectorAll('[data-testid="club-result-card"]').length).toBeGreaterThan(0);
+
+  // ...and closing it rolls them back up.
+  act(() => { toggle().dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(group().querySelector('[data-testid="club-class-rows"]')).toBeNull();
 });

@@ -184,6 +184,16 @@ function ClubHomeIndex({ club }) {
   const [loading, setLoading] = useState(true);
   const [sortMode, setSortMode] = useState("newest");
   const [selectedYear, setSelectedYear] = useState(String(CURRENT_YEAR));
+  // Class groups open on demand. The index is a list of the club's fleets:
+  // each class shows its name and how many result pages it holds, with its
+  // series rolled up behind the class's own arrow until a visitor opens it.
+  const [openGroups, setOpenGroups] = useState(() => new Set());
+  const toggleGroup = (key) => setOpenGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
 
   useEffect(() => {
     let current = true;
@@ -368,14 +378,29 @@ function ClubHomeIndex({ club }) {
                       // id, so a row without a document reads as empty.
                       const seriesReports = (row) => reportsBySeries.get(row.seriesId) || [];
                       const ratingPills = group.ratingLabels || groupScoringModes(group);
+                      // Scope the open state to this section: a class appears
+                      // in more than one section (e.g. a club championship and
+                      // a regatta), and opening one must not open the other.
+                      const groupId = `${type}|${group.key}`;
+                      const open = openGroups.has(groupId);
+                      const rowsId = `club-class-rows-${String(groupId).replace(/[^a-zA-Z0-9]+/g, "-")}`;
                       return (
                       <section key={group.key} data-testid="club-result-class-group" className="overflow-hidden rounded-2xl border border-border/80 bg-background/70">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 bg-muted/25 px-3 py-3 sm:px-4">
-                          <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex min-w-0 flex-1 items-center gap-3">
                             <ClassMark classData={group.classData} />
-                            <div className="min-w-0">
-                              <h3 className="truncate font-heading text-base uppercase leading-tight tracking-tight text-foreground sm:text-lg">{group.className}</h3>
-                              <p className="mt-0.5 text-xs text-muted-foreground">{group.rows.length} result page{group.rows.length === 1 ? "" : "s"}</p>
+                            <div className="min-w-0 flex-1">
+                              <h3 className="min-w-0 font-heading text-base uppercase leading-tight tracking-tight text-foreground sm:text-lg">
+                                <button type="button" onClick={() => toggleGroup(groupId)} aria-expanded={open} aria-controls={rowsId}
+                                  data-testid="club-class-toggle"
+                                  className="flex w-full min-w-0 items-center gap-2 rounded text-left transition-colors hover:text-ocean focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean">
+                                  <span className="truncate">{group.className}</span>
+                                  <span aria-hidden="true" className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border border-ocean/20 bg-ocean/5 text-ocean transition-transform duration-200 ${open ? "rotate-90" : ""}`}>
+                                    <ChevronRight className="h-4 w-4" />
+                                  </span>
+                                </button>
+                              </h3>
+                              <p className="mt-0.5 text-xs font-normal normal-case tracking-normal text-muted-foreground">{group.rows.length} result page{group.rows.length === 1 ? "" : "s"}</p>
                             </div>
                           </div>
                           {ratingPills.length > 0 && (
@@ -384,6 +409,8 @@ function ClubHomeIndex({ club }) {
                             </span>
                           )}
                         </div>
+                        {open && (
+                        <div id={rowsId} data-testid="club-class-rows">
                         <div className="grid gap-3 p-3 sm:grid-cols-2 sm:p-4 xl:hidden">{group.rows.map((row) => (
                           // The report control sits beside the series link rather
                           // than inside it: a website report is an anchor too, and
@@ -446,6 +473,8 @@ function ClubHomeIndex({ club }) {
                             </tbody>
                           </table>
                         </div>
+                        </div>
+                        )}
                       </section>
                       );
                     })}
