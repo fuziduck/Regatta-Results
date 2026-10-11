@@ -241,3 +241,46 @@ class TestRestoringANormalFinish:
 
         # b2 takes the place the officer gave it; the tapped order is untouched.
         assert _places(race) == {"b1": 1, "b2": 3, "b3": 2}
+
+
+class TestTimeLimitExpiredIsNotPlaced:
+    """A TLE boat is scored by the series' time-limit rule, not by where she
+    crossed, so TLE is aligned with DNF/RET: taking a boat off a finish must
+    drop her stored finishing position. Otherwise the stale place stays on the
+    result and shows as a real finish in the boat's history even though the
+    engine scores the boat as TLE."""
+
+    def test_moving_a_finisher_to_tle_drops_her_place(self):
+        race = _race([_result("b1", "FINISHED", 1, "2026-05-02T12:00:00Z"),
+                      _result("b2", "FINISHED", 2, "2026-05-02T12:10:00Z"),
+                      _result("b3", "FINISHED", 3, "2026-05-02T12:20:00Z")])
+        server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+        asyncio.run(server.adjust_result(
+            "r1", "b2", server.ResultAdjustInput(code="TLE"), ADMIN))
+
+        b2 = next(r for r in race["results"] if r["boat_id"] == "b2")
+        assert b2["code"] == "TLE"
+        assert b2["position"] is None
+        # A6.1: the boats behind the boat taken off a finish close up.
+        assert _places(race) == {"b1": 1, "b2": None, "b3": 2}
+
+    def test_tle_behaves_exactly_like_dnf_and_ret(self):
+        for code in ("DNF", "RET", "TLE"):
+            race = _race([_result("b1", "FINISHED", 1, "2026-05-02T12:00:00Z"),
+                          _result("b2", "FINISHED", 2, "2026-05-02T12:10:00Z"),
+                          _result("b3", "FINISHED", 3, "2026-05-02T12:20:00Z")])
+            server.db = _db([race], ONE_DESIGN_SERIES, CLASSES, BOATS)
+            asyncio.run(server.adjust_result(
+                "r1", "b2", server.ResultAdjustInput(code=code), ADMIN))
+
+            b2 = next(r for r in race["results"] if r["boat_id"] == "b2")
+            assert b2["position"] is None, code
+            assert _places(race) == {"b1": 1, "b2": None, "b3": 2}, code
+
+    def test_a_tle_boat_carrying_a_stale_place_is_flagged(self):
+        race = _race([_result("b1", "FINISHED", 1),
+                      _result("b2", "TLE", 2),  # stale finishing place
+                      _result("b3", "FINISHED", 3)])
+        cfg = {"tle": {"enabled": True, "method": "finishers_plus_1"}}
+        issues = server.validate_race_results(race["results"], cfg)
+        assert any(i["level"] == "error" and "b2" in i["message"] for i in issues)

@@ -367,6 +367,23 @@ describe("Admin competition tabs", () => {
     }));
   }, 30000);
 
+  it("offers the TLE scoring methods and the guide's +1/+2 choice", async () => {
+    render(<Harness />);
+    await flush();
+    await openTab("tab-club-championship");
+    await act(async () => { inPage("add-series-btn").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+
+    const dialog = document.querySelector('[role="dialog"]');
+    const tleSwitch = dialog.querySelector('[data-testid="series-tle-switch"]');
+    await act(async () => { tleSwitch.click(); });
+    await flush();
+    // TLE is defined by the sailing instructions (it is no RRS abbreviation),
+    // so the method and the guide's "[one][two]" increment are both chosen here.
+    expect(dialog.querySelector('[data-testid="series-tle-method"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-testid="series-tle-increment"]')).not.toBeNull();
+  }, 30000);
+
   it("no longer asks for a series type in the Add series dialog", async () => {
     render(<Harness />);
     await flush();

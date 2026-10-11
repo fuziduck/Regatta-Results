@@ -148,6 +148,96 @@ class TestTle:
         assert server.result_points(_res("TLE"), 10, 8, finishers=6, cfg=a) == 7.0
         assert server.result_points(_res("TLE"), 10, 8, finishers=6, cfg=b) == 11.0
 
+    def test_stored_config_without_increment_still_scores_finishers_plus_1(self):
+        # Backward compatibility: a config (or a locked season snapshot) that
+        # predates the "[one][two]" choice scores finishers + 1.
+        assert server._default_scoring_config()["tle"]["increment"] == 1
+        cfg = _cfg(tle={"enabled": True, "method": "finishers_plus_1"})
+        assert server.result_points(_res("TLE"), 10, 8, finishers=6, cfg=cfg) == 7.0
+
+    def test_tle_increment_two_matches_the_guide_choice(self):
+        cfg = _cfg(tle={"enabled": True, "method": "finishers_plus_1", "increment": 2})
+        assert server.result_points(_res("TLE"), 10, 8, finishers=6, cfg=cfg) == 8.0
+
+    def test_tle_method_last_finisher_uses_the_last_finisher_score(self):
+        # The guide's wording scores the last boat that finished, plus the
+        # increment. With no penalties that is the same as counting finishers.
+        cfg = _cfg(tle={"enabled": True, "method": "last_finisher"})
+        assert server.result_points(_res("TLE"), 10, 8, finishers=6, cfg=cfg,
+                                    last_finisher_points=6.0) == 7.0
+        cfg2 = _cfg(tle={"enabled": True, "method": "last_finisher", "increment": 2})
+        assert server.result_points(_res("TLE"), 10, 8, finishers=6, cfg=cfg2,
+                                    last_finisher_points=6.0) == 8.0
+
+    def test_finisher_count_includes_penalised_finishers(self):
+        # b3 took a scoring penalty (44.3(a)): she FINISHED and keeps her
+        # penalised place, so she is one of the "boats that finished" a TLE
+        # rule measures against. Counting only FINISHED lines would score the
+        # TLE boat 2 + 1 = 3.0 — better than a boat that completed the race.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {"tle": {"enabled": True, "method": "finishers_plus_1"}}}
+        boats = [_boat(i) for i in range(1, 6)]
+        race = _race(1, [
+            _fin("b1", 1), _fin("b2", 2),
+            {"boat_id": "b3", "code": "SCP", "position": 3,
+             "finish_time": "2026-05-02T10:03:00Z", "penalty_points": 0},
+            _fin("b4", None, "TLE"), _fin("b5", None, "DNF"),
+        ])
+        by_id = {r["boat_id"]: r for r in _standings(series, boats, [race])["standings"]}
+        assert by_id["b3"]["scores"][0]["points"] == 4.0      # 3 + 20% of DNF (6)
+        assert by_id["b4"]["scores"][0]["points"] == 4.0      # 3 finishers + 1
+        assert by_id["b5"]["scores"][0]["points"] == 6.0      # A5.2: entries (5) + 1
+
+    def test_tle_last_finisher_never_beats_a_penalised_finisher(self):
+        # Same race, but scored on the last finisher's own points. The counting
+        # method ties b3's penalised 4.0; this one is strictly worse, which is
+        # why the guide words its TLE score that way.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {"tle": {"enabled": True, "method": "last_finisher"}}}
+        boats = [_boat(i) for i in range(1, 6)]
+        race = _race(1, [
+            _fin("b1", 1), _fin("b2", 2),
+            {"boat_id": "b3", "code": "SCP", "position": 3,
+             "finish_time": "2026-05-02T10:03:00Z", "penalty_points": 0},
+            _fin("b4", None, "TLE"), _fin("b5", None, "DNF"),
+        ])
+        by_id = {r["boat_id"]: r for r in _standings(series, boats, [race])["standings"]}
+        assert by_id["b3"]["scores"][0]["points"] == 4.0
+        assert by_id["b4"]["scores"][0]["points"] == 5.0      # last finisher (4.0) + 1
+        assert by_id["b5"]["scores"][0]["points"] == 6.0
+
+    def test_penalty_without_a_place_is_not_a_finisher(self):
+        # An SCP line with no finishing place cannot have the penalty applied:
+        # the engine scores her as a non-finish (and validation flags it), so
+        # she must not inflate the finisher count either.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {"tle": {"enabled": True, "method": "finishers_plus_1"}}}
+        boats = [_boat(i) for i in range(1, 5)]
+        race = _race(1, [
+            _fin("b1", 1), _fin("b2", 2),
+            {"boat_id": "b3", "code": "SCP", "position": None,
+             "finish_time": None, "penalty_points": 0},
+            _fin("b4", None, "TLE"),
+        ])
+        by_id = {r["boat_id"]: r for r in _standings(series, boats, [race])["standings"]}
+        assert by_id["b4"]["scores"][0]["points"] == 3.0      # 2 finishers + 1
+
+    def test_finishers_convention_counts_penalised_finishers(self):
+        # The A5 "finishers" convention (RYA/Sailwave) shares the same basis:
+        # b2 finished under a scoring penalty, so DNF = 2 finishers + 1 = 3.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_config": {"a5_convention": "finishers"}}
+        boats = [_boat(i) for i in range(1, 4)]
+        race = _race(1, [
+            _fin("b1", 1),
+            {"boat_id": "b2", "code": "SCP", "position": 2,
+             "finish_time": "2026-05-02T10:02:00Z", "penalty_points": 0},
+            _fin("b3", None, "DNF"),
+        ])
+        by_id = {r["boat_id"]: r for r in _standings(series, boats, [race])["standings"]}
+        assert by_id["b2"]["scores"][0]["points"] == 3.0
+        assert by_id["b3"]["scores"][0]["points"] == 3.0
+
     def test_tle_end_to_end_in_standings(self):
         # 4 boats: b1 1st, b2 2nd, b3 TLE, b4 DNC. TLE rule finishers+1 = 3,
         # DNC = 5. TLE boats must NOT be treated as a finishing position.

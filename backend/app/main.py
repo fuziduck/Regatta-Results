@@ -1465,6 +1465,13 @@ TLE_CODES = {"TLE"}
 # Penalties applied on top of a finishing place (RRS 44.3(c) / 30.2). The
 # applicable percentage/points/places come from the series scoring config.
 PENALTY_CODES = {"SCP", "ZFP"}
+# Codes whose boat finished the race and holds a finishing place, possibly made
+# worse by a penalty. An SCP/ZFP boat did finish (44.3(a) / 30.2) and keeps her
+# penalised place, so she counts among the "boats that finished" that the A5
+# finishers convention and the TLE rule measure against — otherwise a TLE boat
+# could score better than a boat that finished. A boat scored DNF, RET, DSQ,
+# NSC, DNC/DNS or TLE never counts.
+PLACED_CODES = ("FINISHED", *PENALTY_CODES)
 # Manual-points codes: the race committee / protest committee decides the
 # resulting score (DPI — discretionary penalty; RDG — redress granted).
 MANUAL_POINT_CODES = {"DPI", "RDG"}
@@ -5303,10 +5310,12 @@ async def adjust_result(race_id: str, boat_id: str, data: ResultAdjustInput,
     if data.code is not None:
         target["code"] = data.code
         # ZFP/SCP boats finished, so their finishing place is kept; RDG/DPI
-        # boats are scored by the committee's manual points (place irrelevant);
-        # TLE boats crossed after the limit and score per the TLE rule; all
-        # other codes lose their place.
-        if data.code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES, *TLE_CODES):
+        # boats are scored by the committee's manual points (place irrelevant).
+        # Every other code loses its place — including TLE, which scores per
+        # the series' time-limit rule rather than by where she crossed, so a
+        # boat moved off a finish must not keep a stale finishing position
+        # that would otherwise show as a real finish in her history.
+        if data.code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES):
             target["position"] = None
         # Leaving a manual-points code clears the committee's points so they
         # can never leak into a later finishing-place score.
@@ -6233,6 +6242,20 @@ def _start_area_entries(results) -> int:
     return len([r for r in results if r.get("code") not in ("DNC", *DUTY_CODES)])
 
 
+def _finished_boats(results) -> list:
+    """The result lines whose boat finished the race and holds a place.
+
+    This is the "boats that finished" basis the sailing-instructions wording
+    uses ("one more than the number of boats that did finish the race") and
+    that the A5.3 / finishers conventions measure against (see PLACED_CODES).
+    A line carrying a finished code but no finishing place is not a finishing
+    place at all — the engine scores it as a non-finish (see result_points) and
+    validation flags it — so it does not count here either.
+    """
+    return [r for r in results
+            if r.get("code") in PLACED_CODES and r.get("position") is not None]
+
+
 def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
     """The canonical, complete scoring-rule configuration for a series.
 
@@ -6243,10 +6266,27 @@ def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
       "a5_3" scores start-area codes start-area entries + 1 (A5.3 SI option);
       "finishers" scores them finishers + 1 (RYA/Sailwave convention, DNC
       always series entries + 1).
-    - tle: Time Limit Expired rule. Disabled by default; when enabled the
-      race committee records a boat as TLE and it scores per `method`
-      ("finishers_plus_1" — the default: one more than the number of boats
-      that finished the race; "dnf" = the active A5 DNF score; "dnc").
+    - tle: Time Limit Expired rule. TLE is not an RRS scoring abbreviation
+      (Appendix A10 defines none) and rule 35 leaves a boat that misses the
+      time limit to the sailing instructions, so the score is configured per
+      series and never inferred. Disabled by default; when enabled the race
+      committee records a boat as TLE and it scores per `method`:
+        "finishers_plus_1" (default) — `increment` more than the number of
+          boats that finished the race (including SCP/ZFP boats, which did
+          finish and keep a penalised place);
+        "last_finisher" — `increment` more than the points scored by the last
+          boat that finished the race (the World Sailing sailing-instructions
+          guide's "[one][two] more than the points scored by the last boat that
+          finished within the Finishing Window"). Unlike the count, this can
+          never score better than a boat that finished, even when that last
+          finisher carries an SCP/ZFP penalty;
+        "dnf" — the active A5 DNF score (A5.2 series entries + 1, A5.3
+          start-area entries + 1). This is what the 2025-2028 World Sailing
+          standard sailing instructions (S12.3) award a boat that fails to
+          finish inside the Finishing Window;
+        "dnc" — as if she did not come to the starting area: series entries + 1.
+      `increment` is the guide's "[one][two]" choice (1 or 2) for the two
+      finisher-based methods.
     - scp/zfp: penalty rule per RRS 44.3(c)/30.2 — a percentage of the DNF
       score added to the boat's place, rounded half-up, never worse than DNF
       (that cap is itself configurable via cap_dnf).
@@ -6267,7 +6307,8 @@ def _default_scoring_config(use_a5_3=False, use_finishers=False) -> dict:
         "a5_convention": convention,
         "discard_policy": "fixed",
         "discard_schedule": [],
-        "tle": {"enabled": False, "time_limit_minutes": None, "method": "finishers_plus_1"},
+        "tle": {"enabled": False, "time_limit_minutes": None,
+                "method": "finishers_plus_1", "increment": 1},
         "scp": {"method": "percent", "value": 20.0, "cap_dnf": True},
         "zfp": {"method": "percent", "value": 20.0, "cap_dnf": True},
         # discards "without" (default): the duty average uses every non-duty
@@ -6331,7 +6372,8 @@ def _effective_discards(cfg: dict, race_count: int, configured_discards: int) ->
 
 
 def result_points(r, series_entries, start_area_entries, use_a5_3=False,
-                  use_finishers=False, finishers=0, cfg=None):
+                  use_finishers=False, finishers=0, cfg=None,
+                  last_finisher_points=None):
     """Points for one boat in one race under RRS Appendix A.
 
     series_entries:    boats entered in the series.
@@ -6344,6 +6386,8 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
                        scores series entries + 1). Takes precedence over
                        use_a5_3 when both are set.
     finishers:         boats that finished the race (for use_finishers).
+    last_finisher_points: the score of the last boat that finished the race
+                       (for the "last_finisher" TLE method).
     cfg:               the series scoring config (see _default_scoring_config).
                        When omitted a default config is built from the legacy
                        use_a5_3 / use_finishers flags, so callers that only
@@ -6357,7 +6401,8 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
     SCP/ZFP  -> her place made worse by the series' configured penalty
                 (percent of DNF, or points/places), capped at DNF when the
                 series rules impose that limit.
-    TLE      -> the series' configured TLE rule (default: finishers + 1).
+    TLE      -> the series' configured TLE rule (default: one more than the
+                number of boats that finished the race).
     DNC      -> series entries + 1 under every convention.
     DNS/OCS/UFD/BFD/NSC/DNF/RET/DSQ/DNE/DGM -> the active A5 base: series
                 entries + 1 (A5.2 default), start-area entries + 1 (A5.3),
@@ -6393,11 +6438,24 @@ def result_points(r, series_entries, start_area_entries, use_a5_3=False,
             pts = min(pts, float(dnf))
         return pts
     if code in TLE_CODES:
-        # The TLE rule is stored on the series so a future change of the
-        # club's TLE convention never recalculates a historical season.
-        method = (cfg.get("tle") or {}).get("method", "dnf")
+        # TLE is not an RRS scoring abbreviation and rule 35 leaves the score
+        # to the sailing instructions, so the method is stored on the series —
+        # a future change of the club's TLE convention never recalculates a
+        # historical season. `increment` is the guide's "[one][two]" choice.
+        tle = (cfg or {}).get("tle") or {}
+        method = tle.get("method") or "dnf"
+        try:
+            increment = int(tle.get("increment") or 1)
+        except (TypeError, ValueError):
+            increment = 1
+        # A TLE boat is always worse than a boat that finished, so the
+        # increment is at least one.
+        increment = max(1, increment)
         if method == "finishers_plus_1":
-            return float(finishers + 1)
+            return float(finishers + increment)
+        if method == "last_finisher":
+            base = finishers if last_finisher_points is None else last_finisher_points
+            return float(base + increment)
         if method == "dnc":
             return float(series_entries + 1)
         return float(dnf)
@@ -6431,7 +6489,7 @@ def validate_race_results(results, cfg=None) -> list:
         seen[bid] = True
         if not code:
             continue
-        if code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES, *TLE_CODES) \
+        if code not in ("FINISHED", *PENALTY_CODES, *MANUAL_POINT_CODES) \
                 and r.get("position") is not None:
             issues.append({"level": "error",
                            "message": f"Boat {bid} is scored {code} but also carries a finishing position — {code} boats are not placed."})
@@ -7224,7 +7282,10 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
         # that IS being scored here.
         fleet_results = [r for r in results if r.get("boat_id") in boat_map]
         start_entries = _start_area_entries(fleet_results)
-        finishers = len([r for r in fleet_results if r.get("code") == "FINISHED"])
+        # "Boats that finished the race" — an SCP/ZFP boat finished and keeps a
+        # penalised place, so she counts; a boat that did not finish never does
+        # (see _finished_boats).
+        finishers = len(_finished_boats(fleet_results))
         present = {r["boat_id"]: r for r in results}
         per_boat = {}
         for bid in boat_map:
@@ -7256,6 +7317,21 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
                 shared = sum(range(pos, pos + len(bids))) / len(bids)
                 for bid in bids:
                     per_boat[bid]["points"] = shared
+        # The "last_finisher" TLE method scores one/two more than the last boat
+        # that finished. That boat's own score is only known once every finisher
+        # has been scored (and any A7 tie split), and it is the guide's number
+        # precisely because counting finishers can leave a TLE boat scoring
+        # better than a penalised finisher who did complete the race.
+        if any(e["code"] in TLE_CODES for e in per_boat.values()) \
+                and str((cfg.get("tle") or {}).get("method") or "").lower() == "last_finisher":
+            last_fin = max([e["points"] for e in per_boat.values()
+                            if e["code"] in PLACED_CODES and e.get("position") is not None],
+                           default=float(finishers))
+            for bid, e in per_boat.items():
+                if e["code"] in TLE_CODES:
+                    e["points"] = result_points(present[bid], series_entries, start_entries,
+                                                finishers=finishers, cfg=cfg,
+                                                last_finisher_points=last_fin)
         for bid, e in per_boat.items():
             agg[bid].append(e)
     return agg, entries_by_race

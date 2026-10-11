@@ -1159,7 +1159,7 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
     a5_convention: "a5_2",
     discard_policy: "fixed",
     discard_schedule: [],
-    tle: { enabled: false, time_limit_minutes: null, method: "finishers_plus_1" },
+    tle: { enabled: false, time_limit_minutes: null, method: "finishers_plus_1", increment: 1 },
     scp: { method: "percent", value: 20, cap_dnf: true },
     zfp: { method: "percent", value: 20, cap_dnf: true },
     duty: { enabled: true, method: "average_own_sailed", round: 2, discards: "without" },
@@ -1193,6 +1193,20 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
   // How many races the admin can assign into mini series (planned count, or
   // the schedule length if that is set instead).
   const miniRaceTotal = Math.max(Number(form.planned_races) || 0, (form.schedule || []).length);
+  // TLE is not an RRS scoring abbreviation (Appendix A10 defines none) — rule
+  // 35 leaves the score of a boat that misses the time limit to the sailing
+  // instructions, so the method is chosen here and stored on the series. The
+  // two finisher-based methods take the guide's "[one][two]" increment.
+  const tleMethod = form.scoring_config?.tle?.method || "finishers_plus_1";
+  const tleIncrement = Number(form.scoring_config?.tle?.increment || 1);
+  const tleFinisherBased = tleMethod === "finishers_plus_1" || tleMethod === "last_finisher";
+  const tleExplanation = tleMethod === "last_finisher"
+    ? `TLE scores ${tleIncrement} more than the points scored by the last boat that finished the race — never better than a boat that did finish, even when that last finisher carries an SCP/ZFP penalty (World Sailing sailing-instructions guide wording).`
+    : tleMethod === "dnf"
+      ? "TLE is scored as DNF under the series' A5 convention — what the World Sailing standard sailing instructions (S12.3) award a boat that fails to finish inside the finish window."
+      : tleMethod === "dnc"
+        ? "TLE scores one more than the number of boats entered in the series, as if she never came to the starting area."
+        : `TLE scores ${tleIncrement} more than the number of boats that finished the race — a boat that finished under an SCP/ZFP penalty counts as a finisher.`;
 
   const toggleMiniRace = (gi, raceNo) => setForm((f) => {
     const groups = (f.mini_series_groups || []).map((g, idx) => {
@@ -1495,20 +1509,34 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
                     <TooltipTrigger asChild>
                       <div className="flex items-center gap-2 w-fit cursor-help"><Switch checked={!!form.scoring_config?.tle?.enabled} onCheckedChange={(v) => patchCfgNested("tle", { enabled: v })} data-testid="series-tle-switch" /><Label className="text-xs font-semibold">TLE — Time Limit Expired rule</Label></div>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-xs">When on, the race committee can record a boat as TLE when it fails to finish within the time limit. It scores per the method below — default: one more than the number of boats that finished the race.</TooltipContent>
+                    <TooltipContent side="top" className="max-w-xs">When on, the race committee can record a boat as TLE when it fails to finish within the time limit. TLE is not an RRS scoring abbreviation — rule 35 leaves the score to your sailing instructions — so pick the method that matches them.</TooltipContent>
                   </Tooltip>
                   {form.scoring_config?.tle?.enabled && (
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1"><Label className="text-xs">Time limit (minutes)</Label><Input type="number" min="1" className="h-8" value={form.scoring_config.tle.time_limit_minutes || ""} onChange={(e) => patchCfgNested("tle", { time_limit_minutes: e.target.value })} data-testid="series-tle-minutes" placeholder="e.g. 120" /></div>
-                      <div className="space-y-1"><Label className="text-xs">TLE scoring method</Label>
-                        <Select value={form.scoring_config?.tle?.method || "dnf"} onValueChange={(v) => patchCfgNested("tle", { method: v })}>
-                          <SelectTrigger className="h-8" data-testid="series-tle-method"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="dnf">Score as DNF (active A5 base)</SelectItem>
-                            <SelectItem value="finishers_plus_1">Finishers + 1</SelectItem>
-                            <SelectItem value="dnc">Series entries + 1</SelectItem>
-                          </SelectContent>
-                        </Select></div>
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1"><Label className="text-xs">Time limit (minutes)</Label><Input type="number" min="1" className="h-8" value={form.scoring_config.tle.time_limit_minutes || ""} onChange={(e) => patchCfgNested("tle", { time_limit_minutes: e.target.value })} data-testid="series-tle-minutes" placeholder="e.g. 120" /></div>
+                        <div className="space-y-1"><Label className="text-xs">TLE scoring method</Label>
+                          <Select value={tleMethod} onValueChange={(v) => patchCfgNested("tle", { method: v })}>
+                            <SelectTrigger className="h-8" data-testid="series-tle-method"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="finishers_plus_1">Boats that finished + N</SelectItem>
+                              <SelectItem value="last_finisher">Last finisher's points + N</SelectItem>
+                              <SelectItem value="dnf">Score as DNF (active A5 base)</SelectItem>
+                              <SelectItem value="dnc">Series entries + 1 (as DNC)</SelectItem>
+                            </SelectContent>
+                          </Select></div>
+                      </div>
+                      {tleFinisherBased && (
+                        <div className="space-y-1"><Label className="text-xs">Points added</Label>
+                          <Select value={String(tleIncrement)} onValueChange={(v) => patchCfgNested("tle", { increment: Number(v) })}>
+                            <SelectTrigger className="h-8" data-testid="series-tle-increment"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="1">+1</SelectItem>
+                              <SelectItem value="2">+2</SelectItem>
+                            </SelectContent>
+                          </Select></div>
+                      )}
+                      <p className="text-[11px] text-muted-foreground">{tleExplanation}</p>
                     </div>
                   )}
                 </div>
