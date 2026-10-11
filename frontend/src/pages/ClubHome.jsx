@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, CalendarDays, ChevronRight, Clock3, Sailboat, Trophy } from "lucide-react";
+import { ArrowLeft, CalendarDays, ChevronRight, Clock3, FileText, Sailboat, Trophy } from "lucide-react";
 import { api } from "@/lib/api";
 import { competitionTypeLabel, DEFAULT_COMPETITION_IMAGE } from "@/lib/competition";
 import { seriesResultsPath } from "@/lib/seo";
@@ -274,6 +274,15 @@ function ClubHomeIndex({ club }) {
               <Badge className="mb-3 gap-1.5 border border-white/25 bg-white/10 text-white shadow-sm backdrop-blur-sm"><Sailboat className="h-3.5 w-3.5" />Club results</Badge>
               <h1 className="font-heading text-3xl uppercase leading-[0.95] tracking-tight sm:text-4xl lg:text-5xl">{club.name}</h1>
               <p className="mt-3 max-w-2xl text-sm leading-relaxed text-white/80 sm:text-base">Find your fleet, then jump straight to the latest championship or event results.</p>
+              {club.official_notice_board !== false && (
+                <div className="mt-4">
+                  <Link to={`/club/${club.slug}/notice-board`}>
+                    <Button variant="outline" size="sm" className="gap-1.5 border-white/60 bg-white/10 text-white hover:bg-white hover:text-ocean" data-testid="club-notice-board-link">
+                      <FileText className="h-4 w-4" /> Official Notice Board
+                    </Button>
+                  </Link>
+                </div>
+              )}
             </div>
             <div className="grid w-full grid-cols-2 gap-3 sm:w-auto sm:min-w-48 sm:grid-cols-1">
               <div className="flex items-center gap-3 rounded-2xl border border-white/20 bg-white/10 px-4 py-3 shadow-lg backdrop-blur-sm">

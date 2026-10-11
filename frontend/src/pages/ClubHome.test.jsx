@@ -349,3 +349,18 @@ test("keeps rating divisions ahead of series scoring modes, and shows nothing wh
   // A class and its series that name no rating at all contribute no pill.
   expect(groupScoringModes({ classData: { id: "c-none", name: "Unrated" }, rows: [] })).toEqual([]);
 });
+
+test("links the club page to the club's Official Notice Board", async () => {
+  await render();
+  const link = container.querySelector('[data-testid="club-notice-board-link"]');
+  expect(link).not.toBeNull();
+  expect(link.closest("a").getAttribute("href")).toBe("/club/harbour-club/notice-board");
+});
+
+test("hides the Official Notice Board link when the club has it switched off", async () => {
+  mockApi.getClubs.mockResolvedValue([{ ...club, official_notice_board: false }]);
+  await render();
+  expect(container.querySelector('[data-testid="club-notice-board-link"]')).toBeNull();
+  // The rest of the club page still renders.
+  expect(container.querySelector('[data-testid="club-results-tables"]')).not.toBeNull();
+});
