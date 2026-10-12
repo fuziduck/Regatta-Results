@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Globe, Plus, Pencil, Trash2, Radio, ShieldCheck, Building2, KeyRound, Megaphone, Mail, ScrollText, Archive, Download, Upload, Lock, Eye, EyeOff, Copy, ClipboardCheck } from "lucide-react";
+import Loading from "@/components/Loading";
 
 const blank = { name: "", color: "#0A369D", abbr: "" };
 const slugify = (name) => (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "club";
@@ -384,13 +385,22 @@ export default function Webmaster() {
   const { updateSession } = useAuth();
   const navigate = useNavigate();
   const [clubs, setClubs] = useState([]);
+  const [clubsLoading, setClubsLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blank);
   const [usersClub, setUsersClub] = useState(null);
   const [section, setSection] = useState("clubs");
 
-  const load = useCallback(() => api.getClubsManage().then(setClubs).catch(() => {}), []);
+  // `clubsLoading` keeps the "No clubs yet" empty state out of the brief window
+  // before the list arrives, so the console never looks unconfigured on load.
+  const load = useCallback(() => {
+    setClubsLoading(true);
+    api.getClubsManage()
+      .then((items) => setClubs(items || []))
+      .catch(() => {})
+      .finally(() => setClubsLoading(false));
+  }, []);
   useEffect(() => { load(); }, [load]);
 
   const save = async () => {
@@ -561,7 +571,9 @@ export default function Webmaster() {
           </Dialog>
         </div>
 
-        {clubs.length === 0 ? (
+        {clubsLoading && clubs.length === 0 ? (
+          <Loading label="Loading clubs…" />
+        ) : clubs.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border p-10 text-center text-muted-foreground">
             <Building2 className="w-8 h-8 mx-auto mb-2 opacity-60" />
             <p>No clubs yet — add the first one to get going.</p>

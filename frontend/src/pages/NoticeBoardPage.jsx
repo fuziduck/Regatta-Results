@@ -7,6 +7,7 @@ import Logo from "@/components/Logo";
 import NoticeBoard from "@/components/NoticeBoard";
 import ResultsSubscription from "@/components/ResultsSubscription";
 import HeaderMenu from "@/components/HeaderMenu";
+import Loading from "@/components/Loading";
 
 export default function NoticeBoardPage() {
   const { slug } = useParams();
@@ -19,7 +20,7 @@ export default function NoticeBoardPage() {
     if (!club) return;
     setDisabled(club.official_notice_board === false);
   }, [club]);
-  if (!club) return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
+  if (!club) return <div className="min-h-screen grid place-items-center"><Loading label="Loading…" /></div>;
   if (disabled) return <div className="min-h-screen grid place-items-center bg-background px-4"><div className="text-center"><h1 className="font-heading text-2xl uppercase">Notice Board unavailable</h1><p className="text-muted-foreground mt-2">This club is not currently using the Official Notice Board.</p><Link to={`/club/${club.slug}`}><Button className="mt-5">Back to club results</Button></Link></div></div>;
   return (
     <div className="min-h-screen bg-background">

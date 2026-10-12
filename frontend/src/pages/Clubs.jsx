@@ -12,6 +12,7 @@ import { CalendarDays, ChevronRight, Sailboat, Search, SlidersHorizontal, Trophy
 import BoatSearchBox from "@/components/BoatSearchBox";
 import OfficialsLink from "@/components/OfficialsLink";
 import Logo from "@/components/Logo";
+import Loading from "@/components/Loading";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { classProfilePath, groupedClassPath } from "@/lib/seo";
 
@@ -232,7 +233,7 @@ export default function Clubs() {
         </div>
 
         {directoryMode === "classes" ? (
-          classesLoading || clubsLoading ? <p className="text-muted-foreground">Loading classes…</p> : publicClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
+          classesLoading || clubsLoading ? <Loading label="Loading classes…" /> : publicClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-testid="class-grid">
               {Object.values(publicClasses.reduce((groups, classData) => {
                 const key = classData.scoring_mode === "one_design" ? classData.class_group_key : `class:${classData.id}`;
@@ -265,7 +266,7 @@ export default function Clubs() {
             </div>
           )
         ) : loading ? (
-          <p className="text-muted-foreground">Loading clubs…</p>
+          <Loading label="Loading clubs…" />
         ) : directory.length === 0 ? (
           year === CURRENT_YEAR ? (
             <p className="text-muted-foreground">No clubs set up yet.</p>

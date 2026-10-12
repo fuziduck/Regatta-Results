@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import ClubBadge from "@/components/ClubBadge";
+import Loading from "@/components/Loading";
 import { Building2 } from "lucide-react";
 
 export default function ClubPicker({ onPick, title = "Choose a club", subtitle }) {
@@ -19,7 +20,7 @@ export default function ClubPicker({ onPick, title = "Choose a club", subtitle }
       <h1 className="text-3xl uppercase tracking-tighter mb-1">{title}</h1>
       <p className="text-muted-foreground text-sm mb-6">{subtitle || "Pick the club whose console you want to open."}</p>
       {loading ? (
-        <p className="text-muted-foreground">Loading clubs…</p>
+        <Loading label="Loading clubs…" />
       ) : (
         <div className="grid sm:grid-cols-2 gap-4">
           {clubs.map((c) => (

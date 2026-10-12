@@ -21,6 +21,7 @@ import BoatSearchBox from "@/components/BoatSearchBox";
 import ResultsSubscription from "@/components/ResultsSubscription";
 import ResultsBrowseTree from "@/components/ResultsBrowseTree";
 import PublishedRaces from "@/components/PublishedRaces";
+import Loading from "@/components/Loading";
 import { competitionImage, competitionPath, competitionStatusClass, competitionStatusLabel, competitionTagClass, competitionType, competitionTypeLabel } from "@/lib/competition";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import { classProfilePath, groupedClassPath } from "@/lib/seo";
@@ -92,7 +93,7 @@ function NotificationBanner({ items }) {
 // Presentational: renders the standings content for the class/series chosen
 // in the hero. All fetching lives in the Landing page so the selector tabs can
 // sit in the banner.
-function ClassResults({ classId, clubId, clubSlug, year, clubName, className, classKey, clubIcon, series, activeSeries, overall, seriesData, adverts }) {
+function ClassResults({ classId, clubId, clubSlug, year, clubName, className, classKey, clubIcon, series, activeSeries, overall, seriesData, adverts, loading = false, standingsLoading = false, overallLoading = false }) {
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
   const active = series.find((s) => s.id === activeSeries);
   const [raceReports, setRaceReports] = useState(null);
@@ -135,6 +136,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
   })();
 
   if (year !== CURRENT_YEAR && !hasData) {
+    if (loading) return <Loading label="Loading results…" />;
     return (
       <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center" data-testid="no-results-year">
         <p className="font-heading text-xl uppercase tracking-tight">No results recorded for {year} yet</p>
@@ -167,7 +169,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
             </Button>
           </div>
         </div>
-        <OverallStandings data={overall} />
+        <OverallStandings data={overall} loading={overallLoading && !overall} />
       </div>
     );
   }
@@ -236,7 +238,7 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
           </div>
         );
       })()}
-      <SeriesStandings data={miniData} />
+      <SeriesStandings data={miniData} loading={standingsLoading && !miniData} />
       <PublishedRaces seriesId={active.id} series={active} classId={classId} clubId={clubId} clubSlug={clubSlug} scoringMode={active.scoring_mode || "one_design"} />
     </div>
   );
@@ -266,6 +268,7 @@ export default function Landing() {
   const [club, setClub] = useState(null);
   const [loadingClub, setLoadingClub] = useState(true);
   const [classes, setClasses] = useState([]);
+  const [classesLoading, setClassesLoading] = useState(true);
   const [activeClass, setActiveClass] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [seasons, setSeasons] = useState([]);
@@ -282,9 +285,13 @@ export default function Landing() {
     if (wanted) seriesParamRef.current = wanted;
   }, [seriesId, searchParams]);
   const [overall, setOverall] = useState(null);
+  const [overallLoading, setOverallLoading] = useState(false);
+  const [seriesStandingsLoading, setSeriesStandingsLoading] = useState(false);
   const [seriesData, setSeriesData] = useState({});
   const pendingSeriesSelection = useRef(null);
   const [regattas, setRegattas] = useState([]);
+  const [regattasLoading, setRegattasLoading] = useState(true);
+  const [regattaStandingsLoading, setRegattaStandingsLoading] = useState(false);
   const [clubSeries, setClubSeries] = useState([]);
   // Two ways to browse the year: the club's championships (class → series →
   // results) or its regattas (regatta → the classes that raced in it).
@@ -334,6 +341,7 @@ export default function Landing() {
   useEffect(() => {
     if (!clubId) return;
     let current = true;
+    setClassesLoading(true);
     api.getClasses({ club_id: clubId }).then((c) => {
       if (!current) return;
       setClasses(c);
@@ -341,7 +349,7 @@ export default function Landing() {
       // otherwise the first class is the default.
       if (requestedClassId && c.some((x) => x.id === requestedClassId)) setActiveClass(requestedClassId);
       else if (c[0]) setActiveClass(c[0].id);
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { if (current) setClassesLoading(false); });
     const load = () => {
       api.getNotifications({ club_id: clubId }).then(setNotifications).catch(() => {});
       // Keep the future-year buttons current when the admin sets up a new season.
@@ -364,7 +372,7 @@ export default function Landing() {
     let current = true;
     const requestedScope = currentSeriesScope;
     setSeriesScope(null);
-    setSeries([]); setOverall(null); setSeriesData({});
+    setSeries([]); setOverall(null); setOverallLoading(true); setSeriesData({});
     const pendingSelection = pendingSeriesSelection.current;
     const selectionMatchesScope = pendingSelection?.classId === activeClass && pendingSelection?.year === year;
     if (pendingSelection && !selectionMatchesScope) pendingSeriesSelection.current = null;
@@ -390,7 +398,8 @@ export default function Landing() {
     });
     api.overallStandings(activeClass, year, clubId)
       .then((data) => { if (current) setOverall(data); })
-      .catch(() => { if (current) setOverall(null); });
+      .catch(() => { if (current) setOverall(null); })
+      .finally(() => { if (current) setOverallLoading(false); });
     return () => { current = false; };
   }, [clubId, activeClass, year, currentSeriesScope]);
 
@@ -398,7 +407,13 @@ export default function Landing() {
   // the active class; load them for the selected year once.
   useEffect(() => {
     if (!clubId) return;
-    api.getRegattas({ year, club_id: clubId }).then(setRegattas).catch(() => setRegattas([]));
+    let current = true;
+    setRegattasLoading(true);
+    api.getRegattas({ year, club_id: clubId })
+      .then((items) => { if (current) setRegattas(items || []); })
+      .catch(() => { if (current) setRegattas([]); })
+      .finally(() => { if (current) setRegattasLoading(false); });
+    return () => { current = false; };
   }, [clubId, year]);
 
   // Club-wide series for the year identify which competition categories are
@@ -483,25 +498,31 @@ export default function Landing() {
   useEffect(() => {
     if (view !== "regattas" || !clubId || !activeRegattaSeries) return;
     if (regattaSeriesData[activeRegattaSeries]) return;
+    let current = true;
+    setRegattaStandingsLoading(true);
     api.seriesStandings(activeRegattaSeries, clubId)
-      .then((d) => setRegattaSeriesData((prev) => ({ ...prev, [activeRegattaSeries]: d })))
-      .catch(() => {});
+      .then((d) => { if (current) setRegattaSeriesData((prev) => ({ ...prev, [activeRegattaSeries]: d })); })
+      .catch(() => {})
+      .finally(() => { if (current) setRegattaStandingsLoading(false); });
+    return () => { current = false; };
   }, [view, clubId, activeRegattaSeries, regattaSeriesData]);
 
   useEffect(() => {
     if (!clubId || !activeClass || activeSeries === "overall") return;
     let current = true;
-    const loadStandings = () => {
+    const loadStandings = (trackLoading) => {
+      if (trackLoading) setSeriesStandingsLoading(true);
       api.seriesStandings(activeSeries, clubId)
         .then((d) => {
           if (current) setSeriesData((prev) => ({ ...prev, [activeSeries]: d }));
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { if (current && trackLoading) setSeriesStandingsLoading(false); });
     };
-    loadStandings();
+    loadStandings(true);
     // Race status changes (including abandonment) affect the scored race total.
     // Refresh the selected series alongside the page's other live data.
-    const timer = setInterval(loadStandings, 20000);
+    const timer = setInterval(() => loadStandings(false), 20000);
     const onVisible = () => { if (document.visibilityState === "visible") loadStandings(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -634,7 +655,7 @@ export default function Landing() {
   });
 
   if (loadingClub) {
-    return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
+    return <div className="min-h-screen grid place-items-center bg-background"><Loading label="Loading results…" /></div>;
   }
   if (!club) {
     return (
@@ -820,6 +841,9 @@ export default function Landing() {
     }
   }
   const treeHasChoices = categoryNodes.length > 0;
+  // `seriesScope` is set only once the selected class/year's series arrive, so
+  // a mismatch means the list is still in flight.
+  const seriesListLoading = seriesScope !== currentSeriesScope;
   const crumbs = [
     { label: "Home", href: "/" },
     // The club's own results index is the parent screen of every series/class
@@ -986,10 +1010,12 @@ export default function Landing() {
                 </div>
               )}
 
-              {classes.length === 0 ? (
+              {classesLoading && classes.length === 0 ? (
+                <Loading label="Loading results…" />
+              ) : classes.length === 0 ? (
                 <p className="text-muted-foreground">No classes set up yet.</p>
               ) : !activeClass ? (
-                <p className="text-muted-foreground">Loading classes…</p>
+                <Loading label="Loading results…" />
               ) : (
                 <ClassResults
                   classId={activeClass}
@@ -1005,6 +1031,9 @@ export default function Landing() {
                   adverts={adverts}
                   overall={overall}
                   seriesData={seriesData}
+                  loading={seriesListLoading || overallLoading}
+                  standingsLoading={seriesStandingsLoading}
+                  overallLoading={overallLoading}
                 />
               )}
             </div>
@@ -1013,7 +1042,9 @@ export default function Landing() {
 
         {showResults && view === "regattas" && (
           <div data-testid="regatta-results">
-            {regattaComps.length === 0 ? (
+            {regattasLoading ? (
+              <Loading label="Loading regattas…" />
+            ) : regattaComps.length === 0 ? (
               <div className="mt-8 rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
                 <p className="font-heading text-xl uppercase tracking-tight">No regattas for {year}</p>
                 <p className="text-muted-foreground text-sm mt-1">Regattas and open meetings will appear here once set up.</p>
@@ -1041,7 +1072,7 @@ export default function Landing() {
                   </div>
                 </section>
                 {!regattaDetail ? (
-                  <p className="py-6 text-muted-foreground">Loading regatta…</p>
+                  <Loading label="Loading regatta…" />
                 ) : (
               <div className="pt-5">
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
@@ -1098,7 +1129,7 @@ export default function Landing() {
                         <Download className="h-4 w-4" /> PDF
                       </Button>
                     </div>
-                    <SeriesStandings data={regattaSeriesData[activeRegattaSeries]} />
+                    <SeriesStandings data={regattaSeriesData[activeRegattaSeries]} loading={regattaStandingsLoading && !regattaSeriesData[activeRegattaSeries]} />
                     <PublishedRaces
                       seriesId={activeRegattaSeries}
                       series={activeRegattaSeriesList.find((s) => s.id === activeRegattaSeries)}

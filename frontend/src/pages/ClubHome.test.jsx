@@ -18,7 +18,7 @@ jest.mock("@/components/HeaderMenu", () => () => <span />);
 jest.mock("@/components/Logo", () => () => <span />);
 jest.mock("@/pages/Landing", () => () => <div data-testid="legacy-results-page" />);
 
-import ClubHome, { buildClubResultsRows, groupResultsByClass, groupScoringModes } from "./ClubHome";
+import ClubHome, { buildClassDirectory, buildClubResultsRows, groupResultsByClass, groupScoringModes } from "./ClubHome";
 import { CURRENT_YEAR } from "@/lib/helpers";
 const mockApi = require("@/lib/api").api;
 
@@ -67,6 +67,20 @@ const expandAllClasses = () => {
   });
 };
 
+// The index is split into a championships column and a regattas column. These
+// read the type sections ("Club Championship", "Regatta", ...) out of a column.
+// A section's <h2> is just the type name; the count sits beside it in a <p>.
+const typeName = (section) => section.querySelector("h2").textContent.trim();
+const columnTypes = (testId) => [...container.querySelectorAll(`[data-testid="${testId}"] > section[id^="results-"]`)].map(typeName);
+const sectionFor = (type) => [...container.querySelectorAll('[data-testid="club-results-col-championships"] > section[id^="results-"], [data-testid="club-results-col-regattas"] > section[id^="results-"]')]
+  .find((section) => typeName(section) === type);
+
+const setInputValue = (input, value) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+};
+
 beforeEach(() => {
   mockRoute.slug = "harbour-club";
   mockRoute.seriesId = undefined;
@@ -113,30 +127,34 @@ test("renders grouped tables newest first and lets visitors open result pages", 
   expect(container.querySelectorAll('[data-testid="club-class-toggle"]').length).toBeGreaterThan(0);
   expect([...container.querySelectorAll('[data-testid="club-class-toggle"]')]
     .every((toggle) => toggle.getAttribute("aria-expanded") === "false")).toBe(true);
-  expect([...container.querySelectorAll('[data-testid="club-results-tables"] > section[id^="results-"]')]
-    .map((section) => section.querySelector("h2").textContent.replace(/\\d+ results pages?/, "").trim())).toEqual(["Regatta"]);
+  // Only a regatta has been sailed in the current year, so there is a single
+  // full-width column and no championships column at all.
+  expect(container.querySelector('[data-testid="club-results-col-championships"]')).toBeNull();
+  expect(columnTypes("club-results-col-regattas")).toEqual(["Regatta"]);
   act(() => {
     initialYear.value = "all";
     initialYear.dispatchEvent(new Event("change", { bubbles: true }));
   });
   expandAllClasses();
 
-  const sections = [...container.querySelectorAll('[data-testid="club-results-tables"] > section[id^="results-"]')];
-  expect(sections.map((section) => section.querySelector("h2").textContent.replace(/\\d+ results pages?/, "").trim())).toEqual([
-    "Regatta", "Club Championship", "Class Championship",
-  ]);
-  const clubChampionship = sections[1];
+  expect(columnTypes("club-results-col-championships")).toEqual(["Club Championship", "Class Championship"]);
+  expect(columnTypes("club-results-col-regattas")).toEqual(["Regatta"]);
+  const clubChampionship = sectionFor("Club Championship");
   const classGroups = [...clubChampionship.querySelectorAll('[data-testid="club-result-class-group"]')];
   expect(classGroups.map((group) => group.querySelector("h3").textContent)).toEqual(["Sonata", "Cruiser Class 1"]);
   expect(classGroups[0].querySelectorAll('[data-testid="club-result-row"]')).toHaveLength(1);
   expect(classGroups[0].querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(1);
   expect(classGroups[1].querySelectorAll('[data-testid="club-result-row"]')).toHaveLength(1);
   expect(classGroups[1].querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(1);
-  const rows = [...container.querySelectorAll('[data-testid="club-result-row"]')];
   expect(container.querySelector('[data-testid="club-results-tables"]').textContent).not.toMatch(/Latest activity|No published races/);
-  expect(rows.map((row) => row.getAttribute("data-result-date"))).toEqual(["2026-08-10", "2025-10-04", "2025-10-03", "2024-05-12"]);
+  // The championships column runs left of the regattas column, so each column
+  // keeps its own newest-first order rather than one global sequence.
+  const columnResultDates = (testId) => [...container.querySelectorAll(`[data-testid="${testId}"] [data-testid="club-result-row"]`)]
+    .map((row) => row.getAttribute("data-result-date"));
+  expect(columnResultDates("club-results-col-championships")).toEqual(["2025-10-04", "2025-10-03", "2024-05-12"]);
+  expect(columnResultDates("club-results-col-regattas")).toEqual(["2026-08-10"]);
   expect(container.querySelector('[data-testid="club-results-year"]').value).toBe("all");
-  expect(container.querySelector('[data-testid="club-result-card"] .font-heading').textContent).toBe("Harbour Regatta · Sonata");
+  expect(container.querySelector('[data-testid="club-results-col-regattas"] [data-testid="club-result-card"] .font-heading').textContent).toBe("Harbour Regatta · Sonata");
   expect(container.querySelector('[data-testid="club-result-card"]').textContent).not.toMatch(/Latest activity|No published races/);
   expect(container.querySelector('[data-testid="club-result-card"]').className).toContain("min-h-16");
   // Every series entry carries its own mark, not just the class heading.
@@ -157,21 +175,20 @@ test("renders grouped tables newest first and lets visitors open result pages", 
     sort.value = "alphabetical";
     sort.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  const alphabeticalSections = [...container.querySelectorAll('[data-testid="club-results-tables"] > section[id^="results-"]')];
-  expect(alphabeticalSections.map((section) => section.querySelector("h2").textContent.replace(/\\d+ results pages?/, "").trim())).toEqual([
-    "Class Championship", "Club Championship", "Regatta",
-  ]);
-  const alphabeticalClubGroups = [...alphabeticalSections[1].querySelectorAll('[data-testid="club-result-class-group"] h3')];
+  expect(columnTypes("club-results-col-championships")).toEqual(["Class Championship", "Club Championship"]);
+  expect(columnTypes("club-results-col-regattas")).toEqual(["Regatta"]);
+  const alphabeticalClubChampionship = sectionFor("Club Championship");
+  const alphabeticalClubGroups = [...alphabeticalClubChampionship.querySelectorAll('[data-testid="club-result-class-group"] h3')];
   expect(alphabeticalClubGroups.map((heading) => heading.textContent)).toEqual(["Cruiser Class 1", "Sonata"]);
-  expect(alphabeticalSections[1].querySelector('[data-testid="club-result-card"] .font-heading').textContent).toBe("Autumn Series");
+  expect(alphabeticalClubChampionship.querySelector('[data-testid="club-result-card"] .font-heading').textContent).toBe("Autumn Series");
 
   const year = container.querySelector('[data-testid="club-results-year"]');
   act(() => {
     year.value = "2025";
     year.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  const filteredSections = [...container.querySelectorAll('[data-testid="club-results-tables"] > section[id^="results-"]')];
-  expect(filteredSections.map((section) => section.querySelector("h2").textContent.replace(/\\d+ results pages?/, "").trim())).toEqual(["Club Championship"]);
+  expect(columnTypes("club-results-col-championships")).toEqual(["Club Championship"]);
+  expect(container.querySelector('[data-testid="club-results-col-regattas"]')).toBeNull();
   expect(container.querySelector('[data-testid="club-results-sort"]').value).toBe("alphabetical");
   expect(container.querySelectorAll('[data-testid="club-result-card"]')).toHaveLength(2);
   expect([...container.querySelectorAll('[data-testid="club-result-card"] .font-heading')].map((title) => title.textContent)).toEqual([
@@ -272,8 +289,8 @@ test("sends a website race report straight out to its host from the index", asyn
   expect(mockApi.getRaceReport).not.toHaveBeenCalled();
   // The card's report link is a sibling of the series link, not nested inside
   // it, so the browser never has to untangle two anchors.
-  const card = container.querySelector('[data-testid="club-result-card"]');
-  const cardLink = links.find((link) => card.contains(link));
+  const cardLink = links.find((link) => link.closest('[data-testid="club-result-card"]'));
+  const card = cardLink.closest('[data-testid="club-result-card"]');
   expect(cardLink.closest("a")).toBe(cardLink);
   expect(card.querySelector('a[href^="/club/harbour-club/series/linked-event/"]')).not.toBeNull();
 });
@@ -371,19 +388,54 @@ test("keeps rating divisions ahead of series scoring modes, and shows nothing wh
   expect(groupScoringModes({ classData: { id: "c-none", name: "Unrated" }, rows: [] })).toEqual([]);
 });
 
-test("links the club page to the club's Official Notice Board", async () => {
+test("links the club page to the club's Official Notice Board, prominently", async () => {
   await render();
+  // A large hero call-to-action plus a shortcut that stays in the sticky header.
   const link = container.querySelector('[data-testid="club-notice-board-link"]');
   expect(link).not.toBeNull();
   expect(link.closest("a").getAttribute("href")).toBe("/club/harbour-club/notice-board");
+  expect(link.textContent).toContain("Official Notice Board");
+  const header = container.querySelector('[data-testid="club-notice-board-header"]');
+  expect(header).not.toBeNull();
+  expect(header.closest("a").getAttribute("href")).toBe("/club/harbour-club/notice-board");
 });
 
 test("hides the Official Notice Board link when the club has it switched off", async () => {
   mockApi.getClubs.mockResolvedValue([{ ...club, official_notice_board: false }]);
   await render();
   expect(container.querySelector('[data-testid="club-notice-board-link"]')).toBeNull();
+  expect(container.querySelector('[data-testid="club-notice-board-header"]')).toBeNull();
   // The rest of the club page still renders.
   expect(container.querySelector('[data-testid="club-results-tables"]')).not.toBeNull();
+});
+
+test("lays the season out as two columns with a run of headline stats", async () => {
+  await render();
+  const year = container.querySelector('[data-testid="club-results-year"]');
+  act(() => {
+    year.value = "all";
+    year.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  // Wide screens get championships beside regattas, not one long stack.
+  expect(container.querySelector('[data-testid="club-results-tables"]').className).toContain("lg:grid-cols-2");
+  expect(container.querySelector('[data-testid="club-results-col-championships"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="club-results-col-regattas"]')).not.toBeNull();
+
+  // The strip describes the season on screen: 2 classes, 5 races sailed,
+  // 4 result pages and the most recent result date.
+  expect(container.querySelector('[data-testid="club-stat-classes"]').textContent).toContain("2");
+  expect(container.querySelector('[data-testid="club-stat-races"]').textContent).toContain("5");
+  expect(container.querySelector('[data-testid="club-stat-pages"]').textContent).toContain("4");
+  expect(container.querySelector('[data-testid="club-stat-latest"]').textContent).toContain("Aug");
+
+  // Narrowing to a year with no regattas collapses back to a single column.
+  act(() => {
+    year.value = "2025";
+    year.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(container.querySelector('[data-testid="club-results-tables"]').className).not.toContain("lg:grid-cols-2");
+  expect(container.querySelector('[data-testid="club-stat-pages"]').textContent).toContain("2");
 });
 
 test("rolls each class's series up behind its arrow until a visitor opens it", async () => {
@@ -409,4 +461,131 @@ test("rolls each class's series up behind its arrow until a visitor opens it", a
   act(() => { toggle().dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   expect(toggle().getAttribute("aria-expanded")).toBe("false");
   expect(group().querySelector('[data-testid="club-class-rows"]')).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// The class directory: the club page's primary navigation. A visitor arrives
+// knowing the boat they sail, not which competition type scored it, so the
+// page opens with a searchable list of the club's fleets, each linking to the
+// class's own results page.
+// ---------------------------------------------------------------------------
+
+test("lists every class the club has set up, most recently active first", () => {
+  const directory = buildClassDirectory({
+    classes, rows: buildClubResultsRows({ classes, series, competitions, races, slug: "harbour-club" }), races,
+  });
+  // A class with no results at all still appears — with em dashes — so a
+  // visitor never has to conclude that their fleet is missing.
+  const [sonata, cruiser] = directory;
+  expect(directory.map((entry) => entry.name)).toEqual(["Sonata", "Cruiser Class 1"]);
+  expect(sonata).toMatchObject({
+    classId: "class-sonata", races: 3, pages: 2, latest: "2026-08-10", latestLabel: "Aug 10, 2026",
+    href: "/class/class-sonata/sonata",
+  });
+  expect(cruiser).toMatchObject({ races: 2, pages: 2, latest: "2025-10-03" });
+
+  const withUnraced = buildClassDirectory({
+    classes: [...classes, { id: "class-laser", name: "Laser" }],
+    rows: buildClubResultsRows({ classes, series, competitions, races, slug: "harbour-club" }),
+    races,
+  });
+  expect(withUnraced.map((entry) => entry.name)).toEqual(["Sonata", "Cruiser Class 1", "Laser"]);
+  expect(withUnraced[2]).toMatchObject({ races: 0, pages: 0, latest: "", latestLabel: "—" });
+});
+
+test("renders the class directory with counts that follow the year selector", async () => {
+  await render();
+  const rows = () => [...container.querySelectorAll('[data-testid="club-class-row"]')];
+  const names = () => rows().map((row) => row.querySelector('[data-testid^="club-class-link-"]').textContent);
+
+  // The page opens on the current season, where only the regatta has been sailed.
+  expect(names()).toEqual(["Sonata", "Cruiser Class 1"]);
+  expect(container.querySelector('[data-testid="club-class-races-class-sonata"]').textContent).toBe("1");
+  expect(container.querySelector('[data-testid="club-class-pages-class-sonata"]').textContent).toBe("1");
+  // A class that did not race this season reads as an em dash, not a zero.
+  expect(container.querySelector('[data-testid="club-class-pages-class-cruiser"]').textContent).toBe("—");
+  expect(container.querySelector('[data-testid="club-class-directory-summary"]').textContent).toContain("2 classes racing in 2026");
+
+  // Every row is a route to that class's own results page.
+  expect(container.querySelector('[data-testid="club-class-link-class-sonata"]').getAttribute("href"))
+    .toBe("/class/class-sonata/sonata");
+  expect(container.querySelector('[data-testid="club-class-link-class-cruiser"]').getAttribute("href"))
+    .toBe("/class/class-cruiser/cruiser-class-1");
+
+  // All years is club-wide: both classes now carry their full season.
+  const year = container.querySelector('[data-testid="club-results-year"]');
+  act(() => {
+    year.value = "all";
+    year.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(names()).toEqual(["Sonata", "Cruiser Class 1"]);
+  expect(container.querySelector('[data-testid="club-class-races-class-sonata"]').textContent).toBe("3");
+  expect(container.querySelector('[data-testid="club-class-pages-class-sonata"]').textContent).toBe("2");
+  expect(container.querySelector('[data-testid="club-class-races-class-cruiser"]').textContent).toBe("2");
+  expect(container.querySelector('[data-testid="club-class-directory-summary"]').textContent).toContain("2 classes racing at the club");
+});
+
+test("searches the class directory by name and says so when nothing matches", async () => {
+  await render();
+  const search = container.querySelector('[data-testid="club-class-search"]');
+  const names = () => [...container.querySelectorAll('[data-testid="club-class-link-class-sonata"], [data-testid="club-class-link-class-cruiser"]')]
+    .map((link) => link.textContent);
+  expect(names()).toHaveLength(2);
+
+  act(() => setInputValue(search, "cru"));
+  expect(names()).toEqual(["Cruiser Class 1"]);
+
+  // A search that matches nothing explains itself rather than showing an
+  // empty table that looks like a broken page.
+  act(() => setInputValue(search, "zzz"));
+  expect(container.querySelectorAll('[data-testid="club-class-row"]')).toHaveLength(0);
+  const empty = container.querySelector('[data-testid="club-class-directory-empty"]');
+  expect(empty).not.toBeNull();
+  expect(empty.textContent).toContain("zzz");
+
+  act(() => setInputValue(search, ""));
+  expect(names()).toHaveLength(2);
+});
+
+test("caps a long class list until it is asked for, but never caps a search", async () => {
+  mockApi.getClasses.mockResolvedValue(Array.from({ length: 10 }, (unused, index) => ({
+    id: `class-${index + 1}`, name: `Fleet ${String(index + 1).padStart(2, "0")}`,
+  })));
+  mockApi.getSeries.mockResolvedValue([]);
+  mockApi.getRegattas.mockResolvedValue([]);
+  mockApi.getRaces.mockResolvedValue([]);
+  await render();
+
+  const shown = () => container.querySelectorAll('[data-testid="club-class-row"]').length;
+  expect(shown()).toBe(8);
+  const more = container.querySelector('[data-testid="club-class-directory-more"]');
+  expect(more.textContent).toContain("Show all 10 classes");
+
+  act(() => more.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(shown()).toBe(10);
+  act(() => container.querySelector('[data-testid="club-class-directory-more"]').dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(shown()).toBe(8);
+
+  // Searching lifts the cap: a name the visitor asked for is always on screen.
+  const search = container.querySelector('[data-testid="club-class-search"]');
+  act(() => setInputValue(search, "fleet"));
+  expect(shown()).toBe(10);
+  expect(container.querySelector('[data-testid="club-class-directory-more"]')).toBeNull();
+});
+
+test("shows the rating pills a class is scored under in the directory", async () => {
+  mockApi.getClasses.mockResolvedValue([
+    { id: "class-split", name: "Mixed Fleet", scoring_mode: "irc",
+      divisions: [{ name: "IRC", scoring_mode: "irc" }, { name: "YTC", scoring_mode: "ytc" }] },
+    { id: "class-one", name: "Slow Fleet", scoring_mode: "one_design" },
+  ]);
+  mockApi.getSeries.mockResolvedValue([]);
+  mockApi.getRegattas.mockResolvedValue([]);
+  mockApi.getRaces.mockResolvedValue([]);
+  await render();
+
+  const ratings = (id) => [...container.querySelector(`[data-testid="club-class-ratings-${id}"]`).children]
+    .map((pill) => pill.textContent);
+  expect(ratings("class-split")).toEqual(["IRC", "YTC"]);
+  expect(ratings("class-one")).toEqual(["One-design"]);
 });

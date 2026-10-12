@@ -18,6 +18,7 @@ import { exportBoatProfilePdf } from "@/lib/exportPdf";
 import OfficialsLink from "@/components/OfficialsLink";
 import { SITE_TAGLINE } from "@/lib/siteConfig";
 import Breadcrumbs from "@/components/Breadcrumbs";
+import Loading from "@/components/Loading";
 
 const ordinal = (n) => {
   if (n == null || n === "") return "–";
@@ -179,7 +180,7 @@ export default function Boat() {
   };
 
   if (loading) {
-    return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
+    return <div className="min-h-screen grid place-items-center bg-background"><Loading label="Loading boat…" /></div>;
   }
 
   const club = profile?.records?.[0];
@@ -650,7 +651,7 @@ export default function Boat() {
                   </Button>
                 </div>
                 {seriesBusy ? (
-                  <p className="text-muted-foreground">Loading series…</p>
+                  <Loading label="Loading series…" compact />
                 ) : active.payload ? (
                   <SeriesStandings data={active.payload} />
                 ) : (

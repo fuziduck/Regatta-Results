@@ -4,6 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Layers, Trophy } from "lucide-react";
 import { podiumPlace } from "@/lib/resultCellStyle";
 import { divisionTables, scoringModeLabel, shouldWrapBoatName, standingsColumns, wrapBoatName } from "@/lib/helpers";
+import Loading from "@/components/Loading";
 
 // Keep the rank (#) column pinned at the left edge and offset the sticky Boat
 // column by the rank column's ACTUAL rendered width, so the two sit
@@ -60,7 +61,11 @@ function DivisionHeadings({ data, children }) {
   ));
 }
 
-export function SeriesStandings({ data, onOpenMini }) {
+export function SeriesStandings({ data, onOpenMini, loading = false }) {
+  // A payload that has not arrived yet is a loading state, not an empty series.
+  // The caller passes `loading` for that window so a slow request never shows
+  // "No results published yet" before the standings land.
+  if (loading) return <Loading label="Loading results…" />;
   return (
     <DivisionHeadings data={data}>
       {(table) => <SeriesStandingsTable data={table} onOpenMini={onOpenMini} />}
@@ -68,7 +73,8 @@ export function SeriesStandings({ data, onOpenMini }) {
   );
 }
 
-export function OverallStandings({ data }) {
+export function OverallStandings({ data, loading = false }) {
+  if (loading) return <Loading label="Loading results…" />;
   return (
     <DivisionHeadings data={data}>
       {(table) => <OverallStandingsTable data={table} />}

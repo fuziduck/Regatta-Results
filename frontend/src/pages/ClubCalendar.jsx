@@ -6,6 +6,7 @@ import Logo from "@/components/Logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CalendarDays, ChevronRight, Clock, Flag, Sailboat } from "lucide-react";
+import Loading from "@/components/Loading";
 
 const monthKey = (date) => date.slice(0, 7);
 const monthLabel = (key) => new Date(`${key}-01T00:00:00`).toLocaleDateString(undefined, {
@@ -59,7 +60,7 @@ export default function ClubCalendar() {
     return [...grouped.keys()].sort().map((key) => groupedMonth(key, grouped.get(key)));
   }, [races]);
 
-  if (loading) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading calendar…</div>;
+  if (loading) return <div className="min-h-screen grid place-items-center bg-background"><Loading label="Loading calendar…" /></div>;
   if (!club) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Club not found.</div>;
 
   return (

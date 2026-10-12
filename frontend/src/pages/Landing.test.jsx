@@ -235,3 +235,26 @@ test("a late series response from the previous class cannot reset a pending seri
   });
   expect(container.querySelector("main h3")?.textContent).toBe("Early Autumn Series");
 });
+
+test("a slow class list shows a loading indicator, never the 'no classes' empty state", async () => {
+  // Reproduces the reported bug: on a slow connection the results page used to
+  // render "No classes set up yet." until /classes resolved, which reads as an
+  // error. It must read as loading instead.
+  const classesRequest = deferred();
+  mockApi.getClasses.mockReturnValue(classesRequest.promise);
+
+  await renderPage();
+
+  expect(container.querySelector('[data-testid="loading"]')).not.toBeNull();
+  expect(container.textContent).not.toContain("No classes set up yet.");
+
+  await act(async () => {
+    classesRequest.resolve(classes);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  });
+  await flush();
+
+  // Once the data has arrived the spinner gives way to the real content.
+  expect(container.querySelector('[data-testid="loading"]')).toBeNull();
+  expect(container.textContent).not.toContain("No classes set up yet.");
+});

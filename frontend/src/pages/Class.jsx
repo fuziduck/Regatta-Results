@@ -11,6 +11,7 @@ import OfficialsLink from "@/components/OfficialsLink";
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, Flag, Sailboat, Trophy } from "lucide-react";
 import { SAILSCORE_EVENTS, useTrackView } from "@/lib/analytics";
 import Breadcrumbs from "@/components/Breadcrumbs";
+import Loading from "@/components/Loading";
 import { ClassRaceReports } from "@/components/RaceReports";
 
 const DEFAULT_CLASS_COLOUR = "#0A369D";
@@ -117,7 +118,7 @@ export default function Class() {
     },
   );
 
-  if (loading) return <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">Loading…</div>;
+  if (loading) return <div className="min-h-screen grid place-items-center bg-background"><Loading label="Loading class…" /></div>;
   if (missing || !data) {
     return <div className="min-h-screen grid place-items-center bg-background"><div className="text-center space-y-4"><p className="text-muted-foreground">Class not found.</p><Link to="/"><Button variant="outline" className="gap-2 border-ocean text-ocean"><ArrowLeft className="h-4 w-4" /> Back to all classes</Button></Link></div></div>;
   }

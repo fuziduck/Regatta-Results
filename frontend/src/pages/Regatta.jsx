@@ -11,6 +11,7 @@ import { competitionImage, competitionStatusClass, competitionStatusLabel, compe
 import { ArrowLeft, ArrowRight, CalendarDays, Download, Flag, MapPin, Medal, Trophy, Users, Sailboat } from "lucide-react";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import PublishedRaces from "@/components/PublishedRaces";
+import Loading from "@/components/Loading";
 
 // Human label for a competition's type + championship scope, e.g.
 // "Class Championship" or "Regatta".
@@ -32,6 +33,7 @@ export default function Regatta() {
   // Standings payloads per series id, fetched lazily when the Results tab
   // needs them (never duplicated or written — straight from the series API).
   const [standings, setStandings] = useState({});
+  const [resultsLoading, setResultsLoading] = useState(false);
 
   useEffect(() => {
     api.getClubs().then((cs) => {
@@ -55,10 +57,15 @@ export default function Regatta() {
 
   useEffect(() => {
     if (tab !== "results" || !regatta || !club) return;
-    (regatta.series || []).forEach((s) => {
-      if (standings[s.id]) return;
-      api.seriesStandings(s.id, club.id).then((d) => setStandings((prev) => ({ ...prev, [s.id]: d }))).catch(() => {});
-    });
+    const pending = (regatta.series || []).filter((s) => !standings[s.id]);
+    if (!pending.length) return;
+    let current = true;
+    setResultsLoading(true);
+    Promise.all(pending.map((s) => api.seriesStandings(s.id, club.id)
+      .then((d) => { if (current) setStandings((prev) => ({ ...prev, [s.id]: d })); })
+      .catch(() => {})))
+      .finally(() => { if (current) setResultsLoading(false); });
+    return () => { current = false; };
   }, [tab, regatta, club, standings]);
 
   // Analytics — coarse, non-identifying props only (sailing data, never
@@ -78,11 +85,8 @@ export default function Regatta() {
   });
 
   if (!regatta) {
-    return (
-      <div className="min-h-screen bg-background grid place-items-center text-muted-foreground">
-        {club ? "Regatta not found." : "Loading…"}
-      </div>
-    );
+    if (club) return <div className="min-h-screen bg-background grid place-items-center text-muted-foreground">Regatta not found.</div>;
+    return <div className="min-h-screen bg-background grid place-items-center"><Loading label="Loading regatta…" /></div>;
   }
 
   const seriesOf = (className) => (regatta.series || []).filter((s) => s.class_name === className);
@@ -120,7 +124,7 @@ export default function Regatta() {
           <Download className="w-3.5 h-3.5" /> PDF
         </Button>
       </div>
-      <SeriesStandings data={standings[s.id]} />
+      <SeriesStandings data={standings[s.id]} loading={resultsLoading && !standings[s.id]} />
       <PublishedRaces
         seriesId={s.id}
         series={s}
