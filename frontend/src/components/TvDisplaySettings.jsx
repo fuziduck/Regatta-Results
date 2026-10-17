@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import {
   CalendarDays,
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   Megaphone,
@@ -21,8 +22,7 @@ import {
 
 const DEFAULT_CONFIG = {
   enabled: true,
-  active_series_id: "",
-  active_regatta_id: "",
+  active_series_ids: [],
   active_year: "",
   display_mode: "full",
   rotation_seconds: 15,
@@ -35,6 +35,18 @@ const DEFAULT_CONFIG = {
   show_status: true,
   show_calendar: true,
 };
+
+// Saved config -> form state. Older saves stored one series id, which becomes a
+// one-item list so existing choices still apply.
+function toFormConfig(tv) {
+  const ids =
+    Array.isArray(tv.active_series_ids) && tv.active_series_ids.length
+      ? tv.active_series_ids
+      : tv.active_series_id
+        ? [tv.active_series_id]
+        : [];
+  return { ...DEFAULT_CONFIG, ...tv, active_series_ids: ids, active_year: tv.active_year || "" };
+}
 
 const DEFAULT_RACE_DAY_INFO = {
   title: "",
@@ -260,13 +272,85 @@ export function RaceDayInfoEditor({ clubId, compact = false }) {
 }
 
 /**
+ * Dropdown of series with a tickbox for each. The ticked series are the ones
+ * whose pages rotate on the club display; none ticked means every series in the
+ * current season.
+ */
+function SeriesTickDropdown({ seriesList, classesById, selectedIds, onChange }) {
+  const [open, setOpen] = useState(false);
+
+  const seriesLabel = (s) => `${classesById[s.class_id]?.name || "Class"} · ${s.name} (${s.year})`;
+  const selectedSeries = seriesList.filter((s) => selectedIds.includes(s.id));
+  let summary = "All current-season series";
+  if (selectedIds.length === 1 || selectedIds.length === 2) {
+    summary = selectedSeries.map(seriesLabel).join(", ");
+  } else if (selectedIds.length > 2) {
+    summary = `${selectedIds.length} series selected`;
+  }
+
+  const toggle = (id) => {
+    onChange(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        id="tv-active-series"
+        data-testid="tv-active-series-trigger"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-1 text-left text-sm shadow-sm"
+      >
+        <span className="truncate">{summary}</span>
+        <ChevronDown className="w-4 h-4 shrink-0 opacity-60" />
+      </button>
+      {open && (
+        <div
+          data-testid="tv-active-series-menu"
+          className="absolute z-20 mt-1 w-full rounded-md border border-border bg-card p-2 shadow-lg"
+        >
+          {seriesList.length === 0 ? (
+            <p className="px-2 py-1 text-xs text-muted-foreground">No series yet</p>
+          ) : (
+            seriesList.map((s) => (
+              <label
+                key={s.id}
+                className="flex items-center gap-2 rounded px-2 py-1.5 text-sm cursor-pointer hover:bg-muted"
+              >
+                <input
+                  type="checkbox"
+                  data-testid={`tv-series-option-${s.id}`}
+                  checked={selectedIds.includes(s.id)}
+                  onChange={() => toggle(s.id)}
+                />
+                <span>{seriesLabel(s)}</span>
+              </label>
+            ))
+          )}
+          {selectedIds.length > 0 && (
+            <button
+              type="button"
+              data-testid="tv-active-series-clear"
+              onClick={() => onChange([])}
+              className="mt-1 px-2 text-xs text-ocean underline"
+            >
+              Clear (show all current-season series)
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Full Clubhouse TV Display Configuration Card for Club Administrators.
  */
 export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [seriesList, setSeriesList] = useState([]);
   const [classesById, setClassesById] = useState({});
-  const [regattasList, setRegattasList] = useState([]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -277,14 +361,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
     if (typeof api.getClubTvConfig === "function") {
       Promise.resolve(api.getClubTvConfig(clubId))
         .then((res) => {
-          const tv = res?.tv_config || {};
-          setConfig({
-            ...DEFAULT_CONFIG,
-            ...tv,
-            active_series_id: tv.active_series_id || "",
-            active_regatta_id: tv.active_regatta_id || "",
-            active_year: tv.active_year || "",
-          });
+          setConfig(toFormConfig(res?.tv_config || {}));
           setLoaded(true);
         })
         .catch(() => {});
@@ -305,11 +382,6 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
         .then((ss) => setSeriesList(ss || []))
         .catch(() => {});
     }
-    if (typeof api.getRegattas === "function") {
-      Promise.resolve(api.getRegattas({ club_id: clubId }))
-        .then((rs) => setRegattasList(rs || []))
-        .catch(() => {});
-    }
   }, [clubId]);
 
   useEffect(() => {
@@ -322,20 +394,15 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
     try {
       const payload = {
         ...nextConfig,
-        active_series_id: nextConfig.active_series_id || null,
-        active_regatta_id: nextConfig.active_regatta_id || null,
+        active_series_ids: nextConfig.active_series_ids,
+        active_series_id: nextConfig.active_series_ids[0] || null,
+        active_regatta_id: null,
         active_year: nextConfig.active_year ? Number(nextConfig.active_year) : null,
         rotation_seconds: Math.max(5, Math.min(120, Number(nextConfig.rotation_seconds) || 15)),
       };
       const res = await api.updateClubTvConfig(clubId, payload);
       if (res?.tv_config) {
-        setConfig({
-          ...DEFAULT_CONFIG,
-          ...res.tv_config,
-          active_series_id: res.tv_config.active_series_id || "",
-          active_regatta_id: res.tv_config.active_regatta_id || "",
-          active_year: res.tv_config.active_year || "",
-        });
+        setConfig(toFormConfig(res.tv_config));
       }
       toast.success("Clubhouse TV display settings saved");
     } catch (e) {
@@ -447,60 +514,19 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
         )}
 
         {/* Active Series / Event & Rotation Duration */}
-        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="tv-active-series">Active Series</Label>
-            <select
-              id="tv-active-series"
-              data-testid="tv-active-series-select"
-              value={config.active_series_id}
-              onChange={(e) =>
-                setConfig({
-                  ...config,
-                  active_series_id: e.target.value,
-                  active_regatta_id: e.target.value ? "" : config.active_regatta_id,
-                })
-              }
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
-            >
-              <option value="">All active series (current season)</option>
-              {seriesList.map((s) => {
-                const clsName = classesById[s.class_id]?.name || "Class";
-                return (
-                  <option key={s.id} value={s.id}>
-                    {clsName} · {s.name} ({s.year})
-                  </option>
-                );
-              })}
-            </select>
+            <Label htmlFor="tv-active-series">Series whose pages rotate</Label>
+            <SeriesTickDropdown
+              seriesList={seriesList}
+              classesById={classesById}
+              selectedIds={config.active_series_ids}
+              onChange={(ids) => setConfig({ ...config, active_series_ids: ids })}
+            />
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="tv-active-regatta">Or Active Regatta / Event</Label>
-            <select
-              id="tv-active-regatta"
-              data-testid="tv-active-regatta-select"
-              value={config.active_regatta_id}
-              onChange={(e) =>
-                setConfig({
-                  ...config,
-                  active_regatta_id: e.target.value,
-                  active_series_id: e.target.value ? "" : config.active_series_id,
-                })
-              }
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
-            >
-              <option value="">None (use series selection)</option>
-              {regattasList.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name} ({r.year})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="tv-rotation-seconds">Rotation duration (seconds per view)</Label>
+            <Label htmlFor="tv-rotation-seconds">Seconds per page</Label>
             <Input
               id="tv-rotation-seconds"
               type="number"

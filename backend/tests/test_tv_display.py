@@ -581,6 +581,42 @@ class TestClubhouseTvDisplayPayload:
             asyncio.run(tv_display.get_club_tv_config("royal-harbour", user=other_admin))
         assert exc.value.status_code == 403
 
+    def test_active_series_ids_normalize_and_keep_legacy_single_series(self):
+        cfg = tv_display.normalize_tv_config({"active_series_ids": ["a", "a", "b"]})
+        assert cfg["active_series_ids"] == ["a", "b"]
+        assert cfg["active_series_id"] == "a"
+        legacy = tv_display.normalize_tv_config({"active_series_id": "s1"})
+        assert legacy["active_series_ids"] == ["s1"]
+        assert tv_display.normalize_tv_config({})["active_series_ids"] == []
+
+    def test_ticked_series_rotate_and_unticked_series_are_left_out(self):
+        req = _make_request("/api/clubs/royal-harbour/display")
+
+        server.db = _sample_db(
+            tv_config={"display_mode": "full", "active_series_ids": ["series-sonata-summer", "series-cruiser-summer"]}
+        )
+        payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
+        assert {cv["series_id"] for cv in payload["views"]["classes"]} == {
+            "series-sonata-summer",
+            "series-cruiser-summer",
+        }
+
+        server.db = _sample_db(tv_config={"display_mode": "full", "active_series_ids": ["series-sonata-summer"]})
+        payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
+        assert {cv["series_id"] for cv in payload["views"]["classes"]} == {"series-sonata-summer"}
+
+    def test_saving_an_unknown_ticked_series_is_rejected(self):
+        server.db = _sample_db()
+        req = _make_request("/api/clubs/royal-harbour/tv-config")
+        admin_user = {"id": "u1", "role": "admin", "club_id": "club-1", "username": "admin@club1"}
+        cfg_in = tv_display.TvDisplayConfigInput(active_series_ids=["series-missing"])
+        try:
+            asyncio.run(tv_display.update_club_tv_config("royal-harbour", cfg_in, req, user=admin_user))
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 400
+        else:
+            raise AssertionError("expected a 400 for an unknown series")
+
     def test_config_and_race_day_update_endpoints_and_normalizers(self):
         server.db = _sample_db()
         req = _make_request("/api/clubs/royal-harbour/tv-config")

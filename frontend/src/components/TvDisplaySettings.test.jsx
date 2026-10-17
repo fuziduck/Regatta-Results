@@ -22,11 +22,11 @@ jest.mock("sonner", () => ({
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function renderCard(tvConfig, { loadError } = {}) {
+async function renderCard(tvConfig, { loadError, series = [] } = {}) {
   if (loadError) api.getClubTvConfig.mockRejectedValue(loadError);
   else api.getClubTvConfig.mockResolvedValue({ tv_config: tvConfig });
   api.getClasses.mockResolvedValue([]);
-  api.getSeries.mockResolvedValue([]);
+  api.getSeries.mockResolvedValue(series);
   api.getRegattas.mockResolvedValue([]);
   api.updateClubTvConfig.mockResolvedValue({});
 
@@ -84,6 +84,66 @@ describe("TvDisplaySettingsCard display modes", () => {
     const [clubId, payload] = api.updateClubTvConfig.mock.calls[0];
     expect(clubId).toBe("c1");
     expect(payload.display_mode).toBe("race_day");
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("TvDisplaySettingsCard series choice", () => {
+  const SERIES = [
+    { id: "s1", name: "Summer Series", year: 2026, class_id: "k1" },
+    { id: "s2", name: "Winter Series", year: 2026, class_id: "k1" },
+    { id: "s3", name: "Spring Cup", year: 2026, class_id: "k2" },
+  ];
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    jest.clearAllMocks();
+  });
+
+  it("lists the series as tickboxes in a dropdown and saves every ticked series", async () => {
+    const { container, root } = await renderCard(
+      { display_mode: "full", active_series_ids: ["s1"] },
+      { series: SERIES },
+    );
+
+    await act(async () => {
+      container.querySelector('[data-testid="tv-active-series-trigger"]').click();
+    });
+    expect(container.querySelector('[data-testid="tv-series-option-s1"]').checked).toBe(true);
+    expect(container.querySelector('[data-testid="tv-series-option-s2"]').checked).toBe(false);
+
+    await act(async () => {
+      container.querySelector('[data-testid="tv-series-option-s2"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="save-tv-config-btn"]').click();
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const [, payload] = api.updateClubTvConfig.mock.calls[0];
+    expect(payload.active_series_ids).toEqual(["s1", "s2"]);
+    expect(payload.active_series_id).toBe("s1");
+
+    await act(async () => root.unmount());
+  });
+
+  it("says all current-season series are shown when nothing is ticked", async () => {
+    const { container, root } = await renderCard({ display_mode: "full" }, { series: SERIES });
+
+    expect(container.querySelector('[data-testid="tv-active-series-trigger"]').textContent).toContain(
+      "All current-season series",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("has no separate regatta selector", async () => {
+    const { container, root } = await renderCard({ display_mode: "full" }, { series: SERIES });
+
+    expect(container.querySelector('[data-testid="tv-active-regatta-select"]')).toBeNull();
 
     await act(async () => root.unmount());
   });

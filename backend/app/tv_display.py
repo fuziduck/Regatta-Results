@@ -29,6 +29,7 @@ def _main():
 class TvDisplayConfigInput(BaseModel):
     """Clubhouse TV display configuration."""
     enabled: bool = True
+    active_series_ids: List[str] = Field(default_factory=list)
     active_series_id: Optional[str] = None
     active_regatta_id: Optional[str] = None
     active_year: Optional[int] = None
@@ -59,6 +60,7 @@ class RaceDayInfoInput(BaseModel):
 
 DEFAULT_TV_CONFIG: Dict[str, Any] = {
     "enabled": True,
+    "active_series_ids": [],
     "active_series_id": None,
     "active_regatta_id": None,
     "active_year": None,
@@ -118,6 +120,13 @@ def normalize_tv_config(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     cfg["rotation_seconds"] = max(5, min(120, rot))
     if cfg.get("display_mode") not in TV_DISPLAY_MODES:
         cfg["display_mode"] = "full"
+    # Ticked series in order, without repeats. A config saved before the list
+    # existed carries only active_series_id, which becomes a one-item list.
+    ids = list(dict.fromkeys(str(s) for s in (cfg.get("active_series_ids") or []) if s))
+    if not ids and cfg.get("active_series_id"):
+        ids = [str(cfg["active_series_id"])]
+    cfg["active_series_ids"] = ids
+    cfg["active_series_id"] = ids[0] if ids else None
     return cfg
 
 
@@ -232,9 +241,9 @@ async def update_club_tv_config(
         raise HTTPException(status_code=404, detail="Club not found")
     m._ensure_club(user, club["id"])
     cfg = normalize_tv_config(data.model_dump())
-    # Validate active_series_id or active_regatta_id if set
-    if cfg.get("active_series_id"):
-        ser = await db.series.find_one({"id": cfg["active_series_id"]}, {"_id": 0})
+    # Every ticked series must exist and belong to this club
+    for sid in cfg.get("active_series_ids") or []:
+        ser = await db.series.find_one({"id": sid}, {"_id": 0})
         if not ser:
             raise HTTPException(status_code=400, detail="Selected series not found")
         ser_club = await m._class_club_id(ser.get("class_id"))
@@ -373,11 +382,18 @@ async def get_club_tv_display(
     effective_regatta_id = regatta_id or tv_config.get("active_regatta_id")
     effective_year = year or tv_config.get("active_year")
 
+    # Several ticked series rotate exactly as ticked; a single series keeps the sibling-series behaviour below.
+    ticked_ids = [series_id] if series_id else list(tv_config.get("active_series_ids") or [])
+    ticked_series = [series_by_id[sid] for sid in ticked_ids if sid in series_by_id]
+    multi_series = len(ticked_series) > 1
+
     # Validate effective_series_id belongs to this club
-    selected_series = series_by_id.get(effective_series_id) if effective_series_id else None
+    selected_series = None if multi_series else (series_by_id.get(effective_series_id) if effective_series_id else None)
     selected_regatta = regatta_by_id.get(effective_regatta_id) if effective_regatta_id else None
 
-    if selected_series:
+    if multi_series:
+        effective_year = ticked_series[0].get("year") or effective_year
+    elif selected_series:
         effective_year = selected_series.get("year") or effective_year
     elif selected_regatta:
         effective_year = selected_regatta.get("year") or effective_year
@@ -396,7 +412,10 @@ async def get_club_tv_display(
             effective_year = current_year
 
     # Determine which series are in scope for the display
-    if selected_series:
+    if multi_series:
+        scoped_series = list(ticked_series)
+        active_event_title = f"Selected series ({effective_year})"
+    elif selected_series:
         # If the admin picked a specific series (e.g., "Summer Series" in Sonata),
         # check if other classes also have a series with the same name & year (common club-wide series pattern),
         # or if it's linked to a regatta. We include the selected series first, plus any sibling series
