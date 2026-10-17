@@ -199,6 +199,24 @@ async def _require_admin_dep(request: Request) -> dict:
     return await m.require_admin(request)
 
 
+@router.get("/clubs/{club_identifier}/tv-config")
+async def get_club_tv_config(
+    club_identifier: str,
+    user: dict = Depends(_require_admin_dep),
+):
+    """Stored TV display configuration for a club, for its admins to edit.
+
+    Unlike the public /clubs list this includes unapproved clubs, so the settings
+    card always shows the saved values instead of defaults.
+    """
+    m = _main()
+    club = await _find_club_by_identifier(m.db, club_identifier)
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found")
+    m._ensure_club(user, club["id"])
+    return {"tv_config": normalize_tv_config(club.get("tv_config"))}
+
+
 @router.put("/clubs/{club_identifier}/tv-config")
 async def update_club_tv_config(
     club_identifier: str,

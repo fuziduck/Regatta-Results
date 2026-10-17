@@ -425,6 +425,39 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(days[0].textContent).toContain("Sonata R2");
     expect(days[0].textContent).toContain("Cruiser Fleet R1");
   });
+
+  it("hides the calendar section and reports no race-day content when every section is switched off", async () => {
+    // Shape the backend returns when all show_* switches are off: the
+    // switched sections are blank, and the title is not switch-controlled.
+    const blanked = {
+      title: "",
+      race_officer: "",
+      status: "",
+      courses: "",
+      live_courses: [],
+      course_diagram: "",
+      start_sequence: "",
+      schedule: [],
+      notes: "",
+      live_notes: [],
+      life_jackets: false,
+      announcements: "",
+      onb_notices: [],
+      calendar: [],
+    };
+    expect(hasRaceDayContent(blanked, { display_mode: "race_day" })).toBe(false);
+
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...raceDayPayload,
+      config: { ...raceDayPayload.config, show_calendar: false },
+      race_day: blanked,
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(container.querySelector('[data-testid="tv-calendar-section"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="tv-calendar-day"]')).toHaveLength(0);
+  });
 });
 
 describe("ClubTvDisplay rotation & rendering", () => {
@@ -556,6 +589,26 @@ describe("ClubTvDisplay rotation & rendering", () => {
 
     expect(container.querySelector('[data-testid="tv-empty-results"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="tv-race-day-panel"]')).toBeNull();
+  });
+
+  it("does not show rotation controls or advance when there is only one view", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValueOnce({
+      ...samplePayload,
+      views: { overall: [samplePayload.views.overall[0]], classes: [], latest_races: [], series_progress: [] },
+      race_day: {},
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const title = container.querySelector('[data-testid="tv-slide-title"]').textContent;
+    expect(container.querySelector('[data-testid="tv-progress-bar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tv-rotation-indicators"]')).toBeNull();
+    expect(container.textContent).not.toContain("Auto-rotating");
+
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(container.querySelector('[data-testid="tv-slide-title"]').textContent).toBe(title);
   });
 
   it("bounds the club logo in the header so any uploaded icon stays small", async () => {

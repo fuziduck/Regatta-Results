@@ -518,6 +518,69 @@ class TestClubhouseTvDisplayPayload:
         payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
         assert len(payload["race_day"]["calendar"]) == tv_display.CALENDAR_SUMMARY_DAYS
 
+    def test_saved_section_switches_persist_and_hide_sections(self):
+        server.db = _sample_db(race_day_info={
+            "race_officer": "RO Jane",
+            "courses": "Course 1 (windward)",
+            "announcements": "Prize giving at 16:30",
+            "notes": "Life jackets mandatory",
+            "start_sequence": "10:30 Sonata",
+        })
+        admin_user = {"id": "u1", "role": "admin", "club_id": "club-1", "username": "admin@club1"}
+        section_keys = (
+            "show_race_officer", "show_courses", "show_schedule", "show_notes",
+            "show_announcements", "show_status", "show_calendar",
+        )
+        cfg_in = tv_display.TvDisplayConfigInput(**{key: False for key in section_keys})
+        req = _make_request("/api/clubs/royal-harbour/tv-config")
+        res = asyncio.run(tv_display.update_club_tv_config("royal-harbour", cfg_in, req, user=admin_user))
+        for key in section_keys:
+            assert res["tv_config"][key] is False, key
+
+        stored = server.db.clubs.docs[0]["tv_config"]
+        for key in section_keys:
+            assert stored[key] is False, key
+
+        payload = asyncio.run(
+            tv_display.get_club_tv_display("royal-harbour", _make_request("/api/clubs/royal-harbour/display"))
+        )
+        for key in section_keys:
+            assert payload["config"][key] is False, key
+        race_day = payload["race_day"]
+        assert race_day["race_officer"] == ""
+        assert race_day["courses"] == ""
+        assert race_day["live_courses"] == []
+        assert race_day["course_diagram"] == ""
+        assert race_day["start_sequence"] == ""
+        assert race_day["schedule"] == []
+        assert race_day["notes"] == ""
+        assert race_day["live_notes"] == []
+        assert race_day["announcements"] == ""
+        assert race_day["onb_notices"] == []
+        assert race_day["status"] == ""
+        assert race_day["calendar"] == []
+
+    def test_admin_reads_saved_config_for_club_missing_from_public_list(self):
+        section_keys = (
+            "show_race_officer", "show_courses", "show_schedule", "show_notes",
+            "show_announcements", "show_status", "show_calendar",
+        )
+        server.db = _sample_db(
+            tv_config={key: False for key in section_keys},
+            approval_status="pending",
+        )
+        admin_user = {"id": "u1", "role": "admin", "club_id": "club-1", "username": "admin@club1"}
+        res = asyncio.run(tv_display.get_club_tv_config("royal-harbour", user=admin_user))
+        for key in section_keys:
+            assert res["tv_config"][key] is False, key
+
+    def test_admin_cannot_read_another_clubs_tv_config(self):
+        server.db = _sample_db()
+        other_admin = {"id": "u2", "role": "admin", "club_id": "club-2", "username": "admin@club2"}
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(tv_display.get_club_tv_config("royal-harbour", user=other_admin))
+        assert exc.value.status_code == 403
+
     def test_config_and_race_day_update_endpoints_and_normalizers(self):
         server.db = _sample_db()
         req = _make_request("/api/clubs/royal-harbour/tv-config")

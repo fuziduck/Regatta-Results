@@ -269,22 +269,23 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
   const [regattasList, setRegattasList] = useState([]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(() => {
     if (!clubId) return;
-    if (typeof api.getClubs === "function") {
-      Promise.resolve(api.getClubs())
-        .then((clubs) => {
-          const c = (clubs || []).find((x) => x.id === clubId);
-          if (c?.tv_config) {
-            setConfig({
-              ...DEFAULT_CONFIG,
-              ...c.tv_config,
-              active_series_id: c.tv_config.active_series_id || "",
-              active_regatta_id: c.tv_config.active_regatta_id || "",
-              active_year: c.tv_config.active_year || "",
-            });
-          }
+    setLoaded(false);
+    if (typeof api.getClubTvConfig === "function") {
+      Promise.resolve(api.getClubTvConfig(clubId))
+        .then((res) => {
+          const tv = res?.tv_config || {};
+          setConfig({
+            ...DEFAULT_CONFIG,
+            ...tv,
+            active_series_id: tv.active_series_id || "",
+            active_regatta_id: tv.active_regatta_id || "",
+            active_year: tv.active_year || "",
+          });
+          setLoaded(true);
         })
         .catch(() => {});
     }
@@ -600,7 +601,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
           <Button
             type="button"
             onClick={() => saveConfig(config)}
-            disabled={busy}
+            disabled={busy || !loaded}
             data-testid="save-tv-config-btn"
             className="gap-2 bg-ocean hover:bg-ocean-dark"
           >

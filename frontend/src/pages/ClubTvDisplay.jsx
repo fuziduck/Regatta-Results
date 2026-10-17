@@ -1399,12 +1399,14 @@ export default function ClubTvDisplay() {
       </header>
 
       {/* Subtle Rotation Progress Bar */}
-      <div className="h-1 w-full bg-slate-900 shrink-0" data-testid="tv-progress-bar">
-        <div
-          className="h-full bg-gradient-to-r from-sky-400 to-amber-400 transition-all duration-200 ease-linear"
-          style={{ width: `${progressPct}%` }}
-        />
-      </div>
+      {slides.length > 1 && (
+        <div className="h-1 w-full bg-slate-900 shrink-0" data-testid="tv-progress-bar">
+          <div
+            className="h-full bg-gradient-to-r from-sky-400 to-amber-400 transition-all duration-200 ease-linear"
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+      )}
 
       {/* Main Content Area: 70-80% Rotating Results + 20-30% Persistent Race-Day Info */}
       <main className="flex-1 min-h-0 px-6 py-4">
@@ -1521,7 +1523,7 @@ export default function ClubTvDisplay() {
           <span data-testid="tv-last-updated">
             Last updated: <strong className="font-mono text-slate-200">{formattedUpdatedTime}</strong>
           </span>
-          {slides.length > 0 && (
+          {slides.length > 1 && (
             <span>
               Showing view {activeSlideIndex + 1} of {slides.length} · Auto-rotating every{" "}
               {Math.round(currentDurationMs / 1000)}s

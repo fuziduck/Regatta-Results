@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
   api: {
-    getClubs: jest.fn(),
+    getClubTvConfig: jest.fn(),
     getClasses: jest.fn(),
     getSeries: jest.fn(),
     getRegattas: jest.fn(),
@@ -22,8 +22,9 @@ jest.mock("sonner", () => ({
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function renderCard(tvConfig) {
-  api.getClubs.mockResolvedValue([{ id: "c1", tv_config: tvConfig }]);
+async function renderCard(tvConfig, { loadError } = {}) {
+  if (loadError) api.getClubTvConfig.mockRejectedValue(loadError);
+  else api.getClubTvConfig.mockResolvedValue({ tv_config: tvConfig });
   api.getClasses.mockResolvedValue([]);
   api.getSeries.mockResolvedValue([]);
   api.getRegattas.mockResolvedValue([]);
@@ -83,6 +84,86 @@ describe("TvDisplaySettingsCard display modes", () => {
     const [clubId, payload] = api.updateClubTvConfig.mock.calls[0];
     expect(clubId).toBe("c1");
     expect(payload.display_mode).toBe("race_day");
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("TvDisplaySettingsCard race-day section switches", () => {
+  const SECTION_KEYS = [
+    "show_status",
+    "show_race_officer",
+    "show_courses",
+    "show_schedule",
+    "show_notes",
+    "show_announcements",
+    "show_calendar",
+  ];
+
+  const switchState = (container, key) =>
+    container.querySelector(`[data-testid="tv-field-${key}"]`).getAttribute("aria-checked");
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    jest.clearAllMocks();
+  });
+
+  it("renders each section switch from the saved config", async () => {
+    const saved = Object.fromEntries(SECTION_KEYS.map((key) => [key, false]));
+    const { container, root } = await renderCard({ display_mode: "full", ...saved });
+
+    for (const key of SECTION_KEYS) {
+      expect(switchState(container, key)).toBe("false");
+    }
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows the saved switches for a club that is missing from the public club list", async () => {
+    const saved = Object.fromEntries(SECTION_KEYS.map((key) => [key, false]));
+    const { container, root } = await renderCard({ display_mode: "full", ...saved });
+
+    for (const key of SECTION_KEYS) {
+      expect(switchState(container, key)).toBe("false");
+    }
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not let Save overwrite stored settings that failed to load", async () => {
+    const { container, root } = await renderCard(null, { loadError: new Error("offline") });
+
+    const save = container.querySelector('[data-testid="save-tv-config-btn"]');
+    expect(save.disabled).toBe(true);
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps switched-off sections off after save when the server echoes the config", async () => {
+    const { container, root } = await renderCard({ display_mode: "full" });
+    api.updateClubTvConfig.mockImplementation(async (_clubId, payload) => ({ tv_config: { ...payload } }));
+
+    for (const key of SECTION_KEYS) {
+      expect(switchState(container, key)).toBe("true");
+      await act(async () => {
+        container.querySelector(`[data-testid="tv-field-${key}"]`).click();
+      });
+      expect(switchState(container, key)).toBe("false");
+    }
+
+    await act(async () => {
+      container.querySelector('[data-testid="save-tv-config-btn"]').click();
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(api.updateClubTvConfig).toHaveBeenCalledTimes(1);
+    const [, payload] = api.updateClubTvConfig.mock.calls[0];
+    for (const key of SECTION_KEYS) {
+      expect(payload[key]).toBe(false);
+      expect(switchState(container, key)).toBe("false");
+    }
 
     await act(async () => root.unmount());
   });

@@ -35,6 +35,7 @@ jest.mock("@/lib/api", () => {
     rrsCodes: jest.fn(),
     getBoats: jest.fn(),
     updateClubSettings: jest.fn(),
+    getClubTvConfig: jest.fn(),
     updateClubTvConfig: jest.fn(),
     updateClubRaceDayInfo: jest.fn(),
     regattas: jest.fn(),
@@ -92,6 +93,7 @@ beforeEach(() => {
   mockApi.rrsCodes.mockResolvedValue([]);
   mockApi.getBoats.mockResolvedValue([]);
   mockApi.updateClubSettings.mockResolvedValue({});
+  mockApi.getClubTvConfig.mockResolvedValue({ tv_config: { enabled: true, rotation_seconds: 15 } });
   mockApi.updateClubTvConfig.mockResolvedValue({ tv_config: { enabled: true, rotation_seconds: 20 } });
   mockApi.updateClubRaceDayInfo.mockResolvedValue({ race_day_info: { title: "Sunday Race" } });
   mockApi.regattas.mockResolvedValue([]);

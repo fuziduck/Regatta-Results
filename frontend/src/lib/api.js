@@ -389,6 +389,8 @@ export const api = {
   // Clubhouse TV Display & Race-Day Information
   getClubTvDisplay: (clubIdentifier, params = {}) =>
     client.get(`/clubs/${encodeURIComponent(clubIdentifier)}/display`, { params }).then((r) => r.data),
+  getClubTvConfig: (clubIdentifier) =>
+    client.get(`/clubs/${encodeURIComponent(clubIdentifier)}/tv-config`).then((r) => r.data),
   updateClubTvConfig: (clubIdentifier, d) =>
     client.put(`/clubs/${encodeURIComponent(clubIdentifier)}/tv-config`, d).then((r) => r.data),
   updateClubRaceDayInfo: (clubIdentifier, d) =>
