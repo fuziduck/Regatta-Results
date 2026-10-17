@@ -72,11 +72,9 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   const views = payload.views || {};
   const slides = [];
 
-  const durationForCount = (totalRows, isMultiPage) => {
-    if (isMultiPage) return Math.round(baseSeconds * 1.15);
-    if (totalRows > 8) return Math.round(baseSeconds * 1.25);
-    return baseSeconds;
-  };
+  // Every slide, including a long table split over several pages, gets exactly
+  // the configured rotation time, so the bottom label matches the admin setting.
+  const durationForCount = () => baseSeconds;
 
   // View A — Overall series standings (default opening view)
   if (Array.isArray(views.overall)) {

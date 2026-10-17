@@ -532,7 +532,7 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(slides[4].categoryLabel).toBe("Series Progress");
   });
 
-  it("paginates large competitor tables and extends view duration", () => {
+  it("paginates large competitor tables but keeps the configured time on every page", () => {
     const manyBoats = Array.from({ length: 14 }, (_, i) => ({
       boat_id: `b-${i + 1}`,
       rank: i + 1,
@@ -558,7 +558,10 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(slides[0].rows).toHaveLength(10);
     expect(slides[1].pageIndex).toBe(2);
     expect(slides[1].rows).toHaveLength(4);
-    expect(slides[0].durationMs).toBeGreaterThan(15000);
+    // The configured seconds are exact: a 15s setting is 15s on every slide,
+    // so the bottom label matches what the admin set.
+    expect(slides.length).toBeGreaterThan(1);
+    expect(slides.every((s) => s.durationMs === 15000)).toBe(true);
   });
 
   it("opens on Overall Standings (View A) by default and displays persistent race-day panel", async () => {
