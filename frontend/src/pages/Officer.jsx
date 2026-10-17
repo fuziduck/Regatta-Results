@@ -7,6 +7,7 @@ import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
 import ClubApplicationStatus from "@/components/ClubApplicationStatus";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
+import { RaceDayInfoEditor } from "@/components/TvDisplaySettings";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, seriesScoringModes } from "@/lib/helpers";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
@@ -2201,11 +2202,26 @@ export default function Officer() {
             <h1 className="text-3xl uppercase tracking-tighter">Race day</h1>
             <p className="text-muted-foreground text-sm">Set up races, record finishes and publish.</p>
           </div>
-          <Button className="gap-2 bg-ocean hover:bg-ocean-dark" data-testid="new-notice-btn"
-            onClick={() => navigate(`/notice/new?club=${clubId}${selected ? `&race=${selected}` : ""}`)}>
-            <FileText className="w-4 h-4" /> New Notice
-          </Button>
+          <div className="flex items-center gap-2">
+            {(clubSlug || clubId) && (
+              <a
+                href={`/clubs/${clubSlug || clubId}/display?preview=1`}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="officer-tv-preview-link"
+                className="inline-flex h-10 items-center gap-1.5 rounded-md border border-ocean/40 px-3 text-xs font-semibold text-ocean hover:bg-ocean hover:text-white transition-colors"
+              >
+                TV Display
+              </a>
+            )}
+            <Button className="gap-2 bg-ocean hover:bg-ocean-dark" data-testid="new-notice-btn"
+              onClick={() => navigate(`/notice/new?club=${clubId}${selected ? `&race=${selected}` : ""}`)}>
+              <FileText className="w-4 h-4" /> New Notice
+            </Button>
+          </div>
         </div>
+
+        {clubId && <RaceDayInfoEditor clubId={clubId} compact />}
 
         <section className="rounded-xl border border-ocean/20 bg-ocean/5 p-4 mb-8" data-testid="schedule-panel">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-3">

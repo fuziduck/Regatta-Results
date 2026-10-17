@@ -35,6 +35,9 @@ jest.mock("@/lib/api", () => {
     rrsCodes: jest.fn(),
     getBoats: jest.fn(),
     updateClubSettings: jest.fn(),
+    updateClubTvConfig: jest.fn(),
+    updateClubRaceDayInfo: jest.fn(),
+    regattas: jest.fn(),
     get2faStatus: jest.fn(),
     getSeasons: jest.fn(),
   };
@@ -89,6 +92,9 @@ beforeEach(() => {
   mockApi.rrsCodes.mockResolvedValue([]);
   mockApi.getBoats.mockResolvedValue([]);
   mockApi.updateClubSettings.mockResolvedValue({});
+  mockApi.updateClubTvConfig.mockResolvedValue({ tv_config: { enabled: true, rotation_seconds: 20 } });
+  mockApi.updateClubRaceDayInfo.mockResolvedValue({ race_day_info: { title: "Sunday Race" } });
+  mockApi.regattas.mockResolvedValue([]);
   mockApi.get2faStatus.mockResolvedValue({ enabled: false, email: "", has_email: false, methods: ["totp"] });
   mockApi.getSeasons.mockResolvedValue({ years: [2026] });
 });
@@ -165,6 +171,29 @@ describe("Admin Club tab", () => {
     expect(mockApi.updateClubSettings).toHaveBeenCalledWith(
       "c1",
       expect.objectContaining({ race_day_notices: false })
+    );
+  });
+
+  it("renders Clubhouse TV Display settings and race-day editor on the Club tab", async () => {
+    render(<Admin />);
+    await flush();
+    await openTab("tab-club");
+
+    const content = container.querySelector('[data-testid="tab-club-content"]');
+    expect(content.querySelector('[data-testid="tv-display-settings-card"]')).not.toBeNull();
+    expect(content.querySelector('[data-testid="race-day-info-card"]')).not.toBeNull();
+    expect(content.querySelector('[data-testid="tv-display-preview-link"]')).not.toBeNull();
+
+    const saveBtn = content.querySelector('[data-testid="save-tv-config-btn"]');
+    expect(saveBtn).not.toBeNull();
+    await act(async () => {
+      saveBtn.click();
+    });
+    await flush();
+
+    expect(mockApi.updateClubTvConfig).toHaveBeenCalledWith(
+      "c1",
+      expect.objectContaining({ enabled: true, rotation_seconds: 15 })
     );
   });
 });

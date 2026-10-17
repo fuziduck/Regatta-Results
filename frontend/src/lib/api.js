@@ -27,7 +27,7 @@ const client = axios.create({ baseURL: API, withCredentials: true });
 // prefix would match every path via startsWith. These are prefixes only.
 const PUBLIC_ROUTE_PREFIXES = [
   "/login", "/forgot-password", "/reset-password", "/club-registration",
-  "/boats", "/boat/", "/class/", "/club/", "/subscriptions/",
+  "/boats", "/boat/", "/class/", "/club/", "/clubs/", "/subscriptions/",
 ];
 
 export function isPublicRoute(pathname) {
@@ -385,6 +385,14 @@ export const api = {
   newNoticeVersion: (id) => client.post(`/notices/${id}/new-version`).then((r) => r.data),
   updateNotice: (id, d, v) => client.put(`/notices/${id}`, withVer(d, v)).then((r) => r.data),
   deleteNotice: (id, v) => client.delete(`/notices/${id}`, { params: verQuery(v) }).then((r) => r.data),
+
+  // Clubhouse TV Display & Race-Day Information
+  getClubTvDisplay: (clubIdentifier, params = {}) =>
+    client.get(`/clubs/${encodeURIComponent(clubIdentifier)}/display`, { params }).then((r) => r.data),
+  updateClubTvConfig: (clubIdentifier, d) =>
+    client.put(`/clubs/${encodeURIComponent(clubIdentifier)}/tv-config`, d).then((r) => r.data),
+  updateClubRaceDayInfo: (clubIdentifier, d) =>
+    client.put(`/clubs/${encodeURIComponent(clubIdentifier)}/race-day-info`, d).then((r) => r.data),
 
 };
 

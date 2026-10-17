@@ -24,6 +24,7 @@ import NoticeWizard from "@/pages/NoticeWizard";
 import SubscriptionManager from "@/pages/SubscriptionManager";
 import SubscriptionVerify from "@/pages/SubscriptionVerify";
 import NoticeBoardPage from "@/pages/NoticeBoardPage";
+import ClubTvDisplay from "@/pages/ClubTvDisplay";
 import Admin from "@/pages/Admin";
 import Webmaster from "@/pages/Webmaster";
 import Help from "@/pages/Help";
@@ -57,7 +58,8 @@ function RouteMetadata() {
     const isPrivate = PRIVATE_ROUTES.some((route) => route.test(path));
     const isUnknownRoute = ![
       /^\/$/,
-      /^\/club\/[^/]+(?:\/calendar|\/notice-board)?\/?$/,
+      /^\/club\/[^/]+(?:\/calendar|\/notice-board|\/display)?\/?$/,
+      /^\/clubs\/[^/]+\/display\/?$/,
       /^\/club\/[^/]+\/series\/[^/]+(?:\/[^/]+)?\/?$/,
       /^\/club\/[^/]+\/(?:race|regatta|competition)\/[^/]+(?:\/[^/]+)?\/?$/,
       /^\/class\/[^/]+(?:\/[^/]+)?\/?$/,
@@ -92,6 +94,9 @@ function RouteMetadata() {
 
 function PersistentHelpSidebar() {
   const location = useLocation();
+  if (/^\/(?:club|clubs)\/[^/]+\/display\/?$/.test(location.pathname)) {
+    return null;
+  }
   return <HelpSidebar showTrigger={false} pathname={location.pathname} />;
 }
 
@@ -115,6 +120,8 @@ function App() {
             <Route path="/club/:slug/regatta/:regattaId/:eventName?" element={<Regatta />} />
             <Route path="/club/:slug/competition/:regattaId/:eventName?" element={<Regatta />} />
             <Route path="/club/:slug/notice-board" element={<NoticeBoardPage />} />
+            <Route path="/club/:slug/display" element={<ClubTvDisplay />} />
+            <Route path="/clubs/:clubId/display" element={<ClubTvDisplay />} />
             <Route path="/boats" element={<Boats />} />
             <Route path="/boat/:fleetId/:boatName?" element={<Boat />} />
             <Route path="/login" element={<Login />} />

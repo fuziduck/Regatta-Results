@@ -11318,7 +11318,17 @@ async def run_seed():
     return {"seeded": True}
 
 
+from app.tv_display import (
+    router as tv_router,
+    get_club_tv_display,
+    update_club_tv_config,
+    update_club_race_day_info,
+    TvDisplayConfigInput,
+    RaceDayInfoInput,
+)
+
 app.include_router(api_router)
+app.include_router(tv_router)
 app.include_router(seo_router)
 app.state.db = db
 

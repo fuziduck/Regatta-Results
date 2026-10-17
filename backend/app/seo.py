@@ -431,6 +431,24 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
             "This SailScore account or authenticated workspace is not available for public search indexing.",
         )
 
+    if len(parts) == 3 and parts[0] in ("club", "clubs") and parts[2] == "display":
+        club = (
+            await _find_one(db, "clubs", {"slug": parts[1]})
+            or await _find_one(db, "clubs", {"id": parts[1]})
+        )
+        if not club or not _is_public_club(club):
+            return _not_found(base, path)
+        club_name = club.get("name") or "Sailing Club"
+        canonical_slug = quote(str(club.get("slug") or parts[1]), safe="")
+        path_out = f"/club/{canonical_slug}/display"
+        tv_cfg = club.get("tv_config") or {}
+        if tv_cfg.get("enabled") is False:
+            return _noindex_page(base, path_out, f"{club_name} Clubhouse TV Display | SailScore",
+                                 "This club's public TV display is currently disabled.")
+        title = f"{club_name} Clubhouse TV Display | SailScore"
+        description = f"Live clubhouse television race results, class standings and race-day information for {club_name}."
+        return _noindex_page(base, path_out, title, description)
+
     if len(parts) == 3 and parts[0] == "club" and parts[2] in ("calendar", "notice-board"):
         club = await _find_one(db, "clubs", {"slug": parts[1]})
         if not club or not _is_public_club(club):

@@ -16,6 +16,7 @@ import { CURRENT_YEAR, CODE_COLORS, fmtDate, scoringModeLabel, classDivisions, s
 import NoticeBoard from "@/components/NoticeBoard";
 import { RaceReportsAdmin } from "@/components/RaceReports";
 import SubscriptionOverview from "@/components/SubscriptionOverview";
+import TvDisplaySettingsCard from "@/components/TvDisplaySettings";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -2476,6 +2477,7 @@ export default function Admin() {
             </div>
             {clubId && <ClubIconField clubId={clubId} />}
             {clubId && <ClubNoticeToggle clubId={clubId} />}
+            {clubId && <TvDisplaySettingsCard clubId={clubId} clubSlug={clubSlug} />}
           </TabsContent>
           <TabsContent value="historic" className="pt-6"><HistoricTab classes={classes} rrsCodes={rrsCodes} clubId={clubId} /></TabsContent>
           <TabsContent value="users" className="pt-6"><UsersManager clubId={clubId} heading={clubName ? `${clubName} logins` : "Club logins"} /></TabsContent>

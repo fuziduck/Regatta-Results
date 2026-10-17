@@ -1,0 +1,399 @@
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import ClubTvDisplay, {
+  buildRotationSlides,
+  hasRaceDayContent,
+  TV_POLL_INTERVAL_MS,
+} from "./ClubTvDisplay";
+
+let mockParams = { slug: "royal-harbour" };
+let mockSearch = new URLSearchParams();
+
+jest.mock("react-router-dom", () => ({
+  useParams: () => mockParams,
+  useSearchParams: () => [mockSearch, jest.fn()],
+}));
+
+jest.mock("@/lib/api", () => ({
+  api: {
+    getClubTvDisplay: jest.fn(),
+  },
+}));
+
+const mockApi = require("@/lib/api").api;
+
+const samplePayload = {
+  club: {
+    id: "club-1",
+    name: "Royal Harbour Sailing Club",
+    slug: "royal-harbour",
+    color: "#0F4C81",
+  },
+  active_event: {
+    title: "Summer Series (2026)",
+    year: 2026,
+  },
+  config: {
+    enabled: true,
+    rotation_seconds: 15,
+    show_overall: true,
+    show_classes: true,
+    show_latest_race: true,
+    show_series_progress: true,
+    show_race_day_panel: true,
+  },
+  views: {
+    overall: [
+      {
+        id: "overall-1",
+        title: "Sonata Overall Standings",
+        subtitle: "2026 Championship",
+        class_name: "Sonata",
+        scoring_label: "One-Design",
+        race_count: 3,
+        races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3 }],
+        standings: [
+          {
+            boat_id: "b1",
+            rank: 1,
+            boat_name: "Bluebird",
+            sail_no: "GBR 8123",
+            class_name: "Sonata",
+            helm: "Alice Smith",
+            races_completed: 3,
+            total: 4,
+            net: 3,
+            scores: [
+              { points: 1, code: "FINISHED", discarded: false },
+              { points: 2, code: "FINISHED", discarded: true },
+              { points: 1, code: "FINISHED", discarded: false },
+            ],
+          },
+          {
+            boat_id: "b2",
+            rank: 2,
+            boat_name: "Tailwind",
+            sail_no: "GBR 8456",
+            class_name: "Sonata",
+            helm: "Bob Jones",
+            races_completed: 3,
+            total: 6,
+            net: 4,
+            scores: [
+              { points: 2, code: "FINISHED", discarded: false },
+              { points: 1, code: "FINISHED", discarded: false },
+              { points: 3, code: "FINISHED", discarded: true },
+            ],
+          },
+        ],
+      },
+    ],
+    classes: [
+      {
+        id: "class-sonata",
+        class_id: "c-sonata",
+        class_name: "Sonata",
+        heading: "Sonata",
+        series_name: "Summer Points",
+        scoring_label: "One-Design",
+        year: 2026,
+        race_count: 3,
+        standings: [
+          {
+            boat_id: "b1",
+            rank: 1,
+            boat_name: "Bluebird",
+            sail_no: "GBR 8123",
+            helm: "Alice Smith",
+            races_completed: 3,
+            total: 4,
+            net: 3,
+          },
+        ],
+      },
+      {
+        id: "class-cruiser-irc",
+        class_id: "c-cruiser",
+        class_name: "Cruiser Fleet",
+        heading: "Cruiser Fleet — IRC",
+        division_name: "IRC",
+        series_name: "Summer Points",
+        scoring_label: "IRC",
+        year: 2026,
+        race_count: 2,
+        standings: [
+          {
+            boat_id: "b3",
+            rank: 1,
+            boat_name: "Zephyr",
+            sail_no: "GBR 901",
+            helm: "Charlie Brown",
+            races_completed: 2,
+            total: 2,
+            net: 2,
+          },
+        ],
+      },
+    ],
+    latest_races: [
+      {
+        id: "race-latest-1",
+        race_id: "r2",
+        race_number: 2,
+        race_label: "Race 2",
+        date: "2026-06-08",
+        status: "provisional",
+        is_provisional: true,
+        class_name: "Sonata",
+        series_name: "Summer Points",
+        scoring_label: "One-Design",
+        results: [
+          {
+            boat_id: "b2",
+            boat_name: "Tailwind",
+            sail_no: "GBR 8456",
+            class_name: "Sonata",
+            helm: "Bob Jones",
+            position: 1,
+            code: "FINISHED",
+            points: 1,
+            elapsed_formatted: "49:10",
+          },
+        ],
+      },
+    ],
+    series_progress: [
+      {
+        id: "prog-1",
+        series_id: "s1",
+        series_name: "Summer Points",
+        class_name: "Sonata",
+        scoring_label: "One-Design",
+        completed_races: 3,
+        planned_races: 6,
+        remaining_races: 3,
+        abandoned_races: 0,
+        discards: 1,
+        next_race_date: "2026-06-15",
+        upcoming_races: [{ race_number: 4, date: "2026-06-15" }],
+        completed_race_list: [{ race_number: 1, date: "2026-06-01" }],
+        standings: [
+          {
+            boat_id: "b1",
+            rank: 1,
+            boat_name: "Bluebird",
+            sail_no: "GBR 8123",
+            helm: "Alice Smith",
+            total: 4,
+            net: 3,
+          },
+        ],
+      },
+    ],
+  },
+  race_day: {
+    title: "Commodore's Regatta Day",
+    date: "2026-06-08",
+    race_officer: "RO Sarah Jenkins",
+    status: "racing",
+    courses: "Course B: 1(P) - 2(P) - 4(S), 3 laps",
+    course_diagram: "Start -> 1p -> 2p -> 4s -> Finish",
+    start_sequence: "10:25 Warning · 10:30 Start",
+    schedule: [
+      {
+        race_id: "r2",
+        class_name: "Sonata",
+        race_label: "Race 2",
+        start_time: "10:30",
+        course: "Course B",
+        status: "racing",
+      },
+    ],
+    notes: "Keep clear of main shipping channel.",
+    life_jackets: true,
+    announcements: "Prize giving in clubhouse bar at 16:30.",
+    onb_notices: [{ id: "n1", title: "SI Amendment 1", summary: "Mark 4 moved 100m North" }],
+  },
+};
+
+let container;
+let root;
+
+const render = (el) => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root.render(el);
+  });
+  return container;
+};
+
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve();
+  });
+};
+
+beforeEach(() => {
+  jest.useFakeTimers();
+  mockParams = { slug: "royal-harbour" };
+  mockSearch = new URLSearchParams();
+  mockApi.getClubTvDisplay.mockResolvedValue(samplePayload);
+});
+
+afterEach(async () => {
+  if (root) {
+    await act(async () => {});
+    act(() => root.unmount());
+    root = null;
+  }
+  if (container) {
+    container.remove();
+    container = null;
+  }
+  jest.useRealTimers();
+  jest.clearAllMocks();
+});
+
+describe("ClubTvDisplay rotation & rendering", () => {
+  it("builds rotation slides in order A -> B -> C -> D and skips empty views", () => {
+    const slides = buildRotationSlides(samplePayload);
+    expect(slides.map((s) => s.viewType)).toEqual(["A", "B", "B", "C", "D"]);
+    expect(slides[0].title).toBe("Sonata Overall Standings");
+    expect(slides[1].title).toBe("Sonata");
+    expect(slides[2].title).toBe("Cruiser Fleet — IRC");
+    expect(slides[3].isProvisional).toBe(true);
+    expect(slides[4].categoryLabel).toBe("Series Progress");
+  });
+
+  it("paginates large competitor tables and extends view duration", () => {
+    const manyBoats = Array.from({ length: 14 }, (_, i) => ({
+      boat_id: `b-${i + 1}`,
+      rank: i + 1,
+      boat_name: `Boat ${i + 1}`,
+      sail_no: `GBR ${100 + i}`,
+      total: i + 1,
+      net: i + 1,
+    }));
+    const payload = {
+      ...samplePayload,
+      config: { ...samplePayload.config, rotation_seconds: 15, show_classes: false, show_latest_race: false, show_series_progress: false },
+      views: {
+        overall: [{ id: "ov-big", title: "Big Fleet", standings: manyBoats }],
+        classes: [],
+        latest_races: [],
+        series_progress: [],
+      },
+    };
+    const slides = buildRotationSlides(payload, 10);
+    expect(slides).toHaveLength(2);
+    expect(slides[0].pageIndex).toBe(1);
+    expect(slides[0].pageCount).toBe(2);
+    expect(slides[0].rows).toHaveLength(10);
+    expect(slides[1].pageIndex).toBe(2);
+    expect(slides[1].rows).toHaveLength(4);
+    expect(slides[0].durationMs).toBeGreaterThan(15000);
+  });
+
+  it("opens on Overall Standings (View A) by default and displays persistent race-day panel", async () => {
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(container.querySelector('[data-testid="tv-club-name"]').textContent).toBe(
+      "Royal Harbour Sailing Club"
+    );
+    expect(container.querySelector('[data-testid="tv-slide-A"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-leader-banner"]').textContent).toContain("Bluebird");
+    expect(container.querySelector('[data-testid="tv-podium-badge-1"]').textContent).toBe("1");
+
+    // Persistent race-day panel
+    const panel = container.querySelector('[data-testid="tv-race-day-panel"]');
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain("Commodore's Regatta Day");
+    expect(panel.textContent).toContain("RO Sarah Jenkins");
+    expect(panel.textContent).toContain("Course B: 1(P) - 2(P) - 4(S), 3 laps");
+    expect(panel.textContent).toContain("Prize giving in clubhouse bar at 16:30.");
+    expect(container.querySelector('[data-testid="tv-life-jackets-alert"]')).not.toBeNull();
+  });
+
+  it("automatically rotates through Views A -> B -> C -> D and shows provisional banner on View C", async () => {
+    render(<ClubTvDisplay />);
+    await flush();
+
+    // Starts on View A
+    expect(container.querySelector('[data-testid="tv-slide-A"]')).not.toBeNull();
+
+    // Advance 15s -> View B (Sonata)
+    await act(async () => {
+      jest.advanceTimersByTime(15100);
+    });
+    expect(container.querySelector('[data-testid="tv-slide-B"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-slide-title"]').textContent).toBe("Sonata");
+
+    // Advance 15s -> View B (Cruiser Fleet — IRC)
+    await act(async () => {
+      jest.advanceTimersByTime(15100);
+    });
+    expect(container.querySelector('[data-testid="tv-slide-title"]').textContent).toBe("Cruiser Fleet — IRC");
+
+    // Advance 15s -> View C (Latest Race - Provisional)
+    await act(async () => {
+      jest.advanceTimersByTime(15100);
+    });
+    expect(container.querySelector('[data-testid="tv-slide-C"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-provisional-banner"]')).not.toBeNull();
+
+    // Advance 15s -> View D (Series Progress)
+    await act(async () => {
+      jest.advanceTimersByTime(15100);
+    });
+    expect(container.querySelector('[data-testid="tv-slide-D"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-progress-completed"]').textContent).toBe("3");
+  });
+
+  it("retains last retrieved results and current slide when a background poll fails", async () => {
+    render(<ClubTvDisplay />);
+    await flush();
+
+    // Move to second slide (View B)
+    await act(async () => {
+      jest.advanceTimersByTime(15100);
+    });
+    expect(container.querySelector('[data-testid="tv-slide-title"]').textContent).toBe("Sonata");
+
+    // Next background poll fails
+    mockApi.getClubTvDisplay.mockRejectedValueOnce(new Error("Network error"));
+    await act(async () => {
+      jest.advanceTimersByTime(TV_POLL_INTERVAL_MS);
+    });
+    await flush();
+
+    // Still showing results + offline warning badge
+    expect(container.querySelector('[data-testid="tv-standings-table"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-connection-warning"]')).not.toBeNull();
+  });
+
+  it("shows empty state when no results are published yet", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValueOnce({
+      ...samplePayload,
+      views: { overall: [], classes: [], latest_races: [], series_progress: [] },
+      race_day: {},
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(container.querySelector('[data-testid="tv-empty-results"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-race-day-panel"]')).toBeNull();
+  });
+
+  it("hides race-day panel when no race-day fields are populated", () => {
+    expect(hasRaceDayContent({}, { show_race_day_panel: true })).toBe(false);
+    expect(
+      hasRaceDayContent({ title: "Sunday Racing" }, { show_race_day_panel: false })
+    ).toBe(false);
+    expect(
+      hasRaceDayContent({ title: "Sunday Racing" }, { show_race_day_panel: true })
+    ).toBe(true);
+  });
+});
