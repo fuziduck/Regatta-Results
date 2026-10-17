@@ -89,3 +89,13 @@ it("toggles day/night from the theme item", async () => {
   act(() => item().click());
   expect(item().textContent).toContain("Switch to night mode");
 });
+
+it("lists the Clubhouse TV display in a new tab only when a TV link is given", () => {
+  const hidden = renderMenu();
+  expect(hidden.querySelector('[data-testid="header-menu-tv"]')).toBeNull();
+  const shown = renderMenu({ tvDisplayHref: "/club/medway/display" });
+  const link = shown.querySelector('[data-testid="header-menu-tv"]');
+  expect(link.getAttribute("href")).toBe("/club/medway/display");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.textContent).toContain("Clubhouse TV display");
+});

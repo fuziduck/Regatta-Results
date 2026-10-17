@@ -352,7 +352,7 @@ function ClubHomeIndex({ club }) {
       <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <div className="flex min-w-0 items-center gap-3">
-            <HeaderMenu title={`${club.name} · results`} />
+            <HeaderMenu title={`${club.name} · results`} tvDisplayHref={club.tv_config?.enabled !== false ? `/club/${club.slug}/display` : null} />
             <Link to="/" aria-label="SailScore home"><Logo className="h-10 w-auto" /></Link>
             <span className="hidden truncate font-heading text-lg uppercase tracking-tight sm:block">{club.name}</span>
           </div>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LifeBuoy, Menu, Share2, Smartphone, Sun, Moon } from "lucide-react";
+import { LifeBuoy, Menu, Share2, Smartphone, Sun, Moon, Tv } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -11,8 +11,9 @@ import { toast } from "sonner";
 
 // Compact burger menu for the public headers. Keeps the interface clean by
 // folding the share link, the "install as a web app" guide, and the day/night
-// theme toggle into one little dropdown on the left.
-export default function HeaderMenu({ title, text, light = false, className = "", showHelp = true }) {
+// theme toggle into one little dropdown on the left. Club pages also pass
+// `tvDisplayHref` to list the Clubhouse TV display, which opens in a new tab.
+export default function HeaderMenu({ title, text, light = false, className = "", showHelp = true, tvDisplayHref = null }) {
   const [installOpen, setInstallOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
   const dark = theme === "dark";
@@ -49,6 +50,11 @@ export default function HeaderMenu({ title, text, light = false, className = "",
         <DropdownMenuContent align="start" className="w-56">
           {showHelp && <DropdownMenuItem onSelect={openHelpSidebar} data-testid="header-menu-help">
             <LifeBuoy className="w-4 h-4" /> Help and quick starts
+          </DropdownMenuItem>}
+          {tvDisplayHref && <DropdownMenuItem asChild data-testid="header-menu-tv">
+            <a href={tvDisplayHref} target="_blank" rel="noopener noreferrer">
+              <Tv className="w-4 h-4" /> Clubhouse TV display
+            </a>
           </DropdownMenuItem>}
           <DropdownMenuItem onSelect={share} data-testid="header-menu-share">
             <Share2 className="w-4 h-4" /> Share this page

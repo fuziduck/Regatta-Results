@@ -68,7 +68,7 @@ export default function ClubCalendar() {
       <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-xl">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <HeaderMenu title={`${club.name} · race calendar`} />
+            <HeaderMenu title={`${club.name} · race calendar`} tvDisplayHref={club.tv_config?.enabled !== false ? `/club/${club.slug}/display` : null} />
             <Link to="/" className="flex items-center"><Logo className="h-11 w-auto" /></Link>
             <div className="hidden sm:block font-heading text-xl uppercase tracking-tight">{club.name}</div>
           </div>

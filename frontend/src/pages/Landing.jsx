@@ -863,7 +863,7 @@ export default function Landing() {
         {/* relative: the header search panel hangs off this row. */}
         <div className="relative max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <HeaderMenu title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} />
+            <HeaderMenu title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} tvDisplayHref={club.tv_config?.enabled !== false ? `/club/${club.slug}/display` : null} />
             <Link to="/"><Logo className="h-11 w-auto" /></Link>
             <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
           </div>
