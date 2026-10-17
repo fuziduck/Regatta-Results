@@ -41,6 +41,7 @@ class TvDisplayConfigInput(BaseModel):
     show_notes: bool = True
     show_announcements: bool = True
     show_status: bool = True
+    show_calendar: bool = True
 
 
 class RaceDayInfoInput(BaseModel):
@@ -70,6 +71,7 @@ DEFAULT_TV_CONFIG: Dict[str, Any] = {
     "show_notes": True,
     "show_announcements": True,
     "show_status": True,
+    "show_calendar": True,
 }
 
 DEFAULT_RACE_DAY_INFO: Dict[str, Any] = {
@@ -87,6 +89,8 @@ DEFAULT_RACE_DAY_INFO: Dict[str, Any] = {
 }
 
 TV_DISPLAY_MODES = ("full", "race_day")
+
+CALENDAR_SUMMARY_DAYS = 6
 
 SCORING_MODE_LABELS = {
     "one_design": "One-Design",
@@ -1001,6 +1005,27 @@ async def get_club_tv_display(
         else:
             derived_status = "scheduled"
 
+    # Racing calendar summary: upcoming planned race dates across the club's
+    # series, grouped by date (soonest first). Only the next few dates are shown.
+    calendar_by_date: Dict[str, List[Dict[str, Any]]] = {}
+    for s in all_series:
+        cls = class_by_id.get(s.get("class_id"), {})
+        for idx, d_str in enumerate(s.get("schedule") or []):
+            if not d_str or str(d_str) < today_iso:
+                continue
+            calendar_by_date.setdefault(str(d_str), []).append({
+                "series_name": s.get("name", "Series"),
+                "class_name": cls.get("name", "Class"),
+                "race_number": idx + 1,
+            })
+    racing_calendar = [
+        {
+            "date": d_str,
+            "races": sorted(items, key=lambda x: (x["class_name"], x["race_number"])),
+        }
+        for d_str, items in sorted(calendar_by_date.items())
+    ][:CALENDAR_SUMMARY_DAYS]
+
     race_day_payload = {
         "title": configured_info.get("title") or (active_event_title if scheduled_today else ""),
         "date": configured_info.get("date") or (target_date if scheduled_today else today_iso),
@@ -1016,6 +1041,7 @@ async def get_club_tv_display(
         "life_jackets": any_life_jackets if tv_config.get("show_notes", True) else False,
         "announcements": configured_info.get("announcements") if tv_config.get("show_announcements", True) else "",
         "onb_notices": recent_announcements if tv_config.get("show_announcements", True) else [],
+        "calendar": racing_calendar if tv_config.get("show_calendar", True) else [],
         "updated_at": configured_info.get("updated_at"),
     }
 

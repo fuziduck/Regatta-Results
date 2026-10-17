@@ -33,6 +33,7 @@ const DEFAULT_CONFIG = {
   show_notes: true,
   show_announcements: true,
   show_status: true,
+  show_calendar: true,
 };
 
 const DEFAULT_RACE_DAY_INFO = {
@@ -578,6 +579,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
                 { key: "show_schedule", label: "Start Times" },
                 { key: "show_notes", label: "Course Notes" },
                 { key: "show_announcements", label: "Announcements" },
+                { key: "show_calendar", label: "Racing Calendar" },
               ].map((item) => (
                 <label
                   key={item.key}

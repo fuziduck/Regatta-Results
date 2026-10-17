@@ -266,7 +266,8 @@ export function hasRaceDayContent(raceDay, config) {
     (raceDay.live_notes && raceDay.live_notes.length > 0) ||
     raceDay.life_jackets ||
     raceDay.announcements ||
-    (raceDay.onb_notices && raceDay.onb_notices.length > 0)
+    (raceDay.onb_notices && raceDay.onb_notices.length > 0) ||
+    (raceDay.calendar && raceDay.calendar.length > 0)
   );
 }
 
@@ -899,6 +900,7 @@ function PersistentRaceDayPanel({ raceDay }) {
   const hasSchedule = Boolean(raceDay.start_sequence || raceDay.schedule?.length);
   const hasNotes = Boolean(raceDay.notes || raceDay.live_notes?.length || raceDay.life_jackets);
   const hasAnnouncements = Boolean(raceDay.announcements || raceDay.onb_notices?.length);
+  const hasCalendar = Boolean(raceDay.calendar?.length);
 
   return (
     <aside
@@ -1051,6 +1053,29 @@ function PersistentRaceDayPanel({ raceDay }) {
               ))}
             </ul>
           )}
+        </div>
+      )}
+
+      {/* Racing Calendar Summary */}
+      {hasCalendar && (
+        <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3.5" data-testid="tv-calendar-section">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-sky-300">
+            <CalendarDays className="h-4 w-4" /> Racing Calendar
+          </div>
+          <div className="space-y-1.5">
+            {raceDay.calendar.map((day) => (
+              <div
+                key={day.date}
+                data-testid="tv-calendar-day"
+                className="flex items-start justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+              >
+                <span className="shrink-0 font-mono text-sm font-bold text-sky-200">{fmtDate(day.date)}</span>
+                <span className="min-w-0 text-right text-xs text-slate-200">
+                  {day.races.map((r) => `${r.class_name} R${r.race_number}`).join(" · ")}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

@@ -475,6 +475,49 @@ class TestClubhouseTvDisplayPayload:
         assert class_views
         assert {cv["class_id"] for cv in class_views} <= raced_class_ids
 
+    def test_racing_calendar_groups_upcoming_planned_dates_by_date_with_race_numbers(self):
+        # Fixed far-future dates keep this deterministic regardless of the run date.
+        server.db = _sample_db()
+        server.db.series.docs.append({
+            "id": "series-sonata-winter", "class_id": "class-sonata", "name": "Winter Series",
+            "year": 2026, "schedule": ["2000-01-01", "2099-01-01", "2099-01-08"],
+        })
+        server.db.series.docs.append({
+            "id": "series-cruiser-winter", "class_id": "class-cruiser", "name": "Cruiser Winter",
+            "year": 2026, "schedule": ["2099-01-01"],
+        })
+        req = _make_request("/api/clubs/royal-harbour/display")
+        payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
+
+        calendar = payload["race_day"]["calendar"]
+        dates = [day["date"] for day in calendar]
+        assert dates == sorted(dates)
+        assert "2000-01-01" not in dates
+        assert len(calendar) <= tv_display.CALENDAR_SUMMARY_DAYS
+
+        by_date = {day["date"]: day["races"] for day in calendar}
+        assert by_date["2099-01-01"] == [
+            {"series_name": "Cruiser Winter", "class_name": "Cruiser Fleet", "race_number": 1},
+            {"series_name": "Winter Series", "class_name": "Sonata", "race_number": 2},
+        ]
+        assert by_date["2099-01-08"] == [
+            {"series_name": "Winter Series", "class_name": "Sonata", "race_number": 3},
+        ]
+
+    def test_racing_calendar_can_be_switched_off_and_is_capped(self):
+        server.db = _sample_db(tv_config={"show_calendar": False})
+        req = _make_request("/api/clubs/royal-harbour/display")
+        payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
+        assert payload["race_day"]["calendar"] == []
+
+        server.db = _sample_db()
+        server.db.series.docs.append({
+            "id": "series-many", "class_id": "class-sonata", "name": "Many Dates",
+            "year": 2026, "schedule": [f"2099-02-{d:02d}" for d in range(1, 9)],
+        })
+        payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
+        assert len(payload["race_day"]["calendar"]) == tv_display.CALENDAR_SUMMARY_DAYS
+
     def test_config_and_race_day_update_endpoints_and_normalizers(self):
         server.db = _sample_db()
         req = _make_request("/api/clubs/royal-harbour/tv-config")

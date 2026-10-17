@@ -358,6 +358,33 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(race.textContent).toContain("Tailwind");
     expect(race.textContent).toContain("Provisional");
   });
+
+  it("shows a racing calendar summary in the race-day panel when calendar data is present", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...raceDayPayload,
+      race_day: {
+        calendar: [
+          {
+            date: "2099-01-01",
+            races: [
+              { series_name: "Summer Points", class_name: "Sonata", race_number: 2 },
+              { series_name: "Cruiser Winter", class_name: "Cruiser Fleet", race_number: 1 },
+            ],
+          },
+        ],
+      },
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const section = container.querySelector('[data-testid="tv-calendar-section"]');
+    expect(section).not.toBeNull();
+    expect(section.textContent).toContain("Racing Calendar");
+    const days = container.querySelectorAll('[data-testid="tv-calendar-day"]');
+    expect(days).toHaveLength(1);
+    expect(days[0].textContent).toContain("Sonata R2");
+    expect(days[0].textContent).toContain("Cruiser Fleet R1");
+  });
 });
 
 describe("ClubTvDisplay rotation & rendering", () => {
