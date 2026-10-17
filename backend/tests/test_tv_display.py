@@ -456,6 +456,25 @@ class TestClubhouseTvDisplayPayload:
         assert "Change to Mark 4 position" in notice_titles
         assert "Secret draft notice" not in notice_titles
 
+    def test_race_day_mode_shows_only_latest_race_date_and_its_classes(self):
+        server.db = _sample_db(tv_config={"display_mode": "race_day"})
+        req = _make_request("/api/clubs/royal-harbour/display")
+        payload = asyncio.run(tv_display.get_club_tv_display("royal-harbour", req))
+
+        assert payload["config"]["display_mode"] == "race_day"
+        assert payload["results_date"]
+        assert payload["views"]["overall"] == []
+        assert payload["views"]["series_progress"] == []
+
+        latest = payload["views"]["latest_races"]
+        assert latest
+        assert {r["date"] for r in latest} == {payload["results_date"]}
+
+        raced_class_ids = {r["class_id"] for r in latest}
+        class_views = payload["views"]["classes"]
+        assert class_views
+        assert {cv["class_id"] for cv in class_views} <= raced_class_ids
+
     def test_config_and_race_day_update_endpoints_and_normalizers(self):
         server.db = _sample_db()
         req = _make_request("/api/clubs/royal-harbour/tv-config")
@@ -465,14 +484,14 @@ class TestClubhouseTvDisplayPayload:
             enabled=False,
             active_series_id="series-sonata-summer",
             rotation_seconds=25,
-            show_overall=True,
-            show_classes=False,
+            display_mode="race_day",
         )
         res = asyncio.run(tv_display.update_club_tv_config("royal-harbour", cfg_in, req, user=admin_user))
         assert res["tv_config"]["enabled"] is False
         assert res["tv_config"]["active_series_id"] == "series-sonata-summer"
         assert res["tv_config"]["rotation_seconds"] == 25
-        assert res["tv_config"]["show_classes"] is False
+        assert res["tv_config"]["display_mode"] == "race_day"
+        assert tv_display.normalize_tv_config({"display_mode": "bogus"})["display_mode"] == "full"
 
         officer_user = {"id": "u2", "role": "officer", "club_id": "club-1", "username": "ro@club1", "name": "RO Jane"}
         rd_in = tv_display.RaceDayInfoInput(

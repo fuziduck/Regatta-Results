@@ -32,11 +32,7 @@ class TvDisplayConfigInput(BaseModel):
     active_series_id: Optional[str] = None
     active_regatta_id: Optional[str] = None
     active_year: Optional[int] = None
-    show_overall: bool = True
-    show_classes: bool = True
-    show_latest_race: bool = True
-    show_series_progress: bool = True
-    show_race_day_panel: bool = True
+    display_mode: str = "full"
     rotation_seconds: int = Field(default=15, ge=5, le=120)
     include_provisional: bool = True
     show_race_officer: bool = True
@@ -65,11 +61,7 @@ DEFAULT_TV_CONFIG: Dict[str, Any] = {
     "active_series_id": None,
     "active_regatta_id": None,
     "active_year": None,
-    "show_overall": True,
-    "show_classes": True,
-    "show_latest_race": True,
-    "show_series_progress": True,
-    "show_race_day_panel": True,
+    "display_mode": "full",
     "rotation_seconds": 15,
     "include_provisional": True,
     "show_race_officer": True,
@@ -93,6 +85,8 @@ DEFAULT_RACE_DAY_INFO: Dict[str, Any] = {
     "updated_at": None,
     "updated_by": None,
 }
+
+TV_DISPLAY_MODES = ("full", "race_day")
 
 SCORING_MODE_LABELS = {
     "one_design": "One-Design",
@@ -118,6 +112,8 @@ def normalize_tv_config(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         rot = 15
     cfg["rotation_seconds"] = max(5, min(120, rot))
+    if cfg.get("display_mode") not in TV_DISPLAY_MODES:
+        cfg["display_mode"] = "full"
     return cfg
 
 
@@ -309,6 +305,11 @@ async def get_club_tv_display(
         )
 
     today_iso = datetime.now(timezone.utc).date().isoformat()
+    # Race-day mode shows only the most recent race date's results and the class
+    # standings for classes that raced that day.
+    race_day_mode = tv_config.get("display_mode") == "race_day"
+    race_day_date: Optional[str] = None
+    race_day_class_ids: set = set()
     current_year = datetime.now(timezone.utc).year
 
     # Load club classes
@@ -442,7 +443,7 @@ async def get_club_tv_display(
     # View A: Overall Series Standings
     # -----------------------------------------------------------------------
     overall_views: List[Dict[str, Any]] = []
-    if tv_config.get("show_overall", True):
+    if not race_day_mode:
         if selected_series:
             # When a specific series is selected, View A shows the overall standings
             # for that selected series (across its divisions/scoring modes, or across
@@ -531,7 +532,7 @@ async def get_club_tv_display(
     # View B: Individual Class / Series / Rating-Division Standings
     # -----------------------------------------------------------------------
     class_views: List[Dict[str, Any]] = []
-    if tv_config.get("show_classes", True):
+    if class_ids:
         # Order series so each class gets fair representation
         for s in scoped_series:
             payload = series_standings_map.get(s["id"])
@@ -599,7 +600,7 @@ async def get_club_tv_display(
 
     # If View A is empty (e.g. no overall championship data yet) but class_views has standings,
     # populate View A from the primary series standings so the default opening view is never blank when data exists.
-    if tv_config.get("show_overall", True) and not overall_views and class_views:
+    if not race_day_mode and not overall_views and class_views:
         first_cv = class_views[0]
         overall_views.append({
             **first_cv,
@@ -613,7 +614,7 @@ async def get_club_tv_display(
     # View C: Latest Race Results
     # -----------------------------------------------------------------------
     latest_races_views: List[Dict[str, Any]] = []
-    if tv_config.get("show_latest_race", True):
+    if class_ids:
         allowed_statuses = {"published"}
         if tv_config.get("include_provisional", True):
             allowed_statuses.add("provisional")
@@ -654,6 +655,15 @@ async def get_club_tv_display(
                 break
         if not selected_latest_races and candidate_races:
             selected_latest_races = candidate_races[:3]
+
+        if race_day_mode:
+            # Every race from the most recent race date, in race-number order.
+            race_day_date = candidate_races[0].get("date") if candidate_races else None
+            selected_latest_races = sorted(
+                (r for r in candidate_races if r.get("date") == race_day_date),
+                key=lambda r: int(r.get("race_number") or 0),
+            )
+            race_day_class_ids = {r.get("class_id") for r in selected_latest_races}
 
         # Decorate published races with multi-mode scoring positions
         published_subset = [r for r in selected_latest_races if r.get("status") == "published"]
@@ -796,11 +806,14 @@ async def get_club_tv_display(
                     "results": result_rows,
                 })
 
+    if race_day_mode:
+        class_views = [cv for cv in class_views if cv.get("class_id") in race_day_class_ids]
+
     # -----------------------------------------------------------------------
     # View D: Series Progress
     # -----------------------------------------------------------------------
     series_progress_views: List[Dict[str, Any]] = []
-    if tv_config.get("show_series_progress", True):
+    if not race_day_mode:
         for s in scoped_series:
             payload = series_standings_map.get(s["id"])
             if not payload:
@@ -1031,5 +1044,6 @@ async def get_club_tv_display(
             "series_progress": series_progress_views,
         },
         "race_day": race_day_payload,
+        "results_date": race_day_date,
         "generated_at": m.now_iso(),
     }

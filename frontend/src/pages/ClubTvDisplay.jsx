@@ -79,7 +79,7 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   };
 
   // View A — Overall series standings (default opening view)
-  if (cfg.show_overall !== false && Array.isArray(views.overall)) {
+  if (Array.isArray(views.overall)) {
     views.overall.forEach((ov) => {
       const allRows = ov.standings || [];
       if (!allRows.length) return;
@@ -105,7 +105,7 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   }
 
   // View B — Individual class standings (cycles through every configured class/division fairly)
-  if (cfg.show_classes !== false && Array.isArray(views.classes)) {
+  if (Array.isArray(views.classes)) {
     views.classes.forEach((cv) => {
       const allRows = cv.standings || [];
       if (!allRows.length) return;
@@ -141,7 +141,7 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   }
 
   // View C — Latest race results
-  if (cfg.show_latest_race !== false && Array.isArray(views.latest_races)) {
+  if (Array.isArray(views.latest_races)) {
     views.latest_races.forEach((lr) => {
       const allRows = lr.results || [];
       if (!allRows.length) return;
@@ -171,7 +171,7 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   }
 
   // View D — Series progress
-  if (cfg.show_series_progress !== false && Array.isArray(views.series_progress)) {
+  if (Array.isArray(views.series_progress)) {
     views.series_progress.forEach((sp) => {
       const allRows = sp.standings || [];
       if (!allRows.length && !sp.completed_races && !sp.upcoming_races?.length) return;
@@ -206,7 +206,7 @@ function ovIdOf(data) {
  * populated content to display.
  */
 export function hasRaceDayContent(raceDay, config) {
-  if (!raceDay || config?.show_race_day_panel === false) return false;
+  if (!raceDay) return false;
   return Boolean(
     raceDay.title ||
     raceDay.race_officer ||

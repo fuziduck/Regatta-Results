@@ -36,11 +36,7 @@ const samplePayload = {
   config: {
     enabled: true,
     rotation_seconds: 15,
-    show_overall: true,
-    show_classes: true,
-    show_latest_race: true,
-    show_series_progress: true,
-    show_race_day_panel: true,
+    display_mode: "full",
   },
   views: {
     overall: [
@@ -278,7 +274,7 @@ describe("ClubTvDisplay rotation & rendering", () => {
     }));
     const payload = {
       ...samplePayload,
-      config: { ...samplePayload.config, rotation_seconds: 15, show_classes: false, show_latest_race: false, show_series_progress: false },
+      config: { ...samplePayload.config, rotation_seconds: 15, display_mode: "full" },
       views: {
         overall: [{ id: "ov-big", title: "Big Fleet", standings: manyBoats }],
         classes: [],
@@ -403,13 +399,11 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(logo.className).not.toContain("h-13");
   });
 
-  it("hides race-day panel when no race-day fields are populated", () => {
-    expect(hasRaceDayContent({}, { show_race_day_panel: true })).toBe(false);
+  it("shows race-day panel only when race-day fields are populated", () => {
+    expect(hasRaceDayContent({}, { display_mode: "full" })).toBe(false);
+    expect(hasRaceDayContent(null, { display_mode: "race_day" })).toBe(false);
     expect(
-      hasRaceDayContent({ title: "Sunday Racing" }, { show_race_day_panel: false })
-    ).toBe(false);
-    expect(
-      hasRaceDayContent({ title: "Sunday Racing" }, { show_race_day_panel: true })
+      hasRaceDayContent({ title: "Sunday Racing" }, { display_mode: "race_day" })
     ).toBe(true);
   });
 });

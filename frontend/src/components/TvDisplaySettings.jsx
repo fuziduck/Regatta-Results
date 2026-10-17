@@ -24,11 +24,7 @@ const DEFAULT_CONFIG = {
   active_series_id: "",
   active_regatta_id: "",
   active_year: "",
-  show_overall: true,
-  show_classes: true,
-  show_latest_race: true,
-  show_series_progress: true,
-  show_race_day_panel: true,
+  display_mode: "full",
   rotation_seconds: 15,
   include_provisional: true,
   show_race_officer: true,
@@ -517,38 +513,60 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
           </div>
         </div>
 
-        {/* Rotating Views Checkboxes */}
+        {/* Display mode */}
         <div className="mt-5">
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2.5 flex items-center gap-1.5">
-            <Sliders className="w-3.5 h-3.5" /> Rotating Views &amp; Panels
+            <Sliders className="w-3.5 h-3.5" /> Display Mode
           </div>
-          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-2.5 sm:grid-cols-2">
             {[
-              { key: "show_overall", label: "View A: Overall Standings", testId: "tv-toggle-overall" },
-              { key: "show_classes", label: "View B: Individual Classes", testId: "tv-toggle-classes" },
-              { key: "show_latest_race", label: "View C: Latest Race Results", testId: "tv-toggle-latest-race" },
-              { key: "show_series_progress", label: "View D: Series Progress", testId: "tv-toggle-series-progress" },
-              { key: "include_provisional", label: "Include Provisional Race Results", testId: "tv-toggle-provisional" },
-              { key: "show_race_day_panel", label: "Persistent Race-Day Side Panel", testId: "tv-toggle-race-day-panel" },
+              {
+                value: "full",
+                label: "Full rotation",
+                description: "Overall standings, class standings, latest race results and series progress.",
+                testId: "tv-mode-full",
+              },
+              {
+                value: "race_day",
+                label: "Race day only",
+                description: "Results from the most recent race day, plus the overall standings for the classes that raced that day.",
+                testId: "tv-mode-race-day",
+              },
             ].map((item) => (
               <label
-                key={item.key}
-                className="flex items-center justify-between rounded-xl border border-border bg-muted/20 px-3.5 py-2.5 text-sm cursor-pointer"
+                key={item.value}
+                className={`flex flex-col gap-1 rounded-xl border px-3.5 py-2.5 text-sm cursor-pointer ${
+                  config.display_mode === item.value ? "border-ocean bg-ocean/5" : "border-border bg-muted/20"
+                }`}
               >
-                <span className="font-medium">{item.label}</span>
-                <Switch
-                  checked={Boolean(config[item.key])}
-                  data-testid={item.testId}
-                  onCheckedChange={(v) => setConfig({ ...config, [item.key]: v })}
-                />
+                <span className="flex items-center gap-2 font-medium">
+                  <input
+                    type="radio"
+                    name="tv-display-mode"
+                    value={item.value}
+                    checked={config.display_mode === item.value}
+                    data-testid={item.testId}
+                    onChange={() => setConfig({ ...config, display_mode: item.value })}
+                  />
+                  {item.label}
+                </span>
+                <span className="text-xs text-muted-foreground">{item.description}</span>
               </label>
             ))}
           </div>
         </div>
 
+        <label className="mt-4 flex items-center justify-between rounded-xl border border-border bg-muted/20 px-3.5 py-2.5 text-sm cursor-pointer">
+          <span className="font-medium">Include Provisional Race Results</span>
+          <Switch
+            checked={Boolean(config.include_provisional)}
+            data-testid="tv-toggle-provisional"
+            onCheckedChange={(v) => setConfig({ ...config, include_provisional: v })}
+          />
+        </label>
+
         {/* Race-day field toggles */}
-        {config.show_race_day_panel && (
-          <div className="mt-4">
+        <div className="mt-4">
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
               Race-Day Panel Sections Displayed
             </div>
@@ -574,8 +592,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
                 </label>
               ))}
             </div>
-          </div>
-        )}
+        </div>
 
         <div className="mt-5 flex justify-end">
           <Button
