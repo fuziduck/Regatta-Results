@@ -252,6 +252,114 @@ afterEach(async () => {
   jest.clearAllMocks();
 });
 
+describe("ClubTvDisplay race-day paired slides", () => {
+  const raceDayPayload = {
+    ...samplePayload,
+    config: { ...samplePayload.config, display_mode: "race_day" },
+    views: {
+      overall: [],
+      series_progress: [],
+      classes: [
+        {
+          id: "class-sonata",
+          class_id: "c-sonata",
+          class_name: "Sonata",
+          heading: "Sonata",
+          series_name: "Summer Points",
+          scoring_label: "One-Design",
+          race_count: 3,
+          standings: [
+            { boat_id: "b1", rank: 1, boat_name: "Bluebird", sail_no: "GBR 8123", total: 4, net: 3 },
+            { boat_id: "b2", rank: 2, boat_name: "Tailwind", sail_no: "GBR 8456", total: 6, net: 6 },
+          ],
+        },
+        {
+          id: "class-cruiser-irc",
+          class_id: "c-cruiser",
+          class_name: "Cruiser Fleet",
+          division_name: "IRC",
+          heading: "Cruiser Fleet — IRC",
+          series_name: "Summer Points",
+          scoring_label: "IRC",
+          race_count: 2,
+          standings: [
+            { boat_id: "b3", rank: 1, boat_name: "Zephyr", sail_no: "GBR 901", total: 2, net: 2 },
+          ],
+        },
+        {
+          id: "class-laser",
+          class_id: "c-laser",
+          class_name: "Laser",
+          heading: "Laser",
+          series_name: "Summer Points",
+          scoring_label: "One-Design",
+          race_count: 3,
+          standings: [
+            { boat_id: "b4", rank: 1, boat_name: "Gull", sail_no: "GBR 1", total: 3, net: 3 },
+          ],
+        },
+      ],
+      latest_races: [
+        {
+          id: "race-latest-1",
+          race_number: 2,
+          race_label: "Race 2",
+          date: "2026-06-08",
+          is_provisional: true,
+          class_id: "c-sonata",
+          class_name: "Sonata",
+          series_name: "Summer Points",
+          scoring_label: "One-Design",
+          results: [
+            { boat_id: "b2", boat_name: "Tailwind", sail_no: "GBR 8456", position: 1, code: "FINISHED", points: 1, elapsed_formatted: "49:10" },
+            { boat_id: "b1", boat_name: "Bluebird", sail_no: "GBR 8123", position: 2, code: "FINISHED", points: 2, elapsed_formatted: "50:02" },
+          ],
+        },
+        {
+          id: "race-cruiser-1",
+          race_number: 2,
+          race_label: "Race 2",
+          date: "2026-06-08",
+          class_id: "c-cruiser",
+          division_name: "IRC",
+          class_name: "Cruiser Fleet",
+          series_name: "Summer Points",
+          scoring_label: "IRC",
+          results: [
+            { boat_id: "b3", boat_name: "Zephyr", sail_no: "GBR 901", position: 1, code: "FINISHED", points: 1 },
+          ],
+        },
+      ],
+    },
+  };
+
+  it("pairs each raced class with its day result and keeps unpaired classes as class standings", () => {
+    const slides = buildRotationSlides(raceDayPayload);
+    expect(slides.map((s) => s.viewType)).toEqual(["E", "E", "B"]);
+    expect(slides[0].title).toBe("Sonata");
+    expect(slides[0].overallRows).toHaveLength(2);
+    expect(slides[0].raceRows.map((r) => r.boat_name)).toEqual(["Tailwind", "Bluebird"]);
+    expect(slides[1].title).toBe("Cruiser Fleet — IRC");
+    expect(slides[1].race.id).toBe("race-cruiser-1");
+    expect(slides[2].title).toBe("Laser");
+  });
+
+  it("renders overall standings and the day's results side by side on one page", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue(raceDayPayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(container.querySelector('[data-testid="tv-slide-E"]')).not.toBeNull();
+    const overall = container.querySelector('[data-testid="tv-overall-panel"]');
+    const race = container.querySelector('[data-testid="tv-race-panel"]');
+    expect(overall.textContent).toContain("Overall Standings");
+    expect(overall.textContent).toContain("Bluebird");
+    expect(race.textContent).toContain("Race 2");
+    expect(race.textContent).toContain("Tailwind");
+    expect(race.textContent).toContain("Provisional");
+  });
+});
+
 describe("ClubTvDisplay rotation & rendering", () => {
   it("builds rotation slides in order A -> B -> C -> D and skips empty views", () => {
     const slides = buildRotationSlides(samplePayload);

@@ -104,9 +104,50 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
     });
   }
 
+  // Race-day pairing — each raced class/division gets one slide per race of
+  // the day, with its overall standings on the left and that race's results
+  // on the right. Views that cannot be paired fall through to B and C below.
+  const pairedClassIds = new Set();
+  const pairedRaceIds = new Set();
+  if (cfg.display_mode === "race_day" && Array.isArray(views.classes) && Array.isArray(views.latest_races)) {
+    views.classes.forEach((cv) => {
+      const key = raceDayPairKey(cv);
+      const races = views.latest_races.filter((lr) => lr.results?.length && raceDayPairKey(lr) === key);
+      if (!races.length) return;
+      pairedClassIds.add(cv.id);
+      races.forEach((lr) => {
+        pairedRaceIds.add(lr.id);
+        const overallPages = chunkRows(cv.standings || [], rowsPerPage);
+        const racePages = chunkRows(lr.results || [], rowsPerPage);
+        const pageCount = Math.max(overallPages.length, racePages.length, 1);
+        const longest = Math.max((cv.standings || []).length, (lr.results || []).length);
+        for (let i = 0; i < pageCount; i += 1) {
+          slides.push({
+            key: `E:${cv.id}:${lr.id}:p${i + 1}`,
+            viewType: "E",
+            categoryLabel: "Class Results · Race Day",
+            title: cv.heading || cv.class_name || "Class Results",
+            subtitle: [cv.series_name, fmtDate(lr.date)].filter(Boolean).join(" · "),
+            scoringLabel: cv.scoring_label || "One-Design",
+            isProvisional: Boolean(lr.is_provisional),
+            data: cv,
+            race: lr,
+            overallRows: overallPages[i] || [],
+            raceRows: racePages[i] || [],
+            leader: null,
+            pageIndex: i + 1,
+            pageCount,
+            durationMs: durationForCount(longest, pageCount > 1) * 1000,
+          });
+        }
+      });
+    });
+  }
+
   // View B — Individual class standings (cycles through every configured class/division fairly)
   if (Array.isArray(views.classes)) {
     views.classes.forEach((cv) => {
+      if (pairedClassIds.has(cv.id)) return;
       const allRows = cv.standings || [];
       if (!allRows.length) return;
       // Avoid exact duplicate if there is only 1 class view and it was already pushed identically as the sole View A fallback
@@ -143,6 +184,7 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   // View C — Latest race results
   if (Array.isArray(views.latest_races)) {
     views.latest_races.forEach((lr) => {
+      if (pairedRaceIds.has(lr.id)) return;
       const allRows = lr.results || [];
       if (!allRows.length) return;
       const pages = chunkRows(allRows, rowsPerPage);
@@ -194,6 +236,10 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   }
 
   return slides;
+}
+
+function raceDayPairKey(item) {
+  return `${item.class_id || item.class_name || ""}|${item.division_name || ""}`;
 }
 
 function ovIdOf(data) {
@@ -422,6 +468,159 @@ function StandingsSlideView({ slide }) {
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function SlidePanel({ testId, label, badge, children }) {
+  return (
+    <div data-testid={testId} className="flex min-h-0 flex-col">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-heading text-xl uppercase tracking-wide text-white">{label}</span>
+        {badge}
+      </div>
+      <div className="flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Race-day slide: a class's overall standings (left) beside that day's
+ * results for the same class/division (right), on one page.
+ */
+function SideBySideSlideView({ slide }) {
+  const { data, race, overallRows, raceRows, pageIndex, isProvisional } = slide;
+  const hasElapsed = raceRows.some((r) => r.elapsed_formatted);
+  const raceLabel = race.race_label || `Race ${race.race_number}`;
+
+  return (
+    <div className="flex h-full flex-col" data-testid="tv-slide-E">
+      <div className="grid h-full min-h-0 grid-cols-2 gap-5">
+        <SlidePanel
+          testId="tv-overall-panel"
+          label="Overall Standings"
+          badge={
+            data.race_count != null ? (
+              <span className="font-mono text-sm text-slate-300">{data.race_count} races</span>
+            ) : null
+          }
+        >
+          {overallRows.length === 0 ? (
+            pageIndex === 1 && (
+              <p className="p-6 text-center text-lg text-slate-400">No standings yet</p>
+            )
+          ) : (
+            <table className="w-full border-collapse text-left" data-testid="tv-overall-table">
+              <thead>
+                <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
+                  <th className="w-14 px-3 py-2.5 text-center">Pos</th>
+                  <th className="px-3 py-2.5">Boat</th>
+                  <th className="px-3 py-2.5">Sail</th>
+                  <th className="px-3 py-2.5 text-right">Total</th>
+                  <th className="px-4 py-2.5 text-right text-amber-300">Net</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/10">
+                {overallRows.map((row) => (
+                  <tr
+                    key={row.boat_id || `${row.sail_no}-${row.rank}`}
+                    data-testid={`tv-overall-row-${row.sail_no || row.boat_name}`}
+                    className={PODIUM_ROW_BG[row.rank] || ""}
+                  >
+                    <td className="px-3 py-2 text-center">
+                      <PodiumRankBadge rank={row.rank} />
+                    </td>
+                    <td className="px-3 py-2 font-heading text-xl uppercase tracking-tight text-white">
+                      {row.boat_name}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-base font-semibold text-sky-200">
+                      {row.sail_no || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-base text-slate-300">
+                      {fmtPoints(row.total)}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-lg font-bold text-amber-300">
+                      {fmtPoints(row.net)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </SlidePanel>
+
+        <SlidePanel
+          testId="tv-race-panel"
+          label={raceLabel}
+          badge={
+            isProvisional ? (
+              <span className="rounded-full bg-amber-400 px-3 py-0.5 font-heading text-xs font-bold uppercase tracking-wider text-slate-950">
+                Provisional
+              </span>
+            ) : null
+          }
+        >
+          {raceRows.length === 0 ? (
+            pageIndex === 1 && (
+              <p className="p-6 text-center text-lg text-slate-400">No race results yet</p>
+            )
+          ) : (
+            <table className="w-full border-collapse text-left" data-testid="tv-race-table">
+              <thead>
+                <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
+                  <th className="w-14 px-3 py-2.5 text-center">Pos</th>
+                  <th className="px-3 py-2.5">Boat</th>
+                  <th className="px-3 py-2.5">Sail</th>
+                  {hasElapsed && <th className="px-3 py-2.5 text-right">Elapsed</th>}
+                  <th className="px-4 py-2.5 text-right">Status / Pts</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/10">
+                {raceRows.map((row, idx) => {
+                  const pos = row.code === "FINISHED" ? row.position : null;
+                  return (
+                    <tr
+                      key={row.boat_id || idx}
+                      data-testid={`tv-race-row-${row.sail_no || row.boat_name}`}
+                      className={pos ? PODIUM_ROW_BG[pos] || "" : ""}
+                    >
+                      <td className="px-3 py-2 text-center">
+                        {pos ? (
+                          <PodiumRankBadge rank={pos} />
+                        ) : (
+                          <span className="inline-block rounded border border-red-400/40 bg-red-500/20 px-2 py-0.5 font-mono text-sm font-bold text-red-200">
+                            {row.code}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-heading text-xl uppercase tracking-tight text-white">
+                        {row.boat_name}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-base font-semibold text-sky-200">
+                        {row.sail_no || "—"}
+                      </td>
+                      {hasElapsed && (
+                        <td className="px-3 py-2 text-right font-mono text-base text-slate-200">
+                          {row.elapsed_formatted || "—"}
+                        </td>
+                      )}
+                      <td className="px-4 py-2 text-right font-mono text-lg font-bold text-amber-300">
+                        {row.points != null
+                          ? `${fmtPoints(row.points)} pts`
+                          : row.code === "FINISHED"
+                          ? `Pos ${row.position}`
+                          : row.code}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </SlidePanel>
       </div>
     </div>
   );
@@ -1238,6 +1437,9 @@ export default function ClubTvDisplay() {
                   )}
                   {currentSlide.viewType === "C" && (
                     <LatestRaceSlideView slide={currentSlide} />
+                  )}
+                  {currentSlide.viewType === "E" && (
+                    <SideBySideSlideView slide={currentSlide} />
                   )}
                   {currentSlide.viewType === "D" && (
                     <SeriesProgressSlideView slide={currentSlide} />
