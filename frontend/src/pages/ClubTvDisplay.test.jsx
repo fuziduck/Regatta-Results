@@ -359,6 +359,46 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(race.textContent).toContain("Provisional");
   });
 
+  it("shows elapsed and corrected times for a handicap race, in corrected finishing order", async () => {
+    const handicapPayload = {
+      ...raceDayPayload,
+      views: {
+        ...raceDayPayload.views,
+        classes: [raceDayPayload.views.classes[1]],
+        latest_races: [
+          {
+            id: "race-irc-1",
+            race_number: 3,
+            race_label: "Race 3",
+            date: "2026-06-08",
+            class_id: "c-cruiser",
+            division_name: "IRC",
+            class_name: "Cruiser Fleet",
+            series_name: "Summer Points",
+            scoring_label: "IRC",
+            scoring_mode: "irc",
+            results: [
+              { boat_id: "b5", boat_name: "Slowpoke", sail_no: "GBR 5", position: 1, code: "FINISHED", elapsed_formatted: "52:00", corrected_formatted: "47:10" },
+              { boat_id: "b6", boat_name: "Racer", sail_no: "GBR 6", position: 2, code: "FINISHED", elapsed_formatted: "50:00", corrected_formatted: "49:30" },
+            ],
+          },
+        ],
+      },
+    };
+    mockApi.getClubTvDisplay.mockResolvedValue(handicapPayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const race = container.querySelector('[data-testid="tv-race-panel"]');
+    const headers = [...race.querySelectorAll("thead th")].map((th) => th.textContent);
+    expect(headers).toEqual(expect.arrayContaining(["Elapsed", "Corrected"]));
+    expect(headers.join(" ")).not.toContain("Pts");
+    const names = [...race.querySelectorAll("tbody tr")].map((tr) => tr.querySelector("td:nth-child(2)").textContent);
+    expect(names).toEqual(["Slowpoke", "Racer"]);
+    expect(race.textContent).toContain("47:10");
+    expect(race.textContent).toContain("49:30");
+  });
+
   it("shows a racing calendar summary in the race-day panel when calendar data is present", async () => {
     mockApi.getClubTvDisplay.mockResolvedValue({
       ...raceDayPayload,

@@ -495,6 +495,7 @@ function SlidePanel({ testId, label, badge, children }) {
 function SideBySideSlideView({ slide }) {
   const { data, race, overallRows, raceRows, pageIndex, isProvisional } = slide;
   const hasElapsed = raceRows.some((r) => r.elapsed_formatted);
+  const hasCorrected = raceRows.some((r) => r.corrected_formatted);
   const raceLabel = race.race_label || `Race ${race.race_number}`;
 
   return (
@@ -576,7 +577,11 @@ function SideBySideSlideView({ slide }) {
                   <th className="px-3 py-2.5">Boat</th>
                   <th className="px-3 py-2.5">Sail</th>
                   {hasElapsed && <th className="px-3 py-2.5 text-right">Elapsed</th>}
-                  <th className="px-4 py-2.5 text-right">Status / Pts</th>
+                  {hasCorrected ? (
+                    <th className="px-4 py-2.5 text-right text-amber-300">Corrected</th>
+                  ) : (
+                    <th className="px-4 py-2.5 text-right">Status / Pts</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/10">
@@ -608,13 +613,19 @@ function SideBySideSlideView({ slide }) {
                           {row.elapsed_formatted || "—"}
                         </td>
                       )}
-                      <td className="px-4 py-2 text-right font-mono text-lg font-bold text-amber-300">
-                        {row.points != null
-                          ? `${fmtPoints(row.points)} pts`
-                          : row.code === "FINISHED"
-                          ? `Pos ${row.position}`
-                          : row.code}
-                      </td>
+                      {hasCorrected ? (
+                        <td className="px-4 py-2 text-right font-mono text-lg font-bold text-amber-300">
+                          {row.corrected_formatted || "—"}
+                        </td>
+                      ) : (
+                        <td className="px-4 py-2 text-right font-mono text-lg font-bold text-amber-300">
+                          {row.points != null
+                            ? `${fmtPoints(row.points)} pts`
+                            : row.code === "FINISHED"
+                            ? `Pos ${row.position}`
+                            : row.code}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

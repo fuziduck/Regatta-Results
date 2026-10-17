@@ -179,6 +179,11 @@ export default function Race() {
   // A split class is timed when any division uses a handicap; dual-scored
   // series also display the corrected time for the currently selected table.
   const hasTiming = divisions.length ? divisions.some((d) => d.scoring_mode !== "one_design") : activeScoringModes.some((mode) => mode !== "one_design");
+  // Handicap-scored views show elapsed and corrected times instead of points.
+  const timedView = divisions.length
+    ? divisions.every((d) => d.scoring_mode !== "one_design")
+    : multiScoring ? displayMode !== "one_design" : hasTiming;
+  const showPoints = !timedView;
   const scoringLabel = divisions.length
     ? divisions.map((d) => `${d.name} (${scoringModeLabel(d.scoring_mode)})`).join(" · ")
     : activeScoringModes.map(scoringModeLabel).join(" + ");
@@ -263,7 +268,7 @@ export default function Race() {
                     <th className="hidden px-3 py-2.5 lg:table-cell">Crew</th>
                     {hasTiming && <th className="px-3 py-2.5 text-right">Elapsed</th>}
                     {hasTiming && <th className="px-3 py-2.5 text-right">Corrected</th>}
-                    <th className="px-3 py-2.5 text-right">Points</th>
+                    {showPoints && <th className="px-3 py-2.5 text-right">Points</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -279,6 +284,7 @@ export default function Race() {
                       : null;
                     const crew = boat.crew || boat.crew_name || (Array.isArray(boat.crew_names) ? boat.crew_names.join(", ") : "—");
                     const resultCode = result.code && result.code !== "FINISHED" ? result.code : null;
+                    const codeBadge = resultCode ? <Badge variant="outline" className={`ml-1 align-middle text-[10px] ${CODE_COLORS[resultCode] || ""}`}>{resultCode}</Badge> : null;
                     return (
                       <tr key={result.boat_id} className={`${index % 2 ? "bg-muted" : "bg-card"} ${PODIUM_ROW[position] || ""}`}>
                         <td className="sticky left-0 z-10 px-3 py-2.5 font-heading text-lg font-bold bg-inherit">
@@ -293,11 +299,11 @@ export default function Race() {
                         <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">{boat.helm || "—"}</td>
                         <td className="hidden px-3 py-2.5 text-muted-foreground lg:table-cell">{crew}</td>
                         {hasTiming && <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(elapsed) : "—"}</td>}
-                        {hasTiming && <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(corrected) : "—"}</td>}
-                        <td className="px-3 py-2.5 text-right font-mono font-bold text-ocean">
+                        {hasTiming && <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs">{result.code === "FINISHED" ? fmtSeconds(corrected) : (showPoints ? "—" : (codeBadge || "—"))}</td>}
+                        {showPoints && <td className="px-3 py-2.5 text-right font-mono font-bold text-ocean">
                           <span>{result.points ?? "—"}</span>
-                          {resultCode && <Badge variant="outline" className={`ml-1 align-middle text-[10px] ${CODE_COLORS[resultCode] || ""}`}>{resultCode}</Badge>}
-                        </td>
+                          {codeBadge}
+                        </td>}
                       </tr>
                     );
                   })}

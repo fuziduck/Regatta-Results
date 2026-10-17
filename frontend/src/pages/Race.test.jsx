@@ -147,7 +147,7 @@ test("shows elapsed and corrected times for handicap scoring", async () => {
     { id: "b1", name: "Handicap Boat", sail_no: "1", helm: "Helm", tcc: 0.8, boat_type: "IRC" },
     { id: "b2", name: "Second", sail_no: "2", helm: "Helm", tcc: 0.9, boat_type: "IRC" },
   ]);
-  mockApi.getRace.mockResolvedValue({ ...mockRace, entries_count: 2, results: mockRace.results.slice(0, 2) });
+  mockApi.getRace.mockResolvedValue({ ...mockRace, entries_count: 2, results: [mockRace.results[1], { boat_id: "b2", code: "DNC", position: null, finish_time: null }] });
 
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -156,6 +156,9 @@ test("shows elapsed and corrected times for handicap scoring", async () => {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
   const headers = [...container.querySelectorAll('[data-testid="race-results-table"] thead th')].map((th) => th.textContent);
-  expect(headers).toEqual(expect.arrayContaining(["Elapsed", "Corrected", "Points"]));
+  expect(headers).toEqual(expect.arrayContaining(["Elapsed", "Corrected"]));
+  expect(headers).not.toContain("Points");
   expect(container.querySelector('[data-testid="race-results-table"]').textContent).toContain("01:00");
+  const rows = [...container.querySelectorAll('[data-testid="race-results-table"] tbody tr')];
+  expect(rows[1].querySelectorAll("td")[rows[1].querySelectorAll("td").length - 1].textContent).toContain("DNC");
 });
