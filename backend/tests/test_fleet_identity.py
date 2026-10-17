@@ -238,6 +238,77 @@ class TestResolveFleetIdentity:
         assert [c["id"] for c in amb] == ["b1"]
 
 
+class TestNewBoatIdentity:
+    def test_new_boat_identity_is_its_own_id(self):
+        # Regression: a new boat must not look linked to a different record.
+        server.db = types.SimpleNamespace(boats=_Coll([]))
+        fid, key, amb = asyncio.run(server._resolve_fleet_identity(
+            _inp("Fresh", "123"), own_id="NEW1"))
+        assert amb is None
+        assert fid == "NEW1"
+
+    def test_rename_without_match_keeps_own_identity(self):
+        b2 = _boat("b2", "Old Name", "111", "c2", 2027, fleet_id="b2")
+        server.db = types.SimpleNamespace(boats=_Coll([b2]))
+        fid, key, amb = asyncio.run(server._resolve_fleet_identity(
+            _inp("Brand New", "555", class_id="c2", year=2027), editing=b2))
+        assert amb is None
+        assert fid == "b2"
+
+
+class TestBoatDeleteRule:
+    def _db(self, series, races=()):
+        server.db = types.SimpleNamespace(series=_Coll(series), races=_Coll(races))
+
+    def _locked(self, **extra):
+        return {"id": "s1", "class_id": "c1", "year": 2026,
+                "lock_status": next(iter(server.NOT_EDITABLE)),
+                "member_boat_ids": ["b1"], **extra}
+
+    def test_unrelated_boat_in_locked_class_year_is_deletable(self):
+        # The reported bug: a boat that never raced in a locked series was blocked.
+        self._db([self._locked()])
+        boat = _boat("b9", "New", "999", "c1", 2026)
+        assert asyncio.run(server._boat_took_part_in_locked_season(boat)) is False
+
+    def test_member_of_locked_series_is_protected(self):
+        self._db([self._locked()])
+        boat = _boat("b1", "Watersong", "8420", "c1", 2026)
+        assert asyncio.run(server._boat_took_part_in_locked_season(boat)) is True
+
+    def test_result_in_locked_series_race_is_protected(self):
+        races = [{"id": "r1", "series_id": "s1", "results": [{"boat_id": "b9"}]}]
+        self._db([self._locked(member_boat_ids=[])], races)
+        boat = _boat("b9", "New", "999", "c1", 2026)
+        assert asyncio.run(server._boat_took_part_in_locked_season(boat)) is True
+
+    def test_unlocked_series_does_not_protect(self):
+        self._db([self._locked(lock_status="unlocked", member_boat_ids=["b9"])])
+        boat = _boat("b9", "New", "999", "c1", 2026)
+        assert asyncio.run(server._boat_took_part_in_locked_season(boat)) is False
+
+    def test_locked_series_in_other_class_does_not_protect(self):
+        self._db([self._locked(class_id="c2", member_boat_ids=["b9"])])
+        boat = _boat("b9", "New", "999", "c1", 2026)
+        assert asyncio.run(server._boat_took_part_in_locked_season(boat)) is False
+
+
+class TestFleetRepairBackfill:
+    def test_stray_singleton_fleet_id_is_reset_to_own_id(self):
+        s1 = _boat("s1", "Solo", "777", "c1", 2026, fleet_id="stray-uuid", fleet_key="777|solo")
+        server.db = types.SimpleNamespace(boats=_Coll([s1]))
+        asyncio.run(server._backfill_fleet_identities())
+        assert s1["fleet_id"] == "s1"
+
+    def test_genuinely_shared_fleet_id_is_left_alone(self):
+        p1 = _boat("p1", "Pair", "555", "c1", 2026, fleet_id="Z", fleet_key="555|pair")
+        p2 = _boat("p2", "Pair", "555", "c2", 2027, fleet_id="Z", fleet_key="555|pair")
+        server.db = types.SimpleNamespace(boats=_Coll([p1, p2]))
+        asyncio.run(server._backfill_fleet_identities())
+        assert p1["fleet_id"] == "Z"
+        assert p2["fleet_id"] == "Z"
+
+
 class TestFleetProfile:
     def _db(self, snapshots=None):
         clubs = [{"id": "club-a", "name": "Medway YC", "slug": "medway"},

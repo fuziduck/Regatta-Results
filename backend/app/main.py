@@ -887,7 +887,7 @@ async def _fleet_candidate_summary(boats):
     return out
 
 
-async def _resolve_fleet_identity(data, editing=None):
+async def _resolve_fleet_identity(data, editing=None, own_id=None):
     """Decide the fleet identity for a boat being created or edited.
 
     Returns (fleet_id, fleet_key, ambiguous_candidates). Priority:
@@ -901,6 +901,9 @@ async def _resolve_fleet_identity(data, editing=None):
        what may be a duplicate entry.
     """
     key = fleet_key(data.name, data.sail_no)
+    # A brand-new identity is the record's OWN id, so an unlinked boat is not
+    # shown as linked (fleet_id == id means no other record shares it).
+    own = editing["id"] if editing else (own_id or new_id())
     if data.fleet_id:
         target = await db.boats.find_one({"id": data.fleet_id}, {"_id": 0})
         if not target:
@@ -908,7 +911,7 @@ async def _resolve_fleet_identity(data, editing=None):
                                 detail="The boat to link this fleet identity to no longer exists.")
         return target.get("fleet_id") or target["id"], key, None
     if data.separate_fleet:
-        return new_id(), key, None
+        return own, key, None
     if editing:
         if editing.get("fleet_id") and key == editing.get("fleet_key"):
             return editing["fleet_id"], key, None
@@ -921,7 +924,7 @@ async def _resolve_fleet_identity(data, editing=None):
         return linkable[0].get("fleet_id") or linkable[0]["id"], key, None
     if candidates:
         return None, key, candidates
-    return new_id(), key, None
+    return own, key, None
 
 
 async def _race_of_club(race_id: str, user: dict):
@@ -3943,7 +3946,8 @@ async def get_boats(request: Request, class_id: Optional[str] = None, year: Opti
 @api_router.post("/boats")
 async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
     cls = await _class_of_club(data.class_id, user)
-    fleet_id, key, ambiguous = await _resolve_fleet_identity(data)
+    boat_id = new_id()
+    fleet_id, key, ambiguous = await _resolve_fleet_identity(data, own_id=boat_id)
     if ambiguous:
         raise HTTPException(status_code=409, detail={
             "message": ("A boat with this name and sail number already exists in this class "
@@ -3955,7 +3959,7 @@ async def create_boat(data: BoatInput, user: dict = Depends(require_admin)):
     doc = data.model_dump()
     doc.pop("expected_version", None)
     doc.pop("separate_fleet", None)
-    doc["id"] = new_id()
+    doc["id"] = boat_id
     doc["fleet_id"] = fleet_id
     doc["fleet_key"] = key
     doc["created_at"] = now_iso()
@@ -4011,6 +4015,24 @@ async def update_boat(boat_id: str, data: BoatInput, user: dict = Depends(requir
     return await db.boats.find_one({"id": boat_id}, {"_id": 0})
 
 
+async def _boat_took_part_in_locked_season(boat: dict) -> bool:
+    """True when this boat is a member of, or has a result in, a locked or
+    archived season of its class and year. Other boats in that class and year
+    did not take part, so they remain deletable."""
+    locked = await db.series.find({"class_id": boat.get("class_id"),
+                                   "year": boat.get("year"),
+                                   "lock_status": {"$in": list(NOT_EDITABLE)}},
+                                  {"_id": 0, "id": 1, "member_boat_ids": 1}).to_list(500)
+    if not locked:
+        return False
+    if any(boat["id"] in (s.get("member_boat_ids") or []) for s in locked):
+        return True
+    series_ids = [s["id"] for s in locked]
+    hit = await db.races.find_one({"series_id": {"$in": series_ids}, "results.boat_id": boat["id"]},
+                                  {"_id": 0, "id": 1})
+    return hit is not None
+
+
 @api_router.delete("/boats/{boat_id}")
 async def delete_boat(boat_id: str, request: Request,
                       user: dict = Depends(require_admin)):
@@ -4019,10 +4041,7 @@ async def delete_boat(boat_id: str, request: Request,
     # frozen snapshot references it by id, and the boat's own record keeps the
     # results auditable. (Editing details is harmless — locked standings come
     # from the snapshot, which stores its own copy of the boat's name.)
-    locked = await db.series.count_documents({"class_id": boat.get("class_id"),
-                                               "year": boat.get("year"),
-                                               "lock_status": {"$in": list(NOT_EDITABLE)}})
-    if locked:
+    if await _boat_took_part_in_locked_season(boat):
         raise HTTPException(status_code=409,
                             detail="This boat took part in a locked or archived season and cannot be deleted.")
     expected = _expected_version_query(request)
@@ -11441,6 +11460,21 @@ async def _backfill_fleet_identities():
     except Exception as exc:
         logger.warning("FLEET BACKFILL FAILED: %s", exc)
         return
+    # Repair boats saved with a fleet_id that no other record shares (an earlier
+    # bug gave new boats a fresh id, so they showed as linked). Such a record's
+    # identity is its own id. Records genuinely sharing an identity are left alone.
+    fleet_counts = {}
+    for b in boats:
+        if b.get("fleet_id"):
+            fleet_counts[b["fleet_id"]] = fleet_counts.get(b["fleet_id"], 0) + 1
+    for b in boats:
+        fid = b.get("fleet_id")
+        if fid and fid != b["id"] and fleet_counts.get(fid) == 1:
+            try:
+                await db.boats.update_one({"id": b["id"]}, {"$set": {"fleet_id": b["id"]}})
+                b["fleet_id"] = b["id"]
+            except Exception as exc:
+                logger.warning("FLEET REPAIR UPDATE FAILED (%s): %s", b["id"], exc)
     by_key = {}
     for b in boats:
         key = b.get("fleet_key") or fleet_key(b.get("name", ""), b.get("sail_no", ""))
