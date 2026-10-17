@@ -31,13 +31,13 @@ export const TV_ROWS_PER_PAGE = 10;
 
 const PODIUM_BADGE = {
   1: "bg-amber-400 text-slate-950 ring-2 ring-amber-300/60 shadow-lg shadow-amber-500/20",
-  2: "bg-slate-200 text-slate-900 ring-2 ring-slate-100/50",
+  2: "bg-gradient-to-br from-slate-100 via-slate-300 to-slate-400 text-slate-900 ring-2 ring-slate-100/80 shadow-lg shadow-slate-300/30",
   3: "bg-amber-600 text-white ring-2 ring-amber-500/50",
 };
 
 const PODIUM_ROW_BG = {
   1: "bg-gradient-to-r from-amber-500/20 via-amber-500/10 to-transparent border-l-4 border-l-amber-400",
-  2: "bg-gradient-to-r from-slate-300/12 via-slate-300/5 to-transparent border-l-4 border-l-slate-300",
+  2: "bg-gradient-to-r from-slate-300/30 via-slate-300/10 to-transparent border-l-4 border-l-slate-200",
   3: "bg-gradient-to-r from-amber-600/15 via-amber-600/5 to-transparent border-l-4 border-l-amber-600",
 };
 
