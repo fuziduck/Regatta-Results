@@ -267,24 +267,27 @@ function ovIdOf(data) {
  * Determine whether the persistent race-day information panel has any
  * populated content to display.
  */
+// The side column shows only when at least one section switch is on and that
+// section has content. A title or date alone is not a section, so it never
+// keeps the column.
 export function hasRaceDayContent(raceDay, config) {
   if (!raceDay) return false;
-  return Boolean(
-    raceDay.title ||
-    raceDay.race_officer ||
-    raceDay.status ||
-    raceDay.courses ||
-    (raceDay.live_courses && raceDay.live_courses.length > 0) ||
-    raceDay.course_diagram ||
-    raceDay.start_sequence ||
-    (raceDay.schedule && raceDay.schedule.length > 0) ||
-    raceDay.notes ||
-    (raceDay.live_notes && raceDay.live_notes.length > 0) ||
-    raceDay.life_jackets ||
-    raceDay.announcements ||
-    (raceDay.onb_notices && raceDay.onb_notices.length > 0) ||
-    (raceDay.calendar && raceDay.calendar.length > 0)
-  );
+  const on = (key) => config?.[key] !== false;
+  return [
+    on("show_status") && Boolean(raceDay.status),
+    on("show_race_officer") && Boolean(raceDay.race_officer),
+    on("show_courses") && Boolean(raceDay.courses || raceDay.live_courses?.length || raceDay.course_diagram),
+    on("show_schedule") && Boolean(raceDay.start_sequence || raceDay.schedule?.length),
+    on("show_notes") && Boolean(raceDay.notes || raceDay.live_notes?.length || raceDay.life_jackets),
+    on("show_announcements") && Boolean(raceDay.announcements || raceDay.onb_notices?.length),
+    on("show_calendar") && Boolean(raceDay.calendar?.length),
+  ].some(Boolean);
+}
+
+// The series table gets one column per race plus its own five; the race table
+// keeps five. More races therefore make the series table proportionally wider.
+export function seriesColumnWeights(raceCount) {
+  return { series: 5 + raceCount, race: 5 };
 }
 
 function fmtPoints(val) {
@@ -514,6 +517,7 @@ function SideBySideSlideView({ slide }) {
   const hasCorrected = raceRows.some((r) => r.corrected_formatted);
   const raceLabel = race.race_label || `Race ${race.race_number}`;
   const seriesRaces = Array.isArray(data.races) ? data.races : [];
+  const weights = seriesColumnWeights(seriesRaces.length);
 
   // Wide series tables sweep sideways within the slide so every race column is seen.
   const seriesScrollRef = useRef(null);
@@ -536,7 +540,13 @@ function SideBySideSlideView({ slide }) {
 
   return (
     <div className="flex h-full flex-col" data-testid="tv-slide-E">
-      <div className="grid h-full min-h-0 grid-cols-2 gap-5">
+      <div
+        data-testid="tv-slide-grid"
+        data-series-columns={weights.series}
+        data-race-columns={weights.race}
+        className="grid h-full min-h-0 gap-5"
+        style={{ gridTemplateColumns: `minmax(0, ${weights.series}fr) minmax(0, ${weights.race}fr)` }}
+      >
         <SlidePanel
           testId="tv-overall-panel"
           label="Series Results"

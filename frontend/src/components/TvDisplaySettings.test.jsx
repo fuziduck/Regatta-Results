@@ -11,7 +11,6 @@ jest.mock("@/lib/api", () => ({
     getClubTvConfig: jest.fn(),
     getClasses: jest.fn(),
     getSeries: jest.fn(),
-    getRegattas: jest.fn(),
     updateClubTvConfig: jest.fn(),
   },
 }));
@@ -27,7 +26,6 @@ async function renderCard(tvConfig, { loadError, series = [] } = {}) {
   else api.getClubTvConfig.mockResolvedValue({ tv_config: tvConfig });
   api.getClasses.mockResolvedValue([]);
   api.getSeries.mockResolvedValue(series);
-  api.getRegattas.mockResolvedValue([]);
   api.updateClubTvConfig.mockResolvedValue({});
 
   const container = document.createElement("div");
@@ -166,6 +164,15 @@ describe("TvDisplaySettingsCard race-day section switches", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     jest.clearAllMocks();
+  });
+
+  it("says the race-day panel is hidden when every section is off", async () => {
+    const off = Object.fromEntries(SECTION_KEYS.map((key) => [key, false]));
+    const { container, root } = await renderCard({ display_mode: "full", ...off });
+
+    expect(container.querySelector('[data-testid="tv-race-day-panel-hidden-note"]')).not.toBeNull();
+
+    await act(async () => root.unmount());
   });
 
   it("renders each section switch from the saved config", async () => {

@@ -36,6 +36,16 @@ const DEFAULT_CONFIG = {
   show_calendar: true,
 };
 
+const RACE_DAY_SECTIONS = [
+  { key: "show_status", label: "Race Status" },
+  { key: "show_race_officer", label: "Race Officer" },
+  { key: "show_courses", label: "Courses & Marks" },
+  { key: "show_schedule", label: "Start Times" },
+  { key: "show_notes", label: "Course Notes" },
+  { key: "show_announcements", label: "Announcements" },
+  { key: "show_calendar", label: "Racing Calendar" },
+];
+
 // Saved config -> form state. Older saves stored one series id, which becomes a
 // one-item list so existing choices still apply.
 function toFormConfig(tv) {
@@ -599,15 +609,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
               Race-Day Panel Sections Displayed
             </div>
             <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              {[
-                { key: "show_status", label: "Race Status" },
-                { key: "show_race_officer", label: "Race Officer" },
-                { key: "show_courses", label: "Courses & Marks" },
-                { key: "show_schedule", label: "Start Times" },
-                { key: "show_notes", label: "Course Notes" },
-                { key: "show_announcements", label: "Announcements" },
-                { key: "show_calendar", label: "Racing Calendar" },
-              ].map((item) => (
+              {RACE_DAY_SECTIONS.map((item) => (
                 <label
                   key={item.key}
                   className="flex items-center justify-between rounded-lg border border-border px-3 py-1.5 text-xs cursor-pointer"
@@ -622,6 +624,12 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
               ))}
             </div>
         </div>
+
+        {RACE_DAY_SECTIONS.every((item) => !config[item.key]) && (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="tv-race-day-panel-hidden-note">
+            All sections are off, so the race-day panel is hidden and results use the full width of the TV.
+          </p>
+        )}
 
         <div className="mt-5 flex justify-end">
           <Button

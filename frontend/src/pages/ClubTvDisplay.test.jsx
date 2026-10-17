@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import ClubTvDisplay, {
   buildRotationSlides,
   hasRaceDayContent,
+  seriesColumnWeights,
   seriesSweepPositionAt,
   TV_POLL_INTERVAL_MS,
 } from "./ClubTvDisplay";
@@ -253,6 +254,14 @@ afterEach(async () => {
   jest.clearAllMocks();
 });
 
+describe("series column weights", () => {
+  it("gives the series table one column per race plus five, and the race table five", () => {
+    expect(seriesColumnWeights(12)).toEqual({ series: 17, race: 5 });
+    expect(seriesColumnWeights(3)).toEqual({ series: 8, race: 5 });
+    expect(seriesColumnWeights(0)).toEqual({ series: 5, race: 5 });
+  });
+});
+
 describe("series sweep position", () => {
   it("moves right to the end of the table and back within one slide", () => {
     // 15s slide, 300px of overflow: 2s pause, 5.5s right, 2s pause, 5.5s back.
@@ -436,6 +445,40 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(race.textContent).toContain("Tailwind");
   });
 
+  it("sizes the series table by its number of races, so more races make it wider", async () => {
+    const races = Array.from({ length: 12 }, (_, i) => ({ race_number: i + 1 }));
+    const widePayload = {
+      ...raceDayPayload,
+      views: {
+        ...raceDayPayload.views,
+        classes: [
+          {
+            ...raceDayPayload.views.classes[0],
+            races,
+            standings: [
+              {
+                boat_id: "b1",
+                rank: 1,
+                boat_name: "Bluebird",
+                sail_no: "GBR 8123",
+                total: 12,
+                net: 12,
+                scores: races.map(() => ({ points: 1, code: "FINISHED", discarded: false })),
+              },
+            ],
+          },
+        ],
+      },
+    };
+    mockApi.getClubTvDisplay.mockResolvedValue(widePayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const grid = container.querySelector('[data-testid="tv-slide-grid"]');
+    expect(grid.dataset.seriesColumns).toBe("17");
+    expect(grid.dataset.raceColumns).toBe("5");
+  });
+
   it("keeps a wide series table inside a scroll container so every race column can be reached", async () => {
     const races = Array.from({ length: 12 }, (_, i) => ({ race_number: i + 1 }));
     const wideRows = [
@@ -530,6 +573,28 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(days).toHaveLength(1);
     expect(days[0].textContent).toContain("Sonata R2");
     expect(days[0].textContent).toContain("Cruiser Fleet R1");
+  });
+
+  it("drops the race-day side column when every section switch is off", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...samplePayload,
+      config: {
+        ...samplePayload.config,
+        show_status: false,
+        show_race_officer: false,
+        show_courses: false,
+        show_schedule: false,
+        show_notes: false,
+        show_announcements: false,
+        show_calendar: false,
+      },
+      race_day: { title: "Sunday Racing", date: "2026-06-08" },
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(container.querySelector('[data-testid="tv-race-day-panel"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tv-primary-results-area"]').className).toContain("col-span-1");
   });
 
   it("hides the calendar section and reports no race-day content when every section is switched off", async () => {
@@ -739,8 +804,10 @@ describe("ClubTvDisplay rotation & rendering", () => {
   it("shows race-day panel only when race-day fields are populated", () => {
     expect(hasRaceDayContent({}, { display_mode: "full" })).toBe(false);
     expect(hasRaceDayContent(null, { display_mode: "race_day" })).toBe(false);
-    expect(
-      hasRaceDayContent({ title: "Sunday Racing" }, { display_mode: "race_day" })
-    ).toBe(true);
+    // A title alone is not a section, so it does not keep the side column.
+    expect(hasRaceDayContent({ title: "Sunday Racing" }, { display_mode: "race_day" })).toBe(false);
+    // Content only counts while its section switch is on.
+    expect(hasRaceDayContent({ courses: "Course A" }, { show_courses: true })).toBe(true);
+    expect(hasRaceDayContent({ courses: "Course A" }, { show_courses: false })).toBe(false);
   });
 });
