@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import ClubTvDisplay, {
   buildRotationSlides,
   hasRaceDayContent,
+  seriesSweepPositionAt,
   TV_POLL_INTERVAL_MS,
 } from "./ClubTvDisplay";
 
@@ -252,6 +253,21 @@ afterEach(async () => {
   jest.clearAllMocks();
 });
 
+describe("series sweep position", () => {
+  it("moves right to the end of the table and back within one slide", () => {
+    // 15s slide, 300px of overflow: 2s pause, 5.5s right, 2s pause, 5.5s back.
+    expect(seriesSweepPositionAt(0, 300, 15000)).toBe(0);
+    expect(seriesSweepPositionAt(4750, 300, 15000)).toBe(150);
+    expect(seriesSweepPositionAt(7500, 300, 15000)).toBe(300);
+    expect(seriesSweepPositionAt(12250, 300, 15000)).toBe(150);
+    expect(seriesSweepPositionAt(16000, 300, 15000)).toBe(0);
+  });
+
+  it("does not move when the table fits the panel", () => {
+    expect(seriesSweepPositionAt(5000, 0, 15000)).toBe(0);
+  });
+});
+
 describe("ClubTvDisplay race-day paired slides", () => {
   const raceDayPayload = {
     ...samplePayload,
@@ -418,6 +434,35 @@ describe("ClubTvDisplay race-day paired slides", () => {
     // The day's race table is still shown alongside the series sheet.
     const race = container.querySelector('[data-testid="tv-race-table"]');
     expect(race.textContent).toContain("Tailwind");
+  });
+
+  it("keeps a wide series table inside a scroll container so every race column can be reached", async () => {
+    const races = Array.from({ length: 12 }, (_, i) => ({ race_number: i + 1 }));
+    const wideRows = [
+      {
+        boat_id: "b1",
+        rank: 1,
+        boat_name: "Bluebird",
+        sail_no: "GBR 8123",
+        total: 12,
+        net: 12,
+        scores: races.map(() => ({ points: 1, code: "FINISHED", discarded: false })),
+      },
+    ];
+    const widePayload = {
+      ...raceDayPayload,
+      views: {
+        ...raceDayPayload.views,
+        classes: [{ ...raceDayPayload.views.classes[0], races, standings: wideRows }],
+      },
+    };
+    mockApi.getClubTvDisplay.mockResolvedValue(widePayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(
+      container.querySelector('[data-testid="tv-series-scroll"] [data-testid="tv-overall-table"]'),
+    ).not.toBeNull();
   });
 
   it("shows elapsed and corrected times for a handicap race, in corrected finishing order", async () => {

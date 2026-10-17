@@ -65,6 +65,24 @@ function chunkRows(rows = [], pageSize = TV_ROWS_PER_PAGE) {
  * Exported as a pure helper so rotation fairness, empty-view skipping,
  * and large-fleet pagination can be unit-tested deterministically.
  */
+const SERIES_SWEEP_PAUSE_MS = 2000;
+
+/**
+ * Horizontal scroll offset for a wide series table during one slide. The table
+ * waits at the left edge, moves right to its far end, waits, then moves back,
+ * so it ends at the left edge exactly as the slide ends.
+ */
+export function seriesSweepPositionAt(elapsedMs, maxScroll, durationMs) {
+  if (maxScroll <= 0 || durationMs <= 0) return 0;
+  const pause = Math.min(SERIES_SWEEP_PAUSE_MS, durationMs / 4);
+  const travel = (durationMs - 2 * pause) / 2;
+  const t = ((elapsedMs % durationMs) + durationMs) % durationMs;
+  if (t < pause) return 0;
+  if (t < pause + travel) return ((t - pause) / travel) * maxScroll;
+  if (t < 2 * pause + travel) return maxScroll;
+  return (1 - (t - (2 * pause + travel)) / travel) * maxScroll;
+}
+
 export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   if (!payload || !payload.views) return [];
   const cfg = payload.config || {};
@@ -497,6 +515,25 @@ function SideBySideSlideView({ slide }) {
   const raceLabel = race.race_label || `Race ${race.race_number}`;
   const seriesRaces = Array.isArray(data.races) ? data.races : [];
 
+  // Wide series tables sweep sideways within the slide so every race column is seen.
+  const seriesScrollRef = useRef(null);
+  useEffect(() => {
+    const el = seriesScrollRef.current;
+    if (!el || typeof requestAnimationFrame !== "function") return undefined;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    el.scrollLeft = 0;
+    if (maxScroll <= 0) return undefined;
+    const durationMs = slide.durationMs || 15000;
+    const startMs = performance.now();
+    let frame = 0;
+    const tick = (now) => {
+      el.scrollLeft = seriesSweepPositionAt(now - startMs, maxScroll, durationMs);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [slide.key, slide.durationMs, overallRows.length]);
+
   return (
     <div className="flex h-full flex-col" data-testid="tv-slide-E">
       <div className="grid h-full min-h-0 grid-cols-2 gap-5">
@@ -514,7 +551,8 @@ function SideBySideSlideView({ slide }) {
               <p className="p-6 text-center text-lg text-slate-400">No standings yet</p>
             )
           ) : (
-            <table className="w-full border-collapse text-left" data-testid="tv-overall-table">
+            <div ref={seriesScrollRef} data-testid="tv-series-scroll" className="overflow-x-hidden">
+            <table className="w-full min-w-max border-collapse text-left" data-testid="tv-overall-table">
               <thead>
                 <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
@@ -576,6 +614,7 @@ function SideBySideSlideView({ slide }) {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </SlidePanel>
 
