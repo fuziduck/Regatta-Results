@@ -1089,12 +1089,21 @@ export default function ClubTvDisplay() {
         className="flex h-20 shrink-0 items-center justify-between border-b border-white/15 bg-slate-950/80 px-6 backdrop-blur-md"
       >
         <div className="flex items-center gap-4 min-w-0">
-          <ClubBadge
-            club={club}
-            size="h-13 w-13 rounded-xl"
-            textSize="text-2xl"
-            className="ring-2 ring-white/20 shadow-lg shrink-0"
-          />
+          {club.icon ? (
+            <img
+              data-testid="tv-club-logo"
+              src={club.icon}
+              alt={club.name || "Club"}
+              className="h-12 w-auto max-w-[10rem] shrink-0 rounded-lg bg-white object-contain p-1 shadow-lg"
+            />
+          ) : (
+            <ClubBadge
+              club={club}
+              size="h-12 w-12 rounded-xl"
+              textSize="text-xl"
+              className="ring-2 ring-white/20 shadow-lg shrink-0"
+            />
+          )}
           <div className="min-w-0">
             <div className="flex items-center gap-3">
               <h1

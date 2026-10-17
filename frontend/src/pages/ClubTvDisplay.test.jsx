@@ -387,6 +387,22 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(container.querySelector('[data-testid="tv-race-day-panel"]')).toBeNull();
   });
 
+  it("bounds the club logo in the header so any uploaded icon stays small", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValueOnce({
+      ...samplePayload,
+      club: { ...samplePayload.club, icon: "data:image/png;base64,iVBORw0KGgo=" },
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const logo = container.querySelector('[data-testid="tv-club-logo"]');
+    expect(logo).not.toBeNull();
+    expect(logo.className).toContain("h-12");
+    expect(logo.className).toContain("max-w-[10rem]");
+    expect(logo.className).toContain("object-contain");
+    expect(logo.className).not.toContain("h-13");
+  });
+
   it("hides race-day panel when no race-day fields are populated", () => {
     expect(hasRaceDayContent({}, { show_race_day_panel: true })).toBe(false);
     expect(
