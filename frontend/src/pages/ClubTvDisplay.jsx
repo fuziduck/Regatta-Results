@@ -497,13 +497,14 @@ function SideBySideSlideView({ slide }) {
   const hasElapsed = raceRows.some((r) => r.elapsed_formatted);
   const hasCorrected = raceRows.some((r) => r.corrected_formatted);
   const raceLabel = race.race_label || `Race ${race.race_number}`;
+  const seriesRaces = Array.isArray(data.races) ? data.races : [];
 
   return (
     <div className="flex h-full flex-col" data-testid="tv-slide-E">
       <div className="grid h-full min-h-0 grid-cols-2 gap-5">
         <SlidePanel
           testId="tv-overall-panel"
-          label="Overall Standings"
+          label="Series Results"
           badge={
             data.race_count != null ? (
               <span className="font-mono text-sm text-slate-300">{data.race_count} races</span>
@@ -521,6 +522,18 @@ function SideBySideSlideView({ slide }) {
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
                   <th className="px-3 py-2.5">Boat</th>
                   <th className="px-3 py-2.5">Sail</th>
+                  {seriesRaces.map((sr) => {
+                    const isDayRace = Number(sr.race_number) === Number(race.race_number);
+                    return (
+                      <th
+                        key={sr.race_number}
+                        data-day-race={isDayRace ? "true" : undefined}
+                        className={`px-2 py-2.5 text-center ${isDayRace ? "text-sky-200" : ""}`}
+                      >
+                        R{sr.race_number}
+                      </th>
+                    );
+                  })}
                   <th className="px-3 py-2.5 text-right">Total</th>
                   <th className="px-4 py-2.5 text-right text-amber-300">Net</th>
                 </tr>
@@ -541,6 +554,20 @@ function SideBySideSlideView({ slide }) {
                     <td className="px-3 py-2 font-mono text-base font-semibold text-sky-200">
                       {row.sail_no || "—"}
                     </td>
+                    {seriesRaces.map((sr, i) => {
+                      const sc = (row.scores || [])[i];
+                      const isDayRace = Number(sr.race_number) === Number(race.race_number);
+                      return (
+                        <td
+                          key={sr.race_number}
+                          className={`px-2 py-2 text-center font-mono text-sm ${
+                            sc?.discarded ? "text-slate-500" : "text-slate-200"
+                          } ${isDayRace ? "bg-sky-500/15 font-bold" : ""}`}
+                        >
+                          {sc && sc.points != null ? (sc.discarded ? `(${fmtPoints(sc.points)})` : fmtPoints(sc.points)) : "—"}
+                        </td>
+                      );
+                    })}
                     <td className="px-3 py-2 text-right font-mono text-base text-slate-300">
                       {fmtPoints(row.total)}
                     </td>

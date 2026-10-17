@@ -352,11 +352,72 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(container.querySelector('[data-testid="tv-slide-E"]')).not.toBeNull();
     const overall = container.querySelector('[data-testid="tv-overall-panel"]');
     const race = container.querySelector('[data-testid="tv-race-panel"]');
-    expect(overall.textContent).toContain("Overall Standings");
+    expect(overall.textContent).toContain("Series Results");
     expect(overall.textContent).toContain("Bluebird");
     expect(race.textContent).toContain("Race 2");
     expect(race.textContent).toContain("Tailwind");
     expect(race.textContent).toContain("Provisional");
+  });
+
+  it("shows every race in the series as a column in the first table, with the day's race marked", async () => {
+    const seriesPayload = {
+      ...raceDayPayload,
+      views: {
+        ...raceDayPayload.views,
+        classes: [
+          {
+            ...raceDayPayload.views.classes[0],
+            races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3 }],
+            standings: [
+              {
+                boat_id: "b1",
+                rank: 1,
+                boat_name: "Bluebird",
+                sail_no: "GBR 8123",
+                total: 4,
+                net: 2,
+                scores: [
+                  { points: 1, code: "FINISHED", discarded: false },
+                  { points: 2, code: "FINISHED", discarded: true },
+                  { points: 1, code: "FINISHED", discarded: false },
+                ],
+              },
+              {
+                boat_id: "b2",
+                rank: 2,
+                boat_name: "Tailwind",
+                sail_no: "GBR 8456",
+                total: 5,
+                net: 5,
+                scores: [
+                  { points: 2, code: "FINISHED", discarded: false },
+                  { points: 1, code: "FINISHED", discarded: false },
+                  { points: 2, code: "FINISHED", discarded: false },
+                ],
+              },
+            ],
+          },
+          ...raceDayPayload.views.classes.slice(1),
+        ],
+      },
+    };
+    mockApi.getClubTvDisplay.mockResolvedValue(seriesPayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const overall = container.querySelector('[data-testid="tv-overall-table"]');
+    const headers = [...overall.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    expect(headers).toEqual(["Pos", "Boat", "Sail", "R1", "R2", "R3", "Total", "Net"]);
+    expect(overall.querySelector('th[data-day-race="true"]').textContent.trim()).toBe("R2");
+
+    const bluebird = [...overall.querySelector('[data-testid="tv-overall-row-GBR 8123"]').querySelectorAll("td")].map(
+      (td) => td.textContent.trim(),
+    );
+    expect(bluebird).toEqual(["1", "Bluebird", "GBR 8123", "1", "(2)", "1", "4", "2"]);
+
+    // The day's race table is still shown alongside the series sheet.
+    const race = container.querySelector('[data-testid="tv-race-table"]');
+    expect(race.textContent).toContain("Tailwind");
   });
 
   it("shows elapsed and corrected times for a handicap race, in corrected finishing order", async () => {
