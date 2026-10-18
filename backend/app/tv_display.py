@@ -626,6 +626,11 @@ async def get_club_tv_display(
                     "discards": int(table.get("discards") or 0),
                     "locked": bool(payload.get("locked")),
                     "races": table.get("races") or [],
+                    # The scheduled dates and abandoned races let the display
+                    # pad the series table with every planned race, exactly as
+                    # the public results page does.
+                    "schedule": table.get("schedule") or s.get("schedule") or [],
+                    "abandoned_races": table.get("abandoned_races") or [],
                     "standings": rows,
                 })
 

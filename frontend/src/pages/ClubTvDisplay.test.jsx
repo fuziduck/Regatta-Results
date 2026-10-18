@@ -384,7 +384,8 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(race.textContent).toContain("Provisional");
   });
 
-  it("shows every race in the series as a column in the first table, with the day's race marked", async () => {
+  it("shows every planned race in the series as a column in the first table, with its date and the day's race marked", async () => {
+    const schedule = ["2026-06-01", "2026-06-08", "2026-06-15", "2026-06-22", "2026-06-29"];
     const seriesPayload = {
       ...raceDayPayload,
       views: {
@@ -392,7 +393,13 @@ describe("ClubTvDisplay race-day paired slides", () => {
         classes: [
           {
             ...raceDayPayload.views.classes[0],
-            races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3 }],
+            races: [
+              { race_number: 1, date: schedule[0] },
+              { race_number: 2, date: schedule[1] },
+              { race_number: 3, date: schedule[2] },
+            ],
+            planned_races: 5,
+            schedule,
             standings: [
               {
                 boat_id: "b1",
@@ -412,12 +419,12 @@ describe("ClubTvDisplay race-day paired slides", () => {
                 rank: 2,
                 boat_name: "Tailwind",
                 sail_no: "GBR 8456",
-                total: 5,
-                net: 5,
+                total: 8,
+                net: 8,
                 scores: [
                   { points: 2, code: "FINISHED", discarded: false },
                   { points: 1, code: "FINISHED", discarded: false },
-                  { points: 2, code: "FINISHED", discarded: false },
+                  { points: 5, code: "DNF", discarded: false },
                 ],
               },
             ],
@@ -431,14 +438,26 @@ describe("ClubTvDisplay race-day paired slides", () => {
     await flush();
 
     const overall = container.querySelector('[data-testid="tv-overall-table"]');
-    const headers = [...overall.querySelectorAll("thead th")].map((th) => th.textContent.trim());
-    expect(headers).toEqual(["Pos", "Boat", "Sail", "R1", "R2", "R3", "Total", "Net"]);
-    expect(overall.querySelector('th[data-day-race="true"]').textContent.trim()).toBe("R2");
+    const heads = [...overall.querySelectorAll("thead th")];
+    const raceHeads = heads.filter((th) => th.hasAttribute("data-race-column"));
+    // Every planned race has a column: three sailed plus the two still to come.
+    expect(raceHeads.map((th) => th.firstChild.textContent)).toEqual(["R1", "R2", "R3", "R4", "R5"]);
+    const shortDate = (d) => new Date(`${d}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    expect(raceHeads.map((th) => th.lastChild.textContent)).toEqual(schedule.map(shortDate));
+    expect(overall.querySelector('th[data-day-race="true"]').firstChild.textContent).toBe("R2");
+    expect(raceHeads.filter((th) => th.hasAttribute("data-planned-race")).map((th) => th.firstChild.textContent))
+      .toEqual(["R4", "R5"]);
 
     const bluebird = [...overall.querySelector('[data-testid="tv-overall-row-GBR 8123"]').querySelectorAll("td")].map(
       (td) => td.textContent.trim(),
     );
-    expect(bluebird).toEqual(["1", "Bluebird", "GBR 8123", "1", "(2)", "1", "4", "2"]);
+    expect(bluebird).toEqual(["1", "Bluebird", "GBR 8123", "1", "(2)", "1", "—", "—", "4", "2"]);
+
+    // A scoring code reads exactly as it does on the website results page.
+    const tailwind = [...overall.querySelector('[data-testid="tv-overall-row-GBR 8456"]').querySelectorAll("td")].map(
+      (td) => td.textContent.trim(),
+    );
+    expect(tailwind).toEqual(["2", "Tailwind", "GBR 8456", "2", "1", "5 DNF", "—", "—", "8", "8"]);
 
     // The day's race table is still shown alongside the series sheet.
     const race = container.querySelector('[data-testid="tv-race-table"]');

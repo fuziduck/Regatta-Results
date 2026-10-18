@@ -343,6 +343,12 @@ class TestClubhouseTvDisplayPayload:
         assert len(views["latest_races"]) >= 2
         assert len(views["series_progress"]) >= 2
 
+        # A class view carries its series' schedule so the TV can show every
+        # planned race (dated) in the series sheet, not only those sailed.
+        sonata = next(v for v in views["classes"] if v["series_id"] == "series-sonata-summer")
+        assert sonata["planned_races"] == 6
+        assert sonata["schedule"] == ["2026-06-01", "2026-06-08", "2026-11-01"]
+
         # Overall view uses official scoring and orders leading boats
         overall = views["overall"][0]
         assert overall["class_name"] in ("Sonata", "Cruiser Fleet")

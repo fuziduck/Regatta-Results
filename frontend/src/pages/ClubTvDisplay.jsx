@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
-import { fmtDate, fmtDateShort } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, standingsColumns } from "@/lib/helpers";
+import { fmtScore } from "@/lib/resultCellStyle";
 import ClubBadge from "@/components/ClubBadge";
 import {
   AlertTriangle,
@@ -588,8 +589,14 @@ function SideBySideSlideView({ slide }) {
   const { data, race, overallRows, raceRows, pageIndex, isProvisional } = slide;
   const { hasElapsed, hasCorrected } = raceTiming(race, raceRows);
   const raceLabel = race.race_label || `Race ${race.race_number}`;
-  const seriesRaces = Array.isArray(data.races) ? data.races : [];
-  const weights = seriesColumnWeights(seriesRaces.length);
+  // The series sheet mirrors the public results page: the races already
+  // sailed, any abandoned on the day, and every remaining planned race, each
+  // under its own numbered column with the scheduled date beneath it.
+  const seriesCols = standingsColumns(data);
+  const weights = seriesColumnWeights(seriesCols.length);
+  const dayRaceNumber = Number(race.race_number);
+  const isDayCol = (col) =>
+    !col.abandoned && !col.planned && Number(col.race_number) === dayRaceNumber;
   // Stretch the shorter of the two tables into the wall's height (and the
   // series table's gross column only when a discard makes it differ from net).
   const showTotal = overallRows.some(
@@ -631,7 +638,9 @@ function SideBySideSlideView({ slide }) {
           label="Series Results"
           badge={
             data.race_count != null ? (
-              <span className="font-mono text-sm text-slate-300">{data.race_count} races</span>
+              <span className="font-mono text-sm text-slate-300">
+                {data.race_count} of {Math.max(Number(data.planned_races) || 0, seriesCols.length) || data.race_count} races
+              </span>
             ) : null
           }
         >
@@ -650,15 +659,34 @@ function SideBySideSlideView({ slide }) {
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
                   <th className="px-3 py-2.5">Boat</th>
                   <th className="px-3 py-2.5">Sail</th>
-                  {seriesRaces.map((sr) => {
-                    const isDayRace = Number(sr.race_number) === Number(race.race_number);
+                  {seriesCols.map((col) => {
+                    const isDayRace = isDayCol(col);
                     return (
                       <th
-                        key={sr.race_number}
+                        key={col.key}
+                        data-race-column="true"
                         data-day-race={isDayRace ? "true" : undefined}
-                        className={`px-2 py-2.5 text-center ${isDayRace ? "text-sky-200" : ""}`}
+                        data-planned-race={col.planned ? "true" : undefined}
+                        className={`px-2 py-2 text-center align-bottom ${isDayRace ? "text-sky-200" : ""}`}
                       >
-                        R{sr.race_number}
+                        <div>{col.mini_name || `R${col.race_number}`}</div>
+                        <div
+                          className={`mt-0.5 font-body text-[10px] font-normal normal-case tracking-normal ${
+                            col.abandoned
+                              ? "text-red-300"
+                              : isDayRace
+                              ? "text-sky-300"
+                              : col.planned
+                              ? "text-slate-500"
+                              : "text-slate-400"
+                          }`}
+                        >
+                          {col.abandoned
+                            ? "Abandoned"
+                            : col.date
+                            ? fmtDateShort(col.date)
+                            : "TBC"}
+                        </div>
                       </th>
                     );
                   })}
@@ -682,17 +710,25 @@ function SideBySideSlideView({ slide }) {
                     <td className="px-3 py-2 font-mono text-base font-semibold text-sky-200">
                       {row.sail_no || "—"}
                     </td>
-                    {seriesRaces.map((sr, i) => {
-                      const sc = (row.scores || [])[i];
-                      const isDayRace = Number(sr.race_number) === Number(race.race_number);
+                    {seriesCols.map((col) => {
+                      const sc = col.scoreIndex == null ? null : (row.scores || [])[col.scoreIndex];
+                      const isDayRace = isDayCol(col);
                       return (
                         <td
-                          key={sr.race_number}
+                          key={col.key}
                           className={`px-2 py-2 text-center font-mono text-sm ${
-                            sc?.discarded ? "text-slate-500" : "text-slate-200"
+                            col.abandoned
+                              ? "text-red-300/50"
+                              : col.planned
+                              ? "text-slate-600"
+                              : sc?.discarded
+                              ? "text-slate-500 italic"
+                              : sc?.code && sc.code !== "FINISHED" && sc.code !== "MINI"
+                              ? "text-red-300"
+                              : "text-slate-200"
                           } ${isDayRace ? "bg-sky-500/15 font-bold" : ""}`}
                         >
-                          {sc && sc.points != null ? (sc.discarded ? `(${fmtPoints(sc.points)})` : fmtPoints(sc.points)) : "—"}
+                          {sc && sc.points != null ? fmtScore(sc) : "—"}
                         </td>
                       );
                     })}
