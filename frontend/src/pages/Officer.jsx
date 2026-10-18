@@ -8,7 +8,7 @@ import ConsoleNav from "@/components/ConsoleNav";
 import ClubApplicationStatus from "@/components/ClubApplicationStatus";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import TvDisplaySettingsCard, { RaceDayInfoEditor } from "@/components/TvDisplaySettings";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, boatRating, seriesScoringModes, scoringModeLabel, scoringCertificateLabel } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, boatRating, orderedDayRaces, seriesScoringModes, scoringModeLabel, scoringCertificateLabel } from "@/lib/helpers";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { RaceTimeEntry } from "@/components/RaceTimeEntry";
@@ -2025,6 +2025,13 @@ export default function Officer() {
   const [classes, setClasses] = useState({});
   const [series, setSeries] = useState({});
   const [selected, setSelected] = useState(null);
+  // Opening a race (from the race-day list, or by switching from another
+  // race's console) puts that race first on the page — so start at the top,
+  // where it now is, instead of wherever the previous race was scrolled to.
+  useEffect(() => {
+    if (!selected) return;
+    try { window.scrollTo({ top: 0 }); } catch (_) { /* jsdom has no scrollTo */ }
+  }, [selected]);
   const [rrsCodes, setRrsCodes] = useState([]);
   // Published races list: newest first by default (most recent race at the
   // top), switchable to oldest first. One series group expanded at a time.
@@ -2168,6 +2175,12 @@ export default function Officer() {
     const sameDayRaces = selectedRace
       ? races.filter((r) => r.date === selectedRace.date)
       : [activeRace];
+    // Opening a race must land on THAT race. The rest of the day follows it,
+    // in race-number order, so the page never starts on a race the officer did
+    // not click (and the others stay one scroll — or one tap — away).
+    const orderedRaces = orderedDayRaces(sameDayRaces, selected);
+    const otherDayRaces = orderedRaces.filter((r) => r.id !== selected);
+    const multi = sameDayRaces.length > 1;
     return (
       <div className="min-h-screen bg-background">
         <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} clubId={clubId} />
@@ -2176,29 +2189,81 @@ export default function Officer() {
             consoles were impossible to tell apart (and squeezed the result
             tables into unreadable columns); stacked cards give every race
             its own bordered box with the same table geometry, so the
-            Boat / Pos / Elapsed / Code columns line up down the page. Small
-            screens still show the selected race only. */}
-        <div className={sameDayRaces.length === 1 ? "" : "mx-auto max-w-5xl px-3 sm:px-4 pt-4 space-y-5"}>
-          {sameDayRaces.map((dayRace) => {
-            const otherDayRaces = sameDayRaces
+            Boat / Pos / Elapsed / Code columns line up down the page. The
+            race that was opened is first; the rest are announced above the
+            fold and again on each card, so a second race is never hidden. */}
+        <div className={multi ? "mx-auto max-w-5xl px-3 sm:px-4 pt-4 space-y-5" : ""}>
+          {multi && otherDayRaces.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-xl border border-ocean/25 bg-ocean/5 px-3 py-2"
+              data-testid="same-day-races-bar">
+              <span className="font-heading text-xs uppercase tracking-wide text-ocean">
+                {sameDayRaces.length} races today
+              </span>
+              <span className="text-xs text-muted-foreground">
+                · {otherDayRaces.length} more below <ChevronDown className="inline h-3.5 w-3.5 align-[-2px]" />
+              </span>
+              <span className="ml-auto flex flex-wrap items-center gap-1.5">
+                {otherDayRaces.map((r) => (
+                  <button key={r.id} type="button"
+                    data-testid={`same-day-jump-${r.id}`}
+                    onClick={() => document.getElementById(`race-panel-${r.id}`)
+                      ?.scrollIntoView?.({ behavior: "smooth", block: "start" })}
+                    className="inline-flex items-center gap-1 rounded-md border border-ocean/30 bg-background px-2 py-1 text-xs font-semibold text-ocean transition-colors hover:bg-ocean hover:text-white">
+                    {raceLabel(r, series[r.series_id])}
+                    <span className="font-normal opacity-80">{meta(r).class_name}</span>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                ))}
+              </span>
+            </div>
+          )}
+          {orderedRaces.map((dayRace, index) => {
+            const isOpened = dayRace.id === selected;
+            const consoleOtherRaces = orderedRaces
               .filter((r) => r.id !== dayRace.id)
               .map((r) => ({ ...r, ...meta(r) }));
-            const multi = sameDayRaces.length > 1;
             return (
-              <div key={dayRace.id}
-                className={multi
-                  ? `rounded-2xl border-2 border-border bg-card shadow-sm ${dayRace.id === selected ? "" : "hidden lg:block"}`
-                  : ""}
-                data-testid={`race-panel-${dayRace.id}`}>
-                <RaceConsole raceId={dayRace.id} meta={meta(dayRace)}
-                  embedded={multi}
-                  series={series[dayRace.series_id] || null} clubId={clubId}
-                  rrsCodes={rrsCodes} dayRaces={otherDayRaces} onSwitchRace={setSelected}
-                  onEnterBatch={enterBatch}
-                  raceDayNotices={raceDayNotices}
-                  onSeriesBoatsSaved={loadRaces}
-                  onBack={() => { setSelected(null); refreshDay(); }} />
-              </div>
+              <Fragment key={dayRace.id}>
+                {multi && index === 1 && (
+                  <div className="flex items-center gap-3 pt-1" data-testid="same-day-races-divider">
+                    <span className="shrink-0 font-heading text-sm uppercase tracking-wide text-ocean">
+                      Other races today — {otherDayRaces.length} below
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                )}
+                {multi && !isOpened && (
+                  <div className="flex flex-wrap items-center gap-2 pb-2 text-xs"
+                    data-testid={`other-race-label-${dayRace.id}`}>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-ocean" />
+                    <span className="font-heading uppercase tracking-wide text-ocean">
+                      Another race today — {raceLabel(dayRace, series[dayRace.series_id])} · {meta(dayRace).class_name}
+                    </span>
+                    <Button size="sm" variant="outline" className="ml-auto h-7 px-2 text-xs"
+                      data-testid={`other-race-show-first-${dayRace.id}`}
+                      onClick={() => setSelected(dayRace.id)}>
+                      Show this race first
+                    </Button>
+                  </div>
+                )}
+                <div id={`race-panel-${dayRace.id}`} style={{ scrollMarginTop: "5rem" }}
+                  className={multi ? "rounded-2xl border-2 border-border bg-card shadow-sm" : ""}
+                  data-testid={`race-panel-${dayRace.id}`}>
+                  {/* The opened race needs no in-card switcher: the day bar
+                      above and the other cards below already carry every
+                      race. The cards further down keep it, so jumping back
+                      to the opened race is always one tap away. */}
+                  <RaceConsole raceId={dayRace.id} meta={meta(dayRace)}
+                    embedded={multi}
+                    series={series[dayRace.series_id] || null} clubId={clubId}
+                    rrsCodes={rrsCodes}
+                    dayRaces={isOpened ? [] : consoleOtherRaces} onSwitchRace={setSelected}
+                    onEnterBatch={enterBatch}
+                    raceDayNotices={raceDayNotices}
+                    onSeriesBoatsSaved={loadRaces}
+                    onBack={() => { setSelected(null); refreshDay(); }} />
+                </div>
+              </Fragment>
             );
           })}
         </div>

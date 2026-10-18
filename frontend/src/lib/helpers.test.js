@@ -18,6 +18,7 @@ import {
   divisionTables,
   seriesRaceStats,
   boatStanding,
+  orderedDayRaces,
 } from "./helpers";
 
 describe("rating divisions (a class racing under two rating systems)", () => {
@@ -265,6 +266,34 @@ describe("miniSeriesNote (officer-facing note on a mini-series race)", () => {
   it("returns null for a non-mini-series race", () => {
     expect(miniSeriesNote(null)).toBeNull();
     expect(miniSeriesNote(undefined)).toBeNull();
+  });
+});
+
+describe("orderedDayRaces (the race you opened comes first)", () => {
+  const day = [
+    { id: "r1", race_number: 1, class_id: "c2" },
+    { id: "r2", race_number: 2, class_id: "c1" },
+    { id: "r6", race_number: 6, class_id: "c2" },
+  ];
+
+  it("puts the opened race first and keeps the rest in race-number order", () => {
+    expect(orderedDayRaces(day, "r6").map((r) => r.id)).toEqual(["r6", "r1", "r2"]);
+    expect(orderedDayRaces(day, "r2").map((r) => r.id)).toEqual(["r2", "r1", "r6"]);
+  });
+
+  it("is already in order when the opened race is the first one", () => {
+    expect(orderedDayRaces(day, "r1").map((r) => r.id)).toEqual(["r1", "r2", "r6"]);
+  });
+
+  it("never mutates the list it is given and tolerates an absent or empty day", () => {
+    const input = [...day];
+    const out = orderedDayRaces(input, "r6");
+    expect(input.map((r) => r.id)).toEqual(["r1", "r2", "r6"]);
+    expect(out).not.toBe(input);
+    // A race that is no longer in the list (deleted elsewhere) leaves the
+    // day's order untouched.
+    expect(orderedDayRaces(day, "gone").map((r) => r.id)).toEqual(["r1", "r2", "r6"]);
+    expect(orderedDayRaces([], "r1")).toEqual([]);
   });
 });
 

@@ -196,6 +196,19 @@ export function boatScoringMode(boat, divisions, fallback) {
   return (divisions.find((d) => d.name === name) || {}).scoring_mode || fallback;
 }
 
+// The same-day races shown in the officer console, in the order they appear:
+// the race the officer opened first, then the rest of the day's races by race
+// number. Opening a race must land on that race, not on whichever one the API
+// happened to list first; the others stay below, one scroll away.
+export function orderedDayRaces(races, selectedId) {
+  const list = [...(races || [])].sort((a, b) =>
+    (Number(a?.race_number) || 0) - (Number(b?.race_number) || 0)
+    || String(a?.class_id || "").localeCompare(String(b?.class_id || "")));
+  const index = list.findIndex((r) => r?.id === selectedId);
+  if (index > 0) list.unshift(list.splice(index, 1)[0]);
+  return list;
+}
+
 // Race totals for the public series summary. Abandoned races reduce the
 // planned series size as well as being excluded from the sailed count.
 export const seriesRaceStats = (series, data) => {
