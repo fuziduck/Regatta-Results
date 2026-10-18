@@ -38,6 +38,7 @@ jest.mock("@/lib/api", () => {
     getBoats: jest.fn(),
     getRace: jest.fn(),
     createRace: jest.fn(),
+    setStatus: jest.fn(),
     get2faStatus: jest.fn(),
   };
   return { api, formatApiError: (d) => d || "error" };
@@ -129,6 +130,7 @@ beforeEach(() => {
   mockApi.getBoats.mockResolvedValue([]);
   mockApi.getRace.mockResolvedValue(raceDoc("r7", 7));
   mockApi.createRace.mockResolvedValue(raceDoc("r7", 7));
+  mockApi.setStatus.mockImplementation((id, status) => Promise.resolve({ ...raceDoc(id, 7), status, version: 2 }));
   mockApi.get2faStatus.mockResolvedValue({ enabled: false, email: "", has_email: false, methods: ["totp"] });
 });
 
@@ -176,6 +178,34 @@ describe("setting up a scheduled race (officer page)", () => {
 
     expect(container.querySelector('[data-testid="race-item-r4"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="race-item-r5"]').textContent).toContain("Abandoned");
+  });
+
+  it("refreshes the scheduled list when a published race returns the officer to race day", async () => {
+    // Publishing drops the slot from /scheduled-races, so the panel has to be
+    // refetched on the way back. Reloading only the races left the race the
+    // officer had just published sitting there reading "Score now" until the
+    // whole page was refreshed by hand.
+    mockApi.scheduledRaces
+      .mockResolvedValueOnce([scheduledItem({ race_id: "r7", status: "setup" })])
+      .mockResolvedValueOnce([]);
+
+    await render(<Officer />);
+    expect(container.querySelector('[data-testid="scheduled-Sonata-7"]')).not.toBeNull();
+
+    await clickScheduledRow();
+    const publish = container.querySelector('[data-testid="publish-btn"]');
+    expect(publish).not.toBeNull();
+    await act(async () => {
+      publish.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(mockApi.setStatus).toHaveBeenCalledWith("r7", "published", 1);
+    // Back on race day, with the scheduled slot gone from the list.
+    expect(mockApi.scheduledRaces).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="schedule-panel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="scheduled-Sonata-7"]')).toBeNull();
+    expect(container.querySelector('[data-testid="schedule-panel"]').textContent).toContain("No races scheduled for this date");
   });
 
   it("creates the race and opens its results console on the happy path", async () => {

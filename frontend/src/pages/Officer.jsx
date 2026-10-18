@@ -2000,7 +2000,17 @@ export default function Officer() {
     setSchedDate((prev) => prev || new Date().toISOString().slice(0, 10));
   }, [clubId]);
 
-  useEffect(() => { loadRaces(); loadScheduled(); api.rrsCodes().then(setRrsCodes); }, [loadRaces, loadScheduled]);
+  // The two lists are views of the same day: a race created, published,
+  // recalled or deleted moves between them (the scheduled endpoint drops a
+  // slot once its race is published). Every path back to race day refreshes
+  // both together, so the scheduled panel never shows a finished race as
+  // "Score now" until the officer reloads the page by hand.
+  const refreshDay = useCallback(
+    () => Promise.all([loadRaces(), loadScheduled()]),
+    [loadRaces, loadScheduled],
+  );
+
+  useEffect(() => { refreshDay(); api.rrsCodes().then(setRrsCodes); }, [refreshDay]);
 
   // After batch exit, if the officer wants to open a specific race, wait
   // for races to load then select it.
@@ -2119,7 +2129,7 @@ export default function Officer() {
                   onEnterBatch={enterBatch}
                   raceDayNotices={raceDayNotices}
                   onSeriesBoatsSaved={loadRaces}
-                  onBack={() => { setSelected(null); loadRaces(); }} />
+                  onBack={() => { setSelected(null); refreshDay(); }} />
               </div>
             );
           })}
@@ -2230,7 +2240,7 @@ export default function Officer() {
     }
   });
 
-  const exitBatch = (raceId) => { setBatchMode(false); setBatchGroup(null); if (raceId) setPendingBatchRace(raceId); loadRaces(); loadScheduled(); };
+  const exitBatch = (raceId) => { setBatchMode(false); setBatchGroup(null); if (raceId) setPendingBatchRace(raceId); refreshDay(); };
   // After a successful race-day split, reload and drop straight into the batch
   // scoring page for the newly-created mini series.
   const handleSplitDone = (res) => {
@@ -2242,7 +2252,7 @@ export default function Officer() {
       series: sr,
       className: classes[sr.class_id]?.name || "Class",
     });
-    loadRaces(); loadScheduled();
+    refreshDay();
   };
 
   if (batchMode && batchGroup) {
@@ -2354,7 +2364,7 @@ export default function Officer() {
             );
           })()}
           <div className="mt-3 pt-3 border-t border-ocean/15">
-            <NewRaceDialog compact onCreated={(r) => { loadRaces(); setSelected(r.id); }} onSplitDone={handleSplitDone} clubId={clubId} />
+            <NewRaceDialog compact onCreated={(r) => { refreshDay(); setSelected(r.id); }} onSplitDone={handleSplitDone} clubId={clubId} />
             <span className="ml-2 text-xs text-muted-foreground">if there is no race scheduled for this day</span>
           </div>
           {dayCreated.length > 0 && dayUnpublished.length > 0 && (
@@ -2365,7 +2375,7 @@ export default function Officer() {
                   if (!window.confirm(`Publish all ${dayUnpublished.length} results for ${fmtDate(schedDate)}? Race-day notices for these races will clear from the landing page.`)) return;
                   for (const item of dayUnpublished) await api.setStatus(item.race_id, "published", item.version);
                   toast.success("All results for the day confirmed & published");
-                  loadRaces(); loadScheduled();
+                  refreshDay();
                 }}>
                 <CheckCircle2 className="w-4 h-4" /> Confirm full day results
               </Button>
