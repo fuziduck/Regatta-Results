@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -284,14 +284,17 @@ export function RaceDayInfoEditor({ clubId, compact = false }) {
 /**
  * Dropdown of series with a tickbox for each. The ticked series are the ones
  * whose pages rotate on the club display; none ticked means every series in the
- * current season.
+ * chosen season. Only that season's series are listed — a club with years of
+ * results would otherwise scroll a hundred entries to find this summer's.
  */
-function SeriesTickDropdown({ seriesList, classesById, selectedIds, onChange }) {
+function SeriesTickDropdown({ seriesList, classesById, selectedIds, onChange, year }) {
   const [open, setOpen] = useState(false);
 
-  const seriesLabel = (s) => `${classesById[s.class_id]?.name || "Class"} · ${s.name} (${s.year})`;
+  // The year is already chosen above the picker, so repeating it on every row
+  // would only add noise.
+  const seriesLabel = (s) => `${classesById[s.class_id]?.name || "Class"} · ${s.name}`;
   const selectedSeries = seriesList.filter((s) => selectedIds.includes(s.id));
-  let summary = "All current-season series";
+  let summary = year ? `All ${year} series` : "All current-season series";
   if (selectedIds.length === 1 || selectedIds.length === 2) {
     summary = selectedSeries.map(seriesLabel).join(", ");
   } else if (selectedIds.length > 2) {
@@ -321,7 +324,7 @@ function SeriesTickDropdown({ seriesList, classesById, selectedIds, onChange }) 
           className="absolute z-20 mt-1 w-full rounded-md border border-border bg-card p-2 shadow-lg"
         >
           {seriesList.length === 0 ? (
-            <p className="px-2 py-1 text-xs text-muted-foreground">No series yet</p>
+            <p className="px-2 py-1 text-xs text-muted-foreground">No series in {year}</p>
           ) : (
             seriesList.map((s) => (
               <label
@@ -345,7 +348,7 @@ function SeriesTickDropdown({ seriesList, classesById, selectedIds, onChange }) 
               onClick={() => onChange([])}
               className="mt-1 px-2 text-xs text-ocean underline"
             >
-              Clear (show all current-season series)
+              Clear (show every {year} series)
             </button>
           )}
         </div>
@@ -354,49 +357,110 @@ function SeriesTickDropdown({ seriesList, classesById, selectedIds, onChange }) 
   );
 }
 
+// The season the picker opens on: the saved one, else the year of a ticked
+// series, else the most recent season the club has series for. A club that has
+// been running for a decade should still land on this summer's racing.
+function seasonFor(config, series) {
+  if (config.active_year) return String(config.active_year);
+  const ticked = (config.active_series_ids || [])
+    .map((id) => series.find((s) => s.id === id))
+    .find((s) => s && s.year);
+  if (ticked) return String(ticked.year);
+  const latest = series.reduce((best, s) => Math.max(best, Number(s.year) || 0), 0);
+  return String(latest || new Date().getFullYear());
+}
+
 /**
- * Full Clubhouse TV Display Configuration Card for Club Administrators.
+ * Full Clubhouse TV Display Configuration Card, for Race Officers and Club
+ * Administrators.
  */
-export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
+export default function TvDisplaySettingsCard({ clubId, clubSlug, showRaceDayInfo = true }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
-  const [seriesList, setSeriesList] = useState([]);
+  const [allSeries, setAllSeries] = useState([]);
+  // One season at a time: the picker lists only this year's series.
+  const [year, setYear] = useState("");
   const [classesById, setClassesById] = useState({});
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     if (!clubId) return;
     setLoaded(false);
+    let saved = DEFAULT_CONFIG;
     if (typeof api.getClubTvConfig === "function") {
-      Promise.resolve(api.getClubTvConfig(clubId))
-        .then((res) => {
-          setConfig(toFormConfig(res?.tv_config || {}));
-          setLoaded(true);
-        })
-        .catch(() => {});
+      try {
+        const res = await api.getClubTvConfig(clubId);
+        saved = toFormConfig(res?.tv_config || {});
+        setConfig(saved);
+        setLoaded(true);
+      } catch {
+        // Keep the defaults rather than blocking the card.
+      }
     }
     if (typeof api.getClasses === "function") {
-      Promise.resolve(api.getClasses({ club_id: clubId }))
-        .then((cls) => {
-          const map = {};
-          (cls || []).forEach((item) => {
-            map[item.id] = item;
-          });
-          setClassesById(map);
-        })
-        .catch(() => {});
+      try {
+        const cls = await api.getClasses({ club_id: clubId });
+        const map = {};
+        (cls || []).forEach((item) => {
+          map[item.id] = item;
+        });
+        setClassesById(map);
+      } catch {
+        // Class names only label the picker.
+      }
     }
     if (typeof api.getSeries === "function") {
-      Promise.resolve(api.getSeries({ club_id: clubId }))
-        .then((ss) => setSeriesList(ss || []))
-        .catch(() => {});
+      try {
+        const ss = (await api.getSeries({ club_id: clubId })) || [];
+        setAllSeries(ss);
+        const season = seasonFor(saved, ss);
+        setYear(season);
+        // Persist the season the officer is actually looking at, so the TV
+        // resolves the same one as the picker, and keep only ticks the picker
+        // can show for that season.
+        setConfig((prev) => ({
+          ...prev,
+          active_year: Number(season) || null,
+          active_series_ids: prev.active_series_ids.filter(
+            (id) => String(ss.find((s) => s.id === id)?.year) === season,
+          ),
+        }));
+      } catch {
+        // An empty picker still lets the rest of the settings save.
+      }
     }
   }, [clubId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Every season the club has series for, newest first, plus the current
+  // selection so a saved future/past season still shows in the picker.
+  const seasons = useMemo(() => {
+    const years = new Set(allSeries.map((s) => Number(s.year)).filter(Boolean));
+    if (year) years.add(Number(year));
+    return [...years].sort((a, b) => b - a);
+  }, [allSeries, year]);
+
+  const seriesList = useMemo(
+    () => allSeries.filter((s) => String(s.year) === String(year)),
+    [allSeries, year],
+  );
+
+  const changeYear = (next) => {
+    setYear(next);
+    setConfig((prev) => ({
+      ...prev,
+      active_year: Number(next) || null,
+      // Ticks from another season are no longer in the list, so drop them:
+      // what is saved must match what the officer can see and review.
+      active_series_ids: prev.active_series_ids.filter(
+        (id) => String(allSeries.find((s) => s.id === id)?.year) === String(next),
+      ),
+    }));
+  };
 
   const saveConfig = async (nextConfig = config) => {
     if (!clubId || typeof api.updateClubTvConfig !== "function") return;
@@ -523,8 +587,24 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
           </div>
         )}
 
-        {/* Active Series / Event & Rotation Duration */}
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        {/* Season / Active Series / Rotation Duration */}
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="tv-active-year">Season</Label>
+            <select
+              id="tv-active-year"
+              data-testid="tv-active-year"
+              value={year}
+              onChange={(e) => changeYear(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+            >
+              {seasons.map((y) => (
+                <option key={y} value={String(y)}>{y}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">Only this season's series are listed.</p>
+          </div>
+
           <div className="space-y-1.5">
             <Label htmlFor="tv-active-series">Series whose pages rotate</Label>
             <SeriesTickDropdown
@@ -532,6 +612,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
               classesById={classesById}
               selectedIds={config.active_series_ids}
               onChange={(ids) => setConfig({ ...config, active_series_ids: ids })}
+              year={year}
             />
           </div>
 
@@ -646,7 +727,7 @@ export default function TvDisplaySettingsCard({ clubId, clubSlug }) {
       </div>
 
       {/* Race-Day Information Editor */}
-      <RaceDayInfoEditor clubId={clubId} />
+      {showRaceDayInfo && <RaceDayInfoEditor clubId={clubId} />}
     </div>
   );
 }

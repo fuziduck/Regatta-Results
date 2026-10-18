@@ -211,12 +211,15 @@ async def _require_admin_dep(request: Request) -> dict:
 @router.get("/clubs/{club_identifier}/tv-config")
 async def get_club_tv_config(
     club_identifier: str,
-    user: dict = Depends(_require_admin_dep),
+    user: dict = Depends(_require_officer_dep),
 ):
-    """Stored TV display configuration for a club, for its admins to edit.
+    """Stored TV display configuration for a club, for its staff to edit.
 
-    Unlike the public /clubs list this includes unapproved clubs, so the settings
-    card always shows the saved values instead of defaults.
+    Race Officers change what the clubhouse screen shows as readily as club
+    admins do — it is their race day on the wall — so officers read and write
+    this config too. Unlike the public /clubs list it includes unapproved
+    clubs, so the settings card always shows the saved values instead of
+    defaults.
     """
     m = _main()
     club = await _find_club_by_identifier(m.db, club_identifier)
@@ -231,9 +234,10 @@ async def update_club_tv_config(
     club_identifier: str,
     data: TvDisplayConfigInput,
     request: Request,
-    user: dict = Depends(_require_admin_dep),
+    user: dict = Depends(_require_officer_dep),
 ):
-    """Configure a club's public Clubhouse TV Display (club admin or webmaster)."""
+    """Configure a club's public Clubhouse TV Display (race officer, club admin
+    or webmaster)."""
     m = _main()
     db = m.db
     club = await _find_club_by_identifier(db, club_identifier)

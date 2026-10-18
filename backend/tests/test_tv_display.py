@@ -560,6 +560,21 @@ class TestClubhouseTvDisplayPayload:
         assert race_day["status"] == ""
         assert race_day["calendar"] == []
 
+    def test_race_officer_may_read_and_change_the_display_config(self):
+        """The TV is the race officer's own scoreboard, so the config routes
+        accept officers — not just club admins. The dependency is checked on
+        the route itself because the handlers are exercised with a user dict
+        below.
+        """
+        for method in ("GET", "PUT"):
+            deps = [
+                dep.call
+                for route in tv_display.router.routes
+                if route.path == "/api/clubs/{club_identifier}/tv-config" and method in route.methods
+                for dep in route.dependant.dependencies
+            ]
+            assert deps == [tv_display._require_officer_dep], method
+
     def test_admin_reads_saved_config_for_club_missing_from_public_list(self):
         section_keys = (
             "show_race_officer", "show_courses", "show_schedule", "show_notes",

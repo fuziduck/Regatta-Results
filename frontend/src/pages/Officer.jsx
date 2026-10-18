@@ -7,7 +7,7 @@ import SeriesBoatsDialog from "@/components/SeriesBoatsDialog";
 import ConsoleNav from "@/components/ConsoleNav";
 import ClubApplicationStatus from "@/components/ClubApplicationStatus";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
-import { RaceDayInfoEditor } from "@/components/TvDisplaySettings";
+import TvDisplaySettingsCard, { RaceDayInfoEditor } from "@/components/TvDisplaySettings";
 import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, seriesScoringModes } from "@/lib/helpers";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
@@ -23,7 +23,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useDeleteWithUndo } from "@/hooks/use-delete-with-undo";
-import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText, Users } from "lucide-react";
+import { Anchor, Plus, Minus, ChevronLeft, ChevronDown, ChevronUp, Flag, FlagOff, LifeBuoy, Undo2, CheckCircle2, Send, Trash2, Radio, Timer, CalendarDays, ChevronRight, RotateCcw, Copy, Building2, Pencil, ListChecks, Layers, Globe, ShieldCheck, FileText, Users, Tv } from "lucide-react";
 
 const STATUS_BADGE = {
   setup: "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300",
@@ -66,12 +66,17 @@ function useNow(intervalMs = 250) {
   return now;
 }
 
-function TopBar({ clubName, onSwitchClub, clubSlug }) {
+export function TopBar({ clubName, onSwitchClub, clubSlug, clubId }) {
   const { role, updateSession } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const clubQuery = searchParams.get("club");
+  // What the clubhouse TV shows is a race-day decision as much as a setup one,
+  // so the officer opens the same settings card from the console menu instead
+  // of having to wait for an admin.
+  const [tvOpen, setTvOpen] = useState(false);
   return (
+    <>
     <header className="sticky top-0 z-40 backdrop-blur-xl bg-ocean/95 text-white">
       <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
@@ -94,6 +99,14 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
               label: "Admin",
               icon: null,
               onClick: () => navigate(clubQuery ? `/admin?club=${clubQuery}` : "/admin"),
+            }] : []),
+            ...(clubId ? [{
+              key: "tv",
+              label: "Clubhouse TV",
+              icon: <Tv className="w-4 h-4 mr-1" />,
+              testId: "nav-tv",
+              menuTestId: "menu-tv",
+              onClick: () => setTvOpen(true),
             }] : []),
             {
               key: "site",
@@ -118,6 +131,22 @@ function TopBar({ clubName, onSwitchClub, clubSlug }) {
         </div>
       </div>
     </header>
+    {clubId && (
+      <Dialog open={tvOpen} onOpenChange={setTvOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto" data-testid="clubhouse-tv-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 uppercase tracking-tight">
+              <Tv className="w-5 h-5 text-ocean" /> Clubhouse TV
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground -mt-2">
+            Choose which results fill the clubhouse screen, then leave the TV URL open full screen.
+          </p>
+          <TvDisplaySettingsCard clubId={clubId} clubSlug={clubSlug} showRaceDayInfo={false} />
+        </DialogContent>
+      </Dialog>
+    )}
+    </>
   );
 }
 
@@ -2027,7 +2056,7 @@ export default function Officer() {
       : [activeRace];
     return (
       <div className="min-h-screen bg-background">
-        <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+        <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} clubId={clubId} />
         {!isWebmaster && <ClubApplicationStatus />}
         {/* Same-day races fill one column per race once the screen is wide
             enough — 2 up on large, 3 on xl, 4 on 2xl — so three or more
@@ -2176,7 +2205,7 @@ export default function Officer() {
   if (batchMode && batchGroup) {
     return (
       <div className="min-h-screen bg-background">
-        <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+        <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} clubId={clubId} />
         {!isWebmaster && <ClubApplicationStatus />}
         <MiniSeriesBatchEntry
           group={batchGroup.group}
@@ -2194,7 +2223,7 @@ export default function Officer() {
 
   return (
     <div className="min-h-screen bg-background">
-      <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} />
+      <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} clubId={clubId} />
       {!isWebmaster && <ClubApplicationStatus />}
       <main className="max-w-3xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-6">

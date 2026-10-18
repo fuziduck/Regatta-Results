@@ -128,11 +128,11 @@ describe("TvDisplaySettingsCard series choice", () => {
     await act(async () => root.unmount());
   });
 
-  it("says all current-season series are shown when nothing is ticked", async () => {
+  it("says all series of the chosen season are shown when nothing is ticked", async () => {
     const { container, root } = await renderCard({ display_mode: "full" }, { series: SERIES });
 
     expect(container.querySelector('[data-testid="tv-active-series-trigger"]').textContent).toContain(
-      "All current-season series",
+      "All 2026 series",
     );
 
     await act(async () => root.unmount());
@@ -142,6 +142,75 @@ describe("TvDisplaySettingsCard series choice", () => {
     const { container, root } = await renderCard({ display_mode: "full" }, { series: SERIES });
 
     expect(container.querySelector('[data-testid="tv-active-regatta-select"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("TvDisplaySettingsCard season filter", () => {
+  const SERIES = [
+    { id: "s1", name: "Summer Series", year: 2026, class_id: "k1" },
+    { id: "s2", name: "Winter Series", year: 2026, class_id: "k1" },
+    { id: "old", name: "Summer Series", year: 2024, class_id: "k1" },
+  ];
+
+  const openPicker = (container) =>
+    container.querySelector('[data-testid="tv-active-series-trigger"]').click();
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    jest.clearAllMocks();
+  });
+
+  it("opens on the saved season and lists only that season's series", async () => {
+    const { container, root } = await renderCard(
+      { display_mode: "full", active_series_ids: ["old"], active_year: 2024 },
+      { series: SERIES },
+    );
+
+    expect(container.querySelector('[data-testid="tv-active-year"]').value).toBe("2024");
+    await act(async () => openPicker(container));
+    expect(container.querySelector('[data-testid="tv-series-option-old"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tv-series-option-s1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tv-series-option-s2"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("switching season swaps the list and drops ticks from the other season", async () => {
+    const { container, root } = await renderCard(
+      { display_mode: "full", active_series_ids: ["s1", "old"], active_year: 2026 },
+      { series: SERIES },
+    );
+
+    await act(async () => openPicker(container));
+    expect(container.querySelector('[data-testid="tv-series-option-s1"]').checked).toBe(true);
+    expect(container.querySelector('[data-testid="tv-series-option-old"]')).toBeNull();
+
+    const season = container.querySelector('[data-testid="tv-active-year"]');
+    await act(async () => {
+      season.value = "2024";
+      season.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="tv-series-option-s1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tv-series-option-old"]')).not.toBeNull();
+    // The 2026 tick is gone: it is not part of this season's rotation.
+    expect(container.querySelector('[data-testid="tv-series-option-old"]').checked).toBe(false);
+
+    await act(async () => {
+      container.querySelector('[data-testid="tv-series-option-old"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="save-tv-config-btn"]').click();
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const [, payload] = api.updateClubTvConfig.mock.calls[0];
+    expect(payload.active_series_ids).toEqual(["old"]);
+    expect(payload.active_year).toBe(2024);
 
     await act(async () => root.unmount());
   });
