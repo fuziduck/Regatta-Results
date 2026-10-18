@@ -57,6 +57,7 @@ const samplePayload = {
             boat_name: "Bluebird",
             sail_no: "GBR 8123",
             class_name: "Sonata",
+            boat_type: "Sonata 26",
             helm: "Alice Smith",
             races_completed: 3,
             total: 4,
@@ -73,6 +74,7 @@ const samplePayload = {
             boat_name: "Tailwind",
             sail_no: "GBR 8456",
             class_name: "Sonata",
+            boat_type: "Sonata 26",
             helm: "Bob Jones",
             races_completed: 3,
             total: 6,
@@ -923,8 +925,24 @@ describe("ClubTvDisplay rotation & rendering", () => {
     const headers = [...table.querySelectorAll("thead th")].map((th) => th.textContent.trim());
     expect(headers).not.toContain("Class");
     expect(headers).not.toContain("Total");
-    expect(headers).toEqual(["Pos", "Boat", "Sail No", "Helm / Skipper", "R1", "R2", "R3", "Races", "Net Pts"]);
+    expect(headers).toEqual(["Pos", "Boat", "Sail No", "R1", "R2", "R3", "Races", "Net Pts"]);
     expect(table.className).not.toContain("h-full");
+  });
+
+  it("shows the boat type and helm small under each boat name, and labels the sail number column in full", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue(offDayPayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const table = container.querySelector('[data-testid="tv-standings-table"]');
+    const boatCell = table.querySelector('[data-testid="tv-standings-boat-GBR 8123"]');
+    expect(boatCell.firstChild.textContent).toBe("Bluebird");
+    expect(boatCell.lastChild.textContent).toBe("Sonata 26 · Alice Smith");
+    expect(boatCell.lastChild.className).toContain("text-base");
+
+    const headers = [...table.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    expect(headers).toContain("Sail No");
+    expect(headers).not.toContain("Sail");
   });
 
   it("caps the race-day panel so no section spills below the fold", async () => {

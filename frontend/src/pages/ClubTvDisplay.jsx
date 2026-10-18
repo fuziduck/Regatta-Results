@@ -338,11 +338,34 @@ function tvDensity(rowCount) {
   return {
     row: roomy ? "py-4" : "py-2.5",
     boat: roomy ? "text-3xl" : "text-2xl",
-    helm: roomy ? "text-xl" : "text-lg",
+    detail: roomy ? "text-base" : "text-sm",
     sail: roomy ? "text-xl" : "text-lg",
     time: roomy ? "text-xl" : "text-lg",
     points: roomy ? "text-3xl" : "text-2xl",
   };
+}
+
+// What the boat is and who sails her, in one quiet line beneath the name.
+function boatDetail(row) {
+  return [row?.boat_type, row?.helm].filter(Boolean).join(" · ");
+}
+
+// The boat cell of every results table: the name read from across the room,
+// with her type and helm small underneath so the boat still leads the row.
+function BoatNameCell({ row, nameClass, detailClass = "text-sm", testId }) {
+  const detail = boatDetail(row);
+  return (
+    <div data-testid={testId}>
+      <div className={nameClass}>{row.boat_name}</div>
+      {detail && (
+        <div
+          className={`mt-0.5 font-body font-medium normal-case tracking-normal text-slate-300 ${detailClass}`}
+        >
+          {detail}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function fmtPoints(val) {
@@ -402,9 +425,9 @@ function LeaderSpotlight({ leader, viewType, scoringLabel, raceCount }) {
                 {leader.sail_no}
               </span>
             )}
-            {leader.helm && (
+            {boatDetail(leader) && (
               <span className="ml-3 font-body text-base font-medium normal-case text-slate-300">
-                · {leader.helm}
+                · {boatDetail(leader)}
               </span>
             )}
           </div>
@@ -475,7 +498,6 @@ function StandingsSlideView({ slide }) {
               <th className="px-4 py-3">Boat</th>
               <th className="px-4 py-3">Sail No</th>
               {showClassCol && <th className="px-4 py-3">Class</th>}
-              <th className="px-4 py-3">Helm / Skipper</th>
               {raceMeta.map((rm, idx) => (
                 <th key={idx} className="hidden xl:table-cell px-2.5 py-3 text-center font-mono">
                   {rm.mini_name || `R${rm.race_number}`}
@@ -504,9 +526,12 @@ function StandingsSlideView({ slide }) {
                     <PodiumRankBadge rank={rank} />
                   </td>
                   <td className={`px-4 ${size.row}`}>
-                    <span className={`font-heading ${size.boat} uppercase tracking-tight text-white`}>
-                      {row.boat_name}
-                    </span>
+                    <BoatNameCell
+                      row={row}
+                      testId={`tv-standings-boat-${row.sail_no || row.boat_name}`}
+                      nameClass={`font-heading ${size.boat} uppercase tracking-tight text-white`}
+                      detailClass={size.detail}
+                    />
                   </td>
                   <td className={`px-4 ${size.row} font-mono ${size.sail} font-semibold text-sky-200`}>
                     {row.sail_no || "—"}
@@ -516,9 +541,6 @@ function StandingsSlideView({ slide }) {
                       {row.class_name || data.class_name || "—"}
                     </td>
                   )}
-                  <td className={`px-4 ${size.row} ${size.helm} font-medium text-slate-200`}>
-                    {row.helm || "—"}
-                  </td>
                   {raceMeta.map((_, idx) => {
                     const s = recentScores[idx];
                     if (!s) {
@@ -658,7 +680,7 @@ function SideBySideSlideView({ slide }) {
                 <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
                   <th className="px-3 py-2.5">Boat</th>
-                  <th className="px-3 py-2.5">Sail</th>
+                  <th className="px-3 py-2.5">Sail No</th>
                   {seriesCols.map((col) => {
                     const isDayRace = isDayCol(col);
                     return (
@@ -704,8 +726,13 @@ function SideBySideSlideView({ slide }) {
                     <td className="px-3 py-2 text-center">
                       <PodiumRankBadge rank={row.rank} />
                     </td>
-                    <td className="px-3 py-2 font-heading text-xl uppercase tracking-tight text-white">
-                      {row.boat_name}
+                    <td className="px-3 py-2">
+                      <BoatNameCell
+                        row={row}
+                        testId={`tv-overall-boat-${row.sail_no || row.boat_name}`}
+                        nameClass="font-heading text-xl uppercase tracking-tight text-white"
+                        detailClass="text-xs"
+                      />
                     </td>
                     <td className="px-3 py-2 font-mono text-base font-semibold text-sky-200">
                       {row.sail_no || "—"}
@@ -772,7 +799,7 @@ function SideBySideSlideView({ slide }) {
                 <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
                   <th className="px-3 py-2.5">Boat</th>
-                  <th className="px-3 py-2.5">Sail</th>
+                  <th className="px-3 py-2.5">Sail No</th>
                   {hasElapsed && <th className="px-3 py-2.5 text-right">Elapsed</th>}
                   {hasCorrected ? (
                     <th className="px-4 py-2.5 text-right text-amber-300">Corrected</th>
@@ -799,8 +826,13 @@ function SideBySideSlideView({ slide }) {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 font-heading text-xl uppercase tracking-tight text-white">
-                        {row.boat_name}
+                      <td className="px-3 py-2">
+                        <BoatNameCell
+                          row={row}
+                          testId={`tv-race-boat-${row.sail_no || row.boat_name}`}
+                          nameClass="font-heading text-xl uppercase tracking-tight text-white"
+                          detailClass="text-xs"
+                        />
                       </td>
                       <td className="px-3 py-2 font-mono text-base font-semibold text-sky-200">
                         {row.sail_no || "—"}
@@ -872,7 +904,6 @@ function LatestRaceSlideView({ slide }) {
               <th className="w-16 px-4 py-3 text-center">Pos</th>
               <th className="px-4 py-3">Boat</th>
               <th className="px-4 py-3">Sail No</th>
-              <th className="px-4 py-3">Helm / Skipper</th>
               {hasElapsed && <th className="px-4 py-3 text-right">Elapsed</th>}
               {hasCorrected && <th className="px-4 py-3 text-right">Corrected</th>}
               <th className="px-5 py-3 text-right">Status / Pts</th>
@@ -897,14 +928,16 @@ function LatestRaceSlideView({ slide }) {
                       </span>
                     )}
                   </td>
-                  <td className={`px-4 ${size.row} font-heading ${size.boat} uppercase tracking-tight text-white`}>
-                    {row.boat_name}
+                  <td className={`px-4 ${size.row}`}>
+                    <BoatNameCell
+                      row={row}
+                      testId={`tv-latest-boat-${row.sail_no || row.boat_name}`}
+                      nameClass={`font-heading ${size.boat} uppercase tracking-tight text-white`}
+                      detailClass={size.detail}
+                    />
                   </td>
                   <td className={`px-4 ${size.row} font-mono ${size.sail} font-semibold text-sky-200`}>
                     {row.sail_no || "—"}
-                  </td>
-                  <td className={`px-4 ${size.row} ${size.helm} font-medium text-slate-200`}>
-                    {row.helm || "—"}
                   </td>
                   {hasElapsed && (
                     <td className={`px-4 ${size.row} text-right font-mono ${size.time} text-slate-200`}>
@@ -1022,7 +1055,6 @@ function SeriesProgressSlideView({ slide }) {
                   <th className="w-14 px-3 py-2 text-center">Pos</th>
                   <th className="px-3 py-2">Boat</th>
                   <th className="px-3 py-2">Sail No</th>
-                  <th className="px-3 py-2">Helm</th>
                   <th className="px-3 py-2 text-right">Total</th>
                   <th className="px-4 py-2 text-right text-amber-300">Net</th>
                 </tr>
@@ -1033,11 +1065,15 @@ function SeriesProgressSlideView({ slide }) {
                     <td className="px-3 py-2 text-center">
                       <PodiumRankBadge rank={row.rank} />
                     </td>
-                    <td className="px-3 py-2 font-heading text-xl uppercase text-white">
-                      {row.boat_name}
+                    <td className="px-3 py-2">
+                      <BoatNameCell
+                        row={row}
+                        testId={`tv-progress-boat-${row.sail_no || row.boat_name}`}
+                        nameClass="font-heading text-xl uppercase text-white"
+                        detailClass="text-xs"
+                      />
                     </td>
                     <td className="px-3 py-2 font-mono text-base text-sky-200">{row.sail_no}</td>
-                    <td className="px-3 py-2 text-base text-slate-300">{row.helm || "—"}</td>
                     <td className="px-3 py-2 text-right font-mono text-base text-slate-400">
                       {fmtPoints(row.total)}
                     </td>

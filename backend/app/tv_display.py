@@ -815,6 +815,7 @@ async def get_club_tv_display(
                         "boat_name": boat.get("name", "Boat"),
                         "sail_no": boat.get("sail_no", ""),
                         "helm": boat.get("helm", ""),
+                        "boat_type": boat.get("boat_type", ""),
                         "class_name": cls.get("name", "Class"),
                         "home_club": home_name,
                         "position": pos,

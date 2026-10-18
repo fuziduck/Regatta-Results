@@ -168,6 +168,7 @@ def _sample_db(tv_config=None, race_day_info=None, approval_status="approved"):
             "class_id": "class-sonata",
             "name": "Bluebird",
             "sail_no": "GBR 8123",
+            "boat_type": "Sonata 26",
             "helm": "Alice Smith",
             "year": 2026,
             "fleet_id": "fb1",
@@ -354,6 +355,25 @@ class TestClubhouseTvDisplayPayload:
         assert overall["class_name"] in ("Sonata", "Cruiser Fleet")
         assert len(overall["standings"]) == 2
         assert overall["standings"][0]["rank"] == 1
+
+    def test_rows_carry_boat_type_and_helm_for_the_tv_boats_name_line(self):
+        """The TV prints the boat type and helm small beneath the boat's name,
+        so every standings and race row must carry both fields."""
+        server.db = _sample_db()
+
+        payload = asyncio.run(tv_display.get_club_tv_display(
+            "royal-harbour", _make_request("/api/clubs/royal-harbour/display")))
+
+        sonata = next(v for v in payload["views"]["classes"]
+                      if v["series_id"] == "series-sonata-summer")
+        bluebird = next(r for r in sonata["standings"] if r["boat_id"] == "b1")
+        assert bluebird["boat_type"] == "Sonata 26"
+        assert bluebird["helm"] == "Alice Smith"
+
+        race = next(v for v in payload["views"]["latest_races"] if v["race_id"] == "race-2")
+        row = next(r for r in race["results"] if r["boat_id"] == "b1")
+        assert row["boat_type"] == "Sonata 26"
+        assert row["helm"] == "Alice Smith"
 
     def test_supports_multiple_rating_systems_as_distinct_class_views(self):
         server.db = _sample_db()

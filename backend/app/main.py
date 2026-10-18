@@ -7682,6 +7682,9 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
+            # The TV display prints the boat's type under her name, so the
+            # standings carry it alongside the helm.
+            "boat_type": b.get("boat_type") or "",
             "home_club": home_name,
             "home_club_slug": home_slug,
             "net": round(net, 1),
@@ -8468,6 +8471,7 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
             "boat_name": b["name"],
             "sail_no": b["sail_no"],
             "helm": b["helm"],
+            "boat_type": b.get("boat_type") or "",
             "home_club": home_name,
             "home_club_slug": home_slug,
             "net": round(total, 1),
