@@ -158,9 +158,22 @@ class TestA8Tiebreak:
 
     def test_keys_are_built_correctly(self):
         entries = [{"points": 1.0}, {"points": 3.0}, {"points": 10.0}, {"points": 2.0}]
-        a8_1, a8_2 = server._a8_tiebreak(entries, drop={2})
+        a8_1, a8_2, a8_3 = server._a8_tiebreak(entries, drop={2})
         assert a8_1 == [1.0, 2.0, 3.0]          # excluded 10 removed, best first
         assert a8_2 == [2.0, 10.0, 3.0, 1.0]    # last race first, excluded kept
+        assert a8_3 == 0                        # no DNC in this boat's scores
+
+    def test_dnc_count_separates_a_dead_heat(self):
+        # A5.2 scores a DNF and a DNC the same, so a boat that stopped short
+        # and one that never came out can be level on every A8 score. The
+        # DNF boat came to the starting area and ranks ahead.
+        dnf = server._a8_tiebreak(
+            [{"points": 1.0, "code": "FINISHED"}, {"points": 3.0, "code": "DNF"}], drop=set())
+        dnc = server._a8_tiebreak(
+            [{"points": 1.0, "code": "FINISHED"}, {"points": 3.0, "code": "DNC"}], drop=set())
+        assert dnf[:2] == dnc[:2]
+        assert dnf[2] == 0 and dnc[2] == 1
+        assert dnf < dnc
 
     def test_boat_with_most_firsts_wins(self):
         # same net; A has two firsts, B has one first and a 4th

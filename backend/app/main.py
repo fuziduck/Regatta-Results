@@ -6948,10 +6948,19 @@ def _a8_tiebreak(entries, drop):
           used.
     A8.2: if still tied, scores in the last race, then next-to-last, and so on
           (excluded scores ARE used).
+
+    Code countback (after A8.1/A8.2): the numeric keys above are dead level
+          when A5 gives a DNC and a DNF the same score (the A5.2 default, and
+          so whenever the fleet size is the shared base). A boat that came to
+          the starting area and did not finish sailed the course, so she
+          ranks ahead of one that never came out: the final key counts each
+          boat's DNC scores, fewest first. Only DNC separates boats here;
+          every other code stays tied.
     """
     a8_1 = sorted([e["points"] for i, e in enumerate(entries) if i not in drop])
     a8_2 = [e["points"] for e in reversed(entries)]
-    return a8_1, a8_2
+    a8_3 = sum(1 for e in entries if e.get("code") == "DNC")
+    return a8_1, a8_2, a8_3
 
 
 async def _club_name_of_class(class_id):
@@ -7141,15 +7150,16 @@ def _fold_combined_mini_groups(series, agg, race_meta):
             if any(e["code"] in DUTY_CODES for e in mini_entries):
                 duty_in_group.add(bid)
             avg, drop = _mini_combined_score(mini_entries, g["discards"])
-            mini_tb_1, mini_tb_2 = _a8_tiebreak(mini_entries, drop)
-            boat_scores[bid] = (avg, drop, mini_tb_1, mini_tb_2)
+            mini_tb_1, mini_tb_2, mini_tb_3 = _a8_tiebreak(mini_entries, drop)
+            boat_scores[bid] = (avg, drop, mini_tb_1, mini_tb_2, mini_tb_3)
         # Rank the fleet: best daily average first, then A8 countback over
         # the day's races breaks ties — the rank (1 for 1st, 2 for 2nd, …)
         # becomes the single score carried into the main series, matching
         # the overall-championship convention for combined mini-series days.
         # Boats DNC for the whole day are excluded (they score DNC instead).
         sorted_bids = sorted((b for b in boat_scores if b not in dnc_only and b not in duty_in_group),
-                             key=lambda b: (boat_scores[b][0], boat_scores[b][2], boat_scores[b][3]))
+                             key=lambda b: (boat_scores[b][0], boat_scores[b][2],
+                                            boat_scores[b][3], boat_scores[b][4]))
         ranks = {bid: i + 1 for i, bid in enumerate(sorted_bids)}
         # Second pass: folded entries normally carry the day's rank, not the
         # average. DNC and OOD are exceptions: both remain non-finishing codes
@@ -7157,7 +7167,7 @@ def _fold_combined_mini_groups(series, agg, race_meta):
         # duty average from its mini-race entry; it must never become a daily
         # finishing position just because the group is displayed as combined.
         for bid, entries in agg.items():
-            avg, drop, mini_tb_1, mini_tb_2 = boat_scores[bid]
+            avg, drop, mini_tb_1, mini_tb_2, mini_tb_3 = boat_scores[bid]
             if bid in duty_in_group:
                 duty_entry = next(e for e in (entries[j] for j in idxs)
                                   if e["code"] in DUTY_CODES)
@@ -7171,7 +7181,7 @@ def _fold_combined_mini_groups(series, agg, race_meta):
             else:
                 new_agg[bid].append({"points": ranks[bid], "code": MINI_COMBINED_CODE,
                                      "discardable": True, "position": None,
-                                     "mini_tb": [mini_tb_1, mini_tb_2]})
+                                     "mini_tb": [mini_tb_1, mini_tb_2, mini_tb_3]})
     return new_agg, new_meta
 
 
@@ -7663,7 +7673,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
         drop = set(discardable_idx[:discards])
         total = sum(e["points"] for e in entries)
         net = sum(e["points"] for i, e in enumerate(entries) if i not in drop)
-        a8_1, a8_2 = _a8_tiebreak(entries, drop)
+        a8_1, a8_2, a8_3 = _a8_tiebreak(entries, drop)
         scores = [{"points": round(e["points"], 1), "code": e["code"], "discarded": i in drop}
                   for i, e in enumerate(entries)]
         home_name, home_slug = _home_club_display(b, club_name, club_map)
@@ -7678,7 +7688,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
             "total": round(total, 1),
             "scores": scores,
             "positions": [e["position"] for e in entries],
-            "_tb": (a8_1, a8_2),
+            "_tb": (a8_1, a8_2, a8_3),
         }
         if combined_view is not None:
             avg, _drop = _mini_combined_score(entries, combined_view["discards"])
@@ -7695,7 +7705,7 @@ async def compute_series_standings(series, race_numbers=None, discards=None, div
         # fall back to the mini races' A8 countback. Every other view ranks
         # by net over its races.
         key = [(r.get("_combined_avg", r["net"]) if combined_view is not None else r["net"]),
-               r["_tb"][0], r["_tb"][1]]
+               r["_tb"][0], r["_tb"][1], r["_tb"][2]]
         if combined_view is None and r["_mini_tb"] is not None:
             key += list(r["_mini_tb"])
         return key

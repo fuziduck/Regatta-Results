@@ -682,6 +682,25 @@ class TestTieBreaking:
         order = [r["boat_id"] for r in st["standings"]]
         assert order == ["b2", "b1"]
 
+    def test_dnf_ranks_ahead_of_dnc_on_identical_scores(self):
+        # A5.2 gives the DNF and the DNC the same points, and both boats have
+        # the same scores race by race, so A8.1 and A8.2 cannot separate them.
+        # The boat that came to the starting area (DNF) must rank above the
+        # one that never came out (DNC) — regardless of the fleet order the
+        # query happened to return.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0}
+        boats = [_boat(2), _boat(1)]  # b2 first: nothing but the code decides
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 1)]),  # A7 split: 1.5 each
+            _race(2, [_fin("b1", code="DNF")]),        # b2 absent -> DNC
+        ]
+        st = _standings(series, boats, races)
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["net"] == by_id["b2"]["net"] == 3.5
+        assert by_id["b1"]["scores"][1]["code"] == "DNF"
+        assert by_id["b2"]["scores"][1]["code"] == "DNC"
+        assert [r["boat_id"] for r in st["standings"]] == ["b1", "b2"]
+
     def test_ties_never_share_a_position_when_a8_decides(self):
         # Two boats on equal net get distinct ranks, not both "1st".
         series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0}
