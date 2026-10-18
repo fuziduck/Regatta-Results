@@ -730,6 +730,10 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     successMessage: "Race deleted",
     undoneMessage: "Race kept",
     errorMessage: "Could not delete the race",
+    // No version on the replayed delete: the officer confirmed removing this
+    // race, so a reload mid-window must not leave it sitting there with its
+    // results because someone else touched the race in the meantime.
+    deferred: { path: `/races/${raceId}` },
     commit: async () => {
       const r = await runMutation(() => api.deleteRace(raceId, version));
       if (r) onBack();
@@ -1377,6 +1381,7 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
       successMessage: "Race deleted",
       undoneMessage: "Race kept",
       errorMessage: "Could not delete the race",
+      deferred: { path: `/races/${race.id}` },
       commit: async () => {
         const r = await mutate(() => api.deleteRace(race.id, race.version));
         if (r) await loadGroup();

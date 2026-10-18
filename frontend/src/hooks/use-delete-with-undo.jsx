@@ -1,5 +1,11 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+  DEFERRED_TTL_MS,
+  forgetDeferredDelete,
+  installDeferredDeleteFlush,
+  rememberDeferredDelete,
+} from "@/lib/pending-deletes";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,8 +25,9 @@ export const UNDO_WINDOW_MS = 8000;
 // Pending deletes are tracked outside React on purpose. Unmounting the tab (or
 // navigating away) must not strand one — otherwise a record the officer
 // watched disappear would silently come back on the next load, and the delete
-// they confirmed would never happen.
-let nextToken = 0;
+// they confirmed would never happen. Module scope survives navigation but NOT a
+// reload, so callers that can be replayed (a race delete, via `deferred`) are
+// also written to storage and flushed when the page goes away.
 const timers = new Map();
 
 let undoWindowMs = UNDO_WINDOW_MS;
@@ -42,6 +49,7 @@ export function setUndoWindowMs(ms) {
  * `dialog` which the caller must render.
  */
 export function useDeleteWithUndo() {
+  useEffect(() => { installDeferredDeleteFlush(); }, []);
   const [request, setRequest] = useState(null);
   const [pending, setPending] = useState(() => new Set());
   const requestRef = useRef(null);
@@ -66,17 +74,28 @@ export function useDeleteWithUndo() {
     setRequest(null);
     if (!opts) return;
 
-    const { key, commit, undo, successMessage, undoneMessage, errorMessage } = opts;
+    const { key, commit, undo, successMessage, undoneMessage, errorMessage, deferred } = opts;
     if (key != null) setPending((prev) => new Set(prev).add(key));
 
-    const token = ++nextToken;
+    // Unique across reloads, because a remembered delete is replayed by a
+    // different page instance than the one that confirmed it.
+    const token = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    if (deferred?.path) {
+      rememberDeferredDelete({ token, ...deferred, expiresAt: Date.now() + DEFERRED_TTL_MS });
+    }
     const settle = async () => {
       timers.delete(token);
       try {
+        // Forget only once the server has answered: a reload while the request
+        // is still in flight must leave the memory in place so the next page
+        // finishes the delete.
         await commit?.();
+        forgetDeferredDelete(token);
         release(key);
       } catch (err) {
-        // Put the row back: the server still has the record.
+        // The officer saw it fail and the record is still there — a later
+        // reload must not delete it behind their back.
+        forgetDeferredDelete(token);
         release(key);
         toast.error(err?.response?.data?.detail || errorMessage || "Could not delete this item");
         undo?.();
@@ -94,6 +113,8 @@ export function useDeleteWithUndo() {
             clearTimeout(timer);
             timers.delete(token);
           }
+          // The race is kept — a later reload must not delete it after all.
+          forgetDeferredDelete(token);
           release(key);
           undo?.();
           toast.success(undoneMessage || "Restored");

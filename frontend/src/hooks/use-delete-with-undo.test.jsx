@@ -9,6 +9,7 @@ import { createRoot } from "react-dom/client";
 jest.mock("sonner", () => ({ toast: { error: jest.fn(), success: jest.fn(), info: jest.fn() } }));
 
 import { UNDO_WINDOW_MS, setUndoWindowMs, useDeleteWithUndo } from "./use-delete-with-undo";
+import { __resetPendingDeletes, pendingDeletes } from "@/lib/pending-deletes";
 
 const toast = require("sonner").toast;
 
@@ -21,7 +22,7 @@ const flush = async (ms = 20) => {
 
 // Mirrors how the real tabs use the hook: the row is filtered out while its
 // delete is pending, exactly as a table filters by isPending(id).
-function Harness({ commit, undo }) {
+function Harness({ commit, undo, deferred }) {
   const { askDelete, isPending, dialog } = useDeleteWithUndo();
   const [rows, setRows] = useState(["row-1", "row-2"]);
   return (
@@ -42,6 +43,7 @@ function Harness({ commit, undo }) {
             // Like the real callers, the commit deletes and then refreshes:
             // the row leaves the data the page renders from.
             commit: async () => { await commit(); setRows((rs) => rs.filter((x) => x !== r)); },
+            deferred,
             undo,
           })}
         >
@@ -72,6 +74,7 @@ const click = async (id) => {
 
 beforeEach(() => {
   setUndoWindowMs(UNDO_WINDOW_MS);
+  __resetPendingDeletes();
   Object.values(toast).forEach((fn) => fn.mockClear());
 });
 
@@ -87,6 +90,7 @@ afterEach(async () => {
   }
   document.body.innerHTML = "";
   setUndoWindowMs(UNDO_WINDOW_MS);
+  __resetPendingDeletes();
 });
 
 describe("useDeleteWithUndo", () => {
@@ -151,6 +155,37 @@ describe("useDeleteWithUndo", () => {
     // A later tick must not resurrect the delete that was taken back.
     await flush(40);
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  // The undo window is a timer in this page only. A confirmed race delete also
+  // has to survive the refresh that destroys that timer, or the race comes back
+  // with its results and the officer has to delete it again.
+  it("remembers a replayable delete so a reload still sends it", async () => {
+    setUndoWindowMs(5000);
+    const commit = jest.fn().mockResolvedValue({});
+    render(<Harness commit={commit} deferred={{ path: "/races/r1" }} />);
+
+    await click("row-1");
+    await click("confirm-delete-confirm");
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(pendingDeletes().map((e) => e.path)).toEqual(["/races/r1"]);
+  });
+
+  it("forgets the remembered delete when the officer undoes", async () => {
+    setUndoWindowMs(5000);
+    const commit = jest.fn().mockResolvedValue({});
+    render(<Harness commit={commit} deferred={{ path: "/races/r1" }} />);
+
+    await click("row-1");
+    await click("confirm-delete-confirm");
+    expect(pendingDeletes()).toHaveLength(1);
+
+    const action = toast.success.mock.calls.map(([, opts]) => opts?.action).find((a) => a?.label === "Undo");
+    act(() => { action.onClick(); });
+    await flush();
+
+    expect(pendingDeletes()).toEqual([]);
   });
 
   it("puts the row back and reports the failure when the delete is rejected", async () => {
