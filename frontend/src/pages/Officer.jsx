@@ -738,8 +738,10 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const gun = () => runMutation(() => api.startRace(raceId, new Date().toISOString(), version), "Race started — timer running");
   // Typed start (the gun fired before the page was open, or it was mis-tapped):
   // everything measured from the start — live taps, typed finish times, the
-  // elapsed clock — is re-timed against it. Elapsed entry measures from the
-  // start rather than from the finish, so that mode needs no start editor.
+  // elapsed clock — is re-timed against it. It stays editable in every
+  // time-entry mode: a duration keyed in as "elapsed" becomes a finish time
+  // from this start, and the start the race is officially timed from has to be
+  // correct whatever the officer happens to be typing.
   const setStart = (iso) => queueCommit((v) => runMutation(() => api.startRace(raceId, iso, v), `Start set to ${clockValueOf(iso)}`));
   const clearGun = () => runMutation(() => api.startRace(raceId, null, version), "Timer reset to scheduled start");
   const applyToDay = async () => {
@@ -808,7 +810,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         {/* Live timing — the race timer only matters while the race is being
             run; once it has finished and been published it's removed. */}
         {showTiming && race.status !== "published" && (
-          <RaceTimer race={race} now={now} showStartEditor={timeEntryMode !== "elapsed"}
+          <RaceTimer race={race} now={now}
             onSetStart={setStart} onClearStart={clearGun} onStart={gun} />
         )}
 

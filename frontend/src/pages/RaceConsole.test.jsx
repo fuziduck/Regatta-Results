@@ -243,10 +243,28 @@ describe("RaceConsole handicap time entry", () => {
     await flush();
     expect(mockApi.startRace).toHaveBeenCalledWith("r1", new Date("2026-05-02T10:35:00").toISOString(), 3);
 
-    // Elapsed entry measures from the start rather than the finish, so that
-    // mode carries no start editor.
+    // The same editor stays in the timer for elapsed entry: a duration is
+    // turned into a finish time from this start, and the race's official start
+    // has to be right whichever mode the officer is typing in.
     chooseMode("elapsed");
-    expect(container.querySelector('[data-testid="start-time-input"]')).toBeNull();
+    const elapsedInput = container.querySelector('[data-testid="start-time-input"]');
+    expect(elapsedInput).not.toBeNull();
+    type(elapsedInput, "10:38:00");
+    await flush();
+    expect(mockApi.startRace).toHaveBeenLastCalledWith("r1", new Date("2026-05-02T10:38:00").toISOString(), 3);
+  });
+
+  it("resets the gun from the elapsed-time view too", async () => {
+    mockApi.getRace.mockResolvedValue({ ...race, actual_start: "2026-05-02T10:35:00Z" });
+    renderConsole(HANDICAP_META);
+    await flush();
+    chooseMode("elapsed");
+
+    const reset = container.querySelector('[data-testid="clear-gun-btn"]');
+    expect(reset).not.toBeNull();
+    click(reset);
+    await flush();
+    expect(mockApi.startRace).toHaveBeenCalledWith("r1", null, 3);
   });
 
   it("says so when elapsed times have no start to measure from", async () => {
@@ -255,6 +273,9 @@ describe("RaceConsole handicap time entry", () => {
     await flush();
     chooseMode("elapsed");
     expect(container.querySelector('[data-testid="elapsed-no-start-note"]')).not.toBeNull();
+    // ... and offers the fix in place, rather than sending the officer to
+    // another mode to set it.
+    expect(container.querySelector('[data-testid="start-time-input"]')).not.toBeNull();
   });
 
   it("never shows a missing start time as null", async () => {

@@ -10,10 +10,17 @@ import { clockValueOf, fmtClock, fmtElapsed, raceClock } from "@/lib/helpers";
  * the timer number means — its label, its note, how it reads — is raceClock()'s
  * business; this only lays it out.
  *
+ * The actual-start editor is always here. Every time-entry mode measures from
+ * the start — a typed finish time is a time of day, and an elapsed duration is
+ * turned into a finish time from the start when it is committed — so the
+ * officer must be able to correct a mis-timed gun without switching modes. It
+ * also records the start the race is officially timed from, which the result,
+ * the notice and the timer all read.
+ *
  * `onSetStart` takes the actual start as an ISO instant, `onClearStart` drops
  * the gun back to the planned start, `onStart` fires the gun now.
  */
-export default function RaceTimer({ race, now, showStartEditor, onSetStart, onClearStart, onStart }) {
+export default function RaceTimer({ race, now, onSetStart, onClearStart, onStart }) {
   const clock = raceClock(race, now);
   return (
     <section className="rounded-2xl overflow-hidden bg-ocean-dark text-white relative" data-testid="timing-strip">
@@ -42,26 +49,24 @@ export default function RaceTimer({ race, now, showStartEditor, onSetStart, onCl
 
         <div className="flex-1" />
 
-        {showStartEditor && (
-          <div className="flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-2.5 py-1.5" data-testid="start-time-editor">
-            <Label className="text-[10px] uppercase tracking-widest text-white/60">Actual start</Label>
-            <ClockInput
-              key={`${race.id}-${race.actual_start || race.start_time || "none"}`}
-              clock={race.actual_start ? clockValueOf(race.actual_start) : (race.start_time || "")}
-              date={race.date}
-              testId="start-time-input"
-              title="The instant every finish time is measured from — type the actual start (HH:MM:SS)"
-              onCommit={onSetStart}
-              className="h-8 w-[5.5rem] px-1.5 font-mono text-sm text-white bg-white/15 border-white/30 focus-visible:ring-white/40"
-            />
-            {race.actual_start && (
-              <Button size="sm" variant="ghost" className="h-8 px-2 text-white/80 hover:bg-white/15 hover:text-white"
-                onClick={onClearStart} data-testid="clear-gun-btn" title="Drop the gun and time from the planned start">
-                <RotateCcw className="w-4 h-4" /> Reset
-              </Button>
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-2.5 py-1.5" data-testid="start-time-editor">
+          <Label className="text-[10px] uppercase tracking-widest text-white/60">Actual start</Label>
+          <ClockInput
+            key={`${race.id}-${race.actual_start || race.start_time || "none"}`}
+            clock={race.actual_start ? clockValueOf(race.actual_start) : (race.start_time || "")}
+            date={race.date}
+            testId="start-time-input"
+            title="The instant every finish time is measured from — type the actual start (HH:MM:SS)"
+            onCommit={onSetStart}
+            className="h-8 w-[5.5rem] px-1.5 font-mono text-sm text-white bg-white/15 border-white/30 focus-visible:ring-white/40"
+          />
+          {race.actual_start && (
+            <Button size="sm" variant="ghost" className="h-8 px-2 text-white/80 hover:bg-white/15 hover:text-white"
+              onClick={onClearStart} data-testid="clear-gun-btn" title="Drop the gun and time from the planned start">
+              <RotateCcw className="w-4 h-4" /> Reset
+            </Button>
+          )}
+        </div>
 
         <Button className="gap-2 bg-safety hover:bg-safety-dark text-white" onClick={onStart} data-testid="start-gun-btn">
           <Play className="w-4 h-4" /> {race.actual_start ? "Re-start" : "Start race"}
