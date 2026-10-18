@@ -251,39 +251,59 @@ running an older bundle hash until cache-busted).
   are unwritable by launchd-spawned processes (`com.apple.provenance` xattr).
   Redirect the job's log to `/tmp` instead.
 
-## 3. Thread-local preview on port 3101 (when 3000 is occupied)
+## 3. Preview registration (default path — the compose dev stack)
 
-The project has a FastAPI backend and React SPA, so use an isolated production
-frontend build plus the thread-specific SPA/API proxy server. This avoids the
-other preview on port 3000, doesn't use or alter Docker, and serves the files
-from `/tmp` because launchd cannot reliably read workspace files.
-
-Reproduce the artifacts and launch from the project checkout:
+UPDATED 2026-10-18. The Preview tab should normally serve the **compose dev
+stack on port 3000**, which bind-mounts `./frontend` and hot-reloads, so it
+already shows the current workspace code — no build, copy to `/tmp`, or extra
+server is needed. Confirm before registering:
 
 ```bash
-cd /Users/lukehopper/Documents/regatta-results/frontend
-# Dependencies: use the pinned Yarn package manager from the README.
-yarn install --frozen-lockfile
-REACT_APP_BACKEND_URL=http://127.0.0.1:3101 CI=false yarn build
-cp -R build /tmp/preview-build-a01ded39-68fb-42a0-8867-e2d54f74190d
-cp ../.freebuff/serve_preview_a01ded39.py /tmp/serve_preview_a01ded39.py
-launchctl submit -l com.codebuff.pva01ded39 -- /bin/sh -c \
-  "/usr/bin/python3 /tmp/serve_preview_a01ded39.py > /tmp/preview-a01ded39-68fb-42a0-8867-e2d54f74190d.log 2>&1"
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/   # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/api/ # 200
+docker compose -f docker-compose.dev.yml ps                      # all healthy
 ```
 
-The build command uses the checkout's already-installed dependencies if
-present; run the frozen Yarn install only when those dependencies are absent.
-Copying the helper to `/tmp` is required: launchd receives “Operation not
-permitted” when it tries to read scripts from the project workspace.
-The dedicated helper binds `127.0.0.1:3101` and forwards `/api/*` to the
-local backend on port 8000. Its log is `/tmp/preview-a01ded39-68fb-42a0-8867-e2d54f74190d.log`.
-This thread's Preview registration uses host PID `10635`.
+Then register the preview at `http://localhost:3000` with the **host** PID of
+the process listening on 3000 (per the gotcha in §1 — a container PID is
+inside the Docker VM and is rejected):
 
-Verify `http://127.0.0.1:3101/` responds before registering it in Preview.
-The proxy forwards same-origin `/api/*` requests to the existing local API at
-`127.0.0.1:8000` and passes cookies for session-based login. Do not run the
-Docker development stack just for this preview, and do not edit/copy secrets.
-To stop this preview later, run `launchctl remove com.codebuff.pva01ded39`.
+```bash
+lsof -nP -iTCP:3000 -sTCP:LISTEN -t   # → com.docker.backend pid, e.g. 9573
+```
+
+Do not start a second server on 3000 and do not re-register if a healthy
+preview already points here. If the stack is down, bring it up with §1 (a
+plain `up -d`, no `--build` unless `package.json` changed).
+
+One-off checks after registering: `preview_snapshot` should show the
+“CLUB RACING RESULTS & STANDINGS” landing page with real clubs (Medway,
+Royal Southern). Two 401s in the console are expected — the app probes the
+session endpoint while signed out.
+
+### 3b. Isolated thread-local preview (only when port 3000 is taken)
+
+Use this only if the compose stack must be left alone on 3000. Build a
+frontend pointed at a free port, copy it to `/tmp` (launchd cannot read the
+workspace), and serve it with `serve_preview_<tag>.py`, which proxies `/api/*`
+to `127.0.0.1:8000`:
+
+```bash
+cd frontend
+# Dependencies: use the pinned Yarn package manager from the README.
+test -d node_modules || yarn install --frozen-lockfile
+REACT_APP_BACKEND_URL=http://127.0.0.1:<port> CI=false yarn build
+cp -R build /tmp/preview-build-<tag>
+cp ../.freebuff/serve_preview_<tag>.py /tmp/serve_preview_<tag>.py
+launchctl submit -l com.codebuff.pv<tag> -- /bin/sh -c \
+  "/usr/bin/python3 /tmp/serve_preview_<tag>.py > /tmp/preview-<tag>.log 2>&1"
+```
+
+The helper has hardcoded `ROOT`/`PORT` constants — edit them before copying
+if the port or `/tmp` path differs. Register the preview with the URL and the
+host PID that the helper process holds. Stop it with
+`launchctl remove com.codebuff.pv<tag>`; a submitted job outlives the thread
+and keeps holding the port.
 
 ## 4. Files modified for docker compose
 
