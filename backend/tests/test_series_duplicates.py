@@ -115,6 +115,11 @@ def _db(series=None, classes=None, races=None, snapshots=None):
         season_snapshots=_Coll(snapshots or []),
         audit_logs=_Coll([]),
         users=_Coll([]),
+        # Series are club-scoped; a club with no approval_status is public
+        # (see _club_is_approved).
+        clubs=_Coll([{"id": "club-a", "name": "Medway YC"}]),
+        # A merge moves the reports attached to the merged series too.
+        race_reports=_Coll([]),
     )
 
 

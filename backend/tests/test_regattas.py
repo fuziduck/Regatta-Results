@@ -101,13 +101,14 @@ class _Cursor:
 
 
 class _Req:
-    """Minimal Request stand-in: `_resolve_club_id` reads cookies for a user."""
-    def __init__(self, club_id=None):
+    """Minimal Request stand-in for an anonymous public caller. The club
+    scope now travels as an explicit `club_id` argument on the endpoint, so
+    these call sites pass it alongside the request rather than inside it."""
+    def __init__(self):
         self.cookies = {}
         self.method = "GET"
         self.headers = {}
         self.client = types.SimpleNamespace(host="127.0.0.1")
-        self._club_id = club_id
 
     async def json(self):
         return {}
@@ -118,6 +119,9 @@ def _db(regattas=None, series=None, classes=None, races=None):
         "regattas": _Coll(regattas or []),
         "series": _Coll(series or []),
         "classes": _Coll(classes or []),
+        # Regattas and their series are club-scoped; a club with no
+        # approval_status is public (see _club_is_approved).
+        "clubs": _Coll([{"id": "club-a", "name": "Medway YC"}]),
         "races": _Coll(races or []),
         "audit_logs": _Coll([]),
         "season_snapshots": _Coll([]),
@@ -126,8 +130,13 @@ def _db(regattas=None, series=None, classes=None, races=None):
     return types.SimpleNamespace(**base)
 
 
-def _req(club_id):
-    return _Req(club_id=club_id)
+def _req():
+    return _Req()
+
+
+def _club(club_id="club-a"):
+    """Endpoint kwargs for an anonymous caller scoped to one public club."""
+    return {"club_id": club_id}
 
 
 class TestRegattaList:
@@ -137,11 +146,12 @@ class TestRegattaList:
                        "start_date": "2026-06-05", "end_date": "2026-06-07", "host_club": "Medway YC"}],
             series=[{"id": "s1", "name": "Regatta Sonata", "class_id": "c1", "regatta_id": "r1"},
                     {"id": "s2", "name": "Regatta Dragon", "class_id": "c2", "regatta_id": "r1"}],
-            classes=[{"id": "c1", "name": "Sonata"}, {"id": "c2", "name": "Dragon"}],
+            classes=[{"id": "c1", "name": "Sonata", "club_id": "club-a"},
+                     {"id": "c2", "name": "Dragon", "club_id": "club-a"}],
             races=[{"id": "rc1", "series_id": "s1", "status": "published"},
                    {"id": "rc2", "series_id": "s1", "status": "published"},
                    {"id": "rc3", "series_id": "s2", "status": "draft"}])
-        out = asyncio.run(server.get_regattas(_req("club-a")))
+        out = asyncio.run(server.get_regattas(_req(), **_club()))
         assert len(out) == 1
         r = out[0]
         assert r["classes"] == ["Sonata", "Dragon"]
@@ -158,7 +168,7 @@ class TestRegattaList:
             regattas=[{"id": "r1", "name": "2026 Regatta", "club_id": "club-a", "year": 2026},
                       {"id": "r2", "name": "2025 Regatta", "club_id": "club-a", "year": 2025}],
             series=[], classes=[], races=[])
-        out = asyncio.run(server.get_regattas(_req("club-a"), year=2025))
+        out = asyncio.run(server.get_regattas(_req(), year=2025, **_club()))
         assert [r["name"] for r in out] == ["2025 Regatta"]
 
     def test_status_derivation_upcoming_and_unknown(self):
@@ -167,21 +177,21 @@ class TestRegattaList:
                        "start_date": "2999-01-01"},
                       {"id": "r2", "name": "Club Regatta", "club_id": "club-a", "year": 2026}],
             series=[], classes=[], races=[])
-        out = asyncio.run(server.get_regattas(_req("club-a")))
+        out = asyncio.run(server.get_regattas(_req(), **_club()))
         statuses = {r["name"]: r["status"] for r in out}
         assert statuses["Open Meeting"] == "Upcoming"
         assert statuses["Club Regatta"] == "In Progress"
 
     def test_no_regattas_returns_empty(self):
         server.db = _db(regattas=[], series=[], classes=[], races=[])
-        assert asyncio.run(server.get_regattas(_req("club-a"))) == []
+        assert asyncio.run(server.get_regattas(_req(), **_club())) == []
 
 
 class TestRegattaDetail:
     def test_missing_regatta_404(self):
         server.db = _db(regattas=[], series=[], classes=[], races=[])
         try:
-            asyncio.run(server.get_regatta("nope", _req("club-a")))
+            asyncio.run(server.get_regatta("nope", _req(), **_club()))
             assert False, "expected HTTPException"
         except server.HTTPException as exc:
             assert exc.status_code == 404
@@ -198,7 +208,7 @@ class TestRegattaDetail:
             classes=[{"id": "c1", "name": "Sonata", "club_id": "club-a"}],
             races=[])
         try:
-            out = asyncio.run(server.get_regatta("r1", _req("club-a")))
+            out = asyncio.run(server.get_regatta("r1", _req(), **_club()))
             assert out["id"] == "r1"
         except Exception:  # scoring engine needs more stubs — winner may be empty, that's fine
             pass
@@ -210,7 +220,7 @@ class TestRegattaDelete:
         series = [{"id": "s1", "name": "Regatta", "class_id": "c1", "regatta_id": "r1"}]
         server.db = _db(regattas=[regatta], series=series, classes=[], races=[])
         user = {"user_id": "u1", "username": "a@b.c", "role": "admin", "club_id": "club-a"}
-        out = asyncio.run(server.delete_regatta("r1", _req("club-a"), user))
+        out = asyncio.run(server.delete_regatta("r1", _req(), user))
         assert out == {"ok": True}
         assert server.db.regattas.docs == []
         assert "regatta_id" not in series[0]

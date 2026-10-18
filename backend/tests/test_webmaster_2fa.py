@@ -66,6 +66,9 @@ class _Coll:
     def __init__(self):
         self.docs = []
 
+    def find(self, filt=None, projection=None):
+        return _Cursor([d for d in self.docs if _matches(d, filt or {})])
+
     async def find_one(self, filt=None, projection=None):
         for d in self.docs:
             if _matches(d, filt or {}):
