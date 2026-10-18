@@ -548,6 +548,96 @@ describe("ClubTvDisplay race-day paired slides", () => {
     expect(race.textContent).toContain("49:30");
   });
 
+  it("shows elapsed and corrected time for a YTC race, not a points column", async () => {
+    const ytcPayload = {
+      ...raceDayPayload,
+      views: {
+        ...raceDayPayload.views,
+        classes: [
+          {
+            id: "class-cruiser-ytc",
+            class_id: "c-cruiser",
+            class_name: "Cruiser Fleet",
+            division_name: "YTC",
+            heading: "Cruiser Fleet — YTC",
+            series_name: "Summer Points",
+            scoring_label: "YTC",
+            race_count: 2,
+            standings: [
+              { boat_id: "b7", rank: 1, boat_name: "Mistral", sail_no: "GBR 7", total: 2, net: 2 },
+            ],
+          },
+        ],
+        latest_races: [
+          {
+            id: "race-cruiser-ytc-1",
+            race_number: 3,
+            race_label: "Race 3",
+            date: "2026-06-08",
+            class_id: "c-cruiser",
+            division_name: "YTC",
+            class_name: "Cruiser Fleet",
+            series_name: "Summer Points",
+            scoring_label: "YTC",
+            scoring_mode: "ytc",
+            shows_times: true,
+            results: [
+              { boat_id: "b7", boat_name: "Mistral", sail_no: "GBR 7", position: 1, code: "FINISHED", elapsed_formatted: "1:05:00", corrected_formatted: "1:10:39" },
+              // No YTC number on this boat yet: the columns stay, the cell is blank.
+              { boat_id: "b8", boat_name: "Zephyr", sail_no: "GBR 8", position: 2, code: "FINISHED", elapsed_formatted: "1:02:00" },
+            ],
+          },
+        ],
+      },
+    };
+    mockApi.getClubTvDisplay.mockResolvedValue(ytcPayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const race = container.querySelector('[data-testid="tv-race-panel"]');
+    const headers = [...race.querySelectorAll("thead th")].map((th) => th.textContent);
+    expect(headers).toEqual(expect.arrayContaining(["Elapsed", "Corrected"]));
+    expect(headers.join(" ")).not.toContain("Pts");
+    expect(race.textContent).toContain("1:10:39");
+    expect(race.textContent).toContain("1:02:00");
+  });
+
+  it("keeps the YTC timing columns on the latest-race slide even with no corrected time yet", async () => {
+    const ytcPayload = {
+      ...samplePayload,
+      views: {
+        overall: [],
+        classes: [],
+        series_progress: [],
+        latest_races: [
+          {
+            id: "race-ytc-2",
+            race_number: 4,
+            race_label: "Race 4",
+            date: "2026-06-15",
+            class_name: "Cruiser Fleet",
+            series_name: "Summer Points",
+            scoring_label: "YTC",
+            scoring_mode: "ytc",
+            shows_times: true,
+            results: [
+              { boat_id: "b7", boat_name: "Mistral", sail_no: "GBR 7", helm: "Diana Prince", position: 1, code: "FINISHED", elapsed_formatted: "1:05:00" },
+            ],
+          },
+        ],
+      },
+    };
+    mockApi.getClubTvDisplay.mockResolvedValue(ytcPayload);
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const table = container.querySelector('[data-testid="tv-latest-race-table"]');
+    const headers = [...table.querySelectorAll("thead th")].map((th) => th.textContent);
+    // Both time columns are there even though this race has no corrected value yet.
+    expect(headers).toEqual(expect.arrayContaining(["Elapsed", "Corrected"]));
+    expect(table.textContent).toContain("1:05:00");
+  });
+
   it("shows a racing calendar summary in the race-day panel when calendar data is present", async () => {
     mockApi.getClubTvDisplay.mockResolvedValue({
       ...raceDayPayload,

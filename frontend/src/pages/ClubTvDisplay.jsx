@@ -254,6 +254,27 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
   return slides;
 }
 
+/**
+ * Whether a race's TV table shows the elapsed and corrected time columns.
+ *
+ * A handicap race is scored on time (IRC by TCC, PY and YTC by their
+ * yardstick number), so those columns belong on the slide even before every
+ * boat has a time to show: falling back to points there hides the scoring
+ * basis and makes YTC look different from IRC. One-design keeps its points
+ * column, and a payload that carries timing without a scoring mode still
+ * shows the columns exactly as before.
+ */
+function raceTiming(data, rows = []) {
+  const mode = data?.scoring_mode;
+  const handicap = data?.shows_times != null
+    ? Boolean(data.shows_times)
+    : Boolean(mode && mode !== "one_design");
+  return {
+    hasElapsed: handicap || rows.some((r) => r.elapsed_formatted),
+    hasCorrected: handicap || rows.some((r) => r.corrected_formatted),
+  };
+}
+
 function raceDayPairKey(item) {
   return `${item.class_id || item.class_name || ""}|${item.division_name || ""}`;
 }
@@ -513,8 +534,7 @@ function SlidePanel({ testId, label, badge, children }) {
  */
 function SideBySideSlideView({ slide }) {
   const { data, race, overallRows, raceRows, pageIndex, isProvisional } = slide;
-  const hasElapsed = raceRows.some((r) => r.elapsed_formatted);
-  const hasCorrected = raceRows.some((r) => r.corrected_formatted);
+  const { hasElapsed, hasCorrected } = raceTiming(race, raceRows);
   const raceLabel = race.race_label || `Race ${race.race_number}`;
   const seriesRaces = Array.isArray(data.races) ? data.races : [];
   const weights = seriesColumnWeights(seriesRaces.length);
@@ -714,8 +734,7 @@ function SideBySideSlideView({ slide }) {
 
 function LatestRaceSlideView({ slide }) {
   const { data, rows, leader, pageIndex, isProvisional } = slide;
-  const hasCorrected = rows.some((r) => r.corrected_formatted);
-  const hasElapsed = rows.some((r) => r.elapsed_formatted);
+  const { hasElapsed, hasCorrected } = raceTiming(data, rows);
 
   return (
     <div className="flex h-full flex-col" data-testid="tv-slide-C">

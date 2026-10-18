@@ -845,6 +845,11 @@ async def get_club_tv_display(
                     "division_name": div_label,
                     "scoring_mode": mode,
                     "scoring_label": _scoring_label(mode),
+                    # A handicap table (IRC, PY, YTC) is scored on time, so the
+                    # TV shows its elapsed and corrected columns even when a
+                    # boat has no computable time yet. Points would hide the
+                    # scoring basis, and made YTC look unlike IRC.
+                    "shows_times": mode in m.RATING_FIELD,
                     "start_time": race.get("start_time") or cls.get("default_start_time"),
                     "course": race.get("course") or "",
                     "entries_count": len(result_rows),

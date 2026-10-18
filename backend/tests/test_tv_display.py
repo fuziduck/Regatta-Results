@@ -362,6 +362,52 @@ class TestClubhouseTvDisplayPayload:
         assert ("Cruiser Fleet", "irc", "IRC") in labels
         assert ("Cruiser Fleet", "ytc", "YTC") in labels
 
+    def test_ytc_race_view_publishes_elapsed_and_corrected_times_like_irc(self):
+        """YTC is a handicap division, so its TV table carries the same time
+        columns as IRC — and it never falls back to a points column, even when
+        a boat has no computable corrected time yet.
+        """
+        db = _sample_db()
+        for race in db.races.docs:
+            if race["id"] != "race-3":
+                continue
+            race["start_tz_offset_minutes"] = 0
+            for res in race["results"]:
+                res["finish_time"] = (
+                    "2026-06-01T12:00:00+00:00" if res["boat_id"] == "b3"
+                    else "2026-06-01T12:05:00+00:00"
+                )
+        server.db = db
+
+        payload = asyncio.run(tv_display.get_club_tv_display(
+            "royal-harbour", _make_request("/api/clubs/royal-harbour/display")))
+        by_division = {v["division_name"]: v for v in payload["views"]["latest_races"]}
+
+        irc, ytc = by_division["IRC"], by_division["YTC"]
+        assert irc["scoring_mode"] == "irc" and ytc["scoring_mode"] == "ytc"
+        assert irc["shows_times"] is True and ytc["shows_times"] is True
+        # IRC corrects by the boat's TCC, YTC by her yardstick number.
+        assert irc["results"][0]["corrected_formatted"] == "59:06"
+        assert ytc["results"][0]["elapsed_formatted"] == "1:05:00"
+        assert ytc["results"][0]["corrected_formatted"] == "1:10:39"
+
+        one_design = next(v for v in payload["views"]["latest_races"]
+                          if v["scoring_mode"] == "one_design")
+        assert one_design["shows_times"] is False
+
+        # A missing YTC number leaves the corrected cell empty, but the table
+        # still shows both time columns rather than switching to points.
+        for boat in db.boats.docs:
+            if boat["id"] == "b4":
+                boat["ytc"] = None
+        payload = asyncio.run(tv_display.get_club_tv_display(
+            "royal-harbour", _make_request("/api/clubs/royal-harbour/display")))
+        ytc = next(v for v in payload["views"]["latest_races"]
+                   if v["division_name"] == "YTC")
+        assert ytc["shows_times"] is True
+        assert ytc["results"][0]["elapsed_formatted"] == "1:05:00"
+        assert ytc["results"][0]["corrected_formatted"] is None
+
     def test_distinguishes_provisional_and_finalised_latest_races(self):
         server.db = _sample_db()
         req = _make_request("/api/clubs/royal-harbour/display")
