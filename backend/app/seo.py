@@ -20,6 +20,8 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
+from app.class_fleet import one_design_fleet, one_design_fleet_class_ids
+
 router = APIRouter(prefix="/api", tags=["public SEO"])
 
 SITE_NAME = "SailScore"
@@ -918,11 +920,17 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
             if item.get("id") and _is_public_club(item)
         }
         grouped_classes = await _to_list(
-            db, "classes", {"scoring_mode": "one_design", "club_id": {"$in": list(public_club_ids)}}, 5000
+            db, "classes", {"club_id": {"$in": list(public_club_ids)}}, 5000
         ) if public_club_ids else []
+        grouped_series = await _to_list(
+            db, "series",
+            {"class_id": {"$in": [item.get("id") for item in grouped_classes if item.get("id")]}},
+            5000,
+        ) if grouped_classes else []
+        grouped_ids = one_design_fleet_class_ids(grouped_classes, grouped_series)
         matching_ids = [
             item.get("id") for item in grouped_classes
-            if not item.get("divisions")
+            if str(item.get("id")) in grouped_ids
             and _class_group_key(item.get("name")) == _class_group_key(parts[2])
         ]
         if not matching_ids or await _published_class_count(db, matching_ids[0]) == 0:
@@ -939,13 +947,19 @@ async def _metadata_for_uri(request: Request, original_uri: str | None = None) -
             }
             classes = await _to_list(
                 db, "classes",
-                {"scoring_mode": "one_design", "club_id": {"$in": list(public_club_ids)}},
+                {"club_id": {"$in": list(public_club_ids)}},
                 5000,
             ) if public_club_ids else []
+            classes_series = await _to_list(
+                db, "series",
+                {"class_id": {"$in": [item.get("id") for item in classes if item.get("id")]}},
+                5000,
+            ) if classes else []
+            grouped_ids = one_design_fleet_class_ids(classes, classes_series)
             matching = [
                 item for item in classes
                 if _class_group_key(item.get("name")) == _class_group_key(class_key)
-                and not item.get("divisions")
+                and str(item.get("id")) in grouped_ids
             ]
             if not matching:
                 return _not_found(base, path, "Sailing class could not be found.")
@@ -1188,7 +1202,7 @@ async def sitemap_xml(request: Request):
             continue
         path = (
             _group_class_path(cls.get("name"))
-            if cls.get("scoring_mode") == "one_design" and not cls.get("divisions")
+            if one_design_fleet(cls, class_series.get(class_id, []))
             else _class_path(class_id, cls.get("name"))
         )
         if path not in seen_class_urls:

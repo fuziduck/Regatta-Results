@@ -236,13 +236,16 @@ export default function Clubs() {
           classesLoading || clubsLoading ? <Loading label="Loading classes…" /> : publicClasses.length === 0 ? <p className="text-muted-foreground">No classes set up yet.</p> : (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-testid="class-grid">
               {Object.values(publicClasses.reduce((groups, classData) => {
-                const key = classData.scoring_mode === "one_design" ? classData.class_group_key : `class:${classData.id}`;
+                // The server sets class_group_key only for a single one-design
+                // fleet (no rating divisions, no handicap series), so grouping
+                // follows the scoring the class actually races under.
+                const key = classData.class_group_key || `class:${classData.id}`;
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(classData);
                 return groups;
               }, {})).sort((a, b) => (a[0].name || "").localeCompare(b[0].name || "")).map((classGroup) => {
                 const classData = classGroup[0];
-                const isGrouped = classData.scoring_mode === "one_design";
+                const isGrouped = Boolean(classData.class_group_key);
                 const groupName = classData.name;
                 const owningClubs = classGroup
                   .map((item) => systemClubs.find((club) => club.id === item.club_id)?.name)

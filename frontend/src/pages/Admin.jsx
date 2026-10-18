@@ -331,7 +331,7 @@ function ClassesTab({ classes, reload, clubId }) {
     <div>
       {dialog}
       <div className="flex justify-between items-center mb-4">
-        <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time.</p>
+        <p className="text-sm text-muted-foreground">Fleets racing this season. Each has an auto start time and may be split into rating divisions; each series chooses the scoring system it publishes.</p>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm(BLANK); } }}>
           <DialogTrigger asChild><Button data-testid="add-class-btn" className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add class</Button></DialogTrigger>
           <DialogContent>
@@ -339,7 +339,10 @@ function ClassesTab({ classes, reload, clubId }) {
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Class name</Label><Input data-testid="class-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dragon" /></div>
               <div className="space-y-1.5"><Label>Default start time</Label><Input type="time" data-testid="class-time-input" value={form.default_start_time} onChange={(e) => setForm({ ...form, default_start_time: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Scoring system</Label><Select value={form.scoring_mode || "one_design"} onValueChange={(v) => setForm({ ...form, scoring_mode: v })}><SelectTrigger data-testid="class-scoring-input"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="one_design">One-design</SelectItem><SelectItem value="irc">IRC</SelectItem><SelectItem value="py">PY</SelectItem><SelectItem value="ytc">YTC</SelectItem></SelectContent></Select></div>
+              {/* Scoring belongs to the series: each one picks the system(s) it
+                  publishes, so a class no longer carries a single system of its
+                  own. The stored field stays as the default a new series starts
+                  from, and divisions below still split one class into fleets. */}
               {/* Rating divisions: some fleets race under two rating systems at
                   once (IRC and YTC boats in the same class and series). Each
                   division is scored in its own table. */}
@@ -376,14 +379,14 @@ function ClassesTab({ classes, reload, clubId }) {
         </Dialog>
       </div>
       <div className="rounded-xl border overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Scoring</TableHead><TableHead>Boat icon</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Class</TableHead><TableHead>Start</TableHead><TableHead>Divisions</TableHead><TableHead>Boat icon</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{classes.filter((c) => !isPending(c.id)).map((c) => (
             <TableRow key={c.id} data-testid={`class-row-${c.name}`}>
               <TableCell className="font-heading text-lg uppercase tracking-tight">{c.name}</TableCell>
               <TableCell className="font-mono">{c.default_start_time}</TableCell>
               <TableCell>{classDivisions(c).length
                 ? <span className="flex flex-wrap gap-1" data-testid={`class-divisions-${c.name}`}>{classDivisions(c).map((d) => <Badge key={d.name} variant="outline">{d.name} · {scoringModeLabel(d.scoring_mode)}</Badge>)}</span>
-                : scoringModeLabel(c.scoring_mode)}</TableCell>
+                : <span className="text-muted-foreground" data-testid={`class-divisions-${c.name}`}>—</span>}</TableCell>
               <TableCell><ClassIconUpload classData={c} onUpdated={reload} /></TableCell>
               <TableCell className="text-right">
                 <Button size="icon" variant="ghost" onClick={() => { setEditing(c.id); setForm({ name: c.name, default_start_time: c.default_start_time, scoring_mode: c.scoring_mode || "one_design", divisions: (c.divisions || []).map((d) => ({ name: d.name || "", scoring_mode: d.scoring_mode || "one_design" })) }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
@@ -1413,7 +1416,21 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
           </Select>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditing(null); setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || "") }); } }}>
-          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => { const mode = classes.find((c) => c.id === classFilter)?.scoring_mode || "one_design"; setForm({ ...blank(), class_id: classFilter !== "all" ? classFilter : (classes[0]?.id || ""), order: series.length + 1, scoring_mode: mode, scoring_modes: [mode] }); setSchedStart(todayLocal()); }} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
+          <DialogTrigger asChild><Button data-testid="add-series-btn" onClick={() => {
+            const classId = classFilter !== "all" ? classFilter : (classes[0]?.id || "");
+            const classOfNew = classes.find((c) => c.id === classId) || {};
+            // A new series starts where the class left off: its rating divisions
+            // decide the scoring, otherwise its most recent series' systems.
+            const previous = series
+              .filter((s) => s.class_id === classId)
+              .sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0)
+                || (Number(b.order) || 0) - (Number(a.order) || 0))[0];
+            const modes = classDivisions(classOfNew).length
+              ? [classOfNew.scoring_mode || "one_design"]
+              : (previous ? seriesScoringModes(previous) : ["one_design"]);
+            setForm({ ...blank(), class_id: classId, order: series.length + 1, scoring_mode: modes[0] || "one_design", scoring_modes: modes });
+            setSchedStart(todayLocal());
+          }} className="gap-2 bg-ocean hover:bg-ocean-dark"><Plus className="w-4 h-4" /> Add series</Button></DialogTrigger>
           <DialogContent className="max-h-[85vh] overflow-y-auto">
             <DialogHeader><DialogTitle className="font-heading uppercase">{dialogTitle}</DialogTitle></DialogHeader>
             <div className="space-y-3">

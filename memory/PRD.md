@@ -38,13 +38,14 @@ Club-level sailing web app with 3 users. Spectator (public landing page, results
   - **A7**: boats tied on an equal stored position split the points of the tied places and the places immediately below.
   - `use_a5_3` is echoed in standings responses and shown on the public standings table footer.
 - **Rating divisions**: a class may field more than one rating system at once (IRC boats and YTC boats in the same class and the same series). `class.divisions = [{name, scoring_mode}, …]` (two or more; Admin class form) and `boat.division` (Admin boat form — blank means "by rating", placed by the certificate the boat holds, else the first division). One owner per rule: `_class_divisions` / `_boat_division` / `_division_fleet` on the server, `classDivisions` / `boatDivision` / `divisionTables` in `frontend/src/lib/helpers.js`. Races are re-sequenced within each division (`_resequence_race` → `_resequence_finished(boat_modes=…)`), and `/standings/series` + `/standings/overall` return `divisions: [payload per division]` alongside the whole-class table (which keeps per-boat history, exports and statistics working on one shape). The results pages, race page, PDF exports, regatta podiums and the officer console show the divisions as separate tables; a DNC is measured against the division's own fleet. The class and the series stay single entities.
-- **IRC scoring** (per-class `scoring_mode`, default one-design): boats carry a TCC
+- **Scoring owner**: the series, never the class. Each series stores `scoring_modes` (one or more of one_design/irc/py/ytc, one shared set of finish times producing one table per mode) and `scoring_mode` as its first entry. The Admin class form no longer asks for a system: `class.scoring_mode` survives only as the default a new series starts from, and a new series inherits the class's most recent series' modes. Rating divisions stay on the class and take precedence over series modes (the API refuses multi-mode series on a divided class). Cross-club one-design grouping (`class_group_key`, `/class/group/...` pages, sitemap) is derived by `app/class_fleet.py`: a class is grouped only when it has no rating divisions and no series scored under a handicap system.
+- **IRC scoring**: boats carry a TCC
   (rating certificate); corrected time = elapsed × TCC rounded to the nearest second
   with 0.5 s rounding up (IRC Rule 12.2). Finishes are re-sequenced by corrected time
   on every finish/edit (start = start gun, else scheduled class start); equal corrected
   times share a place and RRS A7 splits the points (e.g. two tied for 1st → 1.5 each,
-  next boat 3rd). Boats without TCC/start fall back to finish order. Admin UI: class
-  scoring-mode selector + boat TCC field.
+  next boat 3rd). Boats without TCC/start fall back to finish order. Admin UI: boat
+  TCC field; the scoring system is ticked on the series.
 - Unit tests: `backend/tests/test_scoring_rrs.py` — 19 tests covering A4/A5.2/A5.3/A6.1/A7/A8/44.3(c) math (pure functions, no DB). All pass.
 
 ## Implemented (2026-08, multi-club + webmaster)

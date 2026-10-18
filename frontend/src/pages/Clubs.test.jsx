@@ -90,4 +90,9 @@ test("renders only the approved public directory data", async () => {
   expect(container.textContent).toContain("Sonata");
   expect(container.textContent).not.toContain("Secret Pending Club");
   expect(container.textContent).not.toContain("Secret Fleet");
+
+  // Grouping follows the server's class_group_key, not the class's stored
+  // scoring_mode: this fixture still carries a stale "handicap" value.
+  const card = container.querySelector('[data-testid="system-class-card-sonata"]');
+  expect(card.getAttribute("href")).toBe("/class/group/sonata/sonata");
 });

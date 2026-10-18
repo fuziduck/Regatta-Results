@@ -43,6 +43,9 @@ from app.competition import (
     normalize_series_type, normalize_competition_type,
     normalize_championship_scope, series_type_for, class_group_key,
 )
+from app.class_fleet import (
+    division_names, one_design_fleet_class_ids, series_scoring_modes,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3741,11 +3744,22 @@ async def get_classes(request: Request, club_id: Optional[str] = None):
             return []
         q["club_id"] = {"$in": visible_ids}
     items = await db.classes.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
+    # A class shares the cross-club class page only when it is one one-design
+    # fleet: no rating divisions and no series scored under a handicap system.
+    # The class's legacy scoring_mode does not decide this — its series do.
+    class_ids = [item.get("id") for item in items if item.get("id")]
+    class_series = (
+        await db.series.find({"class_id": {"$in": class_ids}},
+                             {"_id": 0, "class_id": 1, "scoring_mode": 1, "scoring_modes": 1})
+        .to_list(5000)
+        if class_ids
+        else []
+    )
+    grouped_ids = one_design_fleet_class_ids(items, class_series)
     for item in items:
-        # A class split into rating divisions is not one one-design fleet, so
-        # it never shares a cross-club class-group page.
-        one_design_fleet = item.get("scoring_mode") == "one_design" and not _class_divisions(item)
-        item["class_group_key"] = class_group_key(item.get("name")) if one_design_fleet else None
+        item["class_group_key"] = (
+            class_group_key(item.get("name")) if str(item.get("id")) in grouped_ids else None
+        )
     return items
 
 
@@ -3812,7 +3826,7 @@ async def get_class_group_directory(class_key: str, request: Request):
     # private preview must not affect the set of participating clubs, and even
     # a Webmaster sees only the public projection here.
     visible_ids = await _visible_club_ids(request, public_only=True)
-    class_query = {"scoring_mode": "one_design"}
+    class_query = {}
     if visible_ids is not None:
         if not visible_ids:
             classes = []
@@ -3821,8 +3835,17 @@ async def get_class_group_directory(class_key: str, request: Request):
             classes = await db.classes.find(class_query, {"_id": 0}).to_list(5000)
     else:
         classes = await db.classes.find(class_query, {"_id": 0}).to_list(5000)
+    class_series = (
+        await db.series.find({"class_id": {"$in": [c.get("id") for c in classes if c.get("id")]}},
+                             {"_id": 0, "class_id": 1, "scoring_mode": 1, "scoring_modes": 1})
+        .to_list(5000)
+        if classes
+        else []
+    )
+    grouped_ids = one_design_fleet_class_ids(classes, class_series)
     matching = [c for c in classes
-                if class_group_key(c.get("name")) == wanted and not _class_divisions(c)]
+                if class_group_key(c.get("name")) == wanted
+                and str(c.get("id")) in grouped_ids]
     if not matching:
         raise HTTPException(status_code=404, detail="One-design class group not found")
     items = await _class_directory_items([c.get("id") for c in matching])
@@ -6603,10 +6626,7 @@ RATING_FIELD = {"irc": "tcc", "py": "py", "ytc": "ytc"}
 
 def _series_scoring_modes(series) -> list:
     """Canonical ordered scoring modes for a series, including legacy records."""
-    modes = series.get("scoring_modes") or [series.get("scoring_mode") or "one_design"]
-    valid = ("one_design", "irc", "py", "ytc")
-    clean = list(dict.fromkeys(mode for mode in modes if mode in valid))
-    return clean or [series.get("scoring_mode") or "one_design"]
+    return series_scoring_modes(series)
 
 
 def _corrected_seconds(mode, finish_time, start_time, rating):
@@ -6625,18 +6645,19 @@ def _class_divisions(cls) -> list:
     [{"name": "IRC", "scoring_mode": "irc"}, {"name": "YTC", "scoring_mode": "ytc"}].
 
     Two divisions are needed for a split to mean anything: with none (or just
-    one) the class is a single fleet scored by its own scoring_mode, exactly
-    as before, so an existing class is never re-scored by this feature.
+    one) the class is a single fleet scored by the scoring its series choose,
+    exactly as before, so an existing class is never re-scored by this feature.
     """
-    clean, seen = [], set()
+    names = division_names(cls)
+    if len(names) < 2:
+        return []
+    modes = {}
     for d in (cls or {}).get("divisions") or []:
         name = str((d or {}).get("name") or "").strip()
-        if not name or name.lower() in seen:
-            continue
-        seen.add(name.lower())
-        clean.append({"name": name,
-                      "scoring_mode": (d or {}).get("scoring_mode") or "one_design"})
-    return clean if len(clean) >= 2 else []
+        if name and name.lower() not in modes:
+            modes[name.lower()] = (d or {}).get("scoring_mode") or "one_design"
+    return [{"name": name, "scoring_mode": modes.get(name.lower(), "one_design")}
+            for name in names]
 
 
 def _boat_division(boat, divisions) -> str:
