@@ -1234,6 +1234,22 @@ class TestOverallCombinedSeries:
         early_rows = {r["boat_id"]: r for r in _series_standings(db.series.docs[1], db)["standings"]}
         assert by_id["b1"]["per_series"]["Early Autumn"] == early_rows["b1"]["net"]
 
+    def test_a_boat_that_never_enters_scores_once_per_scoring_column(self):
+        # b3 never signs onto either series. It must score DNC for every
+        # column the series actually produces — and a combined mini day is
+        # ONE column, even when the day is stored as two race documents.
+        boats = [_boat(i) for i in range(1, 4)]
+        db = _fake_db(self._races(), boats, self._series_docs())
+        payload = _overall(db)
+        by_id = {r["boat_id"]: r for r in payload["standings"]}
+        # Early Autumn: R1, R2, the combined R3 day and R4 are four columns;
+        # DNC is entries + 1 = 3, so the absent boat scores 12, not 15.
+        assert by_id["b3"]["per_series"]["Early Autumn"] == 12
+        # Early Spring is two ordinary races: 3 + 3.
+        assert by_id["b3"]["per_series"]["Early Spring"] == 6
+        assert by_id["b3"]["net"] == 18
+        assert by_id["b3"]["rank"] == 3
+
     def test_ordinary_races_alongside_a_combined_group_keep_series_net(self):
         # A series whose only group is combined but which also has ordinary
         # races (exactly Medway's Early Autumn shape) is still net-scored.

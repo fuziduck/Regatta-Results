@@ -6973,6 +6973,28 @@ def _normalize_mini_groups(series, races):
     return out
 
 
+def _series_scoring_column_count(series: dict, races: list) -> int:
+    """How many scoring columns a series' standings produce.
+
+    A mini group scored "combined" folds all of its races — every document of
+    a split race number included — into ONE daily result (see
+    _fold_combined_mini_groups). Anything that is measured per race of the
+    series must count those columns rather than the raw race documents: the
+    absent-boat DNC net and the duty discard count were both charging a boat
+    for races the series never scored.
+    """
+    combined = {tuple(g["race_numbers"]) for g in _normalize_mini_groups(series, races)
+                if g.get("scoring") == "combined" and g["race_numbers"]}
+    if not combined:
+        return len(races)
+    columns = len(races)
+    for nums in combined:
+        matching = sum(1 for r in races if int(r.get("race_number") or 0) in nums)
+        if matching:
+            columns -= matching - 1
+    return max(0, columns)
+
+
 def _mini_combined_score(entries, discards):
     """Combine one boat's mini-series race entries into a single daily result.
 
@@ -7476,10 +7498,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
             and str(duty_cfg.get("discards", "without")).lower() == "with":
         full_race_count = len(races)
         if fold_combined:
-            full_race_count -= sum(
-                max(0, g["race_count"] - 1)
-                for g in _normalize_mini_groups(series, races)
-                if g.get("scoring") == "combined")
+            full_race_count = _series_scoring_column_count(series, races)
         configured_discards = int(series.get("discards") or 0)
         if cfg.get("discard_policy") == "increasing":
             configured_discards = _effective_discards(cfg, full_race_count, configured_discards)
@@ -8250,11 +8269,14 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
         # the counting races are race_count - discards (at least one counts).
         cfg = _series_scoring_config(series)
         discard_policy = cfg.get("discard_policy", "fixed")
+        # Score the absent boat over the columns the series actually produces:
+        # a combined mini day is one daily result, not one per race document.
+        columns = _series_scoring_column_count(series, race_docs)
         configured = series.get("discards", 0)
         if discard_policy == "increasing":
-            configured = _effective_discards(cfg, len(race_docs), configured)
-        discards = min(configured, max(0, len(race_docs) - 1))
-        counting = max(1, len(race_docs) - discards)
+            configured = _effective_discards(cfg, columns, configured)
+        discards = min(configured, max(0, columns - 1))
+        counting = max(1, columns - discards)
         dnc_series_net[name] = dnc * counting
     for series in sorted(all_series, key=lambda s: s.get("order", 0)):
         name = series["name"]
