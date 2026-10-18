@@ -351,7 +351,7 @@ function RaceNoticeSection({ value, onChange, onSave, busy = false, saveLabel = 
   );
 }
 
-export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onSwitchRace, onEnterBatch, raceDayNotices = true, onSeriesBoatsSaved }) {
+export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onSwitchRace, onEnterBatch, raceDayNotices = true, onSeriesBoatsSaved, embedded = false }) {
   const { askDelete, dialog } = useDeleteWithUndo();
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
@@ -762,12 +762,21 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   };
 
   return (
-    <div className="pb-40">
+    // `embedded`: this console is one card among several same-day races, so it
+    // must not paint a viewport-wide bottom bar (N of those landed on top of
+    // each other — the last race in the DOM owned Publish for every column).
+    <div className={embedded ? "" : "pb-40"} data-testid={embedded ? `race-console-embedded-${race.race_number}` : undefined}>
       {dialog}
-      <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div className={`sticky top-16 z-30 backdrop-blur-xl border-b border-border ${embedded ? "rounded-t-2xl bg-muted/60" : "bg-background/85"}`}>
+        <div className={embedded ? "px-3 py-2.5 flex flex-wrap items-center gap-2" : "max-w-5xl mx-auto px-4 py-3 flex items-center gap-3"}>
+          {embedded && (
+            <span className="shrink-0 rounded-md bg-ocean px-2 py-1 font-heading text-xs uppercase tracking-wide text-white"
+              data-testid={`console-race-chip-${race.race_number}`}>
+              {race.mini_group_label || `R${race.race_number}`}
+            </span>
+          )}
           <Button variant="ghost" size="sm" onClick={onBack} data-testid="console-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
-          <div className="flex-1">
+          <div className={embedded ? "flex-1 min-w-[9rem]" : "flex-1"}>
             <div className="font-heading text-lg uppercase tracking-tight leading-none">{meta.class_name} · {meta.series_name}</div>
             <div className="text-xs text-muted-foreground">{race.mini_group_label || `Race ${race.race_number}`} · {fmtDate(race.date)}{showTiming && race.start_time && ` · Start ${race.start_time}`}{scoringModes.length > 1 && ` · ${scoringModes.map((mode) => mode.toUpperCase()).join(" + ")} results from one finish-time entry`}</div>
           </div>
@@ -790,7 +799,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             <div className="text-xs font-semibold uppercase tracking-widest text-ocean mb-2">Other races on this day</div>
             <div className="flex flex-wrap gap-2">
               {dayRaces.map((item) => (
-                <Button key={item.id} type="button" size="sm" variant="outline" className="h-auto min-h-8 justify-start gap-1.5 border-ocean/30 text-left" data-testid={`same-day-race-${item.id}`} onClick={() => onSwitchRace?.(item.id)}>
+                <Button key={item.id} type="button" size="sm" variant="outline" className="h-auto min-h-8 max-w-full justify-start gap-1.5 whitespace-normal border-ocean/30 text-left" data-testid={`same-day-race-${item.id}`} onClick={() => onSwitchRace?.(item.id)}>
                   <span className="font-semibold">{item.class_name || "Class"}</span>
                   <span className="text-muted-foreground">· {item.series_name || "Series"} · R{item.race_number}</span>
                   <Badge className={STATUS_BADGE[item.status] || "bg-muted text-muted-foreground"}>{item.status}</Badge>
@@ -962,8 +971,17 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             </div>
           )}
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th className="w-20">Pos</th>{showTiming && <th className="w-28">Elapsed</th>}<th className="w-44">Code / Penalty (RRS)</th></tr></thead>
+            {/* Fixed column plan shared with the typed-entry table, so Pos /
+                Elapsed / Code line up between races instead of each table
+                sizing its columns from its own contents. */}
+            <table className="w-full text-sm table-fixed min-w-[592px]">
+              <colgroup>
+                <col className="w-40" />
+                <col className="w-20" />
+                {showTiming && <col className="w-44" />}
+                <col className="w-44" />
+              </colgroup>
+              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th>Pos</th>{showTiming && <th>Elapsed</th>}<th>Code / Penalty (RRS)</th></tr></thead>
               <tbody data-testid="adjust-table">
                 {/* Stable order (sign-on order): rows must not jump while the
                     officer steps through boats updating positions. */}
@@ -1097,9 +1115,18 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         )}
       </div>
 
-      {/* Sticky action bar */}
-      <div className="fixed bottom-0 inset-x-0 z-40 backdrop-blur-xl bg-background/90 border-t border-border">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
+      {/* Action bar. On its own page it pins to the viewport bottom; embedded
+          in a race card it pins to that card's bottom edge instead, so each
+          race keeps its own Abandon / Provisional / Publish controls. */}
+      <div className={embedded
+        ? "sticky bottom-0 z-30 rounded-b-2xl border-t border-border bg-background/95 backdrop-blur-xl [&_button]:h-10"
+        : "fixed bottom-0 inset-x-0 z-40 backdrop-blur-xl bg-background/90 border-t border-border"}>
+        {/* Wraps rather than overflowing: on a phone the four controls are
+            wider than the viewport, which pushed Publish Results off the
+            right-hand edge where it could not be tapped at all. */}
+        <div className={embedded
+          ? "px-3 py-2 flex flex-wrap items-center gap-2"
+          : "max-w-5xl mx-auto px-3 sm:px-4 py-2 sm:py-3 flex flex-wrap items-center gap-2"}>
           {race.abandoned ? (
             <Button variant="outline" className="h-12 border-emerald-500 text-emerald-700 gap-1.5" data-testid="restore-race-btn"
               onClick={() => { if (window.confirm("Restore this race to the series? It will count towards the series scoring again.")) abandon(false); }}>
@@ -1113,16 +1140,16 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
           )}
           <Button variant="outline" className="text-destructive border-destructive/40" data-testid="delete-race-btn" onClick={remove}><Trash2 className="w-4 h-4" /></Button>
           {race.status === "published" ? (
-            <Button variant="outline" className="flex-1 h-12 border-amber-500 text-amber-700" data-testid="recall-btn"
+            <Button variant="outline" className="flex-1 min-w-[8.5rem] h-12 border-amber-500 text-amber-700" data-testid="recall-btn"
               onClick={() => { if (window.confirm("Recall the published result and roll this race back to setup? It will be removed from the public results and its race-day notice will show again.")) setStatus("setup"); }}>
               <RotateCcw className="w-4 h-4 mr-1" /> Recall Result
             </Button>
           ) : (
-            <Button variant="outline" className="flex-1 h-12 border-amber-400 text-amber-700" data-testid="set-provisional-btn" onClick={() => setStatus("provisional")}>
+            <Button variant="outline" className="flex-1 min-w-[8.5rem] h-12 border-amber-400 text-amber-700" data-testid="set-provisional-btn" onClick={() => setStatus("provisional")}>
               <CheckCircle2 className="w-4 h-4 mr-1" /> Mark Provisional
             </Button>
           )}
-          <Button className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-700" data-testid="publish-btn" onClick={() => setStatus("published")}>
+          <Button className="flex-1 min-w-[8.5rem] h-12 bg-emerald-600 hover:bg-emerald-700" data-testid="publish-btn" onClick={() => setStatus("published")}>
             <Send className="w-4 h-4 mr-1" /> {race.status === "published" ? "Re-publish" : "Publish Results"}
           </Button>
         </div>
@@ -1494,10 +1521,12 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
   return (
     <div className="pb-20">
       {dialog}
-      {/* Header */}        <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      {/* Header — wraps on a phone, where Back + title + discards + Add race +
+          Publish all do not fit on one row and Publish all slid off-screen. */}
+      <div className="sticky top-16 z-30 backdrop-blur-xl bg-background/85 border-b border-border">
+        <div className="max-w-5xl mx-auto px-3 sm:px-4 py-3 flex flex-wrap items-center gap-2 sm:gap-3">
           <Button variant="ghost" size="sm" onClick={onClose} data-testid="batch-back-btn"><ChevronLeft className="w-4 h-4" /> Back</Button>
-          <div className="flex-1">
+          <div className="flex-1 min-w-[8rem]">
             <div className="font-heading text-lg uppercase tracking-tight leading-none">{group.name || `Mini ${groupIndex + 1}`}</div>
             <div className="text-xs text-muted-foreground">
               {races.length} race{races.length !== 1 ? "s" : ""}
@@ -2060,19 +2089,26 @@ export default function Officer() {
       <div className="min-h-screen bg-background">
         <TopBar clubName={clubName} onSwitchClub={switchClub} clubSlug={clubSlug} clubId={clubId} />
         {!isWebmaster && <ClubApplicationStatus />}
-        {/* Same-day races fill one column per race once the screen is wide
-            enough — 2 up on large, 3 on xl, 4 on 2xl — so three or more
-            classes racing together still fit without the consoles getting
-            cramped. A single race takes the full width instead of hugging
-            the left column. Small screens show the selected race only. */}
-        <div className={sameDayRaces.length === 1 ? "" : "lg:grid lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 lg:gap-4 lg:items-start lg:px-4"}>
+        {/* One card per same-day race, stacked full width. Side-by-side
+            consoles were impossible to tell apart (and squeezed the result
+            tables into unreadable columns); stacked cards give every race
+            its own bordered box with the same table geometry, so the
+            Boat / Pos / Elapsed / Code columns line up down the page. Small
+            screens still show the selected race only. */}
+        <div className={sameDayRaces.length === 1 ? "" : "mx-auto max-w-5xl px-3 sm:px-4 pt-4 space-y-5"}>
           {sameDayRaces.map((dayRace) => {
             const otherDayRaces = sameDayRaces
               .filter((r) => r.id !== dayRace.id)
               .map((r) => ({ ...r, ...meta(r) }));
+            const multi = sameDayRaces.length > 1;
             return (
-              <div key={dayRace.id} className={dayRace.id === selected ? "" : "hidden lg:block"} data-testid={`race-panel-${dayRace.id}`}>
+              <div key={dayRace.id}
+                className={multi
+                  ? `rounded-2xl border-2 border-border bg-card shadow-sm ${dayRace.id === selected ? "" : "hidden lg:block"}`
+                  : ""}
+                data-testid={`race-panel-${dayRace.id}`}>
                 <RaceConsole raceId={dayRace.id} meta={meta(dayRace)}
+                  embedded={multi}
                   series={series[dayRace.series_id] || null} clubId={clubId}
                   rrsCodes={rrsCodes} dayRaces={otherDayRaces} onSwitchRace={setSelected}
                   onEnterBatch={enterBatch}

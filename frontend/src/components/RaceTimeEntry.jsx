@@ -18,13 +18,22 @@ export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onCloc
   return (
     <>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm" data-testid={`time-entry-${mode}`}>
+        {/* Same fixed column plan as the provisional table in the race console
+            (Boat / Pos / time / Code), so the two tables — and the same table
+            on the next race down the page — keep their columns in line. */}
+        <table className="w-full text-sm table-fixed min-w-[592px]" data-testid={`time-entry-${mode}`}>
+          <colgroup>
+            <col className="w-40" />
+            <col className="w-20" />
+            <col className="w-44" />
+            <col className="w-44" />
+          </colgroup>
           <thead>
             <tr className="text-left text-muted-foreground border-b">
               <th className="py-2">Boat</th>
-              <th className="w-14">Pos</th>
-              <th className={clock ? "w-32" : "w-40"}>{clock ? "Finish time" : "Elapsed"}</th>
-              <th className="w-32">Code / Penalty (RRS)</th>
+              <th>Pos</th>
+              <th>{clock ? "Finish time" : "Elapsed"}</th>
+              <th>Code / Penalty (RRS)</th>
             </tr>
           </thead>
           <tbody>

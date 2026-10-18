@@ -159,6 +159,28 @@ describe("RaceConsole finish buttons", () => {
   });
 });
 
+// Same-day races are stacked as separate cards, each with its own actions.
+// An embedded console must not paint a viewport-wide fixed bottom bar: several
+// of those landed on the same coordinates, so the last race in the DOM owned
+// Publish for every race on the page.
+describe("RaceConsole embedded in a same-day race card", () => {
+  it("labels its own box and keeps the publish controls inside it", async () => {
+    renderConsole(DEFAULT_META, { embedded: true });
+    await flush();
+    expect(container.querySelector('[data-testid="race-console-embedded-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="console-race-chip-1"]').textContent).toBe("R1");
+    expect(container.querySelector('[class*="fixed bottom-0"]')).toBeNull();
+    expect(container.querySelector('[data-testid="publish-btn"]')).not.toBeNull();
+  });
+
+  it("still pins its actions to the viewport when it is the whole page", async () => {
+    renderConsole();
+    await flush();
+    expect(container.querySelector('[class*="fixed bottom-0"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="console-race-chip-1"]')).toBeNull();
+  });
+});
+
 // Handicap races score on elapsed/corrected time, so the officer picks how
 // times are entered: tapped live, typed as a finish time of day, or typed as
 // an elapsed duration. All three go through the same finish endpoints, so the
