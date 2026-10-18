@@ -659,6 +659,43 @@ class TestElapsedCorrection:
         assert server._finish_time_from_elapsed(None, 100) is None
 
 
+class TestRatingDivisionMembership:
+    """A boat is scored in a rating division only when she holds a certificate
+    for it (or is explicitly assigned). Holding one system's certificate does
+    not put her in another system's fleet."""
+
+    DIVISIONS = [{"name": "IRC", "scoring_mode": "irc"},
+                 {"name": "YTC", "scoring_mode": "ytc"}]
+
+    def setup_method(self):
+        self.divs = server._class_divisions({"divisions": self.DIVISIONS})
+
+    def test_the_certificate_she_holds_places_her(self):
+        assert server._boat_division({"tcc": 1.015}, self.divs) == "IRC"
+        assert server._boat_division({"ytc": 1020}, self.divs) == "YTC"
+        # Both certificates: the first matching division, unless she chooses.
+        assert server._boat_division({"tcc": 1.015, "ytc": 1020}, self.divs) == "IRC"
+        assert server._boat_division(
+            {"tcc": 1.015, "ytc": 1020, "division": "YTC"}, self.divs) == "YTC"
+
+    def test_an_unrated_boat_belongs_to_no_division(self):
+        # The defect: she used to fall into the first division (IRC) despite
+        # holding no TCC, so she was scored in a fleet she cannot be rated in.
+        assert server._boat_division({}, self.divs) == ""
+        fleet = server._division_fleet(
+            [{"id": "b1", "tcc": 1.015}, {"id": "b2", "ytc": 1020},
+             {"id": "b3"}], self.divs, "IRC")
+        assert fleet == {"b1"}
+
+    def test_py_and_ytc_are_separate_certificates(self):
+        divs = server._class_divisions({"divisions": [
+            {"name": "PY", "scoring_mode": "py"},
+            {"name": "YTC", "scoring_mode": "ytc"}]})
+        assert server._boat_division({"py": 1013}, divs) == "PY"
+        assert server._boat_division({"ytc": 1020}, divs) == "YTC"
+        assert server._boat_division({"tcc": 1.015}, divs) == ""
+
+
 class TestScheduledStartFallback:
     """_race_start_time: the gun first, then the race's own scheduled start
     (anchored to the officer's device UTC offset), then the class default."""
@@ -679,6 +716,15 @@ class TestScheduledStartFallback:
     def test_missing_date_or_start_returns_none(self):
         assert server._race_start_time({}) is None
         assert server._race_start_time({"date": "2026-08-21"}) is None
+
+    def test_stored_start_with_seconds_is_accepted(self):
+        # An imported race or seed may store HH:MM:SS; it must anchor the same
+        # way as HH:MM rather than produce an unparseable timestamp, which
+        # would blank the TV's elapsed and corrected times.
+        r = {**self.RACE, "start_time": "22:00:30"}
+        assert server._race_start_time(r, self.CLS) == "2026-08-21T22:00:30+00:00"
+        assert server._elapsed_seconds("2026-08-21T22:06:30+00:00",
+                                       server._race_start_time(r, self.CLS)) == 360
 
     def test_utc_offset_applied(self):
         r = {**self.RACE, "start_tz_offset_minutes": 60}

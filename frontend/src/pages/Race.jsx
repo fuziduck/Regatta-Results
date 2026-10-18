@@ -156,7 +156,9 @@ export default function Race() {
         if (divisions.length) {
           const da = boatDivision(boats[a.boat_id], divisions);
           const db = boatDivision(boats[b.boat_id], divisions);
-          if (da !== db) return da.localeCompare(db);
+          // A boat with no certificate for any division belongs to none of
+          // them: she is listed after the divisions, never at their head.
+          if (da !== db) return (da || "\uffff").localeCompare(db || "\uffff");
         }
         if (multiScoring) {
           const aPos = racePositions[a.boat_id] ?? activePositions.get(a.boat_id);

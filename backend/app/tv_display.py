@@ -791,6 +791,14 @@ async def get_club_tv_display(
                     elapsed_sec = m._elapsed_seconds(res.get("finish_time"), start_time) if start_time and res.get("finish_time") else None
                     rating_field = m.RATING_FIELD.get(mode)
                     rating_val = boat.get(rating_field) if rating_field else None
+                    if div_filter is None and rating_field and not rating_val:
+                        # Not part of this rating table (e.g. a YTC-only boat
+                        # in the IRC race): she has no place and no corrected
+                        # time here, so the slide must not list her. A split
+                        # class is decided by division instead — an explicit
+                        # division assignment keeps her in her own table, with
+                        # an empty corrected cell until her number is entered.
+                        continue
                     corrected_sec = (
                         m._corrected_seconds(mode, res.get("finish_time"), start_time, rating_val)
                         if mode in m.RATING_FIELD and start_time and res.get("finish_time") and rating_val

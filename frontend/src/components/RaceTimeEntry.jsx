@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ElapsedInput } from "@/components/ElapsedInput";
-import { clockToIso, clockValueOf, outcomeLabel } from "@/lib/helpers";
+import { boatDivision, boatRating, clockToIso, clockValueOf, outcomeLabel, scoringModeLabel } from "@/lib/helpers";
 
 /**
  * Desk entry for handicap results: one row per racing boat, keyed in rather
@@ -13,25 +13,36 @@ import { clockToIso, clockValueOf, outcomeLabel } from "@/lib/helpers";
  * catalogue from /rrs-codes ({code, label} entries), the same list every other
  * code menu in the console offers.
  */
-export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onClock, onElapsed, onCode, pendingCode = null }) {
+export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onClock, onElapsed, onCode,
+                               pendingCode = null, positionModes = [], scoringPositions = {},
+                               divisions = [], ratingModes = [] }) {
   const clock = mode === "clock";
+  // One place column per scoring system when the series is dual-scored
+  // (e.g. IRC Pos / YTC Pos); otherwise the single stored place. The fixed
+  // widths keep this table in line with the provisional table below it.
+  const posCols = positionModes.length ? positionModes : [null];
+  const minWidth = 592 + 80 * (posCols.length - 1);
+  // A handicap table only holds boats holding its certificate: she keeps her
+  // finish time, which still scores her in the other system's table.
+  const missingCertificates = (boat) => ratingModes.filter((m) => !boatRating(m, boat));
   return (
     <>
       <div className="overflow-x-auto">
-        {/* Same fixed column plan as the provisional table in the race console
-            (Boat / Pos / time / Code), so the two tables — and the same table
-            on the next race down the page — keep their columns in line. */}
-        <table className="w-full text-sm table-fixed min-w-[592px]" data-testid={`time-entry-${mode}`}>
+        <table className="w-full text-sm table-fixed" style={{ minWidth }} data-testid={`time-entry-${mode}`}>
           <colgroup>
             <col className="w-40" />
-            <col className="w-20" />
+            {posCols.map((col) => <col key={col || "pos"} className="w-20" />)}
             <col className="w-44" />
             <col className="w-44" />
           </colgroup>
           <thead>
             <tr className="text-left text-muted-foreground border-b">
               <th className="py-2">Boat</th>
-              <th>Pos</th>
+              {posCols.map((col) => (
+                <th key={col || "pos"} className="text-center" data-testid={col ? `time-pos-head-${col}` : "time-pos-head"}>
+                  {col ? `${scoringModeLabel(col)} Pos` : "Pos"}
+                </th>
+              ))}
               <th>{clock ? "Finish time" : "Elapsed"}</th>
               <th>Code / Penalty (RRS)</th>
             </tr>
@@ -44,10 +55,32 @@ export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onCloc
               // old code is what made RDG look broken here.
               const held = pendingCode?.boatId === r.boat_id ? pendingCode.code : null;
               const shown = held || r.code;
+              const division = divisions.length ? boatDivision(b, divisions) : "";
+              const missing = divisions.length ? (division ? [] : ratingModes) : missingCertificates(b);
+              const unrated = missing.length > 0;
               return (
                 <tr key={r.boat_id} className="border-b last:border-0">
-                  <td className="py-1.5 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></td>
-                  <td className="font-mono">{shown === "FINISHED" ? r.position : held ? <span className="font-sans text-[10px] font-bold uppercase tracking-wide text-ocean">{held}</span> : <span className="text-muted-foreground">—</span>}</td>
+                  <td className="py-1.5 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>
+                    {division && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-safety" data-testid={`time-division-${b.sail_no}`}>{division}</span>}
+                    {unrated && (
+                      <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-muted-foreground" data-testid={`time-unrated-${b.sail_no}`}>
+                        {divisions.length ? "No rating" : missing.map((m) => `No ${scoringModeLabel(m)} rating`).join(" · ")}
+                      </span>
+                    )}
+                  </td>
+                  {posCols.map((col, i) => {
+                    const pos = col
+                      ? (scoringPositions?.[col]?.[r.boat_id] ?? null)
+                      : (shown === "FINISHED" && !unrated ? r.position : null);
+                    return (
+                      <td key={col || "pos"} className="text-center font-mono"
+                        data-testid={col ? `time-pos-${col}-${b.sail_no}` : `time-pos-${b.sail_no}`}>
+                        {pos != null ? pos
+                          : held && i === 0 ? <span className="font-sans text-[10px] font-bold uppercase tracking-wide text-ocean">{held}</span>
+                          : <span className="text-muted-foreground">—</span>}
+                      </td>
+                    );
+                  })}
                   <td>
                     {clock
                       ? <ClockInput clock={clockValueOf(r.finish_time)} date={race.date} testId={`clock-input-${b.sail_no}`}
@@ -72,7 +105,7 @@ export function RaceTimeEntry({ mode, rows, boats, race, codes, hasStart, onCloc
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={4} className="py-4 text-sm text-muted-foreground">No racing boats — sign boats on above first.</td></tr>
+              <tr><td colSpan={posCols.length + 3} className="py-4 text-sm text-muted-foreground">No racing boats — sign boats on above first.</td></tr>
             )}
           </tbody>
         </table>

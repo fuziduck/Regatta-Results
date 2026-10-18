@@ -5130,9 +5130,8 @@ async def get_race(race_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Race not found")
     if not await _club_visible_to_user(race_club_id, user):
         raise HTTPException(status_code=404, detail="Race not found")
-    if race.get("status") == "published":
-        return (await _decorate_races_scoring_positions([race]))[0]
-    return race
+    return (await _decorate_races_scoring_positions(
+        [race], include_unpublished=True))[0]
 
 
 @api_router.post("/races")
@@ -6660,13 +6659,22 @@ def _class_divisions(cls) -> list:
             for name in names]
 
 
+def _boat_rated_for_mode(boat, mode) -> bool:
+    """Whether a boat can be scored under a mode. One-design is open to every
+    boat; a handicap mode needs that system's own certificate (RATING_FIELD)."""
+    field = RATING_FIELD.get(mode)
+    return True if field is None else bool((boat or {}).get(field))
+
+
 def _boat_division(boat, divisions) -> str:
-    """The division a boat competes in ("" when the class has no divisions).
+    """The division a boat competes in ("" when the class has no divisions or
+    she belongs to none of them).
 
     The boat's own choice wins; otherwise she goes to the division whose
-    rating system she holds a certificate for, then to the first division — a
-    boat is never silently dropped from the results because nobody assigned
-    her.
+    rating system she holds a certificate for. A boat holding no certificate
+    and not explicitly assigned belongs to no division — she must not be
+    scored in a rating table she cannot be rated in. She still appears in the
+    race's own results, and in any scoring table she does hold a rating for.
     """
     if not divisions:
         return ""
@@ -6675,9 +6683,9 @@ def _boat_division(boat, divisions) -> str:
         if d["name"].lower() == chosen:
             return d["name"]
     for d in divisions:
-        if boat.get(RATING_FIELD.get(d["scoring_mode"], "")):
+        if _boat_rated_for_mode(boat, d["scoring_mode"]):
             return d["name"]
-    return divisions[0]["name"]
+    return ""
 
 
 def _division_fleet(boats, divisions, name) -> set:
@@ -6720,16 +6728,23 @@ def _race_start_time(race, cls=None):
     # sets start_time per race on the day.
     st = race.get("start_time") or (cls or {}).get("default_start_time")
     if date and st:
+        # A scheduled start is normally stored as HH:MM, but an imported race
+        # or a hand-written seed can carry seconds too. Accept both, so a
+        # stored HH:MM:SS never produces an unparseable timestamp and silently
+        # blanks the TV's elapsed and corrected times.
+        st = str(st).strip()
+        if st.count(":") == 1:
+            st = f"{st}:00"
         # Scheduled start is timezone-less club time. Finish times are captured
         # from the officer's device as UTC, so anchor the scheduled start to the
         # device's UTC offset (captured at race creation) to keep the elapsed
         # math consistent. Falls back to UTC when no offset was recorded.
         off = race.get("start_tz_offset_minutes")
         if off is None:
-            return f"{date}T{st}:00+00:00"
+            return f"{date}T{st}+00:00"
         sign = "+" if off >= 0 else "-"
         m = abs(int(off))
-        return f"{date}T{st}:00{sign}{m // 60:02d}:{m % 60:02d}"
+        return f"{date}T{st}{sign}{m // 60:02d}:{m % 60:02d}"
     return None
 
 
@@ -6880,17 +6895,37 @@ async def _resequence_race(race):
         by_division = {d["name"]: d["scoring_mode"] for d in divisions}
         modes, ratings = {}, {}
         for b in boats:
-            mode = by_division[_boat_division(b, divisions)]
+            div = _boat_division(b, divisions)
+            if not div:
+                # No certificate and no explicit division: not scored in any
+                # rating table (see _boat_division) and given no place here.
+                continue
+            mode = by_division[div]
             modes[b["id"]] = mode
             ratings[b["id"]] = b.get(RATING_FIELD.get(mode, ""))
-        _resequence_finished(results, start_time=_race_start_time(race, cls),
+        for r in results:
+            if r.get("boat_id") not in modes:
+                r["position"] = None
+        _resequence_finished([r for r in results if r.get("boat_id") in modes],
+                             start_time=_race_start_time(race, cls),
                              boat_ratings=ratings, boat_modes=modes)
         return
-    mode = await _race_scoring_mode(race, cls)
+    race_modes = await _race_scoring_modes(race, cls)
+    mode = race_modes[0]
     if mode not in RATING_FIELD:
         _resequence_finished(results)
         return
     boats = await db.boats.find({"class_id": race.get("class_id")}, {"_id": 0}).to_list(2000)
+    # A boat without this system's certificate cannot be placed in it — she
+    # belongs to another system's table (a dual-scored series derives those
+    # places separately), so she keeps her finish but gets no stored place
+    # rather than being sorted in at the bottom of a fleet she cannot be rated
+    # against.
+    rated = {b["id"] for b in boats if _boat_rated_for_mode(b, mode)}
+    for r in results:
+        if r.get("boat_id") not in rated:
+            r["position"] = None
+    results = [r for r in results if r.get("boat_id") in rated]
     key = RATING_FIELD[mode]
     ratings = {b["id"]: b.get(key) for b in boats}
     _resequence_finished(results, mode, _race_start_time(race, cls), ratings)
@@ -7197,14 +7232,19 @@ def _apply_duty_points(agg, entries_by_race, cfg=None, discards=0):
                     e["points"] = float(entries_by_race[i] + 1)
 
 
-async def _decorate_races_scoring_positions(races):
-    """Attach read-only positions for each scoring view to published race data.
+async def _decorate_races_scoring_positions(races, include_unpublished=False):
+    """Attach read-only positions for each scoring view to race data.
 
     The database still stores one result per boat and one finish time. These
-    additional positions are calculated for public race tables only; officer
-    mutations and the canonical race record are untouched.
+    additional positions are calculated for race tables only; officer
+    mutations and the canonical race record are untouched. Public listings
+    decorate published races; the single-race endpoint (used by the officer
+    console while entering results) may also decorate an unpublished race by
+    passing include_unpublished=True.
     """
-    dual = [race for race in races if race.get("status") == "published" and race.get("series_id")]
+    dual = [race for race in races
+            if race.get("series_id")
+            and (include_unpublished or race.get("status") == "published")]
     series_ids = list({race["series_id"] for race in dual})
     if not series_ids:
         return races
@@ -7226,6 +7266,12 @@ async def _decorate_races_scoring_positions(races):
                 {"_id": 0, "results": 1}).to_list(1000)
             members = {result.get("boat_id") for item in all_published
                        for result in item.get("results", []) if result.get("boat_id")}
+            # The races being decorated belong to the fleet too: while the
+            # officer is still entering an unpublished race, its signed-on
+            # boats are the only evidence of who is racing this series.
+            members |= {result.get("boat_id") for item in races
+                        if item.get("series_id") == sid
+                        for result in (item.get("results") or []) if result.get("boat_id")}
         series_fleets[sid] = members
     frozen_races = {}
     for sid, series in dual_series.items():
@@ -7291,6 +7337,12 @@ def _positions_for_mode(race, mode, boat_map):
     ranked = [dict(result, code="FINISHED") for result in results
               if result.get("boat_id") in boat_map
               and result.get("code") in ("FINISHED", *PENALTY_CODES)]
+    if mode in RATING_FIELD:
+        # A boat without this system's certificate is not part of this
+        # scoring view, so she gets no place in it (her finish still counts
+        # under the systems she is rated for).
+        ranked = [result for result in ranked
+                  if _boat_rated_for_mode(boat_map.get(result.get("boat_id")) or {}, mode)]
     if mode == "one_design":
         # One-design's official result is the order manually recorded by the
         # officer. Handicap tables derive their own corrected-time places from
@@ -7304,7 +7356,8 @@ def _positions_for_mode(race, mode, boat_map):
 
 
 def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
-                  scoring_mode=None, derive_positions=False, position_boat_map=None):
+                  scoring_mode=None, derive_positions=False, position_boat_map=None,
+                  entry_pool=None):
     """Score every boat in every race: boat_id -> one entry per race, in the
     order of `races`. Returns (agg, entries_by_race), where entries_by_race is
     the series entry count each race was scored against — the DNC base the
@@ -7316,7 +7369,11 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
     entries_base: the fleet size a non-finish (DNC/A5) score is measured
     against when the series has no explicit membership — a rating division's
     own fleet, so an IRC boat's DNC is scored against the IRC boats, not
-    against the YTC boats sharing her class and series."""
+    against the YTC boats sharing her class and series.
+
+    entry_pool: the boat ids in this table's own rated fleet. A race's entry
+    base then counts only those boats, so a boat signed on under another
+    rating system is not an entry in this race for this table."""
     agg = {bid: [] for bid in boat_map}
     entries_by_race = []
     for race in races:
@@ -7334,6 +7391,13 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
             series_entries = len(member_ids)
         elif entries_base is not None:
             series_entries = entries_base
+        elif entry_pool is not None:
+            # Only this table's rated fleet are entries in the race. A race
+            # none of them sailed keeps the table's own fleet size, so an
+            # absent boat never scores a 1-point DNC for a race it could not
+            # have been part of.
+            in_race = sum(1 for r in results if r.get("boat_id") in entry_pool)
+            series_entries = in_race or len(boat_map)
         else:
             series_entries = race.get("entries_count") or len(results)
         entries_by_race.append(series_entries)
@@ -7449,6 +7513,22 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
     view_races = [races[i] for i in view_idx]
     boats = await db.boats.find({"class_id": series["class_id"], "year": series["year"]}, {"_id": 0}).to_list(2000)
     member_ids = series.get("member_boat_ids") or []
+    modes = _series_scoring_modes(series)
+    selected_mode = scoring_mode or modes[0]
+    # A table scored under a handicap system is its own fleet: only boats
+    # holding THAT certificate are in it. A dual-scored series (one set of
+    # finish times, a table per system) applies this, and so does a series
+    # scored under a single system — a YTC-only boat is not part of the IRC
+    # series merely because she sailed the same races, and an unrated boat is
+    # in neither table. Rating divisions decide membership by division
+    # instead (see _division_fleet).
+    mode_scoped = division is None and selected_mode in RATING_FIELD
+    entry_pool = None
+    if mode_scoped:
+        entry_pool = {b["id"] for b in boats if _boat_rated_for_mode(b, selected_mode)}
+        boats = [b for b in boats if b["id"] in entry_pool]
+        if member_ids:
+            member_ids = [i for i in member_ids if i in entry_pool]
     # A mini-series view still derives corrected places against the full
     # series fleet, not only boats who appear in that mini group. Otherwise
     # boats sailing elsewhere in the same series disappear from the rating
@@ -7499,8 +7579,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
             boats = [b for b in boats if b.get("id") in entered]
     boat_map = {b["id"]: b for b in boats}
     cfg = _series_scoring_config(series)
-    selected_mode = scoring_mode or _series_scoring_modes(series)[0]
-    derive_positions = len(_series_scoring_modes(series)) > 1
+    derive_positions = len(modes) > 1
     if derive_positions:
         cls_for_scoring = await db.classes.find_one({"id": series["class_id"]}, {"_id": 0}) or {}
         for race in races:
@@ -7508,7 +7587,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
     agg, entries_by_race = _race_columns(
         races, boat_map, cfg, member_ids, entries_base,
         scoring_mode=selected_mode, derive_positions=derive_positions,
-        position_boat_map=position_boat_map)
+        position_boat_map=position_boat_map, entry_pool=entry_pool)
     # Duty "with discards": the OOD average drops the boat's worst results,
     # so the duty score needs the same discard count the series net uses —
     # measured over the whole series (a combined mini-series day folds into a
@@ -8228,6 +8307,10 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
         all_series = [series for series in all_series
                       if scoring_mode in _series_scoring_modes(series)]
     boats = await db.boats.find({"class_id": class_id, "year": year}, {"_id": 0}).to_list(2000)
+    if scoring_mode is not None and scoring_mode in RATING_FIELD:
+        # A championship for one rating system only ranks boats holding that
+        # system's certificate — a YTC-only boat is not part of the IRC table.
+        boats = [b for b in boats if _boat_rated_for_mode(b, scoring_mode)]
     divisions = _class_divisions(await db.classes.find_one({"id": class_id}, {"_id": 0}))
     if division is not None:
         if division not in [d["name"] for d in divisions]:
@@ -8252,6 +8335,7 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
     # boat. Series with no published races yet have no one to "sit out":
     # everyone scores 0 until the series starts.
     dnc_series_net = {}
+    series_eligible = {}
     use_position = {}
     for series in all_series:
         name = series["name"]
@@ -8274,15 +8358,28 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
         use_position[name] = pos
         if not race_docs:
             continue
+        # A series scored in one rating system only holds boats carrying that
+        # system's certificate, exactly as its own table does — a boat that is
+        # not part of it must not be charged its DNC in the championship
+        # either.
+        modes = _series_scoring_modes(series)
+        series_mode = scoring_mode if len(modes) > 1 and scoring_mode in modes else modes[0]
+        eligible = None
+        if division is None and series_mode in RATING_FIELD:
+            # A rating division decides membership by division instead, so
+            # this certificate rule applies only to a whole-fleet table.
+            eligible = {bid for bid, b in boat_map.items()
+                        if _boat_rated_for_mode(b, series_mode)}
+            series_eligible[name] = eligible
         # DNC per race = entries + 1: the number of boats that actually raced
         # the series (falling back to the class fleet when the series is
         # empty). RRS A5: DNC always scores series entries + 1.
         raced_boats = {x.get("boat_id") for r in race_docs
                        for x in (r.get("results") or []) if x.get("boat_id")}
-        if division is not None:
-            # A division's DNC base is its own fleet, exactly as its series
-            # standings score it.
-            raced_boats &= set(boat_map)
+        if division is not None or eligible is not None:
+            # A division's (or a single rating system's) DNC base is its own
+            # fleet, exactly as its series standings score it.
+            raced_boats &= eligible if eligible is not None else set(boat_map)
         entries = len(raced_boats) if raced_boats else len(boat_map)
         dnc = float(entries + 1)
         # The net an all-DNC boat scores in this series: every race is
@@ -8336,8 +8433,9 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
         # race, discards applied) so they sink below everyone who sailed it.
         if name in dnc_series_net:
             raced_ids = {row["boat_id"] for row in result["standings"]}
+            eligible = series_eligible.get(name)
             for bid in boat_map:
-                if bid in raced_ids:
+                if bid in raced_ids or (eligible is not None and bid not in eligible):
                     continue
                 dnc = dnc_series_net[name] if not pos else (len(result["standings"]) + 1)
                 totals[bid] = totals.get(bid, 0.0) + dnc

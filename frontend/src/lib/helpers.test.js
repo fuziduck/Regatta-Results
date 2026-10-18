@@ -42,9 +42,14 @@ describe("rating divisions (a class racing under two rating systems)", () => {
     // she says otherwise.
     expect(boatDivision({ tcc: 1.015, ytc: 1020 }, divisions)).toBe("IRC");
     expect(boatDivision({ tcc: 1.015, ytc: 1020, division: "YTC" }, divisions)).toBe("YTC");
-    // No rating at all: the first division, so she is never dropped.
-    expect(boatDivision({}, divisions)).toBe("IRC");
+    // No certificate and no explicit choice: she belongs to no division, so
+    // she is not scored in a rating fleet she cannot be rated in.
+    expect(boatDivision({}, divisions)).toBe("");
+    expect(boatDivision({}, [{ name: "IRC", scoring_mode: "irc" }])).toBe("");
     expect(boatDivision({}, [])).toBe("");
+    // An explicit assignment still places her, even before a certificate is
+    // recorded (the officer may be waiting on one).
+    expect(boatDivision({ division: "YTC" }, divisions)).toBe("YTC");
   });
 
   it("scores a boat under her division's mode", () => {
@@ -343,6 +348,12 @@ describe("handicap corrected time (IRC, PY and RYA YTC)", () => {
   it("returns nothing when the rating or the elapsed time is missing", () => {
     expect(correctedSecondsOf(finish, race, null, "ytc")).toBeNull();
     expect(correctedSecondsOf(null, race, 1013, "ytc")).toBeNull();
+  });
+
+  it("accepts a scheduled start stored with seconds", () => {
+    // Imported races and seeds may store HH:MM:SS; the start must still
+    // resolve so the elapsed and corrected columns are never blanked.
+    expect(correctedSecondsOf(finish, { ...race, start_time: "10:00:00" }, 1013, "ytc")).toBe(1777);
   });
 
   it("reads each mode's own certificate off the boat record", () => {

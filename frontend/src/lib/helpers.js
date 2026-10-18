@@ -56,6 +56,12 @@ export function raceStart(race) {
     if (!Number.isNaN(Date.parse(race.actual_start))) return race.actual_start;
   }
   if (race.date && race.start_time) {
+    // A scheduled start is normally stored as HH:MM, but an imported race or
+    // a hand-written seed can carry seconds too. Accept both, so a stored
+    // HH:MM:SS never produces an unparseable timestamp and silently blanks the
+    // elapsed and corrected times.
+    const startTime = String(race.start_time).trim();
+    const clock = startTime.split(":").length === 2 ? `${startTime}:00` : startTime;
     // Scheduled start is timezone-less club time. Finish times are captured
     // from the officer's device as UTC, so anchor the scheduled start to the
     // device's UTC offset (captured at race creation) to keep the elapsed
@@ -66,9 +72,9 @@ export function raceStart(race) {
       const m = Math.abs(off);
       const hh = String(Math.floor(m / 60)).padStart(2, "0");
       const mm = String(m % 60).padStart(2, "0");
-      return `${race.date}T${race.start_time}:00${sign}${hh}:${mm}`;
+      return `${race.date}T${clock}${sign}${hh}:${mm}`;
     }
-    return `${race.date}T${race.start_time}:00Z`;
+    return `${race.date}T${clock}Z`;
   }
   return null;
 }
@@ -139,12 +145,16 @@ export function clockValueOf(iso) {
 // Correction) are separate yardstick certificates sharing one formula.
 export const SCORING_MODES = {
   one_design: { label: "One-design" },
-  irc: { label: "IRC", rating: "tcc" },
-  py: { label: "PY", rating: "py", yardstick: true },
-  ytc: { label: "YTC", rating: "ytc", yardstick: true },
+  irc: { label: "IRC", rating: "tcc", certificate: "TCC" },
+  py: { label: "PY", rating: "py", certificate: "PY number", yardstick: true },
+  ytc: { label: "YTC", rating: "ytc", certificate: "YTC number", yardstick: true },
 };
 
 export const scoringModeLabel = (mode) => (SCORING_MODES[mode] || SCORING_MODES.one_design).label;
+
+// How the certificate a mode corrects by is named on screen, e.g. "TCC" for
+// IRC; "" for a mode that needs no certificate (one-design).
+export const scoringCertificateLabel = (mode) => (SCORING_MODES[mode] || {}).certificate || "";
 
 // Ordered rating systems selected for a series. Old records and clients only
 // carry scoring_mode, so retain that as the one-mode compatibility fallback.
@@ -165,8 +175,10 @@ export function classDivisions(cls) {
   return clean.length >= 2 ? clean : [];
 }
 
-// The division a boat competes in: her own choice, else the division whose
-// rating system she holds a certificate for, else the first one. "" when the
+// The division a boat competes in: her own choice (explicit assignment),
+// else the division whose rating system she holds a certificate for. A boat
+// with no certificate and no explicit division belongs to no division — she
+// must not be scored in a rating table she cannot be rated in. "" when the
 // class has no divisions.
 export function boatDivision(boat, divisions) {
   if (!divisions?.length) return "";
@@ -174,7 +186,7 @@ export function boatDivision(boat, divisions) {
   const named = divisions.find((d) => d.name.toLowerCase() === chosen);
   if (named) return named.name;
   const rated = divisions.find((d) => boatRating(d.scoring_mode, boat));
-  return (rated || divisions[0]).name;
+  return rated ? rated.name : "";
 }
 
 // The scoring mode a boat is scored under: her division's mode when the class

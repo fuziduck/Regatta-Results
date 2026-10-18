@@ -408,6 +408,25 @@ class TestClubhouseTvDisplayPayload:
         assert ytc["results"][0]["elapsed_formatted"] == "1:05:00"
         assert ytc["results"][0]["corrected_formatted"] is None
 
+    def test_a_single_system_race_lists_only_boats_it_can_rate(self):
+        """A race scored in one rating system is that system's fleet on the TV
+        too: a boat with no certificate for it is not listed in that table (she
+        still scores in the other system's series over the same races)."""
+        db = _sample_db()
+        cls = next(c for c in db.classes.docs if c["id"] == "class-cruiser")
+        cls["divisions"] = []
+        cls["scoring_mode"] = "ytc"
+        ser = next(s for s in db.series.docs if s["id"] == "series-cruiser-summer")
+        ser["scoring_mode"] = "ytc"
+        server.db = db
+
+        payload = asyncio.run(tv_display.get_club_tv_display(
+            "royal-harbour", _make_request("/api/clubs/royal-harbour/display")))
+        view = next(v for v in payload["views"]["latest_races"] if v["race_id"] == "race-3")
+        assert view["scoring_mode"] == "ytc"
+        # Zephyr carries a TCC only, so she has no place in a YTC race.
+        assert [r["sail_no"] for r in view["results"]] == ["GBR 902"]
+
     def test_distinguishes_provisional_and_finalised_latest_races(self):
         server.db = _sample_db()
         req = _make_request("/api/clubs/royal-harbour/display")

@@ -1012,6 +1012,91 @@ def _series_standings(series, db):
     return asyncio.run(server.compute_series_standings(series))
 
 
+class TestRatingDivisionTables:
+    """A split class publishes one table per rating division, and a boat with
+    no certificate for any of them is in none of those tables."""
+
+    def test_an_unrated_boat_is_in_no_division_table(self):
+        cls = {"id": "c1", "club_id": "club-1", "name": "Cruisers",
+               "scoring_mode": "irc",
+               "divisions": [{"name": "IRC", "scoring_mode": "irc"},
+                             {"name": "YTC", "scoring_mode": "ytc"}]}
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc"}
+        boats = [
+            _boat(1, name="IRC only", tcc=1.05),
+            _boat(2, name="YTC only", ytc=900),
+            _boat(3, name="No rating"),
+        ]
+        race = _race(1, [_fin("b1", 1, ft="2026-05-02T11:01:40Z"),
+                         _fin("b2", 2, ft="2026-05-02T11:03:20Z"),
+                         _fin("b3", 3, ft="2026-05-02T11:02:00Z")],
+                     date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        db.classes = _FakeColl([cls])
+        server.db = db
+
+        payload = asyncio.run(server._series_standings_payload(series))
+        tables = {table["division_name"]: table for table in payload["divisions"]}
+        assert [r["boat_name"] for r in tables["IRC"]["standings"]] == ["IRC only"]
+        assert [r["boat_name"] for r in tables["YTC"]["standings"]] == ["YTC only"]
+        assert "No rating" not in [r["boat_name"] for t in payload["divisions"]
+                                    for r in t["standings"]]
+
+
+class TestSingleModeSeriesFleet:
+    """A series scored under one rating system is that system's fleet: a boat
+    without its certificate is not scored, placed or counted in it — she
+    belongs to the other system's series (e.g. the YTC table of a regatta
+    that also runs an IRC series over the same races)."""
+
+    def test_a_yacht_without_the_systems_certificate_is_not_in_its_table(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc"}
+        boats = [_boat(1, name="IRC boat", tcc=1.0),
+                 _boat(2, name="YTC only", ytc=900),
+                 _boat(3, name="No rating")]
+        race = _race(1, [_fin("b1", 1, ft="2026-05-02T11:00:00Z"),
+                         _fin("b2", 2, ft="2026-05-02T11:10:00Z"),
+                         _fin("b3", 3, ft="2026-05-02T11:20:00Z")],
+                     date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+
+        payload = asyncio.run(server.compute_series_standings(series))
+        assert [r["boat_name"] for r in payload["standings"]] == ["IRC boat"]
+
+        # The race itself keeps every finish, but only the IRC boat is placed
+        # in an IRC race: the others cannot be rated against her.
+        asyncio.run(server._resequence_race(race))
+        by_id = {r["boat_id"]: r for r in race["results"]}
+        assert by_id["b1"]["position"] == 1
+        assert by_id["b2"]["position"] is None
+        assert by_id["b3"]["position"] is None
+
+    def test_an_other_systems_entry_does_not_inflate_the_dnc_base(self):
+        # Race 2 was sailed only by the YTC-only boat. The IRC boat's DNC is
+        # measured against the IRC fleet (1 + 1), not that entry plus one.
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc"}
+        boats = [_boat(1, name="IRC boat", tcc=1.0),
+                 _boat(2, name="YTC only", ytc=900)]
+        races = [
+            _race(1, [_fin("b1", 1, ft="2026-05-02T11:00:00Z"),
+                      _fin("b2", 2, ft="2026-05-02T11:10:00Z")],
+                  date="2026-05-02", start_time="10:00"),
+            _race(2, [_fin("b2", 1, ft="2026-05-09T11:10:00Z")],
+                  date="2026-05-09", start_time="10:00"),
+        ]
+        server.db = _fake_db(races, boats, [series])
+
+        payload = asyncio.run(server.compute_series_standings(series))
+        rows = {r["boat_name"]: r for r in payload["standings"]}
+        assert set(rows) == {"IRC boat"}
+        assert rows["IRC boat"]["scores"][1]["code"] == "DNC"
+        assert rows["IRC boat"]["scores"][1]["points"] == 2.0
+
+
 class TestMultiScoringSeries:
     """Independent corrected-time standings derived from each boat's one
     stored finish time, with no result duplication."""
@@ -1043,6 +1128,87 @@ class TestMultiScoringSeries:
         assert len(db.races.docs[0]["results"]) == 2
         assert all(result.get("finish_time") for result in db.races.docs[0]["results"])
         assert [result["position"] for result in db.races.docs[0]["results"]] == [2, 1]
+
+    def test_a_boat_is_only_in_the_table_of_the_rating_she_holds(self):
+        """Two rating systems share one set of finish times, but not one
+        fleet: an IRC-only boat is not in the YTC table and an unrated boat is
+        in neither. She is not scored, placed or counted as a DNC there."""
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="IRC only", tcc=1.05),
+            _boat(2, name="YTC only", ytc=900),
+            _boat(3, name="Both", tcc=0.95, ytc=1100),
+        ]
+        race = _race(1, [
+            _fin("b1", 1, ft="2026-05-02T11:01:40Z"),
+            _fin("b2", 2, ft="2026-05-02T11:03:20Z"),
+            _fin("b3", 3, ft="2026-05-02T11:02:00Z"),
+        ], date="2026-05-02", start_time="10:00")
+        db = _fake_db([race], boats, [series])
+        server.db = db
+
+        payload = asyncio.run(server._series_standings_payload(series))
+        tables = {table["division_scoring_mode"]: table for table in payload["divisions"]}
+        assert [r["boat_name"] for r in tables["irc"]["standings"]] == ["Both", "IRC only"]
+        assert [r["boat_name"] for r in tables["ytc"]["standings"]] == ["Both", "YTC only"]
+        assert "YTC only" not in [r["boat_name"] for r in tables["irc"]["standings"]]
+
+        # The race's derived places follow the same membership: no IRC place
+        # for the YTC-only boat, no YTC place for the IRC-only boat.
+        decorated = asyncio.run(server._decorate_races_scoring_positions([race]))[0]
+        assert set(decorated["scoring_positions"]["irc"]) == {"b1", "b3"}
+        assert set(decorated["scoring_positions"]["ytc"]) == {"b2", "b3"}
+
+    def test_an_unrated_boat_does_not_inflate_a_rating_fleets_dnc_base(self):
+        # Race 2 was sailed by the YTC boat only; in the IRC table both IRC
+        # boats are absent, so each scores its OWN fleet of two + 1 = 3.
+        # The YTC-only entrant must not make that 4 (race entries + 1).
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="IRC only", tcc=1.05),
+            _boat(2, name="YTC only", ytc=900),
+            _boat(3, name="Both", tcc=0.95, ytc=1100),
+        ]
+        races = [
+            _race(1, [_fin("b1", 1, ft="2026-05-02T11:01:40Z"),
+                      _fin("b2", 2, ft="2026-05-02T11:03:20Z"),
+                      _fin("b3", 3, ft="2026-05-02T11:02:00Z")],
+                  date="2026-05-02", start_time="10:00"),
+            _race(2, [_fin("b2", 1, ft="2026-05-09T11:02:00Z")],
+                  date="2026-05-09", start_time="10:00"),
+        ]
+        server.db = _fake_db(races, boats, [series])
+
+        payload = asyncio.run(server._series_standings_payload(series))
+        irc = next(t for t in payload["divisions"] if t["division_scoring_mode"] == "irc")
+        for row in irc["standings"]:
+            assert row["scores"][1]["code"] == "DNC"
+            assert row["scores"][1]["points"] == 3.0, row
+
+    def test_unpublished_race_is_decorated_for_the_officer_console(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0,
+                  "scoring_mode": "irc", "scoring_modes": ["irc", "ytc"]}
+        boats = [
+            _boat(1, name="IRC only", tcc=1.05),
+            _boat(2, name="YTC only", ytc=900),
+        ]
+        race = _race(1, [_fin("b1", 1, ft="2026-05-02T11:01:40Z"),
+                         _fin("b2", 2, ft="2026-05-02T11:03:20Z")],
+                     date="2026-05-02", start_time="10:00")
+        race["status"] = "setup"
+        server.db = _fake_db([race], boats, [series])
+
+        # A public listing never sees positions for an unpublished result...
+        assert "scoring_positions" not in asyncio.run(
+            server._decorate_races_scoring_positions([race]))[0]
+        # ... but the officer's own race view does, so entry can show both
+        # places while the times are still being keyed in.
+        decorated = asyncio.run(
+            server._decorate_races_scoring_positions([race], include_unpublished=True))[0]
+        assert set(decorated["scoring_positions"]["irc"]) == {"b1"}
+        assert set(decorated["scoring_positions"]["ytc"]) == {"b2"}
 
     def test_multiple_modes_are_normalized_and_legacy_is_single_mode(self):
         assert server._series_scoring_modes({"scoring_modes": ["irc", "irc", "ytc"]}) == ["irc", "ytc"]

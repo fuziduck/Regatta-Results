@@ -8,7 +8,7 @@ import ConsoleNav from "@/components/ConsoleNav";
 import ClubApplicationStatus from "@/components/ClubApplicationStatus";
 import TwoFactorAuth from "@/components/TwoFactorAuth";
 import TvDisplaySettingsCard, { RaceDayInfoEditor } from "@/components/TvDisplaySettings";
-import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, seriesScoringModes } from "@/lib/helpers";
+import { fmtDate, fmtDateShort, fmtTime, fmtClock, fmtElapsed, clockValueOf, raceStart, outcomeLabel, CURRENT_YEAR, CODE_COLORS, miniGroupForRace, miniSeriesNote, raceLabel, classDivisions, boatDivision, boatRating, seriesScoringModes, scoringModeLabel, scoringCertificateLabel } from "@/lib/helpers";
 import { SeriesStandings } from "@/components/StandingsTable";
 import { ElapsedInput } from "@/components/ElapsedInput";
 import { RaceTimeEntry } from "@/components/RaceTimeEntry";
@@ -508,13 +508,43 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     ? divisions.every((d) => d.scoring_mode === "one_design")
     : scoringModes.every((mode) => mode === "one_design");
   const showTiming = !isOneDesign;
+  // Dual-scored series publish one table per rating system from the same
+  // finish times, so the console shows a place for each. A split class keeps
+  // one place per boat (places restart inside her own division).
+  const multiMode = !divisions.length && scoringModes.length > 1;
+  const positionModes = multiMode ? scoringModes : [];
+  const scoringPositions = race.scoring_positions || {};
+  // The rating systems this race is scored by, used to mark a boat that holds
+  // no certificate for one of them (see the entry tables): a handicap table
+  // only holds boats that can be rated in it.
+  const ratingModes = [...new Set(divisions.length
+    ? divisions.map((d) => d.scoring_mode)
+    : scoringModes)].filter((m) => scoringCertificateLabel(m));
+  const modeBasis = (m) => (scoringCertificateLabel(m)
+    ? `${scoringModeLabel(m)} (${scoringCertificateLabel(m)})`
+    : scoringModeLabel(m));
+  const scoringBasis = divisions.length
+    ? `Scoring: ${divisions.map((d) => `${d.name} (${scoringModeLabel(d.scoring_mode)})`).join(" · ")} — places restart in each division`
+    : multiMode
+    ? `Scoring: ${scoringModes.map(modeBasis).join(" + ")} — one finish time produces a corrected result in each; a boat without that certificate is not scored in that table`
+    : ratingModes.length
+    ? `Scoring: ${modeBasis(scoringModes[0])} — corrected time from each boat's certificate; a boat without one gets no place here`
+    : `Scoring: ${scoringModes.map(modeBasis).join(" + ")} — finishing order`;
+  const missingCertificates = (boat) => ratingModes.filter((m) => !boatRating(m, boat));
+  const unratedLabel = (boat) => {
+    const missing = missingCertificates(boat);
+    if (divisions.length) return boatDivision(boat, divisions) ? "" : "No rating";
+    return missing.map((m) => `No ${scoringModeLabel(m)} rating`).join(" · ");
+  };
   // Places restart in each division of a split class, so the rows are grouped
   // by division before their finishing order.
   const byDivisionThenPosition = (rows) => [...rows].sort((a, b) => {
     if (divisions.length) {
       const da = boatDivision(boats[a.boat_id], divisions);
       const db = boatDivision(boats[b.boat_id], divisions);
-      if (da !== db) return da.localeCompare(db);
+      // A boat with no certificate for any division belongs to none of them:
+      // she is listed after the divisions, never at their head.
+      if (da !== db) return (da || "\uffff").localeCompare(db || "\uffff");
     }
     return (Number(a.position) || 0) - (Number(b.position) || 0);
   });
@@ -880,6 +910,11 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
               </div>
             )}
           </div>
+          <div className="mb-3" data-testid="scoring-basis">
+            <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-safety/30 bg-safety/5 px-3 py-1.5 text-xs font-semibold text-safety">
+              {scoringBasis}
+            </span>
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <p className="text-sm text-muted-foreground">{isOneDesign ? "Tap boats in the order they finish. Use the provisional table below to correct the order if needed." : TIME_ENTRY_HINTS[timeEntryMode]} {toFinish.length} still racing.</p>
             <div className="flex items-center gap-1.5">
@@ -897,6 +932,8 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
           {showTiming && timeEntryMode !== "live" ? (
             <RaceTimeEntry mode={timeEntryMode} rows={orderBoatIds(racing)} boats={boats} race={race}
               codes={rrsCodes} hasStart={hasStart} pendingCode={pendingCode}
+              positionModes={positionModes} scoringPositions={scoringPositions} divisions={divisions}
+              ratingModes={ratingModes}
               onClock={finishAt} onElapsed={changeElapsed} onCode={changeCode} />
           ) : (
           <div className={`grid gap-2 sm:gap-3 ${crowded ? "grid-cols-3 sm:grid-cols-4 lg:grid-cols-5" : "grid-cols-2 sm:grid-cols-3"}`} data-testid="finish-grid">
@@ -943,9 +980,19 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                 const b = boats[r.boat_id] || {};
                 // The finish time of day, and how long it took from the start.
                 const elapsed = showTiming && r.finish_time && hasStart ? Date.parse(r.finish_time) - startAt : null;
+                // Show the place in every scoring view when one finish time
+                // is scored twice (e.g. "1 / 3" for IRC / YTC).
+                const places = positionModes.map((m) => scoringPositions?.[m]?.[r.boat_id] ?? "—");
+                const placeText = positionModes.length
+                  ? places.join(" / ")
+                  : (r.position ?? (missingCertificates(b).length ? "—" : ""));
                 return (
                   <div key={r.boat_id} className="flex items-center gap-3 p-3">
-                    <div className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-800 grid place-items-center font-heading text-lg">{r.position}</div>
+                    <div className="min-w-9 h-9 px-1.5 rounded-lg bg-emerald-100 text-emerald-800 grid place-items-center font-heading text-lg"
+                      data-testid={`finished-pos-${b.sail_no}`}
+                      title={positionModes.length ? positionModes.map((m) => `${scoringModeLabel(m)} ${scoringPositions?.[m]?.[r.boat_id] ?? "—"}`).join(" · ") : undefined}>
+                      {placeText}
+                    </div>
                     <div className="flex-1">
                       <div className="font-semibold leading-none">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span></div>
                       {showTiming && (
@@ -978,14 +1025,18 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             {/* Fixed column plan shared with the typed-entry table, so Pos /
                 Elapsed / Code line up between races instead of each table
                 sizing its columns from its own contents. */}
-            <table className="w-full text-sm table-fixed min-w-[592px]">
+            <table className="w-full text-sm table-fixed" style={{ minWidth: 592 + 80 * (Math.max(1, positionModes.length) - 1) }}>
               <colgroup>
                 <col className="w-40" />
-                <col className="w-20" />
+                {(positionModes.length ? positionModes : [null]).map((col) => <col key={col || "pos"} className="w-20" />)}
                 {showTiming && <col className="w-44" />}
                 <col className="w-44" />
               </colgroup>
-              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th><th>Pos</th>{showTiming && <th>Elapsed</th>}<th>Code / Penalty (RRS)</th></tr></thead>
+              <thead><tr className="text-left text-muted-foreground border-b"><th className="py-2">Boat</th>
+                {positionModes.length
+                  ? positionModes.map((m) => <th key={m} className="text-center" data-testid={`adjust-pos-head-${m}`}>{scoringModeLabel(m)} Pos</th>)
+                  : <th>Pos</th>}
+                {showTiming && <th>Elapsed</th>}<th>Code / Penalty (RRS)</th></tr></thead>
               <tbody data-testid="adjust-table">
                 {/* Stable order (sign-on order): rows must not jump while the
                     officer steps through boats updating positions. */}
@@ -1000,17 +1051,34 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                   const shown = pending || r.code;
                   // A picked code that is not on the result yet.
                   const unsaved = pending != null && pending !== r.code;
+                  const division = divisions.length ? boatDivision(b, divisions) : "";
+                  const unrated = unratedLabel(b);
                   return (
                     <Fragment key={r.boat_id}>
                     <tr className="border-b last:border-0">
                       <td className="py-2 font-semibold">{b.name} <span className="font-mono text-xs text-muted-foreground">{b.sail_no}</span>
-                        {divisions.length > 0 && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-safety" data-testid={`row-division-${b.sail_no}`}>{boatDivision(b, divisions)}</span>}
+                        {division && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-safety" data-testid={`row-division-${b.sail_no}`}>{division}</span>}
+                        {unrated && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-muted-foreground" data-testid={`row-unrated-${b.sail_no}`}>{unrated}</span>}
                       </td>
-                      <td>
-                        {shown === "FINISHED"
-                          ? <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />
-                          : <Badge variant="outline" className={CODE_COLORS[shown]} data-testid={`pos-badge-${b.sail_no}`}>{shown}</Badge>}
-                      </td>                        {showTiming && <td>
+                      {(positionModes.length ? positionModes : [null]).map((col, colIdx) => {
+                        const pos = col ? (scoringPositions?.[col]?.[r.boat_id] ?? null) : null;
+                        return (
+                          <td key={col || "pos"} className="text-center">
+                            {col ? (
+                              pos != null
+                                ? <span className="font-mono" data-testid={`adjust-pos-${col}-${b.sail_no}`}>{pos}</span>
+                                : shown !== "FINISHED" && colIdx === 0
+                                ? <Badge variant="outline" className={CODE_COLORS[shown]} data-testid={`pos-badge-${b.sail_no}`}>{shown}</Badge>
+                                : <span className="text-muted-foreground" data-testid={`adjust-pos-${col}-${b.sail_no}`}>—</span>
+                            ) : shown === "FINISHED"
+                              ? unrated
+                                ? <span className="text-muted-foreground" data-testid={`adjust-pos-${b.sail_no}`} title={unrated}>—</span>
+                                : <Input type="number" min="1" value={r.position || ""} data-testid={`pos-input-${b.sail_no}`} className="h-8 w-16 font-mono" onChange={(e) => changePos(r.boat_id, e.target.value)} />
+                              : <Badge variant="outline" className={CODE_COLORS[shown]} data-testid={`pos-badge-${b.sail_no}`}>{shown}</Badge>}
+                          </td>
+                        );
+                      })}
+                      {showTiming && <td>
                         {shown === "FINISHED"
                           ? <ElapsedInput finishTime={r.finish_time} race={race} onCommit={(secs) => changeElapsed(r.boat_id, secs)} data-testid={`elapsed-input-${b.sail_no}`} className="[&_input]:w-12" />
                           : <span className="text-muted-foreground">—</span>}
@@ -1038,7 +1106,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                     </tr>
                     {panelBoat === r.boat_id && (
                       <tr className="border-b bg-muted/30" id={`decision-row-${r.boat_id}`}>
-                        <td colSpan={showTiming ? 4 : 3} className="py-3">
+                        <td colSpan={Math.max(1, positionModes.length) + (showTiming ? 3 : 2)} className="py-3">
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                             <div className="space-y-1"><Label className="text-[10px] uppercase">Resulting points</Label><Input type="number" min="0" step="0.5" className="h-8" value={decision.penalty_points} onChange={(e) => setDecision({ ...decision, penalty_points: e.target.value })} data-testid={`decision-points-${b.sail_no}`} /></div>
                             <div className="space-y-1"><Label className="text-[10px] uppercase">Decision-maker / committee</Label><Input className="h-8" value={decision.decision_maker} onChange={(e) => setDecision({ ...decision, decision_maker: e.target.value })} data-testid={`decision-maker-${b.sail_no}`} /></div>

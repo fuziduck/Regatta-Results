@@ -343,6 +343,118 @@ describe("RaceConsole handicap time entry", () => {
     expect(mockApi.recordFinish).toHaveBeenCalledWith("r1", "b1", expect.any(String), 3);
   });
 
+  it("shows the scoring basis and a place per scoring system while times are entered", async () => {
+    mockApi.getRace.mockResolvedValue({
+      ...race,
+      status: "provisional",
+      scoring_positions: { irc: { b1: 2, b2: 1 }, ytc: { b1: 1, b2: 2 } },
+      results: [
+        { boat_id: "b1", code: "FINISHED", position: 2, finish_time: "2026-05-02T11:02:00Z" },
+        { boat_id: "b2", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:01:00Z" },
+      ],
+    });
+    renderConsole(HANDICAP_META, { series: { scoring_mode: "irc", scoring_modes: ["irc", "ytc"] } });
+    await flush();
+    chooseMode("clock");
+
+    const basis = container.querySelector('[data-testid="scoring-basis"]').textContent;
+    expect(basis).toContain("Scoring: IRC (TCC) + YTC (YTC number)");
+    expect(basis).toContain("one finish time produces a corrected result in each");
+
+    const table = container.querySelector('[data-testid="time-entry-clock"]');
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent))
+      .toEqual(expect.arrayContaining(["IRC Pos", "YTC Pos"]));
+    expect(table.querySelector('[data-testid="time-pos-irc-1"]').textContent).toBe("2");
+    expect(table.querySelector('[data-testid="time-pos-ytc-1"]').textContent).toBe("1");
+
+    // The provisional table carries both places too.
+    expect(container.querySelector('[data-testid="adjust-pos-head-irc"]').textContent).toBe("IRC Pos");
+    expect(container.querySelector('[data-testid="adjust-pos-ytc-2"]').textContent).toBe("2");
+  });
+
+  it("leaves a system's place blank when the boat has no certificate for it", async () => {
+    mockApi.getRace.mockResolvedValue({
+      ...race,
+      scoring_positions: { irc: { b1: 1 } },
+      results: [
+        { boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:02:00Z" },
+        { boat_id: "b2", code: "FINISHED", position: 2, finish_time: "2026-05-02T11:03:00Z" },
+      ],
+    });
+    renderConsole(HANDICAP_META, { series: { scoring_mode: "irc", scoring_modes: ["irc", "ytc"] } });
+    await flush();
+    chooseMode("clock");
+
+    // b1 is IRC-rated only, b2 is rated for neither: neither gets an invented
+    // place in a table they do not belong to.
+    expect(container.querySelector('[data-testid="time-pos-irc-1"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="time-pos-ytc-1"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="time-pos-irc-2"]').textContent).toBe("—");
+  });
+
+  it("marks an unrated boat in a split class and gives her no place there", async () => {
+    mockApi.getBoats.mockResolvedValue([
+      { id: "b1", name: "Bluebell", sail_no: "1", tcc: 1.01 },
+      { id: "b2", name: "Screwloose", sail_no: "2", ytc: 1000 },
+      { id: "b3", name: "Unrated", sail_no: "3" },
+    ]);
+    mockApi.getRace.mockResolvedValue({
+      ...race,
+      results: [
+        { boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:01:00Z" },
+        { boat_id: "b2", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:02:00Z" },
+        { boat_id: "b3", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:03:00Z" },
+      ],
+    });
+    renderConsole({
+      ...HANDICAP_META,
+      divisions: [
+        { name: "IRC", scoring_mode: "irc" },
+        { name: "YTC", scoring_mode: "ytc" },
+      ],
+    });
+    await flush();
+    chooseMode("clock");
+
+    expect(container.querySelector('[data-testid="time-division-1"]').textContent).toBe("IRC");
+    expect(container.querySelector('[data-testid="time-division-2"]').textContent).toBe("YTC");
+    expect(container.querySelector('[data-testid="time-unrated-3"]').textContent).toBe("No rating");
+    expect(container.querySelector('[data-testid="time-pos-3"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="row-unrated-3"]').textContent).toBe("No rating");
+    expect(container.querySelector('[data-testid="pos-input-3"]')).toBeNull();
+    expect(container.querySelector('[data-testid="adjust-pos-3"]').textContent).toBe("—");
+  });
+
+  it("names the certificate a single-system race scores by and who it leaves out", async () => {
+    mockApi.getBoats.mockResolvedValue([
+      { id: "b1", name: "Bluebell", sail_no: "1", tcc: 1.01 },
+      { id: "b2", name: "Screwloose", sail_no: "2", ytc: 1000 },
+    ]);
+    mockApi.getRace.mockResolvedValue({
+      ...race,
+      results: [
+        { boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-05-02T11:01:00Z" },
+        { boat_id: "b2", code: "FINISHED", position: null, finish_time: "2026-05-02T11:02:00Z" },
+      ],
+    });
+    renderConsole(HANDICAP_META);
+    await flush();
+    chooseMode("clock");
+
+    const basis = container.querySelector('[data-testid="scoring-basis"]').textContent;
+    expect(basis).toContain("Scoring: IRC (TCC)");
+    expect(basis).toContain("a boat without one gets no place here");
+
+    // The TCC boat is placed; the YTC-only boat is not scored in this race,
+    // but her finish time still stands (it scores her in the YTC series).
+    expect(container.querySelector('[data-testid="time-pos-1"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="time-pos-2"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="time-unrated-2"]').textContent).toBe("No IRC rating");
+    expect(container.querySelector('[data-testid="clock-input-2"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="row-unrated-2"]').textContent).toBe("No IRC rating");
+    expect(container.querySelector('[data-testid="pos-input-2"]')).toBeNull();
+  });
+
   it("keeps one-design races on tap order", async () => {
     renderConsole();
     await flush();

@@ -42,6 +42,71 @@ def _set_elapsed(token, race_id, boat_id, seconds):
     return {res["boat_id"]: res["position"] for res in r.json()["results"]}
 
 
+class TestSeparateRatingSeries:
+    """A club can run one IRC series and one YTC series for the same class. A
+    boat holding only one certificate is scored only in that series — she does
+    not appear in the other system's table merely because she sailed the race.
+    """
+
+    def test_a_boat_without_a_certificate_is_not_scored_in_that_series(
+            self, test_club, club_admin_token, club_officer_token):
+        cls = requests.post(f"{API}/classes", json={
+            "name": "Two Systems Class", "default_start_time": START,
+            "scoring_mode": "irc"}, headers=h(club_admin_token)).json()
+        boats, races, series_docs = [], [], []
+        try:
+            irc_boat = _create_boat(club_admin_token, cls["id"], "Irc Boat", "IR1", tcc=1.0)
+            ytc_boat = _create_boat(club_admin_token, cls["id"], "Ytc Boat", "YT1", ytc=1000)
+            boats = [irc_boat, ytc_boat]
+            for i, (name, mode) in enumerate((("Two Systems IRC", "irc"),
+                                              ("Two Systems YTC", "ytc"))):
+                series = requests.post(f"{API}/series", json={
+                    "name": name, "class_id": cls["id"], "year": YEAR,
+                    "scoring_mode": mode, "discards": 0, "order": i + 1},
+                    headers=h(club_admin_token)).json()
+                series_docs.append(series)
+                race = requests.post(f"{API}/races", json={
+                    "date": f"{YEAR}-05-0{i + 2}", "class_id": cls["id"],
+                    "series_id": series["id"], "race_number": 1, "start_time": START},
+                    headers=h(club_officer_token)).json()
+                races.append(race["id"])
+                # Both boats sign on and sail the same race: one holds a TCC,
+                # the other a YTC number, so each series can rate only its own.
+                requests.post(f"{API}/races/{race['id']}/select-boats",
+                              json={"boat_ids": [b["id"] for b in boats]},
+                              headers=h(club_officer_token))
+                _set_elapsed(club_officer_token, race["id"], irc_boat["id"], 1800)
+                _set_elapsed(club_officer_token, race["id"], ytc_boat["id"], 1900)
+                requests.post(f"{API}/races/{race['id']}/status/published",
+                              headers=h(club_officer_token))
+
+            irc_series, ytc_series = series_docs
+            irc_table = requests.get(f"{API}/standings/series/{irc_series['id']}",
+                                     headers=h(club_admin_token)).json()
+            ytc_table = requests.get(f"{API}/standings/series/{ytc_series['id']}",
+                                     headers=h(club_admin_token)).json()
+            assert [r["sail_no"] for r in irc_table["standings"]] == ["IR1"], \
+                f"the IRC series holds only boats with a TCC: {irc_table['standings']}"
+            assert [r["sail_no"] for r in ytc_table["standings"]] == ["YT1"], \
+                f"the YTC series holds only boats with a YTC number: {ytc_table['standings']}"
+
+            # The race itself keeps both finishes — the boat this series cannot
+            # rate simply has no place in it.
+            irc_race = requests.get(f"{API}/races/{races[0]}",
+                                    headers=h(club_officer_token)).json()
+            pos = {r["boat_id"]: r["position"] for r in irc_race["results"]}
+            assert pos[irc_boat["id"]] == 1
+            assert pos[ytc_boat["id"]] is None
+        finally:
+            for rid in races:
+                requests.delete(f"{API}/races/{rid}", headers=h(club_officer_token))
+            for s in series_docs:
+                requests.delete(f"{API}/series/{s['id']}", headers=h(club_admin_token))
+            for b in boats:
+                requests.delete(f"{API}/boats/{b['id']}", headers=h(club_admin_token))
+            requests.delete(f"{API}/classes/{cls['id']}", headers=h(club_admin_token))
+
+
 class TestYtcScoringOption:
     def test_series_scores_by_ytc_and_switching_to_py_reads_the_other_certificate(
             self, test_club, club_admin_token, club_officer_token):
