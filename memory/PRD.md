@@ -46,6 +46,7 @@ Club-level sailing web app with 3 users. Spectator (public landing page, results
   times share a place and RRS A7 splits the points (e.g. two tied for 1st → 1.5 each,
   next boat 3rd). Boats without TCC/start fall back to finish order. Admin UI: boat
   TCC field; the scoring system is ticked on the series.
+- **Clubhouse TV display** (`frontend/src/pages/ClubTvDisplay.jsx`, `/club/:slug/display`): a 15 s rotating wall of standings, latest races and series progress beside a persistent race-day panel, polling every 45 s. Readability rules for a screen read from across a room: on a race day `buildRotationSlides` leads with the day's own race results (provisional first) instead of several minutes of standings; a table of four or more rows stretches to the wall's height and a fleet of five or fewer gets bigger type (`tvDensity`) while a shorter table stays compact and centred; a `Class` column only appears when the table really spans classes; `Total` disappears when no discard makes it differ from `Net`; the panel caps its schedule (5), calendar (4 days) and notices (2) and drops the calendar/announcements below an 820 px-tall screen so nothing spills past the fold.
 - Unit tests: `backend/tests/test_scoring_rrs.py` — 19 tests covering A4/A5.2/A5.3/A6.1/A7/A8/44.3(c) math (pure functions, no DB). All pass.
 
 ## Implemented (2026-08, multi-club + webmaster)

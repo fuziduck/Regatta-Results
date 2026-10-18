@@ -251,6 +251,24 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
     });
   }
 
+  // On a race day the wall belongs to the day's results: competitors come in
+  // wanting their own race, and with a club's full rotation that slide could
+  // otherwise be several minutes away behind every overall and class table.
+  // Lead with the races sailed on the race-day date, provisional first (a
+  // provisional result is the news; a final one can wait a slide).
+  const slideDate = (slide) => slide.race?.date || slide.data?.date;
+  const dayDate = payload.race_day?.date;
+  if (dayDate) {
+    const isToday = (slide) =>
+      (slide.viewType === "C" || slide.viewType === "E") && slideDate(slide) === dayDate;
+    const todaysResults = slides
+      .filter(isToday)
+      .sort((a, b) => Number(Boolean(b.isProvisional)) - Number(Boolean(a.isProvisional)));
+    if (todaysResults.length) {
+      return [...todaysResults, ...slides.filter((slide) => !isToday(slide))];
+    }
+  }
+
   return slides;
 }
 
@@ -309,6 +327,21 @@ export function hasRaceDayContent(raceDay, config) {
 // keeps five. More races therefore make the series table proportionally wider.
 export function seriesColumnWeights(raceCount) {
   return { series: 5 + raceCount, race: 5 };
+}
+
+// A short fleet gets bigger type and taller rows so the result reads from the
+// far side of the clubhouse; a full fleet keeps the tighter size that fits ten
+// boats without shrinking the names.
+function tvDensity(rowCount) {
+  const roomy = rowCount <= 5;
+  return {
+    row: roomy ? "py-4" : "py-2.5",
+    boat: roomy ? "text-3xl" : "text-2xl",
+    helm: roomy ? "text-xl" : "text-lg",
+    sail: roomy ? "text-xl" : "text-lg",
+    time: roomy ? "text-xl" : "text-lg",
+    points: roomy ? "text-3xl" : "text-2xl",
+  };
 }
 
 function fmtPoints(val) {
@@ -403,7 +436,19 @@ function LeaderSpotlight({ leader, viewType, scoringLabel, raceCount }) {
 
 function StandingsSlideView({ slide }) {
   const { data, rows, leader, pageIndex, viewType } = slide;
-  const showClassCol = viewType === "A";
+  // A class column only earns its width when the table really spans classes;
+  // repeating one class down every row just squeezes the boat names.
+  const classNames = new Set(rows.map((row) => row.class_name || data.class_name).filter(Boolean));
+  const showClassCol = classNames.size > 1;
+  // With no discard in play the gross and net columns are the same numbers.
+  const showTotal = rows.some(
+    (row) => row.total != null && row.net != null && Number(row.total) !== Number(row.net),
+  );
+  // A table of four or more stretches to the wall's edge (with the bigger type
+  // of a short fleet filling the height); a handful of boats would turn into
+  // bands of empty space, so it keeps its natural height and is centred.
+  const fill = rows.length >= 4;
+  const size = tvDensity(rows.length);
   const raceMeta = (data.races || []).slice(-6); // Show up to 6 recent race columns so typography stays large
 
   return (
@@ -416,8 +461,13 @@ function StandingsSlideView({ slide }) {
           raceCount={data.race_count}
         />
       )}
-      <div className="flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl">
-        <table className="w-full border-collapse text-left" data-testid="tv-standings-table">
+      <div
+        className={`flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl ${fill ? "" : "flex items-center"}`}
+      >
+        <table
+          className={`w-full border-collapse text-left ${fill ? "h-full" : ""}`}
+          data-testid="tv-standings-table"
+        >
           <thead>
             <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
               <th className="w-16 px-4 py-3 text-center">Pos</th>
@@ -431,7 +481,7 @@ function StandingsSlideView({ slide }) {
                 </th>
               ))}
               <th className="px-4 py-3 text-center">Races</th>
-              <th className="px-4 py-3 text-right">Total</th>
+              {showTotal && <th className="px-4 py-3 text-right">Total</th>}
               <th className="px-5 py-3 text-right text-amber-300">Net Pts</th>
             </tr>
           </thead>
@@ -449,23 +499,23 @@ function StandingsSlideView({ slide }) {
                   data-testid={`tv-row-${row.sail_no || row.boat_name}`}
                   className={`transition-colors ${podiumRow}`}
                 >
-                  <td className="px-4 py-2.5 text-center">
+                  <td className={`px-4 ${size.row} text-center`}>
                     <PodiumRankBadge rank={rank} />
                   </td>
-                  <td className="px-4 py-2.5">
-                    <span className="font-heading text-2xl uppercase tracking-tight text-white">
+                  <td className={`px-4 ${size.row}`}>
+                    <span className={`font-heading ${size.boat} uppercase tracking-tight text-white`}>
                       {row.boat_name}
                     </span>
                   </td>
-                  <td className="px-4 py-2.5 font-mono text-lg font-semibold text-sky-200">
+                  <td className={`px-4 ${size.row} font-mono ${size.sail} font-semibold text-sky-200`}>
                     {row.sail_no || "—"}
                   </td>
                   {showClassCol && (
-                    <td className="px-4 py-2.5 text-base font-semibold text-slate-300">
+                    <td className={`px-4 ${size.row} text-base font-semibold text-slate-300`}>
                       {row.class_name || data.class_name || "—"}
                     </td>
                   )}
-                  <td className="px-4 py-2.5 text-lg font-medium text-slate-200">
+                  <td className={`px-4 ${size.row} ${size.helm} font-medium text-slate-200`}>
                     {row.helm || "—"}
                   </td>
                   {raceMeta.map((_, idx) => {
@@ -495,13 +545,15 @@ function StandingsSlideView({ slide }) {
                       </td>
                     );
                   })}
-                  <td className="px-4 py-2.5 text-center font-mono text-lg text-slate-300">
+                  <td className={`px-4 ${size.row} text-center font-mono ${size.time} text-slate-300`}>
                     {row.races_completed != null ? row.races_completed : data.race_count ?? "—"}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-lg text-slate-300">
-                    {fmtPoints(row.total)}
-                  </td>
-                  <td className="px-5 py-2.5 text-right font-mono text-2xl font-bold text-amber-300">
+                  {showTotal && (
+                    <td className={`px-4 ${size.row} text-right font-mono ${size.time} text-slate-300`}>
+                      {fmtPoints(row.total)}
+                    </td>
+                  )}
+                  <td className={`px-5 ${size.row} text-right font-mono ${size.points} font-bold text-amber-300`}>
                     {fmtPoints(row.net)}
                   </td>
                 </tr>
@@ -538,6 +590,13 @@ function SideBySideSlideView({ slide }) {
   const raceLabel = race.race_label || `Race ${race.race_number}`;
   const seriesRaces = Array.isArray(data.races) ? data.races : [];
   const weights = seriesColumnWeights(seriesRaces.length);
+  // Stretch the shorter of the two tables into the wall's height (and the
+  // series table's gross column only when a discard makes it differ from net).
+  const showTotal = overallRows.some(
+    (row) => row.total != null && row.net != null && Number(row.total) !== Number(row.net),
+  );
+  const fillSeries = overallRows.length >= 5;
+  const fillRace = raceRows.length >= 5;
 
   // Wide series tables sweep sideways within the slide so every race column is seen.
   const seriesScrollRef = useRef(null);
@@ -581,8 +640,11 @@ function SideBySideSlideView({ slide }) {
               <p className="p-6 text-center text-lg text-slate-400">No standings yet</p>
             )
           ) : (
-            <div ref={seriesScrollRef} data-testid="tv-series-scroll" className="overflow-x-hidden">
-            <table className="w-full min-w-max border-collapse text-left" data-testid="tv-overall-table">
+            <div ref={seriesScrollRef} data-testid="tv-series-scroll" className={`overflow-x-hidden ${fillSeries ? "h-full" : ""}`}>
+            <table
+              className={`w-full min-w-max border-collapse text-left ${fillSeries ? "h-full" : ""}`}
+              data-testid="tv-overall-table"
+            >
               <thead>
                 <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
@@ -600,7 +662,7 @@ function SideBySideSlideView({ slide }) {
                       </th>
                     );
                   })}
-                  <th className="px-3 py-2.5 text-right">Total</th>
+                  {showTotal && <th className="px-3 py-2.5 text-right">Total</th>}
                   <th className="px-4 py-2.5 text-right text-amber-300">Net</th>
                 </tr>
               </thead>
@@ -634,9 +696,11 @@ function SideBySideSlideView({ slide }) {
                         </td>
                       );
                     })}
-                    <td className="px-3 py-2 text-right font-mono text-base text-slate-300">
-                      {fmtPoints(row.total)}
-                    </td>
+                    {showTotal && (
+                      <td className="px-3 py-2 text-right font-mono text-base text-slate-300">
+                        {fmtPoints(row.total)}
+                      </td>
+                    )}
                     <td className="px-4 py-2 text-right font-mono text-lg font-bold text-amber-300">
                       {fmtPoints(row.net)}
                     </td>
@@ -664,7 +728,10 @@ function SideBySideSlideView({ slide }) {
               <p className="p-6 text-center text-lg text-slate-400">No race results yet</p>
             )
           ) : (
-            <table className="w-full border-collapse text-left" data-testid="tv-race-table">
+            <table
+              className={`w-full border-collapse text-left ${fillRace ? "h-full" : ""}`}
+              data-testid="tv-race-table"
+            >
               <thead>
                 <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
                   <th className="w-14 px-3 py-2.5 text-center">Pos</th>
@@ -735,6 +802,8 @@ function SideBySideSlideView({ slide }) {
 function LatestRaceSlideView({ slide }) {
   const { data, rows, leader, pageIndex, isProvisional } = slide;
   const { hasElapsed, hasCorrected } = raceTiming(data, rows);
+  const fill = rows.length >= 4;
+  const size = tvDensity(rows.length);
 
   return (
     <div className="flex h-full flex-col" data-testid="tv-slide-C">
@@ -755,14 +824,18 @@ function LatestRaceSlideView({ slide }) {
       {!isProvisional && pageIndex === 1 && leader && (
         <LeaderSpotlight leader={leader} viewType="C" scoringLabel={slide.scoringLabel} />
       )}
-      <div className="flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl">
-        <table className="w-full border-collapse text-left" data-testid="tv-latest-race-table">
+      <div
+        className={`flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl ${fill ? "" : "flex items-center"}`}
+      >
+        <table
+          className={`w-full border-collapse text-left ${fill ? "h-full" : ""}`}
+          data-testid="tv-latest-race-table"
+        >
           <thead>
             <tr className="border-b border-white/15 bg-slate-950/90 text-xs font-bold uppercase tracking-widest text-slate-300">
               <th className="w-16 px-4 py-3 text-center">Pos</th>
               <th className="px-4 py-3">Boat</th>
               <th className="px-4 py-3">Sail No</th>
-              <th className="px-4 py-3">Class</th>
               <th className="px-4 py-3">Helm / Skipper</th>
               {hasElapsed && <th className="px-4 py-3 text-right">Elapsed</th>}
               {hasCorrected && <th className="px-4 py-3 text-right">Corrected</th>}
@@ -779,7 +852,7 @@ function LatestRaceSlideView({ slide }) {
                   data-testid={`tv-race-row-${row.sail_no || row.boat_name}`}
                   className={podiumRow}
                 >
-                  <td className="px-4 py-2.5 text-center">
+                  <td className={`px-4 ${size.row} text-center`}>
                     {pos ? (
                       <PodiumRankBadge rank={pos} />
                     ) : (
@@ -788,29 +861,26 @@ function LatestRaceSlideView({ slide }) {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 font-heading text-2xl uppercase tracking-tight text-white">
+                  <td className={`px-4 ${size.row} font-heading ${size.boat} uppercase tracking-tight text-white`}>
                     {row.boat_name}
                   </td>
-                  <td className="px-4 py-2.5 font-mono text-lg font-semibold text-sky-200">
+                  <td className={`px-4 ${size.row} font-mono ${size.sail} font-semibold text-sky-200`}>
                     {row.sail_no || "—"}
                   </td>
-                  <td className="px-4 py-2.5 text-base font-semibold text-slate-300">
-                    {row.class_name || data.class_name || "—"}
-                  </td>
-                  <td className="px-4 py-2.5 text-lg font-medium text-slate-200">
+                  <td className={`px-4 ${size.row} ${size.helm} font-medium text-slate-200`}>
                     {row.helm || "—"}
                   </td>
                   {hasElapsed && (
-                    <td className="px-4 py-2.5 text-right font-mono text-lg text-slate-200">
+                    <td className={`px-4 ${size.row} text-right font-mono ${size.time} text-slate-200`}>
                       {row.elapsed_formatted || "—"}
                     </td>
                   )}
                   {hasCorrected && (
-                    <td className="px-4 py-2.5 text-right font-mono text-lg font-bold text-sky-300">
+                    <td className={`px-4 ${size.row} text-right font-mono ${size.time} font-bold text-sky-300`}>
                       {row.corrected_formatted || "—"}
                     </td>
                   )}
-                  <td className="px-5 py-2.5 text-right font-mono text-xl font-bold text-amber-300">
+                  <td className={`px-5 ${size.row} text-right font-mono ${size.points} font-bold text-amber-300`}>
                     {row.points != null
                       ? `${fmtPoints(row.points)} pts`
                       : row.code === "FINISHED"
@@ -901,7 +971,7 @@ function SeriesProgressSlideView({ slide }) {
 
       {/* Standings + Upcoming Dates side by side */}
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3 overflow-hidden">
-        <div className="lg:col-span-2 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 lg:col-span-2">
           <div className="border-b border-white/10 bg-slate-950/80 px-4 py-2.5 flex items-center justify-between">
             <span className="font-heading text-sm uppercase tracking-wider text-slate-300">
               Current Series Standings
@@ -909,7 +979,8 @@ function SeriesProgressSlideView({ slide }) {
             <span className="font-mono text-xs text-slate-400">{slide.scoringLabel}</span>
           </div>
           {rows.length > 0 ? (
-            <table className="w-full border-collapse text-left">
+            <div className="min-h-0 flex-1">
+            <table className="h-full w-full border-collapse text-left">
               <thead>
                 <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
                   <th className="w-14 px-3 py-2 text-center">Pos</th>
@@ -941,6 +1012,7 @@ function SeriesProgressSlideView({ slide }) {
                 ))}
               </tbody>
             </table>
+            </div>
           ) : (
             <div className="p-8 text-center text-slate-400">
               No races scored yet in this series.
@@ -1010,7 +1082,7 @@ function PersistentRaceDayPanel({ raceDay }) {
     <aside
       data-testid="tv-race-day-panel"
       aria-label="Current race-day information"
-      className="flex h-full flex-col gap-3.5 rounded-2xl border border-white/15 bg-slate-900/90 p-5 shadow-2xl overflow-y-auto"
+      className="flex h-full flex-col gap-3.5 rounded-2xl border border-white/15 bg-slate-900/90 p-5 shadow-2xl overflow-y-auto [@media(max-height:820px)]:gap-2 [@media(max-height:820px)]:p-3.5"
     >
       {/* Panel header */}
       <div className="border-b border-white/15 pb-3">
@@ -1106,7 +1178,7 @@ function PersistentRaceDayPanel({ raceDay }) {
           )}
           {raceDay.schedule?.length > 0 && (
             <div className="space-y-1.5">
-              {raceDay.schedule.slice(0, 6).map((item, idx) => {
+              {raceDay.schedule.slice(0, 5).map((item, idx) => {
                 const st = STATUS_STYLES[item.status] || STATUS_STYLES.scheduled;
                 return (
                   <div
@@ -1160,14 +1232,17 @@ function PersistentRaceDayPanel({ raceDay }) {
         </div>
       )}
 
-      {/* Racing Calendar Summary */}
+      {/* Racing Calendar Summary. A 720p screen has room for the start
+          sequence and not much else, and the panel cannot be scrolled from the
+          clubhouse floor: the schedule keeps the space and the calendar and
+          announcements below bow out. */}
       {hasCalendar && (
-        <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3.5" data-testid="tv-calendar-section">
+        <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3.5 [@media(max-height:820px)]:hidden" data-testid="tv-calendar-section">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-sky-300">
             <CalendarDays className="h-4 w-4" /> Racing Calendar
           </div>
           <div className="space-y-1.5">
-            {raceDay.calendar.map((day) => (
+            {raceDay.calendar.slice(0, 4).map((day) => (
               <div
                 key={day.date}
                 data-testid="tv-calendar-day"
@@ -1185,7 +1260,7 @@ function PersistentRaceDayPanel({ raceDay }) {
 
       {/* Announcements & ONB Notices */}
       {hasAnnouncements && (
-        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3.5" data-testid="tv-announcements-section">
+        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3.5 [@media(max-height:820px)]:hidden" data-testid="tv-announcements-section">
           <div className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-amber-300">
             <Megaphone className="h-4 w-4" /> Club Announcements
           </div>
@@ -1196,7 +1271,7 @@ function PersistentRaceDayPanel({ raceDay }) {
           )}
           {raceDay.onb_notices?.length > 0 && (
             <div className="mt-2 space-y-1.5 border-t border-amber-400/20 pt-2">
-              {raceDay.onb_notices.map((n) => (
+              {raceDay.onb_notices.slice(0, 2).map((n) => (
                 <div key={n.id} className="text-xs text-slate-200">
                   <span className="font-bold text-white">{n.title}:</span> {n.summary}
                 </div>
@@ -1468,15 +1543,16 @@ export default function ClubTvDisplay() {
           )}
 
           {slides.length > 1 && (
-            <div className="hidden md:flex items-center gap-1.5" data-testid="tv-rotation-indicators">
-              {slides.map((s, idx) => (
-                <span
-                  key={s.key}
-                  className={`h-2 rounded-full transition-all duration-300 ${
-                    idx === activeSlideIndex ? "w-7 bg-amber-400" : "w-2 bg-white/25"
-                  }`}
-                />
-              ))}
+            // A club's full rotation easily runs to thirty-odd slides, where a
+            // dot per slide reads as a broken dotted line. The position counter
+            // stays legible and the progress bar below already shows the wait.
+            <div
+              className="hidden items-center gap-1 rounded-lg border border-white/15 bg-white/[0.06] px-2.5 py-1 font-mono text-xs font-semibold text-slate-300 md:flex"
+              data-testid="tv-rotation-indicators"
+            >
+              <span className="text-amber-300">{activeSlideIndex + 1}</span>
+              <span className="text-slate-500">/</span>
+              <span>{slides.length}</span>
             </div>
           )}
 

@@ -721,15 +721,50 @@ describe("ClubTvDisplay race-day paired slides", () => {
   });
 });
 
+// The sample payload is a race day: its newest published race is the day the
+// race-day panel names. Shifting that date simulates the rest of the week,
+// when the rotation keeps its standings-first order.
+const offDayPayload = {
+  ...samplePayload,
+  race_day: { ...samplePayload.race_day, date: "2026-06-09" },
+};
+
 describe("ClubTvDisplay rotation & rendering", () => {
   it("builds rotation slides in order A -> B -> C -> D and skips empty views", () => {
-    const slides = buildRotationSlides(samplePayload);
+    const slides = buildRotationSlides(offDayPayload);
     expect(slides.map((s) => s.viewType)).toEqual(["A", "B", "B", "C", "D"]);
     expect(slides[0].title).toBe("Sonata Overall Standings");
     expect(slides[1].title).toBe("Sonata");
     expect(slides[2].title).toBe("Cruiser Fleet — IRC");
     expect(slides[3].isProvisional).toBe(true);
     expect(slides[4].categoryLabel).toBe("Series Progress");
+  });
+
+  it("leads with the day's race results on a race day, provisional first", () => {
+    // Competitors walk in wanting their own race, not the standings: on a race
+    // day the newest results open the rotation instead of sitting several
+    // minutes behind every overall and class table.
+    const slides = buildRotationSlides(samplePayload);
+    expect(slides[0].viewType).toBe("C");
+    expect(slides[0].isProvisional).toBe(true);
+    expect(slides[0].data.date).toBe("2026-06-08");
+    expect(slides.slice(1).map((s) => s.viewType)).toEqual(["A", "B", "B", "D"]);
+
+    // When the day's news is final, the final result still leads; the rest of
+    // the rotation keeps its usual order either way.
+    const finalPayload = {
+      ...samplePayload,
+      views: {
+        ...samplePayload.views,
+        latest_races: samplePayload.views.latest_races.map((r) => ({ ...r, is_provisional: false })),
+      },
+    };
+    const finalSlides = buildRotationSlides(finalPayload);
+    expect(finalSlides[0].viewType).toBe("C");
+    expect(finalSlides[0].isProvisional).toBe(false);
+
+    // A stale race is not "today's news": standings keep the opening slide.
+    expect(buildRotationSlides(offDayPayload)[0].viewType).toBe("A");
   });
 
   it("paginates large competitor tables but keeps the configured time on every page", () => {
@@ -765,6 +800,7 @@ describe("ClubTvDisplay rotation & rendering", () => {
   });
 
   it("opens on Overall Standings (View A) by default and displays persistent race-day panel", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue(offDayPayload);
     render(<ClubTvDisplay />);
     await flush();
 
@@ -774,6 +810,9 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(container.querySelector('[data-testid="tv-slide-A"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="tv-leader-banner"]').textContent).toContain("Bluebird");
     expect(container.querySelector('[data-testid="tv-podium-badge-1"]').textContent).toBe("1");
+    // The rotation position reads as a counter: forty dots read as noise.
+    const indicators = container.querySelector('[data-testid="tv-rotation-indicators"]');
+    expect(indicators.textContent.trim()).toBe("1/5");
 
     // Persistent race-day panel
     const panel = container.querySelector('[data-testid="tv-race-day-panel"]');
@@ -786,6 +825,7 @@ describe("ClubTvDisplay rotation & rendering", () => {
   });
 
   it("automatically rotates through Views A -> B -> C -> D and shows provisional banner on View C", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue(offDayPayload);
     render(<ClubTvDisplay />);
     await flush();
 
@@ -820,7 +860,94 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(container.querySelector('[data-testid="tv-progress-completed"]').textContent).toBe("3");
   });
 
+  it("stretches a full standings table into the height of the wall", async () => {
+    // Eight boats on a 1080p screen used to fill barely half the panel, leaving
+    // a dark void under the table; a full table now grows its rows to the edge.
+    const manyBoats = Array.from({ length: 6 }, (_, i) => ({
+      boat_id: `b-${i + 1}`,
+      rank: i + 1,
+      boat_name: `Boat ${i + 1}`,
+      sail_no: `GBR 90${i}`,
+      class_name: "Sonata",
+      total: i + 1,
+      net: i + 1,
+    }));
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...offDayPayload,
+      views: { ...offDayPayload.views, overall: [{ ...samplePayload.views.overall[0], standings: manyBoats }] },
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    expect(container.querySelector('[data-testid="tv-standings-table"]').className).toContain("h-full");
+  });
+
+  it("drops the repeated Class column, the always-equal Total column and stretching for a short table", async () => {
+    // Two boats from one class with no discard in play: every column that just
+    // repeats the slide title or the net score is width the boats could use.
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...offDayPayload,
+      views: {
+        ...offDayPayload.views,
+        overall: [
+          {
+            ...samplePayload.views.overall[0],
+            standings: samplePayload.views.overall[0].standings.map((row) => ({ ...row, total: row.net })),
+          },
+        ],
+      },
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const table = container.querySelector('[data-testid="tv-standings-table"]');
+    const headers = [...table.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    expect(headers).not.toContain("Class");
+    expect(headers).not.toContain("Total");
+    expect(headers).toEqual(["Pos", "Boat", "Sail No", "Helm / Skipper", "R1", "R2", "R3", "Races", "Net Pts"]);
+    expect(table.className).not.toContain("h-full");
+  });
+
+  it("caps the race-day panel so no section spills below the fold", async () => {
+    // A TV is not scrolled: the schedule, calendar and notices keep their most
+    // useful entries and nothing runs off the bottom of the screen.
+    const schedule = Array.from({ length: 6 }, (_, i) => ({
+      race_id: `r${i + 1}`,
+      class_name: `Fleet ${i + 1}`,
+      race_label: `Race ${i + 1}`,
+      start_time: `1${i}:00`,
+      status: "scheduled",
+    }));
+    const calendar = Array.from({ length: 6 }, (_, i) => ({
+      date: `2099-01-0${i + 1}`,
+      races: [{ class_name: "Sonata", race_number: i + 1 }],
+    }));
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...samplePayload,
+      race_day: {
+        ...samplePayload.race_day,
+        schedule,
+        calendar,
+        onb_notices: [
+          { id: "n1", title: "First Notice", summary: "one" },
+          { id: "n2", title: "Second Notice", summary: "two" },
+          { id: "n3", title: "Third Notice", summary: "three" },
+        ],
+      },
+    });
+    render(<ClubTvDisplay />);
+    await flush();
+
+    const panel = container.querySelector('[data-testid="tv-race-day-panel"]');
+    expect(panel.textContent).toContain("Fleet 5");
+    expect(panel.textContent).not.toContain("Fleet 6");
+    expect(container.querySelectorAll('[data-testid="tv-calendar-day"]')).toHaveLength(4);
+    expect(panel.textContent).toContain("Second Notice");
+    expect(panel.textContent).not.toContain("Third Notice");
+  });
+
   it("retains last retrieved results and current slide when a background poll fails", async () => {
+    mockApi.getClubTvDisplay.mockResolvedValue(offDayPayload);
     render(<ClubTvDisplay />);
     await flush();
 
