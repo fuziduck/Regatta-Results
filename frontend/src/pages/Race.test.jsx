@@ -140,6 +140,51 @@ test("switches race positions, points and corrected-time basis between series sc
   expect(container.querySelector('[data-testid="race-header"]').textContent).toContain("IRC + YTC");
 });
 
+test("leaves a boat out of a rating table she holds no certificate for", async () => {
+  // Dual-scored series: one set of finish times, a table per rating system.
+  // A YTC-only boat has no IRC certificate, so she is not part of the IRC
+  // table at all — no row, no elapsed time, no entry in its scoring.
+  mockApi.getSeries.mockResolvedValue([{ id: "s1", name: "Cruiser Autumn", class_id: "c1", scoring_mode: "irc", scoring_modes: ["irc", "ytc"] }]);
+  mockApi.getClasses.mockResolvedValue([{ id: "c1", name: "Cruisers", scoring_mode: "irc" }]);
+  mockApi.getBoats.mockResolvedValue([
+    { id: "b1", name: "IRC hull", sail_no: "1", helm: "A", tcc: 1.05 },
+    { id: "b2", name: "YTC hull", sail_no: "2", helm: "B", ytc: 900 },
+  ]);
+  mockApi.getRace.mockResolvedValue({ ...mockRace, entries_count: 2, results: [
+    { boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-06-07T11:31:40Z" },
+    { boat_id: "b2", code: "FINISHED", position: 2, finish_time: "2026-06-07T11:33:20Z" },
+  ] });
+  mockApi.seriesStandings.mockResolvedValue({
+    races: [{ race_number: 6, date: "2026-06-07" }],
+    divisions: [
+      { division_name: "IRC", division_scoring_mode: "irc", standings: [
+        { boat_id: "b1", positions: [1], scores: [{ points: 1, code: "FINISHED" }] },
+      ] },
+      { division_name: "YTC", division_scoring_mode: "ytc", standings: [
+        { boat_id: "b2", positions: [1], scores: [{ points: 1, code: "FINISHED" }] },
+      ] },
+    ],
+  });
+
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => { root.render(<Race />); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+  let rows = [...container.querySelectorAll('[data-testid="race-results-table"] tbody tr')];
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain("IRC hull");
+  expect(rows[0].textContent).not.toContain("YTC hull");
+  expect(rows[0].textContent).toContain("01:40");
+
+  await act(async () => { container.querySelector('[data-testid="race-scoring-ytc"]').click(); });
+  rows = [...container.querySelectorAll('[data-testid="race-results-table"] tbody tr')];
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain("YTC hull");
+  expect(rows[0].textContent).not.toContain("IRC hull");
+});
+
 test("shows elapsed and corrected times for handicap scoring", async () => {
   mockApi.getSeries.mockResolvedValue([{ id: "s1", name: "IRC Series", class_id: "c1", scoring_mode: "irc" }]);
   mockApi.getClasses.mockResolvedValue([{ id: "c1", name: "IRC", scoring_mode: "irc" }]);

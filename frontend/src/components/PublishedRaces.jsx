@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, scoringModeLabel, seriesScoringModes, SCORING_MODES, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
+import { fmtDate, fmtSeconds, elapsedSecondsOf, correctedSecondsOf, boatRating, boatDivision, classDivisions, scoringModeLabel, seriesScoringModes, SCORING_MODES, CODE_COLORS, shouldWrapBoatName, wrapBoatName } from "@/lib/helpers";
 import { boatProfilePath, raceResultPath } from "@/lib/seo";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -64,9 +64,17 @@ export default function PublishedRaces({
     ...(series || {}), scoring_mode: series?.scoring_mode || scoringMode,
   });
   const scoringModes = selectedScoringModes.length ? selectedScoringModes : ["one_design"];
-  const hasRatingDivisions = (classInfo?.divisions || []).filter((d) => (d?.name || "").trim()).length >= 2;
-  const activeMode = raceMode && scoringModes.includes(raceMode) ? raceMode : scoringModes[0];
-  const multiScoring = scoringModes.length > 1 && !hasRatingDivisions;
+  const divisions = classDivisions(classInfo);
+  const hasRatingDivisions = divisions.length > 0;
+  // What a race table can be viewed by: a split class shows one table per
+  // rating division, otherwise a dual-scored series shows one per system.
+  // Every table is that rating's own fleet, with its own corrected times.
+  const tableViews = hasRatingDivisions
+    ? divisions.map((d) => ({ key: d.name, label: d.name, mode: d.scoring_mode, division: d.name }))
+    : scoringModes.map((mode) => ({ key: mode, label: scoringModeLabel(mode), mode, division: null }));
+  const activeView = tableViews.find((view) => view.key === raceMode) || tableViews[0];
+  const activeMode = activeView.mode;
+  const multiScoring = tableViews.length > 1;
   // Yardstick handicaps (PY, YTC) show the boat's number; IRC shows the design.
   const yardstick = !!(SCORING_MODES[activeMode] || {}).yardstick;
 
@@ -106,10 +114,20 @@ export default function PublishedRaces({
       {sorted.length > 0 && <Accordion type="single" collapsible className="mt-6" data-testid={testId}>
         {sorted.map((race) => {
           const scoringPositions = race.scoring_positions?.[activeMode] || {};
-          const rows = [...(race.results || [])].map((result) => ({
-            ...result,
-            position: scoringPositions[result.boat_id] ?? result.position,
-          })).sort((a, b) => {
+          // Each table is one rating fleet: a boat with no certificate for the
+          // selected system (or assigned to another division) is not part of
+          // it — no elapsed or corrected time, no place, and no effect on its
+          // scoring. One-design is open to the whole fleet it covers.
+          const rows = [...(race.results || [])]
+            .filter((result) => {
+              const boat = boats[result.boat_id];
+              if (activeView.division) return boatDivision(boat, divisions) === activeView.division;
+              return activeMode === "one_design" || Boolean(boatRating(activeMode, boat));
+            })
+            .map((result) => ({
+              ...result,
+              position: scoringPositions[result.boat_id] ?? result.position,
+            })).sort((a, b) => {
             if (a.code === "FINISHED" && b.code === "FINISHED") return a.position - b.position;
             if (a.code === "FINISHED") return -1;
             if (b.code === "FINISHED") return 1;
@@ -132,9 +150,9 @@ export default function PublishedRaces({
               </AccordionTrigger>
               <AccordionContent>
                 {multiScoring && <div className="mb-3 flex gap-2" role="group" aria-label={`Race ${race.race_number} scoring system`}>
-                  {scoringModes.map((mode) => <button key={mode} type="button" data-testid={`published-race-${race.id}-${mode}`}
-                    className={`inline-flex min-h-11 items-center rounded-md border px-3 text-xs font-semibold ${activeMode === mode ? "border-ocean bg-ocean text-white" : "border-border text-ocean"}`}
-                    onClick={() => setRaceMode(mode)}>{scoringModeLabel(mode)}</button>)}
+                  {tableViews.map((view) => <button key={view.key} type="button" data-testid={`published-race-${race.id}-${view.key}`}
+                    className={`inline-flex min-h-11 items-center rounded-md border px-3 text-xs font-semibold ${activeView.key === view.key ? "border-ocean bg-ocean text-white" : "border-border text-ocean"}`}
+                    onClick={() => setRaceMode(view.key)}>{view.label}</button>)}
                 </div>}
                 {race.abandoned ? (
                   <div className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 p-4 text-sm text-red-700 dark:text-red-300 flex items-start gap-2" data-testid={`race-abandoned-${race.id}`}>
@@ -149,7 +167,7 @@ export default function PublishedRaces({
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-left text-muted-foreground border-b">
-                          <th className="py-2 w-10">Pos{multiScoring ? ` (${scoringModeLabel(activeMode)})` : ""}</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
+                          <th className="py-2 w-10">Pos{multiScoring ? ` (${activeView.label})` : ""}</th><th>Boat</th><th>Club</th><th>Helm</th><th className="text-center">Code</th>
                           {activeMode !== "one_design" && <><th>Type</th>{yardstick && <th>{scoringModeLabel(activeMode)}</th>}<th className="text-right">Elapsed</th><th className="text-right">Corrected</th></>}
                         </tr>
                       </thead>
@@ -158,7 +176,7 @@ export default function PublishedRaces({
                           const boat = boats[result.boat_id] || {};
                           const rating = boatRating(activeMode, boat);
                           return (
-                            <tr key={result.boat_id} className="border-b last:border-0">
+                            <tr key={result.boat_id} className="border-b last:border-0" data-testid={`published-result-${result.boat_id}`}>
                               <td className="py-2 font-heading text-base">{result.code === "FINISHED" ? (scoringPositions[result.boat_id] ?? result.position) : "–"}</td>
                               <td className={shouldWrapBoatName(boat.name) ? "max-w-52" : ""}>
                                 <Link to={boatProfilePath(boat.fleet_id || result.boat_id, boat.name)} className={`font-semibold ${shouldWrapBoatName(boat.name) ? "whitespace-pre-line break-words" : "whitespace-nowrap"}`}>{wrapBoatName(boat.name || "Unknown boat")}</Link>{" "}

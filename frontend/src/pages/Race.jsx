@@ -149,7 +149,17 @@ export default function Race() {
     const activePositions = multiScoring
       ? (positionsByMode.get(displayMode) || positionsByMode.get(activeScoringModes[0]) || new Map())
       : allPositionsByBoat;
+    // The table on show is one rating fleet (a split class keeps its divisions
+    // in one list, so every row already carries its own division). A boat with
+    // no certificate for this system has no place, corrected time or points in
+    // it, so she is not part of its results at all — she appears only where
+    // she is rated (e.g. a YTC-only yacht in the YTC table, never IRC).
+    const ratedMode = multiScoring
+      ? displayMode
+      : divisions.length ? null : activeScoringModes[0];
+    const needsRating = ratedMode && ratedMode !== "one_design";
     return [...(race.results || [])]
+      .filter((result) => !needsRating || Boolean(boatRating(ratedMode, boats[result.boat_id])))
       // Divisions are shown as separate results: the rows of one division stay
       // together, each in its own finishing order.
       .sort((a, b) => {
