@@ -890,7 +890,9 @@ async def get_club_tv_display(
             schedule = [str(d) for d in (s.get("schedule") or []) if d]
             sailed_races = [
                 r for r in all_races
-                if r.get("series_id") == s["id"] and r.get("status") == "published" and not r.get("abandoned")
+                if r.get("series_id") == s["id"]
+                and r.get("status") in m.SCORED_RACE_STATUSES
+                and not r.get("abandoned")
             ]
             abandoned_count = int(payload.get("abandoned_race_count") or 0)
             completed_count = int(payload.get("race_count") or len(sailed_races))

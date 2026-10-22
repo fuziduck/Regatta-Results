@@ -422,6 +422,8 @@ class _FilterColl:
             for key, value in filt.items():
                 if isinstance(value, dict) and "$ne" in value:
                     out = [item for item in out if item.get(key) != value["$ne"]]
+                elif isinstance(value, dict) and "$in" in value:
+                    out = [item for item in out if item.get(key) in value["$in"]]
                 else:
                     out = [item for item in out if item.get(key) == value]
         return _Cursor(out)
@@ -573,6 +575,57 @@ class TestAbandonedRaces:
         assert st["discards"] == 2             # min(2, 3-1) — never discard every race
         by_id = {r["boat_id"]: r for r in st["standings"]}
         assert by_id["b1"]["net"] == 1.0        # 1,1,1 discard two
+
+
+class TestProvisionalRaces:
+    """A provisional result is a completed race awaiting confirmation, so it
+    scores in the series exactly as a published one does. Only a race still in
+    setup (and an abandoned race) is left out of the standings."""
+
+    def _series(self):
+        return {"id": "s1", "class_id": "c1", "year": 2026, "discards": 0}
+
+    def test_provisional_race_scores_like_a_published_one(self):
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b2", 1), _fin("b1", 2)], status="provisional"),
+        ]
+        # _series_results is what the public series page serves.
+        server.db = types.SimpleNamespace(
+            races=_FilterColl(races), boats=_Coll(boats),
+            classes=_Coll([{"id": "c1", "club_id": "club-1"}]), clubs=_Coll([]))
+        payload = asyncio.run(server._series_results(self._series()))
+        assert payload["race_count"] == 2
+        assert [r["race_number"] for r in payload["races"]] == [1, 2]
+        by_id = {r["boat_id"]: r for r in payload["standings"]}
+        assert len(by_id["b1"]["scores"]) == 2
+        assert by_id["b1"]["net"] == 3.0
+        assert by_id["b2"]["net"] == 3.0
+
+    def test_setup_race_is_not_scored(self):
+        boats = [_boat(i) for i in range(1, 3)]
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b2", 1), _fin("b1", 2)], status="setup"),
+        ]
+        st = _standings_filtered(self._series(), boats, races)
+        assert st["race_count"] == 1
+        by_id = {r["boat_id"]: r for r in st["standings"]}
+        assert by_id["b1"]["net"] == 1.0
+
+    def test_overall_championship_counts_a_provisional_race(self):
+        series = {"id": "s1", "class_id": "c1", "year": 2026, "name": "Spring",
+                  "discards": 0, "included_in_overall": True, "planned_races": 2}
+        races = [
+            _race(1, [_fin("b1", 1), _fin("b2", 2)]),
+            _race(2, [_fin("b2", 1), _fin("b1", 2)], status="provisional"),
+        ]
+        boats = [_boat(i) for i in range(1, 3)]
+        payload = _overall(_fake_db(races, boats, [series]))
+        by_id = {r["boat_id"]: r for r in payload["standings"]}
+        assert by_id["b1"]["per_series"]["Spring"] == 3.0
+        assert by_id["b2"]["per_series"]["Spring"] == 3.0
 
 
 class TestDiscards:

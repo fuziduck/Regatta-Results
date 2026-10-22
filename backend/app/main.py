@@ -1517,6 +1517,11 @@ LOCK_ARCHIVED = "archived"
 # States in which the season's results are frozen and every normal mutation
 # of its races/results/config is rejected with 409.
 NOT_EDITABLE = frozenset({LOCK_LOCKED, LOCK_ARCHIVED})
+# Race statuses that count towards series scoring. A provisional result is a
+# completed race awaiting confirmation, so it scores exactly like a published
+# one; only a race still in "setup" (the officer is entering it) and an
+# abandoned race are left out of the standings.
+SCORED_RACE_STATUSES = frozenset({"published", "provisional"})
 # Optimistic concurrency: shown when a write carries an expected_version that
 # no longer matches the stored version (another user changed the record first).
 STALE_VERSION_MSG = ("This record has been changed by another user. Your version is out of "
@@ -3783,7 +3788,8 @@ async def _class_directory_items(class_ids: list[str]):
     for s in series_docs:
         class_data = class_by_id.get(s.get("class_id"), {})
         club = clubs.get(class_data.get("club_id"), {})
-        race_count = await db.races.count_documents({"series_id": s.get("id"), "status": "published"})
+        race_count = await db.races.count_documents(
+            {"series_id": s.get("id"), "status": {"$in": list(SCORED_RACE_STATUSES)}})
         competition = competitions.get(s.get("regatta_id"))
         items.append({
             "id": s.get("id"), "name": s.get("name"), "class_id": s.get("class_id"), "class_name": class_data.get("name"),
@@ -4310,7 +4316,9 @@ async def generate_schedule(series_id: str, data: GenScheduleInput, user: dict =
                                     detail="Season results are locked — the schedule cannot be changed. Use the administrator correction process to amend the season.")
     expected = _expected_version(data)
     total = data.count or series.get("planned_races", 0)
-    races = await db.races.find({"series_id": series_id, "status": "published"}, {"_id": 0}).to_list(1000)
+    races = await db.races.find(
+        {"series_id": series_id, "status": {"$in": list(SCORED_RACE_STATUSES)}},
+        {"_id": 0}).to_list(1000)
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     sailed_dates = [r["date"] for r in races]
     if total < len(sailed_dates):
@@ -7265,16 +7273,17 @@ async def _decorate_races_scoring_positions(races, include_unpublished=False):
     if not dual_series:
         return races
     # Honor explicit membership when present; otherwise only boats entered in
-    # at least one published series race form the fleet. This avoids ranking a
+    # at least one scored series race form the fleet. This avoids ranking a
     # one-off entrant against unrelated class members on the public race page.
     series_fleets = {}
     for sid, series in dual_series.items():
         members = set(series.get("member_boat_ids") or [])
         if not members:
-            all_published = await db.races.find(
-                {"series_id": sid, "status": "published", "abandoned": {"$ne": True}},
+            all_scored = await db.races.find(
+                {"series_id": sid, "status": {"$in": list(SCORED_RACE_STATUSES)},
+                 "abandoned": {"$ne": True}},
                 {"_id": 0, "results": 1}).to_list(1000)
-            members = {result.get("boat_id") for item in all_published
+            members = {result.get("boat_id") for item in all_scored
                        for result in item.get("results", []) if result.get("boat_id")}
             # The races being decorated belong to the fleet too: while the
             # officer is still entering an unpublished race, its signed-on
@@ -7475,11 +7484,12 @@ def _race_columns(races, boat_map, cfg, member_ids, entries_base=None,
 
 async def _series_scores(series, race_numbers=None, fold_combined=False, division=None,
                          scoring_mode=None):
-    """Return scored race data plus the count of published abandoned races.
+    """Return scored race data plus the count of abandoned races.
     agg: boat_id -> list of per-race entry dicts, aligned to race_meta; cfg:
-    the series' effective scoring config; races: the published, scored races
-    in view. If race_numbers is given (a set/list of the series' race
-    numbers), only those races are returned.
+    the series' effective scoring config; races: the scored races in view —
+    published or provisional, never setup or abandoned. If race_numbers is
+    given (a set/list of the series' race numbers), only those races are
+    returned.
 
     The whole series is scored first and the view is sliced out of those
     columns afterwards, so a duty (OOD) score — the boat's average over every
@@ -7499,7 +7509,7 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
         {"series_id": series["id"]}, {"_id": 0}).to_list(1000)
     abandoned_race_count = sum(1 for race in series_races if race.get("abandoned"))
     races = [race for race in series_races
-             if race.get("status") == "published" and not race.get("abandoned")]
+             if race.get("status") in SCORED_RACE_STATUSES and not race.get("abandoned")]
     races.sort(key=lambda r: (r.get("date", ""), r.get("race_number", 0)))
     keep = None if race_numbers is None else {int(n) for n in race_numbers}
     # Abandoned races carry no score, but a series that skipped a race should
@@ -7575,13 +7585,13 @@ async def _series_scores(series, race_numbers=None, fold_combined=False, divisio
         member_set = set(member_ids)
         boats = [b for b in boats if b.get("id") in member_set]
     else:
-        # Only boats that actually appear in at least one published race of
-        # the view are entered in it. Boats registered in the class that
+        # Only boats that actually appear in at least one scored race of the
+        # view are entered in it. Boats registered in the class that
         # never raced the series must not clutter its standings (e.g. a
         # one-off regatta whose fleet is a subset of the club's full class
         # fleet). Boats absent from an individual race still auto-score DNC as
         # usual; boats absent from the whole series simply do not belong to
-        # it. A series with no published races yet keeps its full fleet
+        # it. A series with no scored races yet keeps its full fleet
         # (all-zero rows) as before.
         entered = {r.get("boat_id") for race in view_races
                    for r in (race.get("results") or []) if r.get("boat_id")}
@@ -7866,9 +7876,10 @@ async def _build_snapshot_doc(series: dict, user: dict, version: int,
     # Freeze each mini-series view too, so a locked season's mini standings
     # are equally immutable.
     if series.get("mini_series"):
-        all_races = await db.races.find({"series_id": series["id"], "status": "published",
-                                         "abandoned": {"$ne": True}},
-                                        {"_id": 0, "race_number": 1}).to_list(1000)
+        all_races = await db.races.find(
+            {"series_id": series["id"], "status": {"$in": list(SCORED_RACE_STATUSES)},
+             "abandoned": {"$ne": True}},
+            {"_id": 0, "race_number": 1}).to_list(1000)
         groups = _normalize_mini_groups(series, all_races)
         mini_payloads = {}
         for gi, group in enumerate(groups, start=1):
@@ -8271,9 +8282,10 @@ async def series_standings(series_id: str, request: Request, club_id: Optional[s
     frozen = await _standings_for_series(series, mini=mini)
     if frozen is not None:
         return frozen
-    all_races = await db.races.find({"series_id": series_id, "status": "published",
-                                     "abandoned": {"$ne": True}},
-                                    {"_id": 0, "race_number": 1}).to_list(1000)
+    all_races = await db.races.find(
+        {"series_id": series_id, "status": {"$in": list(SCORED_RACE_STATUSES)},
+         "abandoned": {"$ne": True}},
+        {"_id": 0, "race_number": 1}).to_list(1000)
     groups = _normalize_mini_groups(series, all_races)
     if mini < 1 or mini > len(groups):
         raise HTTPException(status_code=404, detail="Mini series not found")
@@ -8345,15 +8357,16 @@ async def compute_overall_standings(class_id: str, year: int, division=None,
     # the whole class fleet), net after the same discard policy the series
     # would apply. A combined mini-series day already scores by finishing
     # position, so its absent-boat score is the next position after the last
-    # boat. Series with no published races yet have no one to "sit out":
+    # boat. Series with no scored races yet have no one to "sit out":
     # everyone scores 0 until the series starts.
     dnc_series_net = {}
     series_eligible = {}
     use_position = {}
     for series in all_series:
         name = series["name"]
-        race_docs = await db.races.find({"series_id": series["id"], "status": "published",
-                                         "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
+        race_docs = await db.races.find(
+            {"series_id": series["id"], "status": {"$in": list(SCORED_RACE_STATUSES)},
+             "abandoned": {"$ne": True}}, {"_id": 0}).to_list(1000)
         # "Scored by position" only holds when the WHOLE series is a single
         # combined day — a regatta whose mini groups are all "combined". A
         # championship series that merely CONTAINS a combined day (its
