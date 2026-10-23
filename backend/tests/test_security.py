@@ -1417,3 +1417,27 @@ class TestProductionProxyConfig:
         assert "$proxy_add_x_forwarded_for" not in nginx, \
             "nginx must not re-append its own $remote_addr to XFF"
         assert "X-Forwarded-Proto $scheme" in nginx
+
+    def test_nginx_caching_and_security_headers(self):
+        """Verify nginx static asset and index.html caching directives:
+        - /static/ must have long-lived immutable caching
+        - index.html must have Cache-Control: no-cache to force revalidation
+        - index.html must preserve all document security headers
+        """
+        nginx = (self._repo_root() / "frontend" / "nginx.conf").read_text()
+        # Static assets long-term cache
+        assert 'location /static/' in nginx
+        assert 'add_header Cache-Control "public, immutable";' in nginx
+        assert 'expires 1y;' in nginx
+
+        # index.html revalidation
+        assert 'location = /index.html' in nginx
+        assert 'add_header Cache-Control "no-cache";' in nginx
+
+        # Security headers preserved in location = /index.html
+        assert 'X-Content-Type-Options "nosniff"' in nginx
+        assert 'X-Frame-Options "DENY"' in nginx
+        assert 'Referrer-Policy "strict-origin-when-cross-origin"' in nginx
+        assert 'Permissions-Policy "camera=(), microphone=(), geolocation=()"' in nginx
+        assert 'Content-Security-Policy' in nginx
+
