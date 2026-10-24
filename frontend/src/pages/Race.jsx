@@ -98,8 +98,10 @@ export default function Race() {
 
   const raceNavigation = useMemo(() => {
     if (!race) return { previous: null, next: null };
+    // A provisional race is a sailed race with public results, so it is a step
+    // in the sequence too — stepping over it skipped the race just completed.
     const siblings = (raceList || [])
-      .filter((item) => item.id && String(item.status || "").toLowerCase() === "published")
+      .filter((item) => item.id && ["published", "provisional"].includes(String(item.status || "").toLowerCase()))
       .sort((a, b) => Number(a.race_number || 0) - Number(b.race_number || 0)
         || String(a.date || "").localeCompare(String(b.date || "")));
     const index = siblings.findIndex((item) => item.id === race.id);

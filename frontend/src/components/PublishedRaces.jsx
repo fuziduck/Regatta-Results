@@ -9,6 +9,9 @@ import { FlagOff } from "lucide-react";
 
 const STATUS_CLASS = {
   Completed: "border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200",
+  // A provisional result is a sailed race awaiting confirmation: it reads as
+  // amber rather than green, but it is never presented as a race still to come.
+  Provisional: "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200",
   Planned: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-500/40 dark:bg-slate-500/15 dark:text-slate-200",
   Postponed: "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200",
   Abandoned: "border-red-300 bg-red-100 text-red-800 dark:border-red-500/40 dark:bg-red-500/15 dark:text-red-200",
@@ -20,8 +23,16 @@ function raceStatus(race) {
   if (race?.abandoned || status === "abandoned") return "Abandoned";
   if (race?.cancelled || status === "cancelled") return "Cancelled";
   if (race?.postponed || status === "postponed") return "Postponed";
-  return status === "published" ? "Completed" : "Planned";
+  if (status === "published") return "Completed";
+  if (status === "provisional") return "Provisional";
+  return "Planned";
 }
+
+// A race that has been scored has been sailed: its results are either final or
+// awaiting confirmation, and either way the schedule offers them. Hiding a
+// provisional race made it read as a race still to come, so the day's racing
+// disappeared from the page until somebody confirmed it.
+const isScored = (status) => status === "Completed" || status === "Provisional";
 
 export default function PublishedRaces({
   seriesId,
@@ -78,8 +89,8 @@ export default function PublishedRaces({
   // Yardstick handicaps (PY, YTC) show the boat's number; IRC shows the design.
   const yardstick = !!(SCORING_MODES[activeMode] || {}).yardstick;
 
-  const completed = useMemo(() => races.filter((race) => raceStatus(race) === "Completed"), [races]);
-  const sorted = useMemo(() => [...completed].sort((a, b) => (a.date < b.date ? 1 : -1)), [completed]);
+  const scored = useMemo(() => races.filter((race) => isScored(raceStatus(race))), [races]);
+  const sorted = useMemo(() => [...scored].sort((a, b) => (a.date < b.date ? 1 : -1)), [scored]);
   const scheduleRows = useMemo(() => {
     const byNumber = new Map();
     races.filter((race) => race.race_number != null).forEach((race) => {
@@ -98,7 +109,7 @@ export default function PublishedRaces({
         number,
         label: race?.mini_group_label || (rows.length > 1 ? `R${number}${String.fromCharCode(65 + rowIndex)}` : `R${number}`),
         race,
-        date: race && raceStatus(race) === "Completed"
+        date: race && isScored(raceStatus(race))
           ? race.date
           : configured[index] || race?.original_date || race?.scheduled_date || race?.date || null,
         startTime: race?.start_time || race?.scheduled_start_time || classInfo?.default_start_time || null,
@@ -143,6 +154,7 @@ export default function PublishedRaces({
                   <div>
                     <div className="font-semibold flex items-center gap-2">Race {race.race_number}
                       {race.abandoned && <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">Abandoned</Badge>}
+                      {!race.abandoned && raceStatus(race) === "Provisional" && <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">Provisional</Badge>}
                     </div>
                     <div className="text-xs text-muted-foreground">{fmtDate(race.date)}</div>
                   </div>
@@ -224,7 +236,7 @@ export default function PublishedRaces({
               {scheduleRows.map((row, index) => (
                 <tr key={`${row.number}-${row.race?.id || row.label}`} className={index % 2 ? "bg-muted" : "bg-card"} data-testid={`schedule-row-${row.number}`}>
                   <td className="px-3 py-2 font-heading">
-                    {row.status === "Completed" && row.race && clubSlug ? (
+                    {isScored(row.status) && row.race && clubSlug ? (
                       <Link to={raceResultPath(clubSlug, row.race.id, `${classInfo?.name || "Sailing"} ${series?.name || "Series"} race ${row.number} ${series?.year || ""}`)} className="text-ocean hover:underline">{row.label}</Link>
                     ) : row.label}
                   </td>
@@ -232,7 +244,7 @@ export default function PublishedRaces({
                   <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted-foreground">{row.startTime || "To be confirmed"}</td>
                   <td className="px-3 py-2"><Badge variant="outline" className={STATUS_CLASS[row.status]}>{row.status}</Badge></td>
                   <td className="px-3 py-2">
-                    {row.status === "Completed" && row.race && clubSlug ? (
+                    {isScored(row.status) && row.race && clubSlug ? (
                       <Link to={raceResultPath(clubSlug, row.race.id, `${classInfo?.name || "Sailing"} ${series?.name || "Series"} race ${row.number} ${series?.year || ""}`)} className="font-semibold text-ocean hover:underline">View Results</Link>
                     ) : row.status === "Abandoned" ? (
                       <span className="text-xs font-semibold text-red-700 dark:text-red-300" data-testid={`schedule-excluded-${row.race?.id || row.number}`}>Not included in series</span>

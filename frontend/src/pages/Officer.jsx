@@ -745,6 +745,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     () => api.setStatus(raceId, s, version),
     s === "published" ? "Results published to landing page!" :
     s === "setup" ? "Result recalled — race is back in setup" :
+    s === "provisional" ? "Marked provisional — the race shows on the site until it is published" :
     `Marked ${s}`
   ).then((r) => { if (r && s === "published") onBack(); });
   const abandon = (flag) => runMutation(

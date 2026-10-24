@@ -5114,8 +5114,11 @@ async def get_races(request: Request, status: Optional[str] = None, class_id: Op
     items = await db.races.find(q, {"_id": 0}).sort("date", -1).to_list(2000)
     if not user:
         # The public schedule needs metadata for planned/postponed/cancelled
-        # slots, but unpublished results must never leak through this endpoint.
-        items = [item if item.get("status") == "published" else {
+        # slots, but a race nobody has scored must never leak results through
+        # this endpoint. A provisional result is scored — it already counts in
+        # the series and championship tables — so it is returned whole, and the
+        # race page marks it provisional rather than presenting it as final.
+        items = [item if item.get("status") in SCORED_RACE_STATUSES else {
             k: v for k, v in item.items()
             if k not in {"results", "entries_count", "actual_start", "version", "published_at", "publication_event_id"}
         } for item in items]
@@ -5127,11 +5130,13 @@ async def get_race(race_id: str, request: Request):
     race = await db.races.find_one({"id": race_id}, {"_id": 0})
     if not race:
         raise HTTPException(status_code=404, detail="Race not found")
-    # Published races are public; but staff may never view another club's
-    # race (which would expose unpublished results and notices). 404 (not
-    # 403) so the existence of another club's race is never revealed.
+    # Scored races (published, or provisional and awaiting confirmation) are
+    # public — a provisional result counts in the standings, so the race behind
+    # it has to be readable; but staff may never view another club's race
+    # (which would expose unpublished results and notices). 404 (not 403) so
+    # the existence of another club's race is never revealed.
     user = await get_current_user(request)
-    if not user and race.get("status") != "published":
+    if not user and race.get("status") not in SCORED_RACE_STATUSES:
         raise HTTPException(status_code=404, detail="Race not found")
     race_club_id = await _class_club_id(race.get("class_id"))
     if user and user.get("role") != "webmaster" and user.get("club_id") != race_club_id:
@@ -7262,7 +7267,7 @@ async def _decorate_races_scoring_positions(races, include_unpublished=False):
     """
     dual = [race for race in races
             if race.get("series_id")
-            and (include_unpublished or race.get("status") == "published")]
+            and (include_unpublished or race.get("status") in SCORED_RACE_STATUSES)]
     series_ids = list({race["series_id"] for race in dual})
     if not series_ids:
         return races

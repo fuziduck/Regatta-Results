@@ -76,6 +76,31 @@ test("shows every scheduled slot in race-number order and links only completed r
   expect(rows[4].querySelector("a")).toBeNull();
 });
 
+test("lists a provisional race as sailed and links through to its results", async () => {
+  mockApi.getRaces.mockResolvedValue([{
+    id: "r1", race_number: 1, date: "2026-04-04", start_time: "10:30",
+    start_tz_offset_minutes: 0, status: "provisional",
+    results: [{ boat_id: "b1", code: "FINISHED", position: 1, finish_time: "2026-04-04T10:45:00Z" }],
+  }]);
+  mockApi.getBoats.mockResolvedValue([{ id: "b1", name: "Blue Note", sail_no: "GBR 1", boat_type: "Sonata" }]);
+
+  await renderSchedule();
+
+  // The race was sailed: it carries its own date and reads as provisional,
+  // never as a race still to come.
+  const row = container.querySelector('[data-testid="schedule-row-1"]');
+  expect(row.textContent).toContain("Provisional");
+  expect(row.textContent).not.toContain("Planned");
+  expect(row.textContent).toContain("Apr 4, 2026");
+  expect(row.querySelector('a[href="/club/medway-yacht-club/race/r1/sonata-series-race-1-2026"]'))
+    .not.toBeNull();
+
+  // And its detailed results are on the page, badged provisional.
+  expect(container.querySelector('[data-testid="race-folder-r1"]')).not.toBeNull();
+  act(() => { container.querySelector('[data-testid="race-folder-r1"]').click(); });
+  expect(container.querySelector('[data-testid="published-result-b1"]').textContent).toContain("Blue Note");
+});
+
 test("keeps an abandoned scheduled race visible and marks it excluded from the series", async () => {
   mockApi.getRaces.mockResolvedValue([
     { id: "r1", race_number: 1, date: "2026-04-04", status: "published", results: [] },
