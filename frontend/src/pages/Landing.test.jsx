@@ -187,6 +187,34 @@ test("selecting a different class and then its series keeps the requested series
   expect(container.querySelector('[data-testid="series-tab-Early Autumn"]')?.getAttribute("aria-current")).toBe("true");
 });
 
+test("picks up a series set up after the page opened when the tab is re-focused", async () => {
+  await renderPage();
+  click("browse-tree-toggle");
+  expect(container.querySelector('[data-testid="series-tab-Winter"]')).toBeNull();
+
+  // The officer sets today's series up while the reader has the page open: it
+  // must appear as a tab on return, without a reload.
+  const winter = {
+    id: "dragon-winter", class_id: "dragon", year: CURRENT_YEAR,
+    name: "Winter", series_type: "club_championship",
+  };
+  mockApi.getSeries.mockImplementation((params) => {
+    if (params.class_id === "dragon") return Promise.resolve([...dragonSeries, winter]);
+    if (params.class_id === "sonata") return Promise.resolve(sonataSeries);
+    return Promise.resolve([...allSeries, winter]);
+  });
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  await flush();
+
+  expect(container.querySelector('[data-testid="series-tab-Winter"]')).not.toBeNull();
+  // The reader keeps the selection they were on.
+  expect(container.querySelector('[data-testid="series-tab-Spring"]')).not.toBeNull();
+  expect(container.querySelector("main h3")?.textContent).toContain("Overall Championship");
+});
+
 test("selecting a series during the current class request is applied after the request completes", async () => {
   const currentClassRequest = deferred();
   mockApi.getSeries.mockImplementation((params) => {

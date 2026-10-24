@@ -400,7 +400,22 @@ export default function Landing() {
       .then((data) => { if (current) setOverall(data); })
       .catch(() => { if (current) setOverall(null); })
       .finally(() => { if (current) setOverallLoading(false); });
-    return () => { current = false; };
+    // A series is often set up minutes before the first gun, so the class's
+    // list is re-read on page re-focus and on a 30s poll: a tab opened before
+    // the series existed would otherwise keep showing the old set until a
+    // reload. The reader's selected tab is kept — the effect above only moves
+    // it when the series behind it has gone.
+    const readSeries = () => api.getSeries({ class_id: activeClass, year, club_id: clubId })
+      .then((items) => { if (current) setSeries(items || []); })
+      .catch(() => {});
+    const timer = setInterval(readSeries, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") readSeries(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [clubId, activeClass, year, currentSeriesScope]);
 
   // Regattas are club-wide racing occasions (across classes), independent of
@@ -417,10 +432,24 @@ export default function Landing() {
   }, [clubId, year]);
 
   // Club-wide series for the year identify which competition categories are
-  // available, independent of the active class.
+  // available, independent of the active class. They are re-read on page
+  // re-focus and on a 30s poll so a series set up after the page loaded shows
+  // up in the tab tree without a manual reload.
   useEffect(() => {
-    if (!clubId) return;
-    api.getSeries({ year, club_id: clubId }).then(setClubSeries).catch(() => setClubSeries([]));
+    if (!clubId) return undefined;
+    let current = true;
+    const load = () => api.getSeries({ year, club_id: clubId })
+      .then((items) => { if (current) setClubSeries(items || []); })
+      .catch(() => { if (current) setClubSeries([]); });
+    load();
+    const timer = setInterval(load, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [clubId, year]);
 
   // Split the year's results into the three user-facing racing categories.

@@ -241,33 +241,53 @@ function ClubHomeIndex({ club }) {
   const [classQuery, setClassQuery] = useState("");
   const [showAllClasses, setShowAllClasses] = useState(false);
 
+  // A series is often set up minutes before the first gun, so the index has to
+  // pick one up while the page is already open: a phone tab (or a restored
+  // back-forward cache entry) that was loaded before the series existed would
+  // otherwise keep showing the old list until a manual reload. Re-read on page
+  // re-focus and on a 30s poll, the same cadence the club directory uses.
   useEffect(() => {
     let current = true;
-    Promise.all([
+    let loaded = false;
+    const load = () => Promise.all([
       api.getClasses({ club_id: club.id }),
       api.getSeries({ club_id: club.id }),
       api.getRegattas({ club_id: club.id }),
       api.getRaces({ club_id: club.id, status: "published" }),
     ]).then(([classRows, seriesRows, competitionRows, raceRows]) => {
       if (!current) return;
+      loaded = true;
       setClasses(classRows || []);
       setSeries(seriesRows || []);
       setCompetitions(competitionRows || []);
       setRaces(raceRows || []);
     }).catch(() => {
-      if (!current) return;
+      // A failed refresh keeps what is already on screen; only a first load
+      // with nothing to show falls back to the empty index.
+      if (!current || loaded) return;
       setClasses([]);
       setSeries([]);
       setCompetitions([]);
       setRaces([]);
     }).finally(() => { if (current) setLoading(false); });
-    return () => { current = false; };
+    load();
+    const timer = setInterval(load, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [club.id]);
 
   // Race reports hang off classes, so they are fetched per class once the
   // class list lands. A class that cannot be read contributes no reports
   // rather than failing the page — the rest of the index is still useful.
-  const classIds = useMemo(() => classes.map((item) => item.id).filter(Boolean), [classes]);
+  // The ids are keyed by their joined value so the refresh above, which hands
+  // back a new array of the same classes, does not refetch every report.
+  const classIdKey = useMemo(() => classes.map((item) => item.id).filter(Boolean).join(","), [classes]);
+  const classIds = useMemo(() => (classIdKey ? classIdKey.split(",") : []), [classIdKey]);
   useEffect(() => {
     let current = true;
     if (!classIds.length) {

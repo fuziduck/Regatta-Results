@@ -77,10 +77,36 @@ export default function Class() {
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
 
+  // A series can be set up for this fleet after the page was opened, so the
+  // list is re-read on page re-focus and on a 30s poll — otherwise a visitor
+  // who found their class earlier keeps looking at the old set of series
+  // until they reload. Only a first load that fails is reported as missing;
+  // a failed refresh leaves the results already on screen alone.
   useEffect(() => {
+    let current = true;
+    let loaded = false;
     setLoading(true); setMissing(false); setData(null);
-    const request = groupedView ? api.getClassGroupDirectory(classKey) : api.getClassDirectory(classId);
-    request.then(setData).catch(() => setMissing(true)).finally(() => setLoading(false));
+    const load = () => {
+      const request = groupedView ? api.getClassGroupDirectory(classKey) : api.getClassDirectory(classId);
+      return request.then((payload) => {
+        if (!current) return;
+        loaded = true;
+        setData(payload);
+        setMissing(false);
+      }).catch(() => {
+        if (!current || loaded) return;
+        setMissing(true);
+      }).finally(() => { if (current) setLoading(false); });
+    };
+    load();
+    const timer = setInterval(load, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [classId, classKey, groupedView]);
 
   useEffect(() => {

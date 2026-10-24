@@ -525,6 +525,29 @@ test("renders the class directory with counts that follow the year selector", as
   expect(container.querySelector('[data-testid="club-class-directory-summary"]').textContent).toContain("2 classes racing at the club");
 });
 
+test("picks up a series set up after the club page opened when the tab is re-focused", async () => {
+  await render();
+  const pages = () => container.querySelector('[data-testid="club-class-pages-class-sonata"]').textContent;
+  expect(pages()).toBe("1");
+
+  // The officer sets today's championship series up while the page is open.
+  // A phone tab left on the club page must show it on return, not keep the
+  // season it loaded with.
+  const winter = {
+    id: "club-2026-winter", class_id: "class-sonata", name: "Winter Series",
+    year: CURRENT_YEAR, series_type: "club_championship",
+  };
+  mockApi.getSeries.mockResolvedValue([...series, winter]);
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(pages()).toBe("2");
+  expandAllClasses();
+  expect(sectionFor("Club Championship").textContent).toContain("Winter Series");
+});
+
 test("searches the class directory by name and says so when nothing matches", async () => {
   await render();
   const search = container.querySelector('[data-testid="club-class-search"]');
