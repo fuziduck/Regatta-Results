@@ -116,7 +116,7 @@ test("builds a recent-first index grouped by championship type with class-level 
 
 test("renders grouped tables newest first and lets visitors open result pages", async () => {
   await render();
-  expect(mockApi.getRaces).toHaveBeenCalledWith({ club_id: "c1", status: "published" });
+  expect(mockApi.getRaces).toHaveBeenCalledWith({ club_id: "c1" });
   const initialYear = container.querySelector('[data-testid="club-results-year"]');
   expect(initialYear.value).toBe(String(CURRENT_YEAR));
   expect([...initialYear.options].map((option) => option.textContent)).toEqual(["All years", ...[...new Set([CURRENT_YEAR, ...series.map((item) => item.year)])].sort((a, b) => b - a).map(String)]);
@@ -523,6 +523,25 @@ test("renders the class directory with counts that follow the year selector", as
   expect(container.querySelector('[data-testid="club-class-pages-class-sonata"]').textContent).toBe("2");
   expect(container.querySelector('[data-testid="club-class-races-class-cruiser"]').textContent).toBe("2");
   expect(container.querySelector('[data-testid="club-class-directory-summary"]').textContent).toContain("2 classes racing at the club");
+});
+
+test("counts a provisional result as the class's most recent race", async () => {
+  // Race day: the officer has scored today's race, which still awaits
+  // confirmation, and has begun setting up the next one. A provisional result
+  // is a result — it already counts in the series and championship tables — so
+  // the directory must read its date as the class's latest, and must not
+  // mistake the later race still in setup (no result at all) for it.
+  mockApi.getRaces.mockResolvedValue([
+    ...races,
+    { id: "r-sonata-provisional", series_id: "linked-event", date: "2026-08-17", race_number: 4, status: "provisional", entries_count: 3, results: [] },
+    { id: "r-sonata-setup", series_id: "linked-event", date: "2026-08-24", race_number: 5, status: "setup", entries_count: 0 },
+  ]);
+  await render();
+
+  expect(container.querySelector('[data-testid="club-class-latest-class-sonata"]').textContent).toBe("Aug 17, 2026");
+  expect(container.querySelector('[data-testid="club-class-races-class-sonata"]').textContent).toBe("2");
+  expect(container.querySelector('[data-testid="club-stat-latest"]').textContent).toContain("Aug 17");
+  expect(container.querySelector('[data-testid="club-stat-races"]').textContent).toMatch(/^2/);
 });
 
 test("picks up a series set up after the club page opened when the tab is re-focused", async () => {

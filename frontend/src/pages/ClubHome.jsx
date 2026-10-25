@@ -55,6 +55,15 @@ function raceOrderKey(race) {
   return `${race.date || ""}|${String(race.race_number || 0).padStart(4, "0")}`;
 }
 
+// The statuses of a race whose result has been scored: published, or
+// provisional while it awaits confirmation. Both count in the series and
+// championship tables, so both are results the index must read — a provisional
+// race sailed today is the club's most recent result, and leaving it out is
+// what kept the directory showing last week's date. A race still in setup has
+// no result, and an abandoned one is not a result at all.
+const SAILED_RACE_STATUSES = new Set(["published", "provisional"]);
+export const isSailedRace = (race) => Boolean(race) && !race.abandoned && SAILED_RACE_STATUSES.has(race.status);
+
 // First and most recent sailed race per series. Abandoned races are ignored
 // throughout, so they never decide a series' position in the list.
 function raceBoundsBySeries(races) {
@@ -246,6 +255,11 @@ function ClubHomeIndex({ club }) {
   // back-forward cache entry) that was loaded before the series existed would
   // otherwise keep showing the old list until a manual reload. Re-read on page
   // re-focus and on a 30s poll, the same cadence the club directory uses.
+  //
+  // The race list is the club's whole schedule and is narrowed here to the
+  // races that have been scored. Asking the API for `status=published` would
+  // drop every provisional result, which is exactly the result an officer has
+  // just entered on race day.
   useEffect(() => {
     let current = true;
     let loaded = false;
@@ -253,14 +267,14 @@ function ClubHomeIndex({ club }) {
       api.getClasses({ club_id: club.id }),
       api.getSeries({ club_id: club.id }),
       api.getRegattas({ club_id: club.id }),
-      api.getRaces({ club_id: club.id, status: "published" }),
+      api.getRaces({ club_id: club.id }),
     ]).then(([classRows, seriesRows, competitionRows, raceRows]) => {
       if (!current) return;
       loaded = true;
       setClasses(classRows || []);
       setSeries(seriesRows || []);
       setCompetitions(competitionRows || []);
-      setRaces(raceRows || []);
+      setRaces((raceRows || []).filter(isSailedRace));
     }).catch(() => {
       // A failed refresh keeps what is already on screen; only a first load
       // with nothing to show falls back to the empty index.
@@ -545,7 +559,7 @@ function ClubHomeIndex({ club }) {
                         </td>
                         <td className="px-3 py-2.5 text-right font-mono text-sm" data-testid={`club-class-races-${entry.classId}`}>{entry.races || "—"}</td>
                         <td className="px-3 py-2.5 text-right font-mono text-sm" data-testid={`club-class-pages-${entry.classId}`}>{entry.pages || "—"}</td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground">{entry.latestLabel}</td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-muted-foreground" data-testid={`club-class-latest-${entry.classId}`}>{entry.latestLabel}</td>
                         <td className="px-3 py-2.5 text-right">
                           <Link to={entry.href} aria-label={`Open ${entry.name} results`}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors group-hover:bg-ocean group-hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean">
