@@ -70,7 +70,8 @@ export default function ClubCalendar() {
           <div className="flex items-center gap-3">
             <HeaderMenu title={`${club.name} · race calendar`} tvDisplayHref={club.tv_config?.enabled !== false ? `/club/${club.slug}/display` : null} />
             <Link to="/" className="flex items-center"><Logo className="h-11 w-auto" /></Link>
-            <div className="hidden sm:block font-heading text-xl uppercase tracking-tight">{club.name}</div>
+            <Link to={`/club/${club.slug}`} data-testid="header-club-name"
+              className="hidden font-heading text-xl uppercase tracking-tight transition-colors hover:text-ocean sm:block">{club.name}</Link>
           </div>
           <Link to={`/club/${club.slug}`}>
             <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-ocean" data-testid="calendar-back">

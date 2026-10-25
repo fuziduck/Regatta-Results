@@ -894,7 +894,10 @@ export default function Landing() {
           <div className="flex items-center gap-3">
             <HeaderMenu title={`${club.name} · results & standings`} text={`Live results and standings for ${club.name} on SailScore`} tvDisplayHref={club.tv_config?.enabled !== false ? `/club/${club.slug}/display` : null} />
             <Link to="/"><Logo className="h-11 w-auto" /></Link>
-            <div className="font-heading text-xl uppercase tracking-tight leading-none">{club.name}</div>
+            {/* The name in the bar is the club's own home, so a series reached
+                from the club index is never a one-way trip. */}
+            <Link to={`/club/${club.slug}`} data-testid="header-club-name"
+              className="font-heading text-xl uppercase tracking-tight leading-none transition-colors hover:text-ocean">{club.name}</Link>
           </div>
           <div className="flex items-center gap-2">
             <BoatSearchBox variant="header" className="" />

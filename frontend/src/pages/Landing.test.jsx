@@ -172,6 +172,10 @@ test("the club crumb and header button lead back to the club's results index", a
     .toBe("/club/harbour-club");
   expect(container.querySelector('[data-testid="club-home-btn"]').closest("a").getAttribute("href"))
     .toBe("/club/harbour-club");
+  // The club's name in the top bar is the same way home.
+  expect(container.querySelector('[data-testid="header-club-name"]').getAttribute("href"))
+    .toBe("/club/harbour-club");
+  expect(container.querySelector('[data-testid="header-club-name"]').textContent).toBe("Harbour Club");
 });
 
 test("selecting a different class and then its series keeps the requested series", async () => {
