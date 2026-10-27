@@ -469,6 +469,48 @@ class TestClubhouseTvDisplayPayload:
         assert by_race["race-3"]["is_provisional"] is False
         assert by_race["race-3"]["status"] == "final"
 
+    def test_provisional_race_shows_each_scoring_modes_own_places(self):
+        """A race awaiting confirmation is scored like any other, so the TV
+        decorates it with each mode's places too. Race 3 here is provisional and
+        its series offers IRC and YTC with ratings chosen so the two orders
+        differ from the stored (primary-mode) positions: without per-mode
+        decoration the YTC table would repeat the IRC order.
+        """
+        db = _sample_db()
+        cls = next(c for c in db.classes.docs if c["id"] == "class-cruiser")
+        cls["divisions"] = []
+        cls["scoring_mode"] = "irc"
+        ser = next(s for s in db.series.docs if s["id"] == "series-cruiser-summer")
+        ser["scoring_mode"] = "irc"
+        ser["scoring_modes"] = ["irc", "ytc"]
+        race = next(r for r in db.races.docs if r["id"] == "race-3")
+        race["status"] = "provisional"
+        race["start_tz_offset_minutes"] = 0
+        for res in race["results"]:
+            # b3 sails 3600s, b4 3700s — b3 leads on elapsed time.
+            res["finish_time"] = ("2026-06-01T12:00:00+00:00" if res["boat_id"] == "b3"
+                                  else "2026-06-01T12:01:40+00:00")
+        for boat in db.boats.docs:
+            if boat["id"] in ("b3", "b4"):
+                # Equal TCCs keep IRC in elapsed order (b3, b4) ...
+                boat["tcc"] = 1.05
+        next(b for b in db.boats.docs if b["id"] == "b3")["ytc"] = 920
+        next(b for b in db.boats.docs if b["id"] == "b4")["ytc"] = 1100
+        # ... while b4's larger yardstick number puts her ahead on YTC
+        # (3700 x 1000/1100 < 3600 x 1000/920).
+        server.db = db
+
+        payload = asyncio.run(tv_display.get_club_tv_display(
+            "royal-harbour", _make_request("/api/clubs/royal-harbour/display")))
+        views = [v for v in payload["views"]["latest_races"] if v["race_id"] == "race-3"]
+        irc = next(v for v in views if v["scoring_mode"] == "irc")
+        ytc = next(v for v in views if v["scoring_mode"] == "ytc")
+        assert ytc["is_provisional"] is True
+        assert [(r["sail_no"], r["position"]) for r in irc["results"]] == [
+            ("GBR 901", 1), ("GBR 902", 2)]
+        assert [(r["sail_no"], r["position"]) for r in ytc["results"]] == [
+            ("GBR 902", 1), ("GBR 901", 2)]
+
     def test_enforces_public_access_control_when_disabled_or_unapproved(self, monkeypatch):
         # 1. Disabled TV display returns 403 for anonymous viewer
         server.db = _sample_db(tv_config={"enabled": False})

@@ -715,10 +715,15 @@ async def get_club_tv_display(
             )
             race_day_class_ids = {r.get("class_id") for r in selected_latest_races}
 
-        # Decorate published races with multi-mode scoring positions
-        published_subset = [r for r in selected_latest_races if r.get("status") == "published"]
-        if published_subset:
-            decorated = await m._decorate_races_scoring_positions(published_subset)
+        # Decorate every scored race — published AND provisional — with its
+        # per-mode places. A race awaiting confirmation is already scored (the
+        # standings include it), so skipping provisional races here left each
+        # table on the stored primary-mode position and showed the wrong order
+        # in the second mode's table.
+        scored_subset = [r for r in selected_latest_races
+                         if r.get("status") in m.SCORED_RACE_STATUSES]
+        if scored_subset:
+            decorated = await m._decorate_races_scoring_positions(scored_subset)
             dec_by_id = {d["id"]: d for d in decorated if d.get("id")}
             selected_latest_races = [dec_by_id.get(r["id"], r) for r in selected_latest_races]
 
