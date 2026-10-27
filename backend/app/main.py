@@ -11673,59 +11673,77 @@ async def _backfill_fleet_identities():
                 logger.warning("FLEET BACKFILL UPDATE FAILED (%s): %s", b["id"], exc)
 
 
+def _db_index_plans():
+    """The index definitions `_ensure_db_constraints` applies, keyed by
+    collection name.
+
+    Plain data, deliberately independent of the database object, so the
+    definitions can be inspected without one: an expression MongoDB refuses
+    would otherwise surface only as a startup warning, which is how the races
+    index below went missing unnoticed.
+    """
+    return {
+        "race_reports": [([("id", 1)], {"unique": True}),
+                         ([("class_id", 1), ("year", -1), ("uploaded_at", -1)], {})],
+        "races": [([("id", 1)], {"unique": True}),
+                  # One race per (series, race_number) — except the sub-races of
+                  # a mini series, which deliberately share a race number and
+                  # are told apart by mini_group_id. A plain unique index on
+                  # the three keys expresses exactly that: a normal race has no
+                  # mini_group_id, MongoDB indexes a missing key as null, and a
+                  # second normal race with the same number therefore collides.
+                  # (A partial filter cannot say "only when absent":
+                  # {"mini_group_id": {"$exists": False}} compiles to $not,
+                  # which partial filters reject — so that form never created
+                  # an index at all.)
+                  ([("series_id", 1), ("race_number", 1), ("mini_group_id", 1)],
+                   {"unique": True})],
+        "series": [([("id", 1)], {"unique": True}),
+                   # One competition per (class, name, year) — duplicates would
+                   # split a fleet across two parallel standings tables.
+                   # Sparsity keeps pre-backfill legacy docs (or imports that
+                   # bypass the API) insertable rather than hard-failing.
+                   ([("class_id", 1), ("name", 1), ("year", 1)],
+                    {"unique": True, "sparse": True})],
+        "boats": [([("id", 1)], {"unique": True}),
+                  ([("fleet_key", 1)], {})],
+        "classes": [([("id", 1)], {"unique": True})],
+        "clubs": [([("id", 1)], {"unique": True}),
+                  ([("slug", 1)], {"unique": True})],
+        "season_snapshots": [([("id", 1)], {"unique": True}),
+                             ([("series_id", 1), ("version", 1)], {"unique": True})],
+        "users": [([("id", 1)], {"unique": True}),
+                  ([("club_id", 1), ("username", 1)],
+                   {"unique": True, "partialFilterExpression": {"club_id": {"$exists": True}}})],
+        "club_applications": [([("id", 1)], {"unique": True}),
+                              ([ ("verification_token_hash", 1) ],
+                               {"unique": True, "sparse": True}),
+                              ([ ("email", 1), ("status", 1) ], {})],
+        "audit_logs": [([("id", 1)], {"unique": True})],
+        "subscriptions": [([("id", 1)], {"unique": True}),
+                          ([("email_hash", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {})],
+        "subscription_deliveries": [([("id", 1)], {"unique": True}),
+                                    ([ ("delivery_key", 1) ], {"unique": True})],
+    }
+
+
 async def _ensure_db_constraints():
     """Database-level integrity constraints (second line of defence):
     - unique `id` on every entity collection (guarantees a guessed id can
       only ever hit at most one document of that collection);
     - unique club slug;
-    - unique (series, race_number) so a series can never gain a duplicate
-      race; a race's series ownership is enforced by the app layer.
+    - unique (series, race_number, mini_group_id) so a series can never gain a
+      duplicate race; a race's series ownership is enforced by the app layer.
     - unique (club_id, username) per club user.
     All idempotent (create_index is a no-op if the index already exists)."""
-    plans = {
-        db.race_reports: [([("id", 1)], {"unique": True}),
-                          ([("class_id", 1), ("year", -1), ("uploaded_at", -1)], {})],
-        db.races: [([("id", 1)], {"unique": True}),
-                   # Unique on (series_id, race_number) for non-mini races.
-                   # Mini-series sub-races share the same race_number with different
-                   # mini_group_id values, so we use a partial index that only enforces
-                   # uniqueness when mini_group_id is null (i.e., non-mini races).
-                   ([("series_id", 1), ("race_number", 1)],
-                    {"unique": True, "partialFilterExpression": {"mini_group_id": {"$exists": False}}})],
-        db.series: [([("id", 1)], {"unique": True}),
-                    # One competition per (class, name, year) — duplicates would
-                    # split a fleet across two parallel standings tables.
-                    # Sparsity keeps pre-backfill legacy docs (or imports that
-                    # bypass the API) insertable rather than hard-failing.
-                    ([("class_id", 1), ("name", 1), ("year", 1)],
-                     {"unique": True, "sparse": True})],
-        db.boats: [([("id", 1)], {"unique": True}),
-                   ([("fleet_key", 1)], {})],
-        db.classes: [([("id", 1)], {"unique": True})],
-        db.clubs: [([("id", 1)], {"unique": True}),
-                   ([("slug", 1)], {"unique": True})],
-        db.season_snapshots: [([("id", 1)], {"unique": True}),
-                              ([("series_id", 1), ("version", 1)], {"unique": True})],
-        db.users: [([("id", 1)], {"unique": True}),
-                   ([("club_id", 1), ("username", 1)],
-                    {"unique": True, "partialFilterExpression": {"club_id": {"$exists": True}}})],
-        db.club_applications: [([("id", 1)], {"unique": True}),
-                               ([ ("verification_token_hash", 1) ],
-                                {"unique": True, "sparse": True}),
-                               ([ ("email", 1), ("status", 1) ], {})],
-        db.audit_logs: [([("id", 1)], {"unique": True})],
-        db.subscriptions: [([("id", 1)], {"unique": True}),
-                           ([("email_hash", 1), ("subscription_type", 1), ("target_id", 1), ("active", 1)], {})],
-        db.subscription_deliveries: [([("id", 1)], {"unique": True}),
-                                      ([ ("delivery_key", 1) ], {"unique": True})],
-    }
-    for coll, indexes in plans.items():
+    for name, indexes in _db_index_plans().items():
+        coll = db[name]
         for keys, kwargs in indexes:
             try:
                 await coll.create_index(keys, **kwargs)
             except Exception as exc:
                 logger.warning("INDEX CREATION FAILED (%s %s): %s",
-                               coll.name, keys, exc)
+                               name, keys, exc)
 
 
 @app.on_event("startup")
