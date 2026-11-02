@@ -26,9 +26,11 @@ import {
 
 // Poll interval for background updates (45 seconds, within the 30-60s spec)
 export const TV_POLL_INTERVAL_MS = 45000;
-// Maximum competitor rows per page in a TV standings table so text remains
-// readable from several metres away on a 1920x1080 screen.
-export const TV_ROWS_PER_PAGE = 10;
+// A table taller than the screen is never split over pages: it holds for a
+// moment so the top of the table reads, scrolls slowly down, then holds again
+// so the last boats are readable before the next slide. The holds eat into the
+// slide's own rotation time, so a 10s slide scrolls from 2s to 8s.
+export const TV_SCROLL_HOLD_MS = 2000;
 
 const PODIUM_BADGE = {
   1: "bg-amber-400 text-slate-950 ring-2 ring-amber-300/60 shadow-lg shadow-amber-500/20",
@@ -52,19 +54,54 @@ const STATUS_STYLES = {
   cancelled: { label: "Cancelled", cls: "bg-red-500/30 text-red-100 border-red-400/60" },
 };
 
-function chunkRows(rows = [], pageSize = TV_ROWS_PER_PAGE) {
-  if (!rows || rows.length === 0) return [];
-  const pages = [];
-  for (let i = 0; i < rows.length; i += pageSize) {
-    pages.push(rows.slice(i, i + pageSize));
-  }
-  return pages;
+/**
+ * Vertical scroll offset for a table taller than the wall during one slide.
+ * It waits at the top, travels to the bottom, and holds there until the slide
+ * ends. Exported so the timing is unit-tested without an animation frame.
+ */
+export function tableScrollPositionAt(elapsedMs, maxScroll, durationMs) {
+  if (maxScroll <= 0 || durationMs <= 0) return 0;
+  // Four seconds of slide means a one-second hold at each end, so a short
+  // rotation still moves rather than sitting still.
+  const hold = Math.min(TV_SCROLL_HOLD_MS, durationMs / 4);
+  const travel = durationMs - 2 * hold;
+  const t = ((elapsedMs % durationMs) + durationMs) % durationMs;
+  if (travel <= 0 || t <= hold) return 0;
+  if (t >= hold + travel) return maxScroll;
+  return ((t - hold) / travel) * maxScroll;
+}
+
+/**
+ * Drive a table container down over the slide's rotation time. The container
+ * keeps `overflow: hidden` so no scrollbar shows on the clubhouse wall; the
+ * position is written straight to `scrollTop` each frame. A table that already
+ * fits is left untouched.
+ */
+function useTableAutoScroll(ref, { durationMs, rowCount }) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    el.scrollTop = 0;
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    if (maxScroll <= 0 || typeof requestAnimationFrame !== "function") return undefined;
+    const duration = durationMs || 15000;
+    // Timed from the slide's own first frame, so the hold starts when the
+    // table actually appears rather than when it was built.
+    let startedAt = null;
+    let frame = requestAnimationFrame(function step(now) {
+      if (startedAt === null) startedAt = now;
+      el.scrollTop = tableScrollPositionAt(now - startedAt, maxScroll, duration);
+      frame = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [ref, durationMs, rowCount]);
 }
 
 /**
  * Build the sequence of rotating slides from the TV display payload.
- * Exported as a pure helper so rotation fairness, empty-view skipping,
- * and large-fleet pagination can be unit-tested deterministically.
+ * Exported as a pure helper so rotation fairness and empty-view skipping can be
+ * unit-tested deterministically. A long table is one slide: the page scrolls
+ * it rather than adding more slides.
  */
 const SERIES_SWEEP_PAUSE_MS = 2000;
 
@@ -84,15 +121,15 @@ export function seriesSweepPositionAt(elapsedMs, maxScroll, durationMs) {
   return (1 - (t - (2 * pause + travel)) / travel) * maxScroll;
 }
 
-export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
+export function buildRotationSlides(payload) {
   if (!payload || !payload.views) return [];
   const cfg = payload.config || {};
   const baseSeconds = Math.max(5, Math.min(120, Number(cfg.rotation_seconds) || 15));
   const views = payload.views || {};
   const slides = [];
 
-  // Every slide, including a long table split over several pages, gets exactly
-  // the configured rotation time, so the bottom label matches the admin setting.
+  // Every slide gets exactly the configured rotation time, so the bottom label
+  // matches the admin setting and a scrolling table finishes with its slide.
   const durationForCount = () => baseSeconds;
 
   // View A — Overall series standings (default opening view)
@@ -100,23 +137,18 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
     views.overall.forEach((ov) => {
       const allRows = ov.standings || [];
       if (!allRows.length) return;
-      const pages = chunkRows(allRows, rowsPerPage);
-      pages.forEach((pageRows, pageIdx) => {
-        slides.push({
-          key: `A:${ov.id}:p${pageIdx + 1}`,
-          viewType: "A",
-          categoryLabel: "Overall Standings",
-          title: ov.title || "Overall Series Standings",
-          subtitle: ov.subtitle || "",
-          scoringLabel: ov.scoring_label || "One-Design",
-          data: ov,
-          rows: pageRows,
-          totalRows: allRows.length,
-          leader: allRows[0] || null,
-          pageIndex: pageIdx + 1,
-          pageCount: pages.length,
-          durationMs: durationForCount(allRows.length, pages.length > 1) * 1000,
-        });
+      slides.push({
+        key: `A:${ov.id}`,
+        viewType: "A",
+        categoryLabel: "Overall Standings",
+        title: ov.title || "Overall Series Standings",
+        subtitle: ov.subtitle || "",
+        scoringLabel: ov.scoring_label || "One-Design",
+        data: ov,
+        rows: allRows,
+        totalRows: allRows.length,
+        leader: allRows[0] || null,
+        durationMs: durationForCount() * 1000,
       });
     });
   }
@@ -134,29 +166,21 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
       pairedClassIds.add(cv.id);
       races.forEach((lr) => {
         pairedRaceIds.add(lr.id);
-        const overallPages = chunkRows(cv.standings || [], rowsPerPage);
-        const racePages = chunkRows(lr.results || [], rowsPerPage);
-        const pageCount = Math.max(overallPages.length, racePages.length, 1);
-        const longest = Math.max((cv.standings || []).length, (lr.results || []).length);
-        for (let i = 0; i < pageCount; i += 1) {
-          slides.push({
-            key: `E:${cv.id}:${lr.id}:p${i + 1}`,
-            viewType: "E",
-            categoryLabel: "Class Results · Race Day",
-            title: cv.heading || cv.class_name || "Class Results",
-            subtitle: [cv.series_name, fmtDate(lr.date)].filter(Boolean).join(" · "),
-            scoringLabel: cv.scoring_label || "One-Design",
-            isProvisional: Boolean(lr.is_provisional),
-            data: cv,
-            race: lr,
-            overallRows: overallPages[i] || [],
-            raceRows: racePages[i] || [],
-            leader: null,
-            pageIndex: i + 1,
-            pageCount,
-            durationMs: durationForCount(longest, pageCount > 1) * 1000,
-          });
-        }
+        slides.push({
+          key: `E:${cv.id}:${lr.id}`,
+          viewType: "E",
+          categoryLabel: "Class Results · Race Day",
+          title: cv.heading || cv.class_name || "Class Results",
+          subtitle: [cv.series_name, fmtDate(lr.date)].filter(Boolean).join(" · "),
+          scoringLabel: cv.scoring_label || "One-Design",
+          isProvisional: Boolean(lr.is_provisional),
+          data: cv,
+          race: lr,
+          overallRows: cv.standings || [],
+          raceRows: lr.results || [],
+          leader: null,
+          durationMs: durationForCount() * 1000,
+        });
       });
     });
   }
@@ -177,23 +201,18 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
       ) {
         return;
       }
-      const pages = chunkRows(allRows, rowsPerPage);
-      pages.forEach((pageRows, pageIdx) => {
-        slides.push({
-          key: `B:${cv.id}:p${pageIdx + 1}`,
-          viewType: "B",
-          categoryLabel: "Class Standings",
-          title: cv.heading || cv.class_name || "Class Standings",
-          subtitle: `${cv.series_name || "Series"} · ${cv.year || ""}`.replace(/ · $/, ""),
-          scoringLabel: cv.scoring_label || "One-Design",
-          data: cv,
-          rows: pageRows,
-          totalRows: allRows.length,
-          leader: allRows[0] || null,
-          pageIndex: pageIdx + 1,
-          pageCount: pages.length,
-          durationMs: durationForCount(allRows.length, pages.length > 1) * 1000,
-        });
+      slides.push({
+        key: `B:${cv.id}`,
+        viewType: "B",
+        categoryLabel: "Class Standings",
+        title: cv.heading || cv.class_name || "Class Standings",
+        subtitle: `${cv.series_name || "Series"} · ${cv.year || ""}`.replace(/ · $/, ""),
+        scoringLabel: cv.scoring_label || "One-Design",
+        data: cv,
+        rows: allRows,
+        totalRows: allRows.length,
+        leader: allRows[0] || null,
+        durationMs: durationForCount() * 1000,
       });
     });
   }
@@ -204,27 +223,22 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
       if (pairedRaceIds.has(lr.id)) return;
       const allRows = lr.results || [];
       if (!allRows.length) return;
-      const pages = chunkRows(allRows, rowsPerPage);
-      pages.forEach((pageRows, pageIdx) => {
-        const classLabel = lr.division_name
-          ? `${lr.class_name} (${lr.division_name})`
-          : lr.class_name;
-        slides.push({
-          key: `C:${lr.id}:p${pageIdx + 1}`,
-          viewType: "C",
-          categoryLabel: lr.is_provisional ? "Latest Race · Provisional" : "Latest Race Results",
-          title: `${classLabel} — ${lr.race_label || `Race ${lr.race_number}`}`,
-          subtitle: [lr.series_name, fmtDate(lr.date)].filter(Boolean).join(" · "),
-          scoringLabel: lr.scoring_label || "One-Design",
-          isProvisional: Boolean(lr.is_provisional),
-          data: lr,
-          rows: pageRows,
-          totalRows: allRows.length,
-          leader: allRows[0] || null,
-          pageIndex: pageIdx + 1,
-          pageCount: pages.length,
-          durationMs: durationForCount(allRows.length, pages.length > 1) * 1000,
-        });
+      const classLabel = lr.division_name
+        ? `${lr.class_name} (${lr.division_name})`
+        : lr.class_name;
+      slides.push({
+        key: `C:${lr.id}`,
+        viewType: "C",
+        categoryLabel: lr.is_provisional ? "Latest Race · Provisional" : "Latest Race Results",
+        title: `${classLabel} — ${lr.race_label || `Race ${lr.race_number}`}`,
+        subtitle: [lr.series_name, fmtDate(lr.date)].filter(Boolean).join(" · "),
+        scoringLabel: lr.scoring_label || "One-Design",
+        isProvisional: Boolean(lr.is_provisional),
+        data: lr,
+        rows: allRows,
+        totalRows: allRows.length,
+        leader: allRows[0] || null,
+        durationMs: durationForCount() * 1000,
       });
     });
   }
@@ -242,11 +256,9 @@ export function buildRotationSlides(payload, rowsPerPage = TV_ROWS_PER_PAGE) {
         subtitle: `${sp.completed_races} of ${sp.planned_races || sp.completed_races} races completed`,
         scoringLabel: sp.scoring_label || "One-Design",
         data: sp,
-        rows: allRows.slice(0, rowsPerPage),
+        rows: allRows,
         totalRows: allRows.length,
         leader: allRows[0] || null,
-        pageIndex: 1,
-        pageCount: 1,
         durationMs: baseSeconds * 1000,
       });
     });
@@ -459,7 +471,7 @@ function LeaderSpotlight({ leader, viewType, scoringLabel, raceCount }) {
 }
 
 function StandingsSlideView({ slide }) {
-  const { data, rows, leader, pageIndex, viewType } = slide;
+  const { data, rows, leader, viewType } = slide;
   // A class column only earns its width when the table really spans classes;
   // repeating one class down every row just squeezes the boat names.
   const classNames = new Set(rows.map((row) => row.class_name || data.class_name).filter(Boolean));
@@ -474,10 +486,14 @@ function StandingsSlideView({ slide }) {
   const fill = rows.length >= 4;
   const size = tvDensity(rows.length);
   const raceMeta = (data.races || []).slice(-6); // Show up to 6 recent race columns so typography stays large
+  // A full fleet is never split over pages: the whole table scrolls down over
+  // the slide's own time, so every boat appears on the one slide.
+  const scrollRef = useRef(null);
+  useTableAutoScroll(scrollRef, { durationMs: slide.durationMs, rowCount: rows.length });
 
   return (
     <div className="flex h-full flex-col" data-testid={`tv-slide-${viewType}`}>
-      {pageIndex === 1 && leader && (
+      {leader && (
         <LeaderSpotlight
           leader={leader}
           viewType={viewType}
@@ -486,8 +502,9 @@ function StandingsSlideView({ slide }) {
         />
       )}
       <div
-        className={`flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl ${fill ? "" : "flex items-center"}`}
+        className={`flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl ${fill ? "min-h-0" : "flex items-center"}`}
       >
+        <div ref={scrollRef} data-testid="tv-standings-scroll" className={`w-full overflow-hidden ${fill ? "h-full" : "max-h-full"}`}>
         <table
           className={`w-full border-collapse text-left ${fill ? "h-full" : ""}`}
           data-testid="tv-standings-table"
@@ -584,19 +601,23 @@ function StandingsSlideView({ slide }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
 }
 
-function SlidePanel({ testId, label, badge, children }) {
+function SlidePanel({ testId, label, badge, scrollRef, children }) {
   return (
     <div data-testid={testId} className="flex min-h-0 flex-col">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-heading text-xl uppercase tracking-wide text-white">{label}</span>
         {badge}
       </div>
-      <div className="flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl"
+      >
         {children}
       </div>
     </div>
@@ -608,7 +629,7 @@ function SlidePanel({ testId, label, badge, children }) {
  * results for the same class/division (right), on one page.
  */
 function SideBySideSlideView({ slide }) {
-  const { data, race, overallRows, raceRows, pageIndex, isProvisional } = slide;
+  const { data, race, overallRows, raceRows, isProvisional } = slide;
   const { hasElapsed, hasCorrected } = raceTiming(race, raceRows);
   const raceLabel = race.race_label || `Race ${race.race_number}`;
   // The series sheet mirrors the public results page: the races already
@@ -627,8 +648,14 @@ function SideBySideSlideView({ slide }) {
   const fillSeries = overallRows.length >= 5;
   const fillRace = raceRows.length >= 5;
 
+  // Both tables scroll down over the slide's own time rather than paging, so a
+  // boat that does not fit still appears before the slide turns over.
+  const raceScrollRef = useRef(null);
+  useTableAutoScroll(raceScrollRef, { durationMs: slide.durationMs, rowCount: raceRows.length });
+
   // Wide series tables sweep sideways within the slide so every race column is seen.
   const seriesScrollRef = useRef(null);
+  useTableAutoScroll(seriesScrollRef, { durationMs: slide.durationMs, rowCount: overallRows.length });
   useEffect(() => {
     const el = seriesScrollRef.current;
     if (!el || typeof requestAnimationFrame !== "function") return undefined;
@@ -667,11 +694,9 @@ function SideBySideSlideView({ slide }) {
           }
         >
           {overallRows.length === 0 ? (
-            pageIndex === 1 && (
-              <p className="p-6 text-center text-lg text-slate-400">No standings yet</p>
-            )
+            <p className="p-6 text-center text-lg text-slate-400">No standings yet</p>
           ) : (
-            <div ref={seriesScrollRef} data-testid="tv-series-scroll" className={`overflow-x-hidden ${fillSeries ? "h-full" : ""}`}>
+            <div ref={seriesScrollRef} data-testid="tv-series-scroll" className={`overflow-hidden ${fillSeries ? "h-full" : ""}`}>
             <table
               className={`w-full min-w-max border-collapse text-left ${fillSeries ? "h-full" : ""}`}
               data-testid="tv-overall-table"
@@ -777,6 +802,7 @@ function SideBySideSlideView({ slide }) {
 
         <SlidePanel
           testId="tv-race-panel"
+          scrollRef={raceScrollRef}
           label={raceLabel}
           badge={
             isProvisional ? (
@@ -787,9 +813,7 @@ function SideBySideSlideView({ slide }) {
           }
         >
           {raceRows.length === 0 ? (
-            pageIndex === 1 && (
-              <p className="p-6 text-center text-lg text-slate-400">No race results yet</p>
-            )
+            <p className="p-6 text-center text-lg text-slate-400">No race results yet</p>
           ) : (
             <table
               className={`w-full border-collapse text-left ${fillRace ? "h-full" : ""}`}
@@ -868,10 +892,12 @@ function SideBySideSlideView({ slide }) {
 }
 
 function LatestRaceSlideView({ slide }) {
-  const { data, rows, leader, pageIndex, isProvisional } = slide;
+  const { data, rows, leader, isProvisional } = slide;
   const { hasElapsed, hasCorrected } = raceTiming(data, rows);
   const fill = rows.length >= 4;
   const size = tvDensity(rows.length);
+  const scrollRef = useRef(null);
+  useTableAutoScroll(scrollRef, { durationMs: slide.durationMs, rowCount: rows.length });
 
   return (
     <div className="flex h-full flex-col" data-testid="tv-slide-C">
@@ -889,12 +915,13 @@ function LatestRaceSlideView({ slide }) {
           </span>
         </div>
       )}
-      {!isProvisional && pageIndex === 1 && leader && (
+      {!isProvisional && leader && (
         <LeaderSpotlight leader={leader} viewType="C" scoringLabel={slide.scoringLabel} />
       )}
       <div
-        className={`flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl ${fill ? "" : "flex items-center"}`}
+        className={`flex-1 overflow-hidden rounded-xl border border-white/15 bg-slate-900/75 shadow-xl ${fill ? "min-h-0" : "flex items-center"}`}
       >
+        <div ref={scrollRef} data-testid="tv-race-standings-scroll" className={`w-full overflow-hidden ${fill ? "h-full" : "max-h-full"}`}>
         <table
           className={`w-full border-collapse text-left ${fill ? "h-full" : ""}`}
           data-testid="tv-latest-race-table"
@@ -961,6 +988,7 @@ function LatestRaceSlideView({ slide }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -1681,14 +1709,6 @@ export default function ClubTvDisplay() {
                           className="rounded-md border border-white/20 bg-white/10 px-2.5 py-0.5 font-mono text-xs font-bold text-sky-200"
                         >
                           {currentSlide.scoringLabel}
-                        </span>
-                      )}
-                      {currentSlide.pageCount > 1 && (
-                        <span
-                          data-testid="tv-slide-page"
-                          className="rounded-md bg-white/10 px-2.5 py-0.5 font-mono text-xs text-slate-300"
-                        >
-                          Page {currentSlide.pageIndex} of {currentSlide.pageCount}
                         </span>
                       )}
                     </div>

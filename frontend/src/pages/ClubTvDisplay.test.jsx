@@ -5,6 +5,7 @@ import ClubTvDisplay, {
   hasRaceDayContent,
   seriesColumnWeights,
   seriesSweepPositionAt,
+  tableScrollPositionAt,
   TV_POLL_INTERVAL_MS,
 } from "./ClubTvDisplay";
 
@@ -788,7 +789,7 @@ describe("ClubTvDisplay rotation & rendering", () => {
     expect(buildRotationSlides(offDayPayload)[0].viewType).toBe("A");
   });
 
-  it("paginates large competitor tables but keeps the configured time on every page", () => {
+  it("keeps a large competitor table on one slide instead of paging it", () => {
     const manyBoats = Array.from({ length: 14 }, (_, i) => ({
       boat_id: `b-${i + 1}`,
       rank: i + 1,
@@ -807,17 +808,106 @@ describe("ClubTvDisplay rotation & rendering", () => {
         series_progress: [],
       },
     };
-    const slides = buildRotationSlides(payload, 10);
-    expect(slides).toHaveLength(2);
-    expect(slides[0].pageIndex).toBe(1);
-    expect(slides[0].pageCount).toBe(2);
-    expect(slides[0].rows).toHaveLength(10);
-    expect(slides[1].pageIndex).toBe(2);
-    expect(slides[1].rows).toHaveLength(4);
+    const slides = buildRotationSlides(payload);
+    expect(slides).toHaveLength(1);
+    expect(slides[0].rows).toHaveLength(14);
+    expect(slides[0].totalRows).toBe(14);
+    expect(slides[0].rows.map((row) => row.boat_name)).toContain("Boat 14");
     // The configured seconds are exact: a 15s setting is 15s on every slide,
     // so the bottom label matches what the admin set.
-    expect(slides.length).toBeGreaterThan(1);
-    expect(slides.every((s) => s.durationMs === 15000)).toBe(true);
+    expect(slides[0].durationMs).toBe(15000);
+  });
+
+  it("scrolls a tall table from the top after a hold and finishes before the slide ends", () => {
+    // A 10s slide holds for 2s, travels for 6s, then holds at the bottom: it
+    // starts moving at 2s and is finished by 8s.
+    expect(tableScrollPositionAt(0, 500, 10000)).toBe(0);
+    expect(tableScrollPositionAt(1999, 500, 10000)).toBe(0);
+    expect(tableScrollPositionAt(2000, 500, 10000)).toBe(0);
+    expect(tableScrollPositionAt(5000, 500, 10000)).toBeCloseTo(250, 5);
+    expect(tableScrollPositionAt(8000, 500, 10000)).toBe(500);
+    expect(tableScrollPositionAt(9999, 500, 10000)).toBe(500);
+    // A table that already fits, or a slide with no time, never moves.
+    expect(tableScrollPositionAt(5000, 0, 10000)).toBe(0);
+    expect(tableScrollPositionAt(5000, 500, 0)).toBe(0);
+    // A very short rotation still scrolls rather than sitting still.
+    expect(tableScrollPositionAt(1000, 300, 4000)).toBe(0);
+    expect(tableScrollPositionAt(3000, 300, 4000)).toBe(300);
+  });
+
+  it("scrolls a full table down in time with the slide, holding at the top and the bottom", async () => {
+    const manyBoats = Array.from({ length: 14 }, (_, i) => ({
+      boat_id: `b-${i + 1}`,
+      rank: i + 1,
+      boat_name: `Boat ${i + 1}`,
+      sail_no: `GBR ${100 + i}`,
+      class_name: "Sonata",
+      total: i + 1,
+      net: i + 1,
+    }));
+    mockApi.getClubTvDisplay.mockResolvedValue({
+      ...offDayPayload,
+      config: { ...offDayPayload.config, rotation_seconds: 15 },
+      views: {
+        ...offDayPayload.views,
+        overall: [{ ...samplePayload.views.overall[0], standings: manyBoats }],
+      },
+    });
+    // jsdom has no layout, so the scroller is given the geometry a 14-boat
+    // table on a 1080p wall would really have (1200px of rows in 600px), and
+    // animation frames are driven by hand instead of by the wall clock.
+    const geometry = (px) => ({
+      configurable: true,
+      get() {
+        return this.dataset?.testid === "tv-standings-scroll" ? px : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", geometry(1200));
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", geometry(600));
+    const realRaf = window.requestAnimationFrame;
+    const realCaf = window.cancelAnimationFrame;
+    let pending = null;
+    window.requestAnimationFrame = (fn) => {
+      pending = fn;
+      return 1;
+    };
+    window.cancelAnimationFrame = () => {
+      pending = null;
+    };
+    const frameAt = (ms) => {
+      const fn = pending;
+      pending = null;
+      if (fn) fn(ms);
+    };
+    try {
+      render(<ClubTvDisplay />);
+      await flush();
+
+      const scroller = container.querySelector('[data-testid="tv-standings-scroll"]');
+      expect(scroller.querySelectorAll("tbody tr")).toHaveLength(14);
+      expect(scroller.scrollTop).toBe(0);
+
+      // A 15s slide holds the table still for its first 2s so the top reads.
+      frameAt(0);
+      frameAt(1000);
+      frameAt(2000);
+      expect(scroller.scrollTop).toBe(0);
+
+      // Then it travels, reaching the bottom 2s before the slide turns over.
+      frameAt(5000);
+      expect(scroller.scrollTop).toBeGreaterThan(100);
+      expect(scroller.scrollTop).toBeLessThan(250);
+
+      frameAt(13000);
+      expect(scroller.scrollTop).toBe(600);
+      frameAt(14900);
+      expect(scroller.scrollTop).toBe(600);
+    } finally {
+      window.requestAnimationFrame = realRaf;
+      window.cancelAnimationFrame = realCaf;
+      delete HTMLElement.prototype.scrollHeight;
+      delete HTMLElement.prototype.clientHeight;
+    }
   });
 
   it("opens on Overall Standings (View A) by default and displays persistent race-day panel", async () => {
