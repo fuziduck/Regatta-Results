@@ -231,6 +231,7 @@ export const api = {
 
   getBoats: (params = {}) => client.get("/boats", { params }).then((r) => r.data),
   createBoat: (d) => client.post("/boats", d).then((r) => r.data),
+  createSeriesBoat: (id, d) => client.post(`/series/${id}/boats/new`, d).then((r) => r.data),
   updateBoat: (id, d, v) => client.put(`/boats/${id}`, withVer(d, v)).then((r) => r.data),
   deleteBoat: (id, v) => client.delete(`/boats/${id}`, { params: verQuery(v) }).then((r) => r.data),
   // Shared boat registry: one physical boat may race at several clubs or in

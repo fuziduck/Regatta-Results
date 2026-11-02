@@ -4264,6 +4264,17 @@ async def update_series_type(series_id: str, data: SeriesTypeInput,
     return await db.series.find_one({"id": series_id}, {"_id": 0})
 
 
+@api_router.post("/series/{series_id}/boats/new")
+async def create_series_boat(series_id: str, data: BoatInput,
+                             user: dict = Depends(require_officer)):
+    """Register a race-day entrant in the series' class and season."""
+    series = await _series_of_club(series_id, user)
+    await _ensure_series_not_locked(series_id)
+    if data.class_id != series.get("class_id") or data.year != series.get("year"):
+        raise HTTPException(status_code=400, detail="Boat must belong to the series' class and season")
+    return await create_boat(data, user)
+
+
 @api_router.put("/series/{series_id}/boats")
 async def update_series_boats(series_id: str, data: SeriesBoatsInput,
                               user: dict = Depends(require_officer)):
@@ -5263,8 +5274,10 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
     # older fleet — still races: give her the line the selection asks for.
     missing = selected - {r["boat_id"] for r in results}
     if missing:
-        boats = await db.boats.find({"id": {"$in": list(missing)}, "class_id": race.get("class_id")},
-                                    {"_id": 0}).to_list(500)
+        boat_query = {"id": {"$in": list(missing)}, "class_id": race.get("class_id")}
+        if race.get("year") is not None:
+            boat_query["year"] = race["year"]
+        boats = await db.boats.find(boat_query, {"_id": 0}).to_list(500)
         results.extend({"boat_id": b["id"], "code": "DNS", "finish_time": None,
                         "position": None, "penalty_points": 0} for b in boats)
     previously_finished = {r["boat_id"] for r in results if r.get("code") == "FINISHED"}
@@ -5289,6 +5302,22 @@ async def select_boats(race_id: str, data: SelectBoatsInput, user: dict = Depend
                                        {"$set": {"results": results}, "$inc": {"version": 1}})
     if result.modified_count == 0:
         _raise_stale(expected)
+    # Explicit series fleets must include late entrants when they sign on;
+    # otherwise their race result would be excluded from the standings. An
+    # empty fleet means automatic detection and must remain empty.
+    series = await db.series.find_one({"id": race.get("series_id")}, {"_id": 0})
+    members = series.get("member_boat_ids") or [] if series else []
+    entrants = selected & {r["boat_id"] for r in results} - set(members)
+    if members and entrants:
+        query = {"id": {"$in": list(entrants)}, "class_id": race.get("class_id")}
+        if race.get("year") is not None:
+            query["year"] = race["year"]
+        valid = await db.boats.find(query, {"_id": 0, "id": 1}).to_list(2000)
+        if valid:
+            await db.series.update_one(
+                {"id": race.get("series_id"), "member_boat_ids": {"$exists": True, "$ne": []}},
+                {"$addToSet": {"member_boat_ids": {"$each": [b["id"] for b in valid]}},
+                 "$inc": {"version": 1}})
     club_id = await _class_club_id(race.get("class_id"))
     await _log_audit(request=None, user=user, action="RACE_UPDATED",
                      description=f"Updated starters for race {race.get('race_number')} ({len(selected)} boats)",

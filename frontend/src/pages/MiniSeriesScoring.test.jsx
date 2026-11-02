@@ -14,6 +14,7 @@ jest.mock("@/lib/api", () => {
     getRaces: jest.fn(),
     getRace: jest.fn(),
     getBoats: jest.fn(),
+    createSeriesBoat: jest.fn(),
     seriesStandings: jest.fn(),
     addMiniRace: jest.fn(),
     selectBoats: jest.fn(),
@@ -219,6 +220,28 @@ describe("Mini series scoring page", () => {
     const chips = [...container.querySelectorAll('[data-testid^="fleet-boat-"]')].map((b) => b.textContent);
     expect(chips).toEqual(["Bluebell 1", "Screwloose 2"]);
     expect(container.textContent).toContain("2 of 2 boats");
+  });
+
+  it("adds an entrant on the day and applies it only to unpublished races", async () => {
+    mockApi.createSeriesBoat.mockResolvedValue({ id: "b3", name: "Visitor", sail_no: "3" });
+    renderPage();
+    await act(async () => {});
+    act(() => container.querySelector('[data-testid="officer-add-boat-btn"]').click());
+    await act(async () => {});
+    const setInput = (id, value) => {
+      const input = document.querySelector(`[data-testid="officer-boat-${id}"]`);
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      act(() => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    };
+    setInput("name", "Visitor"); setInput("sail_no", "3"); setInput("helm", "Alex");
+    act(() => document.querySelector('[data-testid="officer-save-boat"]').click());
+    await act(async () => {});
+    expect(mockApi.createSeriesBoat).toHaveBeenCalledWith("s1", expect.objectContaining({ class_id: "cl1", year: 2026 }));
+    act(() => container.querySelector('[data-testid="fleet-boat-3"]').click());
+    act(() => container.querySelector('[data-testid="fleet-apply-btn"]').click());
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(mockApi.selectBoats).toHaveBeenCalledWith("r2", ["b1", "b2", "b3"], 1);
+    expect(mockApi.selectBoats).toHaveBeenCalledTimes(1);
   });
 
   it("applies the fleet selection to every unpublished race", async () => {

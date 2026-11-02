@@ -351,6 +351,49 @@ function RaceNoticeSection({ value, onChange, onSave, busy = false, saveLabel = 
   );
 }
 
+function AddSeriesBoatDialog({ seriesId, classId, year, onAdded }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ name: "", sail_no: "", helm: "", home_club: "", boat_type: "", tcc: "", py: "", ytc: "" });
+  const save = async () => {
+    if (!form.name.trim() || !form.sail_no.trim() || !form.helm.trim()) return toast.error("Enter the boat name, sail number and helm");
+    setBusy(true);
+    try {
+      const boat = await api.createSeriesBoat(seriesId, {
+        ...form, name: form.name.trim(), sail_no: form.sail_no.trim(), helm: form.helm.trim(),
+        class_id: classId, year: Number(year), active: true,
+        tcc: form.tcc === "" ? null : Number(form.tcc),
+        py: form.py === "" ? null : Number(form.py),
+        ytc: form.ytc === "" ? null : Number(form.ytc),
+      });
+      setOpen(false);
+      setForm({ name: "", sail_no: "", helm: "", home_club: "", boat_type: "", tcc: "", py: "", ytc: "" });
+      onAdded(boat);
+      toast.success("Boat added — select it to sign on");
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : detail?.message || "Could not add boat");
+    } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild><Button type="button" size="sm" variant="outline" data-testid="officer-add-boat-btn"><Plus className="w-4 h-4 mr-1" /> Add boat</Button></DialogTrigger>
+      <DialogContent className="max-h-[85vh] overflow-y-auto" data-testid="officer-add-boat-dialog">
+        <DialogHeader><DialogTitle>Add boat to this class</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">Register a boat for the {year} season, then select it to sign on.</p>
+        <div className="grid grid-cols-2 gap-3">
+          {[["name", "Boat name"], ["sail_no", "Sail number"], ["helm", "Helm"], ["home_club", "Home club"], ["boat_type", "Boat type"], ["tcc", "TCC (IRC rating)"], ["py", "PY rating"], ["ytc", "YTC rating"]].map(([key, label]) => (
+            <div key={key} className="space-y-1.5"><Label htmlFor={`officer-boat-${key}`}>{label}</Label>
+              <Input id={`officer-boat-${key}`} data-testid={`officer-boat-${key}`} type={["tcc", "py", "ytc"].includes(key) ? "number" : "text"} min={["tcc", "py", "ytc"].includes(key) ? "0" : undefined} step={key === "tcc" ? "0.001" : undefined} value={form[key]} onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))} />
+            </div>
+          ))}
+        </div>
+        <DialogFooter><Button onClick={save} disabled={busy} data-testid="officer-save-boat">{busy ? "Adding…" : "Add boat"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, dayRaces = [], onSwitchRace, onEnterBatch, raceDayNotices = true, onSeriesBoatsSaved, embedded = false }) {
   const { askDelete, dialog } = useDeleteWithUndo();
   const [race, setRace] = useState(null);
@@ -431,12 +474,23 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
     }
   }, [raceId]);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const raceYear = race?.year || series?.year || (race?.date ? Number(race.date.slice(0, 4)) : null);
+  const loadBoats = useCallback(async () => {
+    if (!raceYear) return;
+    try {
+      const bs = await api.getBoats({ class_id: meta.class_id, year: raceYear, ...(clubId ? { club_id: clubId } : {}) });
+      setBoats(Object.fromEntries(bs.map((b) => [b.id, b])));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not load boats");
+    } finally { setBoatsReady(true); }
+  }, [meta.class_id, raceYear, clubId]);
   useEffect(() => {
-    refresh();
-    api.getBoats({ class_id: meta.class_id }).then((bs) => { const m = {}; bs.forEach((b) => (m[b.id] = b)); setBoats(m); })
-      .catch(() => {})
-      .finally(() => setBoatsReady(true));
-  }, [raceId]); // eslint-disable-line
+    loadBoats();
+    window.addEventListener("focus", loadBoats);
+    return () => window.removeEventListener("focus", loadBoats);
+  }, [loadBoats]);
 
   // Capture the boat order of the most recent race in the series so the
   // buttons can default to "the same order as the last set of results".
@@ -552,14 +606,13 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // start) — helpers.raceStart owns that rule, helpers.raceClock the readout.
   const startAt = Date.parse(raceStart(race));
   const hasStart = !Number.isNaN(startAt);
-  // When the series has an explicit membership list (officer/admin managed
-  // via "Series boats"), only member boats belong to it. Boats not signed on
-  // for the series are hidden from the race-day boat list and can't be
-  // selected or scored here — they're excluded from the series standings too.
-  const memberSet = (series && Array.isArray(series.member_boat_ids) && series.member_boat_ids.length)
-    ? new Set(series.member_boat_ids) : null;
-  const visibleResults = memberSet ? race.results.filter((r) => memberSet.has(r.boat_id)) : race.results;
-  const racing = visibleResults.filter((r) => r.code !== "DNC");
+  // Include current-season boats added after the race was created. Synthetic
+  // DNC rows are only choices; the server creates a real row on sign-on.
+  const existingIds = new Set(race.results.map((r) => r.boat_id));
+  const visibleResults = [...race.results, ...Object.values(boats)
+    .filter((b) => b.active !== false && !existingIds.has(b.id))
+    .map((b) => ({ boat_id: b.id, code: "DNC" }))];
+  const racing = race.results.filter((r) => r.code !== "DNC");
   const sameClassDayRaces = dayRaces.filter((r) => r.class_id === race.class_id);
   const orderBoatIds = (list) => {
     if (boatOrder === "alpha") {
@@ -608,12 +661,12 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const toggleBoat = (boatId) => {
     const selected = new Set(racing.map((r) => r.boat_id));
     if (selected.has(boatId)) selected.delete(boatId); else selected.add(boatId);
-    return runMutation(() => api.selectBoats(raceId, [...selected], version));
+    return runMutation(() => api.selectBoats(raceId, [...selected], version)).then((r) => { if (r) onSeriesBoatsSaved?.(); return r; });
   };
   // Championship regattas: one tap puts every boat on the race as racing.
   const selectAll = () => {
     const all = visibleResults.map((r) => r.boat_id);
-    return runMutation(() => api.selectBoats(raceId, all, version), `${all.length} boats selected as racing`);
+    return runMutation(() => api.selectBoats(raceId, all, version), `${all.length} boats selected as racing`).then((r) => { if (r) onSeriesBoatsSaved?.(); return r; });
   };
   const clearAll = () =>
     runMutation(() => api.selectBoats(raceId, [], version), "Selection cleared — every boat scores DNC");
@@ -868,7 +921,9 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         <section className="rounded-xl border border-border bg-card p-4">
           <div className="flex items-center justify-between gap-2 mb-1">
             <h3 className="font-heading uppercase tracking-tight">Boats signed on</h3>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {race.series_id && raceYear && <AddSeriesBoatDialog seriesId={race.series_id} classId={race.class_id} year={raceYear} onAdded={(b) => setBoats((prev) => ({ ...prev, [b.id]: b }))} />}
+              <Button size="sm" variant="outline" onClick={loadBoats} data-testid="refresh-sign-on-boats">Refresh boats</Button>
               <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1 border-ocean/40 text-ocean hover:bg-ocean hover:text-white" data-testid="select-all-boats-btn" onClick={selectAll}>
                 <ListChecks className="w-3.5 h-3.5" /> All
               </Button>
@@ -1294,7 +1349,9 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
       await loadGroup(false);
       if (!cancelled) setLoading(false);
     })();
-    return () => { cancelled = true; };
+    const refreshOnFocus = () => loadGroup(false);
+    window.addEventListener("focus", refreshOnFocus);
+    return () => { cancelled = true; window.removeEventListener("focus", refreshOnFocus); };
   }, [loadGroup]);
 
   // Auto-expand every unpublished race so the scoring controls are visible
@@ -1659,6 +1716,8 @@ export function MiniSeriesBatchEntry({ group, groupIndex, seriesId, clubId, clas
             <span className="w-6 h-6 rounded-lg bg-ocean/10 grid place-items-center text-ocean font-heading font-bold text-sm">1</span>
             <h3 className="font-heading uppercase tracking-tight text-sm">Sign on the fleet</h3>
             <span className="ml-auto text-xs text-muted-foreground">{fleetSelected.length} of {allBoatIds.length} boats</span>
+            {races[0]?.class_id && (races[0]?.year || seriesMap[seriesId]?.year) && <AddSeriesBoatDialog seriesId={seriesId} classId={races[0].class_id} year={races[0].year || seriesMap[seriesId].year} onAdded={(b) => setBoatsMap((prev) => ({ ...prev, [b.id]: b }))} />}
+            <Button size="sm" variant="outline" onClick={() => loadGroup(false)} data-testid="refresh-fleet-boats">Refresh boats</Button>
           </div>
           <p className="text-xs text-muted-foreground mb-2.5">Pick which boats are racing — the selection applies to every race in this mini series.</p>
           {allBoatIds.length > 0 ? (

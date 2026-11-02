@@ -8,6 +8,7 @@ jest.mock("@/lib/api", () => {
   const api = {
     getRace: jest.fn(),
     getBoats: jest.fn(),
+    createSeriesBoat: jest.fn(),
     getRaces: jest.fn(),
     selectBoats: jest.fn(),
     adjustResult: jest.fn(),
@@ -135,6 +136,56 @@ const flush = async () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 };
+
+describe("RaceConsole sign-on", () => {
+  it("shows a late admin entrant and signs it on without dropping existing starters", async () => {
+    mockApi.getBoats.mockResolvedValue([
+      { id: "b1", name: "Bluebell", sail_no: "1" },
+      { id: "b2", name: "Screwloose", sail_no: "2" },
+      { id: "b3", name: "Late arrival", sail_no: "3" },
+    ]);
+    renderConsole(DEFAULT_META, { series: { id: "s1", year: 2026, member_boat_ids: ["b1", "b2"] } });
+    await flush();
+    expect(mockApi.getBoats).toHaveBeenCalledWith({ class_id: "cl1", year: 2026, club_id: "c1" });
+    expect(container.querySelector('[data-testid="boat-toggle-3"]').textContent).toContain("Late arrival");
+    act(() => container.querySelector('[data-testid="boat-toggle-3"]').click());
+    await flush();
+    expect(mockApi.selectBoats).toHaveBeenCalledWith("r1", ["b1", "b2", "b3"], 3);
+  });
+
+  it("refreshes boats when returning to the console", async () => {
+    renderConsole();
+    await flush();
+    mockApi.getBoats.mockResolvedValue([{ id: "b3", name: "Late arrival", sail_no: "3" }]);
+    act(() => window.dispatchEvent(new Event("focus")));
+    await flush();
+    expect(container.querySelector('[data-testid="boat-toggle-3"]').textContent).toContain("Late arrival");
+  });
+
+  it("registers a boat from the dialog and makes it available to sign on", async () => {
+    mockApi.createSeriesBoat.mockResolvedValue({ id: "b3", name: "New boat", sail_no: "3" });
+    renderConsole();
+    await flush();
+    act(() => container.querySelector('[data-testid="officer-add-boat-btn"]').click());
+    await flush();
+    const setInput = (id, value) => {
+      const input = document.querySelector(`[data-testid="officer-boat-${id}"]`);
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      act(() => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    };
+    setInput("name", "New boat");
+    setInput("sail_no", "3");
+    setInput("helm", "Alex");
+    setInput("tcc", "1.015");
+    act(() => document.querySelector('[data-testid="officer-save-boat"]').click());
+    await flush();
+    expect(mockApi.createSeriesBoat).toHaveBeenCalledWith("s1", expect.objectContaining({ name: "New boat", sail_no: "3", helm: "Alex", class_id: "cl1", year: 2026, tcc: 1.015 }));
+    expect(container.querySelector('[data-testid="boat-toggle-3"]')).not.toBeNull();
+    act(() => container.querySelector('[data-testid="boat-toggle-3"]').click());
+    await flush();
+    expect(mockApi.selectBoats).toHaveBeenCalledWith("r1", ["b1", "b2", "b3"], 3);
+  });
+});
 
 describe("RaceConsole finish buttons", () => {
   it("shows a non-finish outcome dropdown under every finish button", async () => {
