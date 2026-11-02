@@ -15,6 +15,8 @@ jest.mock("@/lib/api", () => {
     recordFinish: jest.fn(),
     startRace: jest.fn(),
     deleteRace: jest.fn(),
+    validateRace: jest.fn(),
+    setStatus: jest.fn(),
   };
   return { api, formatApiError: (d) => d || "error" };
 });
@@ -75,6 +77,8 @@ beforeEach(() => {
   mockApi.adjustResult.mockResolvedValue({});
   mockApi.recordFinish.mockResolvedValue({});
   mockApi.startRace.mockResolvedValue({});
+  mockApi.validateRace.mockResolvedValue({ errors: [], warnings: [] });
+  mockApi.setStatus.mockResolvedValue({});
   window.localStorage.clear();
 });
 
@@ -136,6 +140,56 @@ const flush = async () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 };
+
+describe("RaceConsole guided entry", () => {
+  it("navigates to sign-on, entry and review without changing results", async () => {
+    renderConsole();
+    await flush();
+    const nav = container.querySelector('[data-testid="race-entry-steps"]');
+    expect(nav.textContent).toContain("2 signed on · 2 currently DNS");
+    for (const [step, section] of [["signon", "race-signon-section"], ["entry", "race-entry-section"], ["review", "race-review-section"]]) {
+      act(() => container.querySelector(`[data-testid="race-step-${step}"]`).click());
+      expect(document.activeElement).toBe(container.querySelector(`[data-testid="${section}"]`));
+    }
+    expect(mockApi.selectBoats).not.toHaveBeenCalled();
+    expect(mockApi.adjustResult).not.toHaveBeenCalled();
+  });
+
+  it("keeps the race-day notice available but closed until requested", async () => {
+    renderConsole(DEFAULT_META, { raceDayNotices: true });
+    await flush();
+    expect(container.querySelector('[data-testid="notif-course"]')).toBeNull();
+    act(() => container.querySelector('[data-testid="race-notice-toggle"]').click());
+    expect(container.querySelector('[data-testid="notif-course"]')).not.toBeNull();
+  });
+
+  it("distinguishes no sign-on from completed outcomes and valid DNS", async () => {
+    mockApi.getRace.mockResolvedValue({ ...race, results: [{ boat_id: "b1", code: "DNC" }] });
+    renderConsole();
+    await flush();
+    expect(container.querySelector('[data-testid="race-entry-progress"]').textContent).toContain("No boats signed on");
+    expect(container.querySelector('[data-testid="finish-grid"]').textContent).toContain("No boats signed on yet");
+    mockApi.getRace.mockResolvedValue({ ...race, results: [{ boat_id: "b1", code: "FINISHED", position: 1 }, { boat_id: "b2", code: "DNF" }] });
+    act(() => container.querySelector('[data-testid="boat-toggle-1"]').click());
+    await flush();
+    expect(container.querySelector('[data-testid="race-entry-progress"]').textContent).toContain("2 signed on · 0 currently DNS");
+    expect(container.querySelector('[data-testid="finish-grid"]').textContent).toContain("No boats currently marked DNS");
+  });
+
+  it("shows validation feedback and clears it after a result changes", async () => {
+    mockApi.validateRace.mockResolvedValue({ errors: [{ message: "Check the result" }], warnings: [] });
+    renderConsole();
+    await flush();
+    act(() => container.querySelector('[data-testid="validate-btn"]').click());
+    await flush();
+    expect(container.querySelector('[data-testid="validate-msg"]').textContent).toContain("Check the result");
+    act(() => container.querySelector('[data-testid="finish-btn-1"]').click());
+    await flush();
+    expect(mockApi.adjustResult).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="validate-msg"]')).toBeNull();
+    expect(container.querySelector('[data-testid="publish-btn"]')).not.toBeNull();
+  });
+});
 
 describe("RaceConsole sign-on", () => {
   it("shows a late admin entrant and signs it on without dropping existing starters", async () => {

@@ -399,6 +399,13 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const [race, setRace] = useState(null);
   const [boats, setBoats] = useState({});
   const [boatsReady, setBoatsReady] = useState(false);
+  const signOnRef = useRef(null);
+  const finishEntryRef = useRef(null);
+  const reviewRef = useRef(null);
+  const goToStep = (ref) => {
+    ref.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    ref.current?.focus({ preventScroll: true });
+  };
   // How the boat buttons are ordered: "last" = the same order as the most
   // recent race's results in this series, "alpha" = boat name, "sail" = sail
   // number. Applies to the boats-racing chips and the big finish buttons.
@@ -643,6 +650,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   const runMutation = async (fn, okMsg) => {
     try {
       const r = await fn();
+      setValidateMsg(null);
       if (okMsg) toast.success(okMsg);
       refresh();
       return r;
@@ -709,6 +717,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
   // form is filled, whether the code was just picked or an existing decision is
   // being re-opened. `code` says which decision record (dpi_* / rdg_*) to read.
   const openDecision = (boatId, code) => {
+    setValidateMsg(null);
     // Re-picking the code already pending must not wipe what the committee has
     // typed into the panel — only a genuinely new decision (or re-opening a
     // stored one) refills the form.
@@ -899,6 +908,17 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
       )}
 
       <div className="max-w-5xl mx-auto px-4 pt-5 space-y-6">
+        <nav aria-label="Race entry steps" className="rounded-xl border border-border bg-card p-3" data-testid="race-entry-steps">
+          <p className="text-xs text-muted-foreground mb-2">Sign on, enter results, then review before publishing.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => goToStep(signOnRef)} data-testid="race-step-signon">1 · Sign on <span className="ml-1 text-muted-foreground">({racing.length})</span></Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => goToStep(finishEntryRef)} data-testid="race-step-entry">2 · Enter results <span className="ml-1 text-muted-foreground">({toFinish.length} DNS)</span></Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => goToStep(reviewRef)} data-testid="race-step-review">3 · Review & publish</Button>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2" data-testid="race-entry-progress">
+            {race.status === "published" ? "Published — review or recall this result below." : !racing.length ? "No boats signed on yet." : `${racing.length} signed on · ${toFinish.length} currently DNS — enter a finish or leave DNS if the boat did not start.`}
+          </p>
+        </nav>
         {race.abandoned && (
           <section className="rounded-xl border border-red-300 bg-red-50 dark:bg-red-500/10 dark:border-red-500/40 p-4 text-sm text-red-700 dark:text-red-300 flex items-center gap-2" data-testid="abandoned-banner">
             <FlagOff className="w-4 h-4 shrink-0" /> This race is abandoned — it is excluded from the series scoring, so the series has one fewer race scored and its discards may reduce. Use “Restore race” below to count it again.
@@ -914,13 +934,13 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         {/* Race day notice — collapsible, hidden entirely when the club has
             race-day notices disabled. */}
         {raceDayNotices && (
-          <RaceNoticeSection value={notif} onChange={setNotif} onSave={saveNotif} hideStartTime={!showTiming} />
+          <RaceNoticeSection value={notif} onChange={setNotif} onSave={saveNotif} hideStartTime={!showTiming} defaultOpen={false} />
         )}
 
         {/* Boat selection */}
-        <section className="rounded-xl border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-2 mb-1">
-            <h3 className="font-heading uppercase tracking-tight">Boats signed on</h3>
+        <section ref={signOnRef} tabIndex={-1} className="rounded-xl border border-border bg-card p-4 scroll-mt-24" data-testid="race-signon-section">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+            <h3 className="font-heading uppercase tracking-tight">1 · Boats signed on</h3>
             <div className="flex flex-wrap items-center gap-1.5">
               {race.series_id && raceYear && <AddSeriesBoatDialog seriesId={race.series_id} classId={race.class_id} year={raceYear} onAdded={(b) => setBoats((prev) => ({ ...prev, [b.id]: b }))} />}
               <Button size="sm" variant="outline" onClick={loadBoats} data-testid="refresh-sign-on-boats">Refresh boats</Button>
@@ -952,9 +972,9 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         </section>
 
         {/* Finish recording */}
-        <section>
+        <section ref={finishEntryRef} tabIndex={-1} className="scroll-mt-24" data-testid="race-entry-section">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-            <h3 className="font-heading uppercase tracking-tight flex items-center gap-2">{isOneDesign ? <ListChecks className="w-5 h-5 text-safety" /> : <Timer className="w-5 h-5 text-safety" />} {isOneDesign ? "Record finishing order" : "Record finishes"}</h3>
+            <h3 className="font-heading uppercase tracking-tight flex items-center gap-2">{isOneDesign ? <ListChecks className="w-5 h-5 text-safety" /> : <Timer className="w-5 h-5 text-safety" />} 2 · {isOneDesign ? "Record finishing order" : "Record finishes"}</h3>
             {showTiming && (
               <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5" data-testid="time-entry-mode">
                 {TIME_ENTRY_MODES.map((m) => (
@@ -972,7 +992,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
             </span>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <p className="text-sm text-muted-foreground">{isOneDesign ? "Tap boats in the order they finish. Use the provisional table below to correct the order if needed." : TIME_ENTRY_HINTS[timeEntryMode]} {toFinish.length} still racing.</p>
+            <p className="text-sm text-muted-foreground">{isOneDesign ? "Tap boats in the order they finish. Use the provisional table below to correct the order if needed." : TIME_ENTRY_HINTS[timeEntryMode]} {toFinish.length} currently DNS.</p>
             <div className="flex items-center gap-1.5">
               <Label className="text-xs text-muted-foreground">Order</Label>
               <Select value={boatOrder} onValueChange={setBoatOrder}>
@@ -1026,7 +1046,7 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
                 </div>
               );
             })}
-            {boatsReady && toFinish.length === 0 && <div className="col-span-full text-sm text-muted-foreground py-4">All racing boats have finished, or none selected yet.</div>}
+            {boatsReady && toFinish.length === 0 && <div className="col-span-full text-sm text-muted-foreground py-4">{racing.length ? "No boats currently marked DNS. Review the recorded results below." : "No boats signed on yet — select the boats above to enter results."}</div>}
           </div>
           )}
 
@@ -1067,13 +1087,14 @@ export function RaceConsole({ raceId, meta, series, clubId, onBack, rrsCodes, da
         </section>
 
         {/* Provisional / adjust */}
-        <section className="rounded-xl border border-border bg-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-heading uppercase tracking-tight">Provisional results & penalties</h3>
+        <section ref={reviewRef} tabIndex={-1} className="rounded-xl border border-border bg-card p-4 scroll-mt-24" data-testid="race-review-section">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h3 className="font-heading uppercase tracking-tight">3 · Review results & penalties</h3>
             <Button size="sm" variant="outline" className="h-8 border-ocean/40 text-ocean" data-testid="validate-btn" onClick={checkResults}>Check results</Button>
           </div>
+          <p className="text-xs text-muted-foreground mb-3">Check positions and codes, then use Check results before marking provisional or publishing. DNS may be a valid final result.</p>
           {validateMsg && (
-            <div className={`mb-3 rounded-lg p-3 text-xs whitespace-pre-line ${validateMsg.level === "ok" ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : validateMsg.level === "error" ? "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300" : "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"}`} data-testid="validate-msg">
+            <div role="status" className={`mb-3 rounded-lg p-3 text-xs whitespace-pre-line ${validateMsg.level === "ok" ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" : validateMsg.level === "error" ? "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300" : "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"}`} data-testid="validate-msg">
               {validateMsg.text}
             </div>
           )}
