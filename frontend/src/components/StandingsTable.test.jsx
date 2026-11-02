@@ -97,6 +97,106 @@ describe("boat-name wrapping in the standings table", () => {
   });
 });
 
+describe("series scoring legend", () => {
+  it("explains the codes actually displayed once, including varying redress awards", () => {
+    const d = data();
+    d.race_count = 3;
+    d.races = [1, 2, 3].map((race_number) => ({ race_number }));
+    d.scoring_mode = "irc";
+    d.scoring_config = { a5_convention: "a5_3", duty: { enabled: true, discards: "with" } };
+    d.standings[0].scores = [{ code: "RDG", points: 1.5 }, { code: "DNC", points: 4, discarded: true }, { code: "OOD", points: 2 }];
+    d.standings[1].scores = [{ code: "RDG", points: 2 }, { code: "DNF", points: 3 }, { code: "FINISHED", points: 1 }];
+    renderTable(d);
+    const legend = container.querySelector('[data-testid="series-scoring-legend"]');
+    expect(legend.textContent).toContain("IRC places are based on corrected time");
+    expect(legend.textContent).toContain("RRS A5.3");
+    expect(legend.textContent).toContain("starting-area entries plus one");
+    expect(legend.textContent).toContain("DNC: Did not start and did not come to the starting area");
+    expect(legend.textContent).toContain("DNF: Did not finish");
+    expect(legend.textContent).toContain("after applicable discards");
+    expect(legend.textContent).toContain("RDG: Redress given");
+    expect(legend.textContent).toContain("committee awards a score");
+    expect(legend.querySelectorAll("dt")).toHaveLength(8);
+    expect(legend.textContent).not.toContain("DSQ:");
+    expect(container.querySelector('[data-testid="standing-row-1"]').textContent).toContain("1.5 RDG");
+    expect(container.querySelector('[data-testid="standing-row-2"]').textContent).toContain("2 RDG");
+  });
+
+  it("describes the configured non-finish, time-limit and penalty rules", () => {
+    const d = data();
+    d.scoring_config = {
+      a5_convention: "finishers",
+      tle: { enabled: true, method: "last_finisher", increment: 2, time_limit_minutes: 60 },
+      scp: { method: "percent", value: 20, cap_dnf: true },
+      zfp: { method: "points", value: 3, cap_dnf: false },
+      duty: { enabled: false },
+    };
+    d.races = [1, 2, 3, 4].map((race_number) => ({ race_number }));
+    d.standings[0].scores = [{ code: "SCP", points: 2 }, { code: "ZFP", points: 4 }, { code: "TLE", points: 5 }, { code: "OOD", points: 5 }];
+    renderTable(d);
+    const legend = container.querySelector('[data-testid="series-scoring-legend"]');
+    expect(legend.textContent).toContain("number of finishers plus one");
+    expect(legend.textContent).toContain("2 more than the last finisher's points; time limit 60 minutes");
+    expect(legend.textContent).toContain("20% of the non-finish score, rounded to whole points added to the finishing place, capped");
+    expect(legend.textContent).toContain("3 points added to the finishing place");
+    expect(legend.textContent).toContain("scored as a non-finish");
+  });
+
+  it("explains every supported result code without duplicating entries", () => {
+    const codes = ["DNC", "DNS", "OCS", "UFD", "BFD", "ZFP", "SCP", "NSC", "DNF", "RET", "DSQ", "DNE", "DGM", "DPI", "RDG", "TLE", "OOD"];
+    const d = data();
+    d.races = codes.map((_, index) => ({ race_number: index + 1 }));
+    d.standings[0].scores = codes.map((code) => ({ code, points: 1 }));
+    renderTable(d);
+    const legend = container.querySelector('[data-testid="series-scoring-legend"]');
+    const labels = [...legend.querySelectorAll("dt")].map((dt) => dt.textContent.trim());
+    codes.forEach((code) => expect(labels.filter((label) => label === `${code}:`)).toHaveLength(1));
+    expect(legend.textContent).toContain("DNE: Disqualification that cannot be discarded");
+    expect(legend.textContent).toContain("DGM: Disqualification for gross misconduct that cannot be discarded");
+    expect(legend.textContent).toContain("DPI: Discretionary penalty imposed");
+  });
+
+  it("keeps historical payloads readable without inventing unavailable configuration", () => {
+    const d = data();
+    d.standings[0].scores = [{ code: "RDG", points: 1 }];
+    renderTable(d);
+    const legend = container.querySelector('[data-testid="series-scoring-legend"]');
+    expect(legend.textContent).toContain("RDG: Redress given");
+    expect(legend.textContent).not.toContain("Non-finish scoring:");
+    expect(legend.textContent).not.toContain("undefined");
+  });
+
+  it("describes A5.2 and each configured time-limit scoring method", () => {
+    const methods = {
+      finishers_plus_1: "2 more than the number of finishers",
+      last_finisher: "2 more than the last finisher's points",
+      dnf: "the non-finish score",
+      dnc: "series entries plus one",
+    };
+    const d = data();
+    d.scoring_config = { a5_convention: "a5_2", tle: { enabled: true, method: "dnf", increment: 2 } };
+    renderTable(d);
+    for (const [method, text] of Object.entries(methods)) {
+      d.scoring_config.tle.method = method;
+      act(() => root.render(<MemoryRouter><SeriesStandingsTable data={d} /></MemoryRouter>));
+      const legend = container.querySelector('[data-testid="series-scoring-legend"]');
+      expect(legend.textContent).toContain("RRS A5.2");
+      expect(legend.textContent).toContain(`TLE scores ${text}`);
+    }
+  });
+
+  it("describes a combined day without inventing hidden race codes", () => {
+    const d = data();
+    d.races = [{ mini_name: "Day", mini_index: 1, combined: true }];
+    d.standings[0].scores = [{ code: "MINI", points: 1 }];
+    renderTable(d);
+    const legend = container.querySelector('[data-testid="series-scoring-legend"]');
+    expect(legend.textContent).toContain("Combined mini-series:");
+    expect(legend.textContent).toContain("rank counts as one series score");
+    expect(legend.textContent).not.toContain("MINI:");
+  });
+});
+
 describe("combined mini-series drill-down link", () => {
   const combinedData = () => ({
     race_count: 1,
@@ -244,6 +344,20 @@ describe("SeriesStandings (rating divisions)", () => {
       "IRC results",
       "YTC results",
     ]);
+  });
+
+  it("gives each division its own legend and result codes", () => {
+    const d = split();
+    d.divisions[0].standings[0].scores = [{ code: "DNF", points: 4 }];
+    d.divisions[1].standings[0].scores = [{ code: "RDG", points: 2 }];
+    renderSplit(d);
+    const legends = container.querySelectorAll('[data-testid="series-scoring-legend"]');
+    expect(legends).toHaveLength(2);
+    expect(legends[0].textContent).toContain("DNF: Did not finish");
+    expect(legends[0].textContent).not.toContain("RDG:");
+    expect(legends[1].textContent).toContain("RDG: Redress given");
+    expect(legends[1].textContent).not.toContain("DNF:");
+    expect(legends[1].textContent).toContain("YTC places are based on corrected time");
   });
 
   it("renders the single table with no division heading when the class is not split", () => {

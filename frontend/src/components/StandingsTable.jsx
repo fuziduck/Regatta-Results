@@ -90,6 +90,84 @@ const PODIUM_CELL = {
   2: "bg-slate-300 dark:bg-slate-400/50", // silver
   3: "bg-orange-400/70 dark:bg-orange-400/40", // bronze
 };
+const RESULT_CODE_DESCRIPTIONS = {
+  DNC: "Did not start and did not come to the starting area.",
+  DNS: "Did not start (other than DNC or OCS).",
+  OCS: "On the course side at the starting signal or broke rule 30.1.",
+  UFD: "Disqualified under the U flag starting rule.",
+  BFD: "Disqualified under the black flag starting rule.",
+  ZFP: "Starting penalty under rule 30.2.",
+  SCP: "Took a scoring penalty under rule 44.3(a).",
+  NSC: "Did not sail the course.",
+  DNF: "Did not finish.",
+  RET: "Retired.",
+  DSQ: "Disqualified.",
+  DNE: "Disqualification that cannot be discarded.",
+  DGM: "Disqualification for gross misconduct that cannot be discarded.",
+  DPI: "Discretionary penalty imposed; the committee determines the score.",
+  RDG: "Redress given: the committee awards a score to remedy an unfair disadvantage.",
+  TLE: "Did not finish within the time limit; scored under the series time-limit rule.",
+  OOD: "Officer of the Day duty.",
+};
+
+function SeriesScoringLegend({ data, cols }) {
+  const cfg = data.scoring_config;
+  const convention = cfg?.a5_convention || (data.use_finishers ? "finishers" : data.use_a5_3 ? "a5_3" : null);
+  const conventionDescriptions = {
+    a5_2: "RRS A5.2: non-finish scores are one more than the number of series entries.",
+    a5_3: "RRS A5.3: DNC scores series entries plus one; other non-finish scores use starting-area entries plus one.",
+    finishers: "DNC scores series entries plus one; other non-finish scores use the number of finishers plus one.",
+  };
+  // Only include codes in rendered columns, not concealed mini-series races.
+  const codes = [...new Set(data.standings.flatMap((row) => cols
+    .filter((col) => col.scoreIndex != null)
+    .map((col) => row.scores?.[col.scoreIndex]?.code)
+    .filter((code) => code && code !== "FINISHED" && code !== "MINI")))].sort();
+  const mode = data.division_scoring_mode || data.scoring_mode;
+  const modes = {
+    one_design: "Finishing order determines place.",
+    irc: "IRC places are based on corrected time using TCC.",
+    py: "PY places are based on corrected time using the Portsmouth Yardstick.",
+    ytc: "YTC places are based on corrected time using the Yacht Time Correction rating.",
+  };
+  const penaltyDescription = (code, rule) => {
+    if (!rule) return RESULT_CODE_DESCRIPTIONS[code];
+    const amount = rule.method === "percent" ? `${rule.value}% of the non-finish score, rounded to whole points` : `${rule.value} ${rule.method === "places" ? "places" : "points"}`;
+    return `${RESULT_CODE_DESCRIPTIONS[code]} ${amount} added to the finishing place${rule.cap_dnf ? ", capped at the non-finish score" : ""}.`;
+  };
+  const tle = cfg?.tle;
+  const tleIncrement = tle?.increment || 1;
+  const tleMethods = {
+    finishers_plus_1: `${tleIncrement} more than the number of finishers`,
+    last_finisher: `${tleIncrement} more than the last finisher's points`,
+    dnf: "the non-finish score",
+    dnc: "series entries plus one",
+  };
+  const descriptions = {
+    ...RESULT_CODE_DESCRIPTIONS,
+    SCP: penaltyDescription("SCP", cfg?.scp),
+    ZFP: penaltyDescription("ZFP", cfg?.zfp),
+    OOD: !cfg?.duty ? RESULT_CODE_DESCRIPTIONS.OOD : cfg.duty.enabled === false
+      ? "Officer of the Day duty; scored as a non-finish under this series' rules."
+      : `Officer of the Day duty; scored as the boat's average of its other series races${cfg.duty.discards === "with" ? " after applicable discards" : " before discards"}, including DNC.`,
+  };
+  return (
+    <section className="px-3 py-3 border-t border-border text-sm" aria-label="Scoring legend" data-testid="series-scoring-legend">
+      <h4 className="font-semibold mb-2">Scoring legend</h4>
+      <dl className="space-y-1 text-muted-foreground">
+        <div><dt className="inline font-semibold text-foreground">Points: </dt><dd className="inline">A finishing place normally scores the same number of points; lower scores are better. Tied finishes share points.</dd></div>
+        {modes[mode] && <div><dt className="inline font-semibold text-foreground">{scoringModeLabel(mode)}: </dt><dd className="inline">{modes[mode]}</dd></div>}
+        {conventionDescriptions[convention] && <div><dt className="inline font-semibold text-foreground">Non-finish scoring: </dt><dd className="inline">{conventionDescriptions[convention]}</dd></div>}
+        {tle?.enabled && tleMethods[tle.method] && <div><dt className="inline font-semibold text-foreground">Time limit: </dt><dd className="inline">TLE scores {tleMethods[tle.method]}{tle.time_limit_minutes ? `; time limit ${tle.time_limit_minutes} minutes` : ""}.</dd></div>}
+        <div><dt className="inline font-semibold text-foreground">Total and net: </dt><dd className="inline">Total is the sum of race scores; net excludes discarded scores, shown in brackets.</dd></div>
+        {cols.some((col) => col.combined) && <div><dt className="inline font-semibold text-foreground">Combined mini-series: </dt><dd className="inline">The day's counting race scores are averaged to rank boats; that rank counts as one series score. DNC and duty scores are handled separately.</dd></div>}
+        {data.mini_combined && <div><dt className="inline font-semibold text-foreground">Daily result: </dt><dd className="inline">Counting mini-race scores are averaged to rank boats for the combined series result.</dd></div>}
+        {codes.map((code) => <div key={code}><dt className="inline font-semibold text-foreground">{code}: </dt><dd className="inline">{descriptions[code] || "Result code recorded for this race."}</dd></div>)}
+      </dl>
+    </section>
+  );
+}
+
 export function SeriesStandingsTable({ data, onOpenMini }) {
   const tableRef = useRef(null);
   useRankPinning(tableRef, [data]);
@@ -111,7 +189,8 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
   const miniCombined = data.mini_combined || null;
   const combinedGroups = (data.mini_series?.groups || []).filter((g) => g.scoring === "combined");
   return (
-    <div className="overflow-x-auto rounded-xl border border-border">
+    <div className="rounded-xl border border-border">
+      <div className="overflow-x-auto">
       <Table data-testid="series-standings-table" ref={tableRef}>
         <TableHeader>
           <TableRow className="bg-ocean text-white hover:bg-ocean">
@@ -210,6 +289,8 @@ export function SeriesStandingsTable({ data, onOpenMini }) {
         {data.engine_version ? ` · engine ${data.engine_version}` : ""}
         {data.snapshot_version ? ` · snapshot v${data.snapshot_version}${data.locked_at ? ` ${new Date(data.locked_at).toLocaleDateString()}` : ""}` : ""}
       </div>
+      </div>
+      <SeriesScoringLegend data={data} cols={cols} />
     </div>
   );
 }
