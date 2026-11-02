@@ -426,6 +426,9 @@ describe("Admin competition tabs", () => {
     const headers = [...container.querySelectorAll("thead th")].map((t) => t.textContent.trim());
     expect(headers).not.toContain("Class");
     expect(headers).not.toContain("Mini");
+    // Discards depend on how many races are held, so the series list does not
+    // state a fixed count as if it were settled.
+    expect(headers).not.toContain("Discards");
 
     // One band per class, ordered by class name, each naming its own count.
     const groups = [...container.querySelectorAll('[data-testid^="series-group-"]')];
@@ -438,10 +441,12 @@ describe("Admin competition tabs", () => {
     const row = inPage("series-row-Early Spring");
     expect(row.querySelectorAll("td")).toHaveLength(headers.length);
 
-    // Names wrap within a deliberately narrow Series column so the rest of
-    // the table remains visible without horizontal scrolling on desktop.
+    // Names wrap within a bounded Series column so the rest of the table
+    // remains visible without horizontal scrolling, and the column is wide
+    // enough to hold several words before wrapping.
     const seriesHeader = [...container.querySelectorAll("thead th")].find((th) => th.textContent.trim() === "Series");
-    expect(seriesHeader.className).toContain("w-32");
+    expect(seriesHeader.className).toContain("w-48");
+    expect(row.cells[1].className).toContain("w-48");
     expect(row.cells[1].className).toContain("whitespace-normal");
     expect(row.cells[1].className).toContain("break-words");
     expect(row.cells[1].className).not.toContain("whitespace-nowrap");

@@ -1795,14 +1795,14 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
       )}
       <div className="rounded-xl border overflow-hidden">
         <ScrollHintWrap>
-        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead className="w-32 max-w-32">Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Discards</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+        <Table><TableHeader><TableRow className="bg-muted"><TableHead>Order</TableHead><TableHead className="w-48 max-w-48">Series</TableHead><TableHead>Year</TableHead><TableHead>Scoring</TableHead><TableHead>Planned</TableHead><TableHead>In overall</TableHead><TableHead>Scoring rules</TableHead><TableHead>Season</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
           <TableBody>{classGroups.map((group, gi) => (
             <Fragment key={group.key}>
             {/* The break between fleets: one tinted row naming the class, so a
                 scan down the table stops at each one. */}
             <TableRow data-testid={`series-group-${group.name}`}
               className={`border-border bg-muted hover:bg-muted ${gi > 0 ? "border-t-2" : ""}`}>
-              <TableCell colSpan={10} className="py-1.5">
+              <TableCell colSpan={9} className="py-1.5">
                 <span className="font-heading text-sm uppercase tracking-tight">{group.name}</span>
                 <span className="ml-2 text-[11px] text-muted-foreground">
                   ({group.items.length} series)
@@ -1815,10 +1815,9 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
             return (
             <TableRow key={s.id} data-testid={`series-row-${s.name}`}>
               <TableCell className="font-mono">{s.order}</TableCell>
-              <TableCell className="w-32 max-w-32 font-heading text-lg uppercase tracking-tight whitespace-normal break-words">{s.name}</TableCell>
+              <TableCell className="w-48 max-w-48 font-heading text-lg uppercase tracking-tight whitespace-normal break-words">{s.name}</TableCell>
               <TableCell className="font-mono">{s.year || "—"}</TableCell>
               <TableCell><div className="flex flex-wrap gap-1">{seriesScoringModes(s).map((mode) => <Badge key={mode} variant="outline">{scoringModeLabel(mode)}</Badge>)}</div></TableCell>
-              <TableCell className="font-mono">{s.discards}</TableCell>
               <TableCell className="font-mono">{s.planned_races || "—"}</TableCell>
               <TableCell><Switch checked={s.included_in_overall} onCheckedChange={(v) => quickSet(s, { included_in_overall: v })} data-testid={`overall-toggle-${s.name}`} /></TableCell>
               <TableCell className="text-xs text-muted-foreground max-w-44">
@@ -1846,7 +1845,7 @@ function SeriesTab({ classes, clubId, seriesType = "championship", regattaId = n
           );})}
             </Fragment>
           ))}
-            {!classGroups.length && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-6">{regattaId ? "No series in this competition yet — add the first one above." : `No ${bucketLabel.toLowerCase()} series for this year. Try another year or class.`}</TableCell></TableRow>}
+            {!classGroups.length && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">{regattaId ? "No series in this competition yet — add the first one above." : `No ${bucketLabel.toLowerCase()} series for this year. Try another year or class.`}</TableCell></TableRow>}
           </TableBody></Table>
         </ScrollHintWrap>
       </div>
