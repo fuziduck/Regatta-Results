@@ -160,25 +160,43 @@ test("four related series are condensed onto a single page", () => {
   expect(txt).toContain("/Subtype /Image");
 });
 
+const fleet = (boats) => ({
+  race_count: 6,
+  discards: 2,
+  standings: Array.from({ length: boats }, (_, i) => ({
+    rank: i + 1, boat_name: `Boat ${i + 1}`, sail_no: `GBR${100 + i}`, helm: "H",
+    home_club: "Medway Yacht Club", net: i + 1, total: i + 3, scores: [],
+  })),
+});
+
+const fourSeries = (boats) => ["Spring", "Summer", "Autumn", "Winter"].map((name) => ({
+  id: name, name, data: fleet(boats),
+}));
+
 test("four full fleets are still condensed onto one page", () => {
   pdfBytes = null;
-  const fleet = () => ({
-    race_count: 6,
-    discards: 2,
-    standings: Array.from({ length: 24 }, (_, i) => ({
-      rank: i + 1, boat_name: `Boat ${i + 1}`, sail_no: `GBR${100 + i}`, helm: "H",
-      home_club: "Medway Yacht Club", net: i + 1, total: i + 3, scores: [],
-    })),
-  });
   exportAllSeriesPdf({
     clubName: "Medway Yacht Club",
     className: "Sonata",
     year: 2026,
-    series: ["Spring", "Summer", "Autumn", "Winter"].map((name) => ({ id: name, name, data: fleet() })),
+    series: fourSeries(24),
     icon: logoDataUrl,
     adverts: [],
   });
   expect(lastDoc.getNumberOfPages()).toBe(1);
+});
+
+test("a long fleet continues onto another page instead of being cut short", () => {
+  pdfBytes = null;
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: fourSeries(40),
+    icon: null,
+    adverts: [],
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(2);
 });
 
 test("a fifth series continues onto a second page", () => {

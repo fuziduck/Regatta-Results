@@ -308,19 +308,16 @@ describe("exportAllSeriesPdf", () => {
     mockDoc.save.mockClear();
   });
 
-  it("condenses four series onto one page in a two-by-two grid", () => {
+  it("condenses four series side by side onto one page", () => {
     runAll(["Spring", "Summer", "Autumn", "Winter"].map((n) => seriesEntry(n)));
 
     expect(mockDoc.addPage).not.toHaveBeenCalled();
     expect(autoTable).toHaveBeenCalledTimes(4);
-    // Two columns, two rows: exactly two distinct start positions each way.
-    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(2);
-    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
-    // Every panel is half the printable width with a clear gap between them.
-    const [first, second] = mockCalls;
-    expect(first.startY).toBe(second.startY);
-    expect(second.margin.left).toBeGreaterThan(first.margin.left);
-    expect(first.head[0]).toEqual(["#", "Boat", "Net"]);
+    // Four columns on the same page, each with its own left edge.
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(4);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(1);
+    expect(mockCalls[1].margin.left).toBeGreaterThan(mockCalls[0].margin.left);
+    expect(mockCalls[0].head[0]).toEqual(["#", "Boat", "Net"]);
     expect(mockDoc.save).toHaveBeenCalledWith("Fleet-All-Series-2026.pdf");
   });
 
@@ -334,12 +331,17 @@ describe("exportAllSeriesPdf", () => {
     expect(mockCalls[4].startY).toBe(mockCalls[0].startY);
   });
 
-  it("caps a big fleet with a '+N more' row instead of overflowing the panel", () => {
+  it("prints every boat, continuing a long fleet on later pages", () => {
     runAll([seriesEntry("Spring", 80), seriesEntry("Autumn", 80)]);
 
-    const body = mockCalls[0].body;
-    expect(body.length).toBeLessThanOrEqual(30);
-    expect(body[body.length - 1][0].content).toMatch(/^\+\d+ more$/);
+    // 29 rows fit a page, so 80 boats take three pages — none are dropped.
+    expect(mockDoc.addPage).toHaveBeenCalledTimes(2);
+    expect(autoTable).toHaveBeenCalledTimes(6);
+    const printed = mockCalls.flatMap((c) => c.body);
+    expect(printed.length).toBe(160);
+    expect(printed.some((row) => String(row[0]?.content || "").includes("more"))).toBe(false);
+    // Each continuation page is labelled as such.
+    expect(mockCalls[2].body[0][1]).toBe("Boat 30");
   });
 
   it("ignores series with no standings and does nothing when none remain", () => {
