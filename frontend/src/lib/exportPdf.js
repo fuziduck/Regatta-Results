@@ -2,7 +2,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import qrcode from "qrcode-generator";
 import { divisionTables, standingsColumns } from "./helpers";
-import { fmtScore, raceCellStyle } from "./resultCellStyle";
+import { fmtScore, PODIUM_FILLS, PODIUM_TEXT, raceCellStyle, seriesPodiumPlace } from "./resultCellStyle";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
 
 // Shared PDF styling for SailScore result exports.
@@ -438,6 +438,12 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
 
   tables.forEach((table, i) => {
   const startY = i === 0 ? contentTop : doc.lastAutoTable.finalY + 30;
+  // The net scores in each series column, so the three lowest take the same
+  // gold/silver/bronze fills as the three lowest race scores in a series.
+  const seriesValues = Object.fromEntries(table.series_names.map((name) => [
+    name,
+    table.standings.map((row) => row.per_series?.[name]),
+  ]));
   if (tables.length > 1) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
@@ -466,6 +472,17 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
       ...Object.fromEntries(table.series_names.map((_, j) => [j + 3, { halign: "center" }])),
       [3 + table.series_names.length]: { cellWidth: 45, halign: "center", fontStyle: "bold" },
       [4 + table.series_names.length]: { cellWidth: 45, halign: "center" },
+    },
+    didParseCell: (d) => {
+      const col = d.column.index;
+      const seriesCount = table.series_names.length;
+      if (col < 3 || col >= 3 + seriesCount) return;
+      const name = table.series_names[col - 3];
+      const place = seriesPodiumPlace(d.cell.raw, seriesValues[name]);
+      if (!place) return;
+      d.cell.styles.fillColor = PODIUM_FILLS[place];
+      d.cell.styles.textColor = PODIUM_TEXT;
+      d.cell.styles.fontStyle = "bold";
     },
     didDrawPage: (d) => {
       if (d.doc) drawPageChrome(d.doc, { sponsors, logo, qrUrl: url, drawnPages, pageNumber: d.pageNumber });

@@ -1,4 +1,4 @@
-import { exportSeriesPdf, exportAllSeriesPdf, pickPdfSponsors, FOOTER_BAND_HEIGHT } from "./exportPdf";
+import { exportOverallPdf, exportSeriesPdf, exportAllSeriesPdf, pickPdfSponsors, FOOTER_BAND_HEIGHT } from "./exportPdf";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
 import qrcode from "qrcode-generator";
 import autoTable from "jspdf-autotable";
@@ -355,6 +355,57 @@ describe("live results QR", () => {
     mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
     expect(mockDoc.rect).not.toHaveBeenCalled();
     expect(mockDoc.text.mock.calls.some(([t]) => t === "Live results")).toBe(false);
+  });
+});
+
+describe("exportOverallPdf series podium fills", () => {
+  const overallData = () => ({
+    series_names: ["Spring", "Autumn"],
+    standings: [
+      { rank: 1, entries: 4, boat_name: "Boat 1", sail_no: "1", helm: "H", home_club: "Club", total: 8, net: 8, per_series: { Spring: 4, Autumn: 1 } },
+      { rank: 2, entries: 4, boat_name: "Boat 2", sail_no: "2", helm: "H", home_club: "Club", total: 14, net: 14, per_series: { Spring: 8, Autumn: 2 } },
+      { rank: 3, entries: 4, boat_name: "Boat 3", sail_no: "3", helm: "H", home_club: "Club", total: 20, net: 20, per_series: { Spring: 12, Autumn: 3 } },
+      { rank: 4, entries: 4, boat_name: "Boat 4", sail_no: "4", helm: "H", home_club: "Club", total: 26, net: 26, per_series: { Spring: 16, Autumn: 4 } },
+      { rank: 5, entries: 5, boat_name: "Boat 5", sail_no: "5", helm: "H", home_club: "Club", total: 20, net: 20, per_series: { Spring: 20 } },
+    ],
+  });
+
+  beforeEach(() => {
+    mockCaptured = null;
+    mockCalls = [];
+    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; mockCalls.push(opts); });
+    jsPDF.mockImplementation(() => mockDoc);
+    mockDoc.splitTextToSize.mockImplementation((t) => [String(t)]);
+    mockDoc.getImageProperties.mockImplementation(() => ({ width: 100, height: 50 }));
+    exportOverallPdf({
+      clubName: "Club", className: "Fleet", year: 2026, data: overallData(),
+      icon: null, adverts: [],
+    });
+  });
+
+  const cellFor = (raw, col) => {
+    const cell = { raw, styles: {} };
+    mockCaptured.didParseCell({ column: { index: col }, cell });
+    return cell;
+  };
+
+  it("gives the three lowest nets in each series column the medal fills", () => {
+    expect(cellFor(4, 3).styles.fillColor).toEqual(PODIUM_FILLS[1]); // Spring gold
+    expect(cellFor(8, 3).styles.fillColor).toEqual(PODIUM_FILLS[2]); // Spring silver
+    expect(cellFor(12, 3).styles.fillColor).toEqual(PODIUM_FILLS[3]); // Spring bronze
+    expect(cellFor(16, 3).styles.fillColor).toBeUndefined();
+    expect(cellFor(1, 4).styles.fillColor).toEqual(PODIUM_FILLS[1]); // Autumn gold
+    expect(cellFor(2, 4).styles.fillColor).toEqual(PODIUM_FILLS[2]);
+    expect(cellFor(3, 4).styles.fillColor).toEqual(PODIUM_FILLS[3]);
+    expect(cellFor(4, 4).styles.fillColor).toBeUndefined();
+    // A missing series score is an em dash, never a zero-score gold.
+    expect(cellFor("—", 4).styles.fillColor).toBeUndefined();
+  });
+
+  it("leaves the position, total and net columns alone", () => {
+    expect(cellFor("1 / 4", 0).styles.fillColor).toBeUndefined();
+    expect(cellFor("8", 5).styles.fillColor).toBeUndefined();
+    expect(cellFor("8", 6).styles.fillColor).toBeUndefined();
   });
 });
 

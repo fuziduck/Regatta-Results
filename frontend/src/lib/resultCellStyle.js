@@ -55,6 +55,29 @@ export function podiumPlace(s) {
   return null;
 }
 
+// The podium place of a boat's series contribution inside an overall table,
+// judged against the other boats in the same series column: the three lowest
+// net scores take gold, silver and bronze, exactly as the three lowest race
+// scores do in a series table. Ties share a place and the next boat moves down
+// accordingly. Missing values and places below bronze return null.
+export function seriesPodiumPlace(value, columnValues) {
+  const score = numericScore(value);
+  if (score == null) return null;
+  const place = columnValues.filter((v) => {
+    const other = numericScore(v);
+    return other != null && other < score;
+  }).length + 1;
+  return place <= 3 ? place : null;
+}
+
+// A series contribution as a number, or null when nothing was scored. A
+// missing value must never become 0 (which would rank as a gold medal).
+function numericScore(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Decide how one race-result cell is styled. `s` is a standings score object
 // ({points, code, discarded}) or a falsy/primitive value for empty or header
 // cells. Returns {textColor, fontStyle, fillColor} with nulls meaning "no

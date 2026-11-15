@@ -1,4 +1,4 @@
-import { fmtScore, raceCellStyle, podiumPlace, PODIUM_FILLS, DISCARD_TEXT, PENALTY_TEXT } from "./resultCellStyle";
+import { fmtScore, raceCellStyle, podiumPlace, seriesPodiumPlace, PODIUM_FILLS, DISCARD_TEXT, PENALTY_TEXT } from "./resultCellStyle";
 
 describe("fmtScore", () => {
   it("formats a plain finishing position without a code suffix", () => {
@@ -20,6 +20,39 @@ describe("fmtScore", () => {
     expect(fmtScore({ points: 2.5, code: "OOD", discarded: true })).toBe("(2.5 OOD)");
     expect(fmtScore({ points: 1, code: "FINISHED", discarded: true })).toBe("(1)");
     expect(fmtScore({ points: 3.5, code: "MINI", discarded: true })).toBe("(3.5)");
+  });
+});
+
+describe("seriesPodiumPlace — the three lowest scores in an overall series column", () => {
+  const column = [4, 8, 12, 16, 20];
+
+  it("gives gold, silver and bronze to the three lowest nets", () => {
+    expect(seriesPodiumPlace(4, column)).toBe(1);
+    expect(seriesPodiumPlace(8, column)).toBe(2);
+    expect(seriesPodiumPlace(12, column)).toBe(3);
+    expect(seriesPodiumPlace(16, column)).toBeNull();
+  });
+
+  it("is position-based, not value-based (a 4 can be gold)", () => {
+    expect(seriesPodiumPlace(4, column)).toBe(1);
+    expect(seriesPodiumPlace(4, [1, 2, 3])).toBeNull();
+    expect(seriesPodiumPlace(3, [1, 2, 3])).toBe(3);
+  });
+
+  it("shares a place on a tie and moves the next boat down", () => {
+    const tied = [5, 5, 6, 9];
+    expect(seriesPodiumPlace(5, tied)).toBe(1);
+    expect(seriesPodiumPlace(6, tied)).toBe(3);
+    expect(seriesPodiumPlace(9, tied)).toBeNull();
+  });
+
+  it("ignores missing values and never treats them as a zero score", () => {
+    expect(seriesPodiumPlace(NaN, [1, 2, 3])).toBeNull();
+    expect(seriesPodiumPlace(null, [1, 2, 3])).toBeNull();
+    expect(seriesPodiumPlace("", [1, 2, 3])).toBeNull();
+    expect(seriesPodiumPlace(3, [])).toBe(1);
+    // Missing entries in the column do not occupy a podium place.
+    expect(seriesPodiumPlace(7, [null, "", 6, 8, 9])).toBe(2);
   });
 });
 

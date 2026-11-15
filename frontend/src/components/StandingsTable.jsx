@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Layers, Trophy } from "lucide-react";
-import { podiumPlace } from "@/lib/resultCellStyle";
+import { podiumPlace, seriesPodiumPlace } from "@/lib/resultCellStyle";
 import { divisionTables, scoringModeLabel, shouldWrapBoatName, standingsColumns, wrapBoatName } from "@/lib/helpers";
 import Loading from "@/components/Loading";
 
@@ -301,6 +301,13 @@ export function OverallStandingsTable({ data }) {
   if (!data || !data.standings?.length) {
     return <p data-testid="no-overall" className="text-muted-foreground text-sm py-6">No overall results yet.</p>;
   }
+  // The net scores in each series column, so the three lowest can take the
+  // same gold/silver/bronze fills as the three lowest race scores do in a
+  // series table.
+  const columnValues = Object.fromEntries(data.series_names.map((name) => [
+    name,
+    data.standings.map((row) => row.per_series?.[name]),
+  ]));
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
       <Table data-testid="overall-standings-table" ref={tableRef}>
@@ -334,11 +341,17 @@ export function OverallStandingsTable({ data }) {
               <TableCell className="text-muted-foreground whitespace-nowrap">
                 {row.home_club_slug ? <Link to={`/club/${row.home_club_slug}`} className="hover:text-ocean transition-colors">{row.home_club || "—"}</Link> : (row.home_club || "—")}
               </TableCell>
-              {data.series_names.map((s) => (
-                <TableCell key={s} className="text-center font-mono text-sm text-muted-foreground hidden md:table-cell">
-                  {row.per_series[s] ?? "—"}
-                </TableCell>
-              ))}
+              {data.series_names.map((s) => {
+                const value = row.per_series?.[s];
+                const place = seriesPodiumPlace(value, columnValues[s]);
+                const podium = place ? PODIUM_CELL[place] : "";
+                return (
+                  <TableCell key={s} data-testid={`overall-series-${row.sail_no}-${s}`}
+                    className={`text-center font-mono text-sm hidden md:table-cell ${podium ? `${podium} font-bold` : "text-muted-foreground"}`}>
+                    {value ?? "—"}
+                  </TableCell>
+                );
+              })}
               <TableCell className="text-center font-mono font-bold text-ocean text-lg">{row.total}</TableCell>
               <TableCell className="text-center font-mono text-muted-foreground text-lg">{row.net}</TableCell>
             </TableRow>

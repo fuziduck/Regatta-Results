@@ -5,7 +5,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { SeriesStandingsTable, SeriesStandings } from "./StandingsTable";
+import { SeriesStandingsTable, SeriesStandings, OverallStandingsTable } from "./StandingsTable";
 
 let container;
 let root;
@@ -44,7 +44,55 @@ afterEach(() => {
   container = null;
 });
 
+const renderOverall = (d) => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root.render(
+      <MemoryRouter>
+        <OverallStandingsTable data={d} />
+      </MemoryRouter>
+    );
+  });
+  return container;
+};
+
 const linkFor = (sail) => container.querySelector(`[data-testid="boat-link-${sail}"]`);
+
+describe("overall series podium colouring", () => {
+  const overall = {
+    series_names: ["Spring", "Autumn"],
+    standings: [
+      { rank: 1, boat_id: "b1", boat_name: "Bluebell", sail_no: "1", helm: "H", home_club: "C", total: 8, net: 8, per_series: { Spring: 4, Autumn: 1 } },
+      { rank: 2, boat_id: "b2", boat_name: "Cirrus", sail_no: "2", helm: "H", home_club: "C", total: 14, net: 14, per_series: { Spring: 8, Autumn: 2 } },
+      { rank: 3, boat_id: "b3", boat_name: "Dolphin", sail_no: "3", helm: "H", home_club: "C", total: 20, net: 20, per_series: { Spring: 12, Autumn: 3 } },
+      { rank: 4, boat_id: "b4", boat_name: "Eclipse", sail_no: "4", helm: "H", home_club: "C", total: 26, net: 26, per_series: { Spring: 16, Autumn: 4 } },
+      { rank: 5, boat_id: "b5", boat_name: "Falcon", sail_no: "5", helm: "H", home_club: "C", total: 20, net: 20, per_series: { Spring: 20 } },
+    ],
+  };
+
+  it("gives the three lowest nets in each series column the medal fills", () => {
+    renderOverall(overall);
+    const cell = (sail, series) => container.querySelector(`[data-testid="overall-series-${sail}-${series}"]`);
+
+    // Spring: 4 / 8 / 12 are the three lowest, even though none is 1-3.
+    expect(cell("1", "Spring").className).toContain("bg-amber-400/70");
+    expect(cell("2", "Spring").className).toContain("bg-slate-300");
+    expect(cell("3", "Spring").className).toContain("bg-orange-400/70");
+    expect(cell("4", "Spring").className).not.toContain("bg-orange-400/70");
+
+    // Autumn: 1 / 2 / 3 take the same fills in that column.
+    expect(cell("1", "Autumn").className).toContain("bg-amber-400/70");
+    expect(cell("2", "Autumn").className).toContain("bg-slate-300");
+    expect(cell("3", "Autumn").className).toContain("bg-orange-400/70");
+    expect(cell("4", "Autumn").className).not.toContain("bg-orange-400/70");
+
+    // A boat with no score in that series is blank, never a zero-score gold.
+    expect(cell("5", "Autumn").textContent).toBe("—");
+    expect(cell("5", "Autumn").className).not.toContain("bg-amber-400/70");
+  });
+});
 
 describe("boat-name wrapping in the standings table", () => {
   it("keeps short names (<=14 chars) on one unbroken line", () => {
