@@ -420,23 +420,23 @@ describe("exportAllSeriesPdf", () => {
     expect(total.text).toEqual([]);
   });
 
-  it("fits six series onto one page in three columns", () => {
+  it("fits six series onto one page in two columns and three rows", () => {
     runAll(["Spring", "Summer", "Autumn", "Winter", "Spring 2", "Autumn 2"].map((n) => seriesEntry(n)));
 
     expect(mockDoc.addPage).not.toHaveBeenCalled();
     expect(autoTable).toHaveBeenCalledTimes(6);
-    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(3);
-    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(2);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(3);
     expect(mockCalls[5].head[0]).toEqual(["#", "Boat", "R1", "R2", "R3", "Total", "Net"]);
   });
 
-  it("fits five series onto one page, three across and two down", () => {
+  it("fits five series onto one page, two across and three down", () => {
     runAll(["A", "B", "C", "D", "E"].map((n) => seriesEntry(n)));
 
     expect(mockDoc.addPage).not.toHaveBeenCalled();
     expect(autoTable).toHaveBeenCalledTimes(5);
-    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(3);
-    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(2);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(3);
   });
 
   it("uses the roomy profile for ten boats or fewer", () => {
@@ -453,29 +453,29 @@ describe("exportAllSeriesPdf", () => {
 
     expect(mockDoc.addPage).not.toHaveBeenCalled();
     expect(autoTable).toHaveBeenCalledTimes(6);
-    expect(mockCalls[0].styles.fontSize).toBe(5.4);
+    expect(mockCalls[0].styles.fontSize).toBe(5.2);
     expect(mockCalls[0].body).toHaveLength(11);
   });
 
   it("continues a fleet larger than one dense panel", () => {
     runAll(["A", "B", "C", "D", "E", "F"].map((n) => seriesEntry(n, 20)));
 
-    // 19 rows fit a dense panel, so 20 boats continue on a second page.
+    // 12 rows fit a dense panel, so 20 boats continue on a second page.
     expect(mockDoc.addPage).toHaveBeenCalledTimes(1);
     expect(autoTable).toHaveBeenCalledTimes(12);
-    expect(mockCalls[6].body[0][1]).toBe("Boat 20");
+    expect(mockCalls[6].body[0][1]).toBe("Boat 13");
   });
 
   it("prints every boat, continuing a long fleet on later pages", () => {
     runAll([seriesEntry("Spring", 80), seriesEntry("Autumn", 80)]);
 
-    // 42 rows fit a dense page, so 80 boats take two pages — none are dropped.
+    // 46 rows fit a dense full-height panel, so 80 boats take two pages — none are dropped.
     expect(mockDoc.addPage).toHaveBeenCalledTimes(1);
     expect(autoTable).toHaveBeenCalledTimes(4);
     const printed = mockCalls.flatMap((c) => c.body);
     expect(printed.length).toBe(160);
     // Each continuation page carries the next slice of the same table.
-    expect(mockCalls[2].body[0][1]).toBe("Boat 43");
+    expect(mockCalls[2].body[0][1]).toBe("Boat 47");
   });
 
   it("carries the live results QR on the grid pages", () => {

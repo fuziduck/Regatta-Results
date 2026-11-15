@@ -478,21 +478,21 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
 
 // The "all series" export for a class: every series in the class/year is
 // printed with its full race-by-race standings table (# / Boat / every race /
-// Total / Net). Up to six series share one landscape page (three across, two
+// Total / Net). Up to six series share one landscape page (two across, three
 // down). Two page profiles keep the grid readable: a roomy one for fleets of
 // ten boats or fewer, and a denser one that still fits eleven or more. Every
 // scored boat is always printed — a long fleet continues on the next page, its
 // table marked "(cont.)", rather than being cut off.
-const SERIES_PAGE = { perPage: 6, maxColumns: 3, gapX: 10, gapY: 12 };
+const SERIES_PAGE = { perPage: 6, maxColumns: 2, gapX: 10, gapY: 12 };
 const SERIES_LAYOUTS = {
   roomy: {
-    fontSize: 6.2, headFontSize: 6.2, cellPadding: 1.2,
-    rowHeight: 10.2, headHeight: 10.2, headingHeight: 13,
+    fontSize: 6.2, headFontSize: 6.2, cellPadding: 1.0,
+    rowHeight: 9.3, headHeight: 9.5, headingHeight: 11,
     headingFontSize: 8.4, noteFontSize: 6.2,
   },
   dense: {
-    fontSize: 5.4, headFontSize: 5.8, cellPadding: 0.9,
-    rowHeight: 8.4, headHeight: 9.5, headingHeight: 12,
+    fontSize: 5.2, headFontSize: 5.4, cellPadding: 0.8,
+    rowHeight: 7.8, headHeight: 9, headingHeight: 11,
     headingFontSize: 7.6, noteFontSize: 5.8,
   },
 };
@@ -625,13 +625,11 @@ export function exportAllSeriesPdf({ clubName, className, year, series, icon, ad
   const layout = fleetSize <= ROOMY_MAX_BOATS ? SERIES_LAYOUTS.roomy : SERIES_LAYOUTS.dense;
   let firstPage = true;
 
-  // Six tables per spread (three columns, two rows); a longer season keeps
-  // flowing on new pages. Four series keep the wider two-by-two grid.
+  // Six tables per spread (two columns, three rows); a longer season keeps
+  // flowing on new pages.
   for (let start = 0; start < panels.length; start += SERIES_PAGE.perPage) {
     const group = panels.slice(start, start + SERIES_PAGE.perPage);
-    const gridColumns = group.length <= SERIES_PAGE.maxColumns
-      ? Math.max(1, group.length)
-      : (group.length === 4 ? 2 : 3);
+    const gridColumns = Math.min(SERIES_PAGE.maxColumns, Math.max(1, group.length));
     const gridRows = Math.ceil(group.length / gridColumns);
     const panelWidth = (pageW - 80 - SERIES_PAGE.gapX * (gridColumns - 1)) / gridColumns;
     const panelHeight = (gridBottom - contentTop - SERIES_PAGE.gapY * (gridRows - 1)) / gridRows;

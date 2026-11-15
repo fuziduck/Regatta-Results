@@ -190,11 +190,26 @@ test("six series of ten boats fit on one page in the roomy layout", () => {
     series: namedSeries(["Early Spring", "Spring", "Summer", "Autumn", "Winter", "Spring 2"], 10),
     icon: logoDataUrl,
     adverts: [],
+    competitionLabel: "2026 CLUB CHAMPIONSHIP · Championship",
   });
   expect(lastDoc.getNumberOfPages()).toBe(1);
 });
 
-test("six series of eighteen boats still fit on one page in the dense layout", () => {
+test("six series of twelve boats still fit on one page in the dense layout", () => {
+  pdfBytes = null;
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: namedSeries(["Early Spring", "Spring", "Summer", "Autumn", "Winter", "Spring 2"], 12),
+    icon: null,
+    adverts: [],
+    competitionLabel: "2026 CLUB CHAMPIONSHIP · Championship",
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(1);
+});
+
+test("eighteen boats continue onto a second page in the three-row grid", () => {
   pdfBytes = null;
   exportAllSeriesPdf({
     clubName: "Medway Yacht Club",
@@ -204,7 +219,7 @@ test("six series of eighteen boats still fit on one page in the dense layout", (
     icon: null,
     adverts: [],
   });
-  expect(lastDoc.getNumberOfPages()).toBe(1);
+  expect(lastDoc.getNumberOfPages()).toBe(2);
 });
 
 test("four fleets of twelve, with every race column, fit on one page", () => {
@@ -232,7 +247,7 @@ test("a long fleet continues onto another page instead of being cut short", () =
     icon: null,
     adverts: [],
   });
-  expect(lastDoc.getNumberOfPages()).toBe(3);
+  expect(lastDoc.getNumberOfPages()).toBe(2);
 });
 
 test("a seventh series continues onto a second page", () => {
