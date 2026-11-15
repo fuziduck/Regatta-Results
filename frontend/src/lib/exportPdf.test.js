@@ -1,5 +1,6 @@
 import { exportSeriesPdf, exportAllSeriesPdf, pickPdfSponsors, FOOTER_BAND_HEIGHT } from "./exportPdf";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
+import qrcode from "qrcode-generator";
 import autoTable from "jspdf-autotable";
 import { jsPDF } from "jspdf";
 import { DISCARD_TEXT, PODIUM_FILLS, PENALTY_TEXT } from "./resultCellStyle";
@@ -22,6 +23,8 @@ const mockDoc = {
   text: jest.fn(),
   addImage: jest.fn(),
   addPage: jest.fn(),
+  rect: jest.fn(),
+  setFillColor: jest.fn(),
   getTextWidth: jest.fn((t) => String(t).length * 5),
   splitTextToSize: jest.fn((t) => [String(t)]),
   getImageProperties: jest.fn(() => ({ width: 100, height: 50 })),
@@ -268,6 +271,18 @@ describe("club logo", () => {
     expect(mockDoc.addImage).toHaveBeenCalledTimes(2);
   });
 
+  it("moves the crest left to leave room for the live-results QR", () => {
+    runExport({ icon: "data:image/png;base64,QUFB", url: "https://www.sailscore.co.uk/club/harbour-club" });
+    mockDoc.addImage.mockClear();
+    mockDoc.rect.mockClear();
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
+
+    const [, , x, y, w] = mockDoc.addImage.mock.calls[0];
+    expect(y).toBe(24);
+    expect(x + w).toBeLessThanOrEqual(842 - 40 - 56 - 12);
+    expect(mockDoc.rect).toHaveBeenCalled();
+  });
+
   it("skips the crest when the club has no icon and never fails on a bad one", () => {
     runExport({ icon: null });
     mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
@@ -277,6 +292,69 @@ describe("club logo", () => {
     runExport({ icon: "data:image/gif;base64,QUFB" });
     mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
     expect(mockDoc.addImage).not.toHaveBeenCalled();
+  });
+});
+
+describe("live results QR", () => {
+  const url = "https://www.sailscore.co.uk/club/harbour-club?class=dragon";
+
+  beforeEach(() => {
+    mockCaptured = null;
+    mockCalls = [];
+    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; mockCalls.push(opts); });
+    jsPDF.mockImplementation(() => mockDoc);
+    mockDoc.splitTextToSize.mockImplementation((t) => [String(t)]);
+    mockDoc.getImageProperties.mockImplementation(() => ({ width: 100, height: 50 }));
+    mockDoc.rect.mockClear();
+    mockDoc.setFillColor.mockClear();
+  });
+
+  // The number of dark horizontal runs in the same QR the export encodes; the
+  // export draws one filled rectangle per run.
+  const expectedRuns = (value) => {
+    const code = qrcode(0, "M");
+    code.addData(value);
+    code.make();
+    const count = code.getModuleCount();
+    let runs = 0;
+    for (let row = 0; row < count; row += 1) {
+      let inRun = false;
+      for (let col = 0; col < count; col += 1) {
+        if (code.isDark(row, col) && !inRun) { runs += 1; inRun = true; }
+        if (!code.isDark(row, col)) inRun = false;
+      }
+    }
+    return runs;
+  };
+
+  it("draws the live page QR once per page inside the top-right box", () => {
+    runExport({ url });
+    mockDoc.rect.mockClear();
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 }); // second table, same page
+
+    const calls = mockDoc.rect.mock.calls;
+    expect(calls.length).toBe(expectedRuns(url));
+    calls.forEach(([x, y, w, h, style]) => {
+      expect(style).toBe("F");
+      expect(x).toBeGreaterThanOrEqual(842 - 40 - 56);
+      expect(x + w).toBeLessThanOrEqual(842 - 40);
+      expect(y).toBeGreaterThanOrEqual(24);
+      expect(y + h).toBeLessThanOrEqual(24 + 56);
+    });
+    expect(mockDoc.text.mock.calls.some(([t]) => t === "Live results")).toBe(true);
+
+    // Every page carries the code — a printed page is never a dead end.
+    mockDoc.rect.mockClear();
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 2 });
+    expect(mockDoc.rect).toHaveBeenCalledTimes(expectedRuns(url));
+  });
+
+  it("draws no QR when no live URL is supplied", () => {
+    runExport({ url: null });
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
+    expect(mockDoc.rect).not.toHaveBeenCalled();
+    expect(mockDoc.text.mock.calls.some(([t]) => t === "Live results")).toBe(false);
   });
 });
 
@@ -299,8 +377,8 @@ describe("exportAllSeriesPdf", () => {
     },
   });
 
-  const runAll = (series) => exportAllSeriesPdf({
-    clubName: "Club", className: "Fleet", year: 2026, series, icon: null, adverts: [],
+  const runAll = (series, extra = {}) => exportAllSeriesPdf({
+    clubName: "Club", className: "Fleet", year: 2026, series, icon: null, adverts: [], ...extra,
   });
 
   beforeEach(() => {
@@ -342,26 +420,70 @@ describe("exportAllSeriesPdf", () => {
     expect(total.text).toEqual([]);
   });
 
-  it("continues onto a further page when there are more than four series", () => {
+  it("fits six series onto one page in three columns", () => {
+    runAll(["Spring", "Summer", "Autumn", "Winter", "Spring 2", "Autumn 2"].map((n) => seriesEntry(n)));
+
+    expect(mockDoc.addPage).not.toHaveBeenCalled();
+    expect(autoTable).toHaveBeenCalledTimes(6);
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(3);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
+    expect(mockCalls[5].head[0]).toEqual(["#", "Boat", "R1", "R2", "R3", "Total", "Net"]);
+  });
+
+  it("fits five series onto one page, three across and two down", () => {
     runAll(["A", "B", "C", "D", "E"].map((n) => seriesEntry(n)));
 
-    expect(mockDoc.addPage).toHaveBeenCalledTimes(1);
+    expect(mockDoc.addPage).not.toHaveBeenCalled();
     expect(autoTable).toHaveBeenCalledTimes(5);
-    // The fifth series opens the next page's first panel.
-    expect(mockCalls[4].margin.left).toBe(mockCalls[0].margin.left);
-    expect(mockCalls[4].startY).toBe(mockCalls[0].startY);
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(3);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
+  });
+
+  it("uses the roomy profile for ten boats or fewer", () => {
+    runAll(["A", "B", "C", "D", "E", "F"].map((n) => seriesEntry(n, 10)));
+
+    expect(mockDoc.addPage).not.toHaveBeenCalled();
+    expect(autoTable).toHaveBeenCalledTimes(6);
+    expect(mockCalls[0].styles.fontSize).toBe(6.2);
+    expect(mockCalls[0].body).toHaveLength(10);
+  });
+
+  it("switches to the dense profile for eleven or more boats", () => {
+    runAll(["A", "B", "C", "D", "E", "F"].map((n) => seriesEntry(n, 11)));
+
+    expect(mockDoc.addPage).not.toHaveBeenCalled();
+    expect(autoTable).toHaveBeenCalledTimes(6);
+    expect(mockCalls[0].styles.fontSize).toBe(5.4);
+    expect(mockCalls[0].body).toHaveLength(11);
+  });
+
+  it("continues a fleet larger than one dense panel", () => {
+    runAll(["A", "B", "C", "D", "E", "F"].map((n) => seriesEntry(n, 20)));
+
+    // 19 rows fit a dense panel, so 20 boats continue on a second page.
+    expect(mockDoc.addPage).toHaveBeenCalledTimes(1);
+    expect(autoTable).toHaveBeenCalledTimes(12);
+    expect(mockCalls[6].body[0][1]).toBe("Boat 20");
   });
 
   it("prints every boat, continuing a long fleet on later pages", () => {
     runAll([seriesEntry("Spring", 80), seriesEntry("Autumn", 80)]);
 
-    // 37 rows fit a page, so 80 boats take three pages — none are dropped.
-    expect(mockDoc.addPage).toHaveBeenCalledTimes(2);
-    expect(autoTable).toHaveBeenCalledTimes(6);
+    // 42 rows fit a dense page, so 80 boats take two pages — none are dropped.
+    expect(mockDoc.addPage).toHaveBeenCalledTimes(1);
+    expect(autoTable).toHaveBeenCalledTimes(4);
     const printed = mockCalls.flatMap((c) => c.body);
     expect(printed.length).toBe(160);
     // Each continuation page carries the next slice of the same table.
-    expect(mockCalls[2].body[0][1]).toBe("Boat 38");
+    expect(mockCalls[2].body[0][1]).toBe("Boat 43");
+  });
+
+  it("carries the live results QR on the grid pages", () => {
+    runAll([seriesEntry("Spring")], { url: "https://www.sailscore.co.uk/club/harbour-club" });
+    mockDoc.rect.mockClear();
+    mockCalls[0].didDrawPage({ doc: mockDoc, pageNumber: 1 });
+    expect(mockDoc.rect).toHaveBeenCalled();
+    expect(mockDoc.text.mock.calls.some(([t]) => t === "Live results")).toBe(true);
   });
 
   it("ignores series with no standings and does nothing when none remain", () => {

@@ -111,6 +111,7 @@ export default function Regatta() {
               clubName: club?.name || "", className, seriesName: s.name !== regatta.name ? s.name : regatta.name,
               year: regatta.year, data: standings[s.id], icon: club?.icon,
               competitionLabel: `${regatta.name} · ${compLabel}`,
+              url: `${window.location.origin}${window.location.pathname}`,
             });
             trackEvent(SAILSCORE_EVENTS.DOWNLOAD_RESULTS_PDF, {
               regatta_id: regattaId,

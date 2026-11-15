@@ -268,13 +268,25 @@ test("a late series response from the previous class cannot reset a pending seri
   expect(container.querySelector("main h3")?.textContent).toBe("Early Autumn Series");
 });
 
-test("the overall view downloads every series that makes up the championship", async () => {
+test("downloads every series in the class, including those outside the overall", async () => {
+  // Winter is a class series that does not count towards the overall: it must
+  // still appear in the all-series PDF.
+  const winter = {
+    id: "dragon-winter", class_id: "dragon", year: CURRENT_YEAR,
+    name: "Winter", series_type: "club_championship",
+  };
+  const classSeries = [...dragonSeries, winter];
+  mockApi.getSeries.mockImplementation((params) => {
+    if (params.class_id === "dragon") return Promise.resolve(classSeries);
+    if (params.class_id === "sonata") return Promise.resolve(sonataSeries);
+    return Promise.resolve([...allSeries, winter]);
+  });
   mockApi.overallStandings.mockResolvedValue({
     standings: [{ boat_id: "boat-1" }],
     series_names: ["Spring", "Autumn"],
   });
   mockApi.seriesStandings.mockImplementation((seriesId) => Promise.resolve({
-    series_name: allSeries.find((item) => item.id === seriesId)?.name,
+    series_name: [...allSeries, winter].find((item) => item.id === seriesId)?.name,
     standings: [{ boat_id: "boat-1", rank: 1, net: 3 }],
   }));
 
@@ -291,7 +303,10 @@ test("the overall view downloads every series that makes up the championship", a
 
   const { exportAllSeriesPdf } = require("@/lib/exportPdf");
   expect(exportAllSeriesPdf).toHaveBeenCalledTimes(1);
-  expect(exportAllSeriesPdf.mock.calls[0][0].series.map((s) => s.name)).toEqual(["Spring", "Autumn"]);
+  expect(exportAllSeriesPdf.mock.calls[0][0].series.map((s) => s.name))
+    .toEqual(["Spring", "Autumn", "Winter"]);
+  // The PDF's QR links back to this class's live results page.
+  expect(exportAllSeriesPdf.mock.calls[0][0].url).toContain("class=dragon");
   // The individual series standings button still downloads one series.
   expect(container.querySelector('[data-testid="export-overall-pdf"]')).not.toBeNull();
 });

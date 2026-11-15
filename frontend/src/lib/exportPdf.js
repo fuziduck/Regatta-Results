@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import qrcode from "qrcode-generator";
 import { divisionTables, standingsColumns } from "./helpers";
 import { fmtScore, raceCellStyle } from "./resultCellStyle";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
@@ -26,6 +27,8 @@ export const FOOTER_BAND_HEIGHT = 82; // vertical space reserved at the page foo
 const SPONSOR_LOGO_BOX = { w: 88, h: 30 }; // max logo box — aspect is preserved
 const SPONSOR_TEXT = [30, 41, 59]; // near-black, readable on any logo
 const CLUB_LOGO_BOX = { w: 96, h: 50 }; // top-right club crest — aspect is preserved
+const QR_SIZE = 56; // printed QR size in pt (about 20mm on A4)
+const QR_QUIET_MODULES = 4; // the quiet zone a scanner needs around the code
 
 // The sponsors for a PDF: up to `count` active adverts in website priority
 // order (`order`, stable for ties). Deterministic for a given input list.
@@ -134,7 +137,8 @@ function drawPageFooter(doc, sponsors) {
 // Draw the club's crest at the top right of the CURRENT page, scaled to fit
 // its box with the natural aspect ratio preserved. Anything jsPDF cannot
 // embed (or an unreadable image) is skipped rather than failing the export.
-function drawClubLogo(doc, logo) {
+// `rightInset` keeps it clear of the QR code when one is printed.
+function drawClubLogo(doc, logo, rightInset = 0) {
   if (!logo) return;
   const pageW = doc.internal.pageSize.getWidth();
   let w = CLUB_LOGO_BOX.h; // square fallback when the image size is unknown
@@ -149,7 +153,48 @@ function drawClubLogo(doc, logo) {
   } catch {
     // Unreadable image data — keep the square fallback.
   }
-  doc.addImage(logo.bytes, logo.format, pageW - 40 - w, 24, w, h);
+  doc.addImage(logo.bytes, logo.format, pageW - 40 - rightInset - w, 24, w, h);
+}
+
+// A QR code linking to the live results, drawn as filled module runs (no
+// canvas, so it prints crisply at any zoom and works in every environment).
+// A 4-module quiet zone is kept inside the box; an unencodable URL simply
+// omits the code rather than failing the export.
+function drawQrCode(doc, url, { x, y, size = QR_SIZE }) {
+  if (!url) return;
+  let code;
+  try {
+    code = qrcode(0, "M"); // 0 = smallest version that fits; M = 15% recovery
+    code.addData(String(url));
+    code.make();
+  } catch {
+    return;
+  }
+  const modules = code.getModuleCount();
+  const total = modules + QR_QUIET_MODULES * 2;
+  const cell = size / total;
+  doc.setFillColor(0, 0, 0);
+  for (let row = 0; row < modules; row++) {
+    let runStart = null;
+    for (let col = 0; col <= modules; col++) {
+      const dark = col < modules && code.isDark(row, col);
+      if (dark && runStart === null) runStart = col;
+      if (!dark && runStart !== null) {
+        doc.rect(
+          x + (runStart + QR_QUIET_MODULES) * cell,
+          y + (row + QR_QUIET_MODULES) * cell,
+          (col - runStart) * cell,
+          cell,
+          "F",
+        );
+        runStart = null;
+      }
+    }
+  }
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(5.5);
+  doc.setTextColor(...MUTED);
+  doc.text("Live results", x + size / 2, y + size + 7, { align: "center" });
 }
 
 // Shrink the header line until it fits the space left beside the logo, then
@@ -172,9 +217,10 @@ function fitHeaderText(doc, text, maxWidth, size, minSize = 11) {
 // two-line header (competition page / boat identity) never has the rule
 // struck through its second line, as a fixed position did. The logo's column
 // is kept clear for the club crest drawn at the top right of every page.
-function header(doc, { clubName, className, title, year, logo, competitionLabel }) {
+function header(doc, { clubName, className, title, year, logo, qrUrl, competitionLabel }) {
   const pageW = doc.internal.pageSize.getWidth();
-  const maxWidth = pageW - 80 - (logo ? CLUB_LOGO_BOX.w + 14 : 0);
+  const qrSpace = qrUrl ? QR_SIZE + 12 : 0;
+  const maxWidth = pageW - 80 - (logo ? CLUB_LOGO_BOX.w + 14 : 0) - qrSpace;
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...OCEAN);
   doc.text(fitHeaderText(doc, `${clubName}`, maxWidth, 16), 40, 40);
@@ -195,25 +241,28 @@ function header(doc, { clubName, className, title, year, logo, competitionLabel 
   return ruleY + 12;
 }
 
-// Footer plus the club crest, drawn once per page. Pages are tracked by number
-// because a page can carry more than one table (rating divisions, or the
-// all-series grid) and every table runs its own didDrawPage hook.
-function drawPageChrome(doc, { sponsors, logo, drawnLogoPages, pageNumber }) {
+// Footer, live-results QR and club crest, drawn once per page. Pages are
+// tracked by number because a page can carry more than one table (rating
+// divisions, or the all-series grid) and every table runs its own didDrawPage
+// hook.
+function drawPageChrome(doc, { sponsors, logo, qrUrl, drawnPages, pageNumber }) {
   drawPageFooter(doc, sponsors);
-  if (!logo || drawnLogoPages.has(pageNumber)) return;
-  drawClubLogo(doc, logo);
-  drawnLogoPages.add(pageNumber);
+  if (drawnPages.has(pageNumber)) return;
+  drawnPages.add(pageNumber);
+  const pageW = doc.internal.pageSize.getWidth();
+  drawClubLogo(doc, logo, qrUrl ? QR_SIZE + 12 : 0);
+  drawQrCode(doc, qrUrl, { x: pageW - 40 - QR_SIZE, y: 24 });
 }
 
-export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon, adverts, competitionLabel }) {
+export function exportSeriesPdf({ clubName, className, seriesName, year, data, icon, adverts, competitionLabel, url }) {
   // A class split into rating divisions exports one table per division in the
   // same document, so an IRC boat is never printed against a YTC boat.
   const tables = divisionTables(data).filter((t) => t.standings?.length);
   if (!tables.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   const logo = imageFromDataUrl(icon);
-  const drawnLogoPages = new Set();
-  const contentTop = header(doc, { clubName, className, title: `${seriesName} Series`, year, logo, competitionLabel });
+  const drawnPages = new Set();
+  const contentTop = header(doc, { clubName, className, title: `${seriesName} Series`, year, logo, qrUrl: url, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
   // The same columns the on-screen table shows (see standingsColumns), so the
@@ -284,7 +333,7 @@ export function exportSeriesPdf({ clubName, className, seriesName, year, data, i
     footStyles: { fillColor: [241, 245, 249], textColor: MUTED, fontSize: 8, halign: "center" },
     // Drawn on every page, inside the reserved band at the page foot.
     didDrawPage: (d) => {
-      if (d.doc) drawPageChrome(d.doc, { sponsors, logo, drawnLogoPages, pageNumber: d.pageNumber });
+      if (d.doc) drawPageChrome(d.doc, { sponsors, logo, qrUrl: url, drawnPages, pageNumber: d.pageNumber });
     },
   });
   });
@@ -376,15 +425,15 @@ export function exportBoatProfilePdf({ clubName, boat, seasons, history }) {
   doc.save(`${safe(boat.name)}-${safe(boat.sail_no)}-profile.pdf`);
 }
 
-export function exportOverallPdf({ clubName, className, year, data, icon, adverts, competitionLabel }) {
+export function exportOverallPdf({ clubName, className, year, data, icon, adverts, competitionLabel, url }) {
   // A class split into rating divisions has a championship per division: each
   // is printed as its own table, never ranked against the other.
   const tables = divisionTables(data).filter((t) => t.standings?.length);
   if (!tables.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   const logo = imageFromDataUrl(icon);
-  const drawnLogoPages = new Set();
-  const contentTop = header(doc, { clubName, className, title: "Overall Championship", year, logo, competitionLabel });
+  const drawnPages = new Set();
+  const contentTop = header(doc, { clubName, className, title: "Overall Championship", year, logo, qrUrl: url, competitionLabel });
   const sponsors = pickPdfSponsors(adverts);
 
   tables.forEach((table, i) => {
@@ -419,7 +468,7 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
       [4 + table.series_names.length]: { cellWidth: 45, halign: "center" },
     },
     didDrawPage: (d) => {
-      if (d.doc) drawPageChrome(d.doc, { sponsors, logo, drawnLogoPages, pageNumber: d.pageNumber });
+      if (d.doc) drawPageChrome(d.doc, { sponsors, logo, qrUrl: url, drawnPages, pageNumber: d.pageNumber });
     },
   });
   });
@@ -427,21 +476,27 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
   doc.save(`${className}-Overall-${year}.pdf`);
 }
 
-// The compact "all series" export behind an overall championship: every related
-// series is printed with its full race-by-race standings table (# / Boat /
-// every race / Total / Net). Two tables sit side by side per row, so up to four
-// series share one landscape page. Every scored boat is always printed — a long
-// fleet continues on the next page, its table marked "(cont.)", rather than
-// being cut off.
-const GRID = {
-  columns: 2,
-  perPage: 4,
-  gapX: 14,
-  gapY: 14,
-  headingHeight: 13,
-  headHeight: 9.5,
-  rowHeight: 9.6, // conservative: one condensed race-by-race row
+// The "all series" export for a class: every series in the class/year is
+// printed with its full race-by-race standings table (# / Boat / every race /
+// Total / Net). Up to six series share one landscape page (three across, two
+// down). Two page profiles keep the grid readable: a roomy one for fleets of
+// ten boats or fewer, and a denser one that still fits eleven or more. Every
+// scored boat is always printed — a long fleet continues on the next page, its
+// table marked "(cont.)", rather than being cut off.
+const SERIES_PAGE = { perPage: 6, maxColumns: 3, gapX: 10, gapY: 12 };
+const SERIES_LAYOUTS = {
+  roomy: {
+    fontSize: 6.2, headFontSize: 6.2, cellPadding: 1.2,
+    rowHeight: 10.2, headHeight: 10.2, headingHeight: 13,
+    headingFontSize: 8.4, noteFontSize: 6.2,
+  },
+  dense: {
+    fontSize: 5.4, headFontSize: 5.8, cellPadding: 0.9,
+    rowHeight: 8.4, headHeight: 9.5, headingHeight: 12,
+    headingFontSize: 7.6, noteFontSize: 5.8,
+  },
 };
+const ROOMY_MAX_BOATS = 10;
 
 // One row per scored boat, with the same race columns the series' own PDF
 // shows. Rating divisions (or scoring-mode splits) tag the boat so each row
@@ -469,7 +524,7 @@ function seriesColumnLabels(columns) {
 
 // One series table: its name, race/discard summary and the next slice of its
 // boats, placed at an explicit position on the current page.
-function drawSeriesPanel(doc, panel, { x, top, width, contentTop, continued, sponsors, logo, drawnLogoPages }) {
+function drawSeriesPanel(doc, panel, { x, top, width, contentTop, continued, sponsors, logo, qrUrl, drawnPages, layout }) {
   const pageW = doc.internal.pageSize.getWidth();
   const rows = panel.rows;
   const raceCount = panel.columns.length;
@@ -482,24 +537,24 @@ function drawSeriesPanel(doc, panel, { x, top, width, contentTop, continued, spo
   ].filter(Boolean).join(" · ");
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(8.5);
+  doc.setFontSize(layout.headingFontSize);
   doc.setTextColor(...OCEAN);
-  doc.text(doc.splitTextToSize(label, width - 78)[0] || "", x, top + 9);
+  doc.text(doc.splitTextToSize(label, width - 64)[0] || "", x, top + 9);
   if (note) {
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.2);
+    doc.setFontSize(layout.noteFontSize);
     doc.setTextColor(...MUTED);
     doc.text(note, x + width, top + 9, { align: "right" });
   }
 
   // Fixed rank/total/net widths; the boat column takes about a third and every
   // race column shares what is left.
-  const rankW = 13;
-  const totalW = 20;
-  const netW = 20;
+  const rankW = 12;
+  const totalW = 18;
+  const netW = 18;
   const flexible = width - rankW - totalW - netW;
   const boatW = raceCount
-    ? Math.max(54, Math.min(Math.round(width * 0.3), flexible - raceCount * 8))
+    ? Math.max(50, Math.min(Math.round(width * 0.28), flexible - raceCount * 8))
     : flexible;
   const raceW = raceCount ? (flexible - boatW) / raceCount : 0;
   const firstRace = 2;
@@ -507,14 +562,14 @@ function drawSeriesPanel(doc, panel, { x, top, width, contentTop, continued, spo
   const netAt = totalAt + 1;
 
   autoTable(doc, {
-    startY: top + GRID.headingHeight,
+    startY: top + layout.headingHeight,
     tableWidth: width,
     margin: { top: contentTop, right: pageW - x - width, bottom: FOOTER_BAND_HEIGHT + 40, left: x },
     head: [["#", "Boat", ...panel.labels, "Total", "Net"]],
     body: rows,
     theme: "striped",
-    headStyles: { fillColor: OCEAN, fontSize: 6, cellPadding: 1, halign: "center" },
-    styles: { fontSize: 5.8, cellPadding: 1, valign: "middle", overflow: "ellipsize" },
+    headStyles: { fillColor: OCEAN, fontSize: layout.headFontSize, cellPadding: layout.cellPadding, halign: "center" },
+    styles: { fontSize: layout.fontSize, cellPadding: layout.cellPadding, valign: "middle", overflow: "ellipsize" },
     columnStyles: {
       0: { cellWidth: rankW, halign: "center", fontStyle: "bold" },
       1: { cellWidth: boatW },
@@ -534,21 +589,21 @@ function drawSeriesPanel(doc, panel, { x, top, width, contentTop, continued, spo
       if (style.fillColor) d.cell.styles.fillColor = style.fillColor;
     },
     didDrawPage: (d) => {
-      if (d.doc) drawPageChrome(d.doc, { sponsors, logo, drawnLogoPages, pageNumber: d.pageNumber });
+      if (d.doc) drawPageChrome(d.doc, { sponsors, logo, qrUrl, drawnPages, pageNumber: d.pageNumber });
     },
   });
 }
 
-export function exportAllSeriesPdf({ clubName, className, year, series, icon, adverts, competitionLabel }) {
+export function exportAllSeriesPdf({ clubName, className, year, series, icon, adverts, competitionLabel, url }) {
   const usable = (series || []).filter((s) => divisionTables(s.data).some((t) => t.standings?.length));
   if (!usable.length) return;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   const sponsors = pickPdfSponsors(adverts);
   const logo = imageFromDataUrl(icon);
-  const drawnLogoPages = new Set();
+  const drawnPages = new Set();
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
-  const drawHeader = () => header(doc, { clubName, className, title: "All Series", year, logo, competitionLabel });
+  const drawHeader = () => header(doc, { clubName, className, title: "All Series", year, logo, qrUrl: url, competitionLabel });
 
   const panels = usable.map((entry) => {
     const columns = standingsColumns(entry.data);
@@ -564,18 +619,24 @@ export function exportAllSeriesPdf({ clubName, className, year, series, icon, ad
   // the first page's header.
   const contentTop = drawHeader();
   const gridBottom = pageH - FOOTER_BAND_HEIGHT - 40;
+  // Choose the page profile once for the whole document: the largest fleet in
+  // the class decides whether the roomy or dense grid is used.
+  const fleetSize = panels.reduce((max, panel) => Math.max(max, panel.rows.length), 0);
+  const layout = fleetSize <= ROOMY_MAX_BOATS ? SERIES_LAYOUTS.roomy : SERIES_LAYOUTS.dense;
   let firstPage = true;
 
-  // Four tables per spread (two columns, two rows); a longer season keeps
-  // flowing on new pages.
-  for (let start = 0; start < panels.length; start += GRID.perPage) {
-    const group = panels.slice(start, start + GRID.perPage);
-    const gridColumns = group.length === 1 ? 1 : GRID.columns;
-    const gridRows = group.length > GRID.columns ? 2 : 1;
-    const panelWidth = (pageW - 80 - GRID.gapX * (gridColumns - 1)) / gridColumns;
-    const panelHeight = (gridBottom - contentTop - GRID.gapY * (gridRows - 1)) / gridRows;
+  // Six tables per spread (three columns, two rows); a longer season keeps
+  // flowing on new pages. Four series keep the wider two-by-two grid.
+  for (let start = 0; start < panels.length; start += SERIES_PAGE.perPage) {
+    const group = panels.slice(start, start + SERIES_PAGE.perPage);
+    const gridColumns = group.length <= SERIES_PAGE.maxColumns
+      ? Math.max(1, group.length)
+      : (group.length === 4 ? 2 : 3);
+    const gridRows = Math.ceil(group.length / gridColumns);
+    const panelWidth = (pageW - 80 - SERIES_PAGE.gapX * (gridColumns - 1)) / gridColumns;
+    const panelHeight = (gridBottom - contentTop - SERIES_PAGE.gapY * (gridRows - 1)) / gridRows;
     const rowsPerPanel = Math.max(2, Math.floor(
-      (panelHeight - GRID.headingHeight - GRID.headHeight) / GRID.rowHeight,
+      (panelHeight - layout.headingHeight - layout.headHeight) / layout.rowHeight,
     ));
     const pages = Math.max(...group.map((panel) => Math.ceil(panel.rows.length / rowsPerPanel)));
 
@@ -590,14 +651,16 @@ export function exportAllSeriesPdf({ clubName, className, year, series, icon, ad
           ...panel,
           rows: panel.rows.slice(chunk * rowsPerPanel, (chunk + 1) * rowsPerPanel),
         }, {
-          x: 40 + (i % gridColumns) * (panelWidth + GRID.gapX),
-          top: contentTop + Math.floor(i / gridColumns) * (panelHeight + GRID.gapY),
+          x: 40 + (i % gridColumns) * (panelWidth + SERIES_PAGE.gapX),
+          top: contentTop + Math.floor(i / gridColumns) * (panelHeight + SERIES_PAGE.gapY),
           width: panelWidth,
           contentTop,
           continued: chunk > 0,
           sponsors,
           logo,
-          drawnLogoPages,
+          qrUrl: url,
+          drawnPages,
+          layout,
         });
       });
     }

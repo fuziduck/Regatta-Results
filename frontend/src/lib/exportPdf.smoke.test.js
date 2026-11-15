@@ -177,6 +177,36 @@ const fourSeries = (boats) => ["Spring", "Summer", "Autumn", "Winter"].map((name
   id: name, name, data: fleet(boats),
 }));
 
+const namedSeries = (names, boats) => names.map((name) => ({
+  id: name, name, data: fleet(boats),
+}));
+
+test("six series of ten boats fit on one page in the roomy layout", () => {
+  pdfBytes = null;
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: namedSeries(["Early Spring", "Spring", "Summer", "Autumn", "Winter", "Spring 2"], 10),
+    icon: logoDataUrl,
+    adverts: [],
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(1);
+});
+
+test("six series of eighteen boats still fit on one page in the dense layout", () => {
+  pdfBytes = null;
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: namedSeries(["Early Spring", "Spring", "Summer", "Autumn", "Winter", "Spring 2"], 18),
+    icon: null,
+    adverts: [],
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(1);
+});
+
 test("four fleets of twelve, with every race column, fit on one page", () => {
   pdfBytes = null;
   exportAllSeriesPdf({
@@ -205,17 +235,39 @@ test("a long fleet continues onto another page instead of being cut short", () =
   expect(lastDoc.getNumberOfPages()).toBe(3);
 });
 
-test("a fifth series continues onto a second page", () => {
+test("a seventh series continues onto a second page", () => {
   pdfBytes = null;
   exportAllSeriesPdf({
     clubName: "Medway Yacht Club",
     className: "Sonata",
     year: 2026,
-    series: [...allSeries(), { id: "Extra", name: "Extra", data: data() }],
+    series: [
+      ...allSeries(),
+      { id: "Extra 1", name: "Extra 1", data: data() },
+      { id: "Extra 2", name: "Extra 2", data: data() },
+      { id: "Extra 3", name: "Extra 3", data: data() },
+    ],
     icon: null,
     adverts: [],
   });
   expect(lastDoc.getNumberOfPages()).toBe(2);
+});
+
+test("a live results QR is printed without disturbing the document", () => {
+  pdfBytes = null;
+  exportSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Cruiser",
+    seriesName: "Spring",
+    year: 2026,
+    data: data(),
+    icon: logoDataUrl,
+    adverts: [],
+    url: "https://www.sailscore.co.uk/club/medway-yacht-club?class=abc",
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(1);
+  const txt = Buffer.from(pdfBytes).toString("latin1");
+  expect(txt).toContain("Live results");
 });
 
 // Regression: with a competition/identity line the header has two meta text
