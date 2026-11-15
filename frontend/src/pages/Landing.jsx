@@ -11,7 +11,7 @@ import AdvertCard, { useAdverts, pickAdverts } from "@/components/AdvertCard";
 import HeaderMenu from "@/components/HeaderMenu";
 import OfficialsLink from "@/components/OfficialsLink";
 import CopyLinkButton from "@/components/CopyLinkButton";
-import { exportSeriesPdf, exportOverallPdf } from "@/lib/exportPdf";
+import { exportSeriesPdf, exportOverallPdf, exportAllSeriesPdf } from "@/lib/exportPdf";
 import { SAILSCORE_EVENTS, trackEvent, useTrackView } from "@/lib/analytics";
 import { SITE_TAGLINE, SITE_OWNER, SITE_CONTACT_EMAIL } from "@/lib/siteConfig";
 import { seriesNavModel } from "@/lib/seriesNav";
@@ -97,6 +97,37 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
   const hasData = series.length > 0 || (overall && overall.standings?.length > 0);
   const active = series.find((s) => s.id === activeSeries);
   const [raceReports, setRaceReports] = useState(null);
+  const [exportingAllSeries, setExportingAllSeries] = useState(false);
+
+  // The series that make up the overall championship, in the page's own order.
+  // The API keys per-series contributions by series name, so that list is the
+  // authority on which series belong to this overall.
+  const overallSeries = useMemo(() => {
+    const names = overall?.series_names || [];
+    return series.filter((s) => names.includes(s.name));
+  }, [series, overall]);
+
+  // Download every series behind the overall as one condensed PDF. Standings
+  // not already loaded are fetched on demand as the document is built.
+  const downloadAllSeries = async () => {
+    if (!overallSeries.length || exportingAllSeries) return;
+    setExportingAllSeries(true);
+    try {
+      const entries = await Promise.all(overallSeries.map(async (s) => ({
+        id: s.id,
+        name: s.name,
+        data: seriesData[s.id] || await api.seriesStandings(s.id, clubId).catch(() => null),
+      })));
+      const downloadable = entries.filter((e) => e.data?.standings?.length);
+      if (!downloadable.length) return;
+      exportAllSeriesPdf({ clubName, className, year, series: downloadable, icon: clubIcon, adverts });
+      trackEvent(SAILSCORE_EVENTS.DOWNLOAD_RESULTS_PDF, {
+        class_name: className, club: clubName, view: "all-series", series_count: downloadable.length,
+      });
+    } finally {
+      setExportingAllSeries(false);
+    }
+  };
 
   useEffect(() => {
     let current = true;
@@ -156,6 +187,13 @@ function ClassResults({ classId, clubId, clubSlug, year, clubName, className, cl
           <h3 className="text-xl uppercase tracking-tight flex items-center gap-2"><Sailboat className="w-5 h-5 text-ocean" /> Overall Championship</h3>
           <div className="flex items-center gap-2 shrink-0">
             <CopyLinkButton url={shareUrl} />
+            <Button variant="outline" size="sm" data-testid="export-all-series-pdf"
+              className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
+              title="Download every series in this overall as one PDF"
+              disabled={!overallSeries.length || exportingAllSeries}
+              onClick={downloadAllSeries}>
+              <Download className="w-4 h-4" /> All series
+            </Button>
             <Button variant="outline" size="sm" data-testid="export-overall-pdf"
               className="gap-2 border-ocean text-ocean hover:bg-ocean hover:text-white shrink-0"
               disabled={!overall?.standings?.length}

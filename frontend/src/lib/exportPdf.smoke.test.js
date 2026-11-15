@@ -14,6 +14,7 @@ const jspdfModule = require("jspdf");
 const RealJsPDF = jspdfModule.jsPDF;
 
 let pdfBytes = null;
+let lastDoc = null;
 // exportSeriesPdf creates its own jsPDF instance; wrap the class so its
 // save() captures the rendered document instead of triggering a download.
 // jsPDF assigns save as an own instance property, so the override must be
@@ -23,6 +24,7 @@ class CaptureJsPDF extends RealJsPDF {
     super(...args);
     this.save = () => {
       pdfBytes = this.output("arraybuffer");
+      lastDoc = this;
     };
   }
 }
@@ -39,7 +41,7 @@ for (let i = 0; i < logoW * logoH; i++) {
 const logoBytes = fastPng.encode({ width: logoW, height: logoH, data: logoPx });
 const logoDataUrl = "data:image/png;base64," + Buffer.from(logoBytes).toString("base64");
 
-const { exportSeriesPdf } = require("./exportPdf");
+const { exportSeriesPdf, exportAllSeriesPdf } = require("./exportPdf");
 
 afterAll(() => {
   jspdfModule.jsPDF = RealJsPDF;
@@ -115,6 +117,81 @@ test("exportSeriesPdf renders a valid PDF with the real libraries", () => {
   expect(txt).toContain("sponsors keep this software free for clubs");
   expect(txt).toContain("SailScore");
   expect(txt).toContain("admin@sailscore.co.uk");
+});
+
+// The club crest must sit at the top right of the results export, and the
+// per-page hook must keep it there on later pages too (the header is drawn
+// once, the logo is not).
+test("the club logo is embedded in the results export", () => {
+  pdfBytes = null;
+  exportSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Cruiser",
+    seriesName: "Spring",
+    year: 2026,
+    data: data(),
+    icon: logoDataUrl,
+    adverts: [],
+  });
+  const txt = Buffer.from(pdfBytes).toString("latin1");
+  expect(txt).toContain("/Subtype /Image");
+  expect(txt).toContain("/XObject");
+});
+
+const allSeries = () => ["Spring", "Summer", "Autumn", "Winter"].map((name) => ({
+  id: name, name, data: data(),
+}));
+
+test("four related series are condensed onto a single page", () => {
+  pdfBytes = null;
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: allSeries(),
+    icon: logoDataUrl,
+    adverts: [],
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(1);
+  const txt = Buffer.from(pdfBytes).toString("latin1");
+  // Every series is named, so all four panels really are on that page.
+  ["Spring", "Summer", "Autumn", "Winter"].forEach((name) => expect(txt).toContain(name));
+  // The club crest is embedded there too.
+  expect(txt).toContain("/Subtype /Image");
+});
+
+test("four full fleets are still condensed onto one page", () => {
+  pdfBytes = null;
+  const fleet = () => ({
+    race_count: 6,
+    discards: 2,
+    standings: Array.from({ length: 24 }, (_, i) => ({
+      rank: i + 1, boat_name: `Boat ${i + 1}`, sail_no: `GBR${100 + i}`, helm: "H",
+      home_club: "Medway Yacht Club", net: i + 1, total: i + 3, scores: [],
+    })),
+  });
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: ["Spring", "Summer", "Autumn", "Winter"].map((name) => ({ id: name, name, data: fleet() })),
+    icon: logoDataUrl,
+    adverts: [],
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(1);
+});
+
+test("a fifth series continues onto a second page", () => {
+  pdfBytes = null;
+  exportAllSeriesPdf({
+    clubName: "Medway Yacht Club",
+    className: "Sonata",
+    year: 2026,
+    series: [...allSeries(), { id: "Extra", name: "Extra", data: data() }],
+    icon: null,
+    adverts: [],
+  });
+  expect(lastDoc.getNumberOfPages()).toBe(2);
 });
 
 // Regression: with a competition/identity line the header has two meta text

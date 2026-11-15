@@ -1,10 +1,11 @@
-import { exportSeriesPdf, pickPdfSponsors, FOOTER_BAND_HEIGHT } from "./exportPdf";
+import { exportSeriesPdf, exportAllSeriesPdf, pickPdfSponsors, FOOTER_BAND_HEIGHT } from "./exportPdf";
 import { SITE_NAME, SITE_ATTRIBUTION, SITE_SUPPORTERS_LINE } from "./siteConfig";
 import autoTable from "jspdf-autotable";
 import { jsPDF } from "jspdf";
 import { DISCARD_TEXT, PODIUM_FILLS, PENALTY_TEXT } from "./resultCellStyle";
 
 let mockCaptured = null; // the autoTable options object, set by the mock
+let mockCalls = []; // every autoTable options object, in call order
 
 // Module-level fake jsPDF so tests can assert what the export drew. The
 // `mock` prefix is required: jest.mock factories may only close over
@@ -20,6 +21,8 @@ const mockDoc = {
   line: jest.fn(),
   text: jest.fn(),
   addImage: jest.fn(),
+  addPage: jest.fn(),
+  getTextWidth: jest.fn((t) => String(t).length * 5),
   splitTextToSize: jest.fn((t) => [String(t)]),
   getImageProperties: jest.fn(() => ({ width: 100, height: 50 })),
 };
@@ -68,7 +71,8 @@ describe("exportSeriesPdf cell styling", () => {
     // react-scripts resets mock implementations before each test, so the
     // autoTable capture and the fake-doc helpers are re-wired here.
     mockCaptured = null;
-    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; });
+    mockCalls = [];
+    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; mockCalls.push(opts); });
     jsPDF.mockImplementation(() => mockDoc);
     mockDoc.splitTextToSize.mockImplementation((t) => [String(t)]);
     mockDoc.getImageProperties.mockImplementation(() => ({ width: 100, height: 50 }));
@@ -175,7 +179,8 @@ describe("pickPdfSponsors", () => {
 describe("sponsor footer", () => {
   beforeEach(() => {
     mockCaptured = null;
-    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; });
+    mockCalls = [];
+    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; mockCalls.push(opts); });
     jsPDF.mockImplementation(() => mockDoc);
     mockDoc.splitTextToSize.mockImplementation((t) => [String(t)]);
     mockDoc.getImageProperties.mockImplementation(() => ({ width: 100, height: 50 }));
@@ -232,5 +237,114 @@ describe("sponsor footer", () => {
     const doc = drawFooter();
     expect(doc.addImage).not.toHaveBeenCalled();
     expect(doc.text).toHaveBeenCalled();
+  });
+});
+
+describe("club logo", () => {
+  beforeEach(() => {
+    mockCaptured = null;
+    mockCalls = [];
+    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; mockCalls.push(opts); });
+    jsPDF.mockImplementation(() => mockDoc);
+    mockDoc.splitTextToSize.mockImplementation((t) => [String(t)]);
+    mockDoc.getImageProperties.mockImplementation(() => ({ width: 100, height: 50 }));
+    mockDoc.addImage.mockClear();
+  });
+
+  it("draws the club crest once on every page, top right", () => {
+    runExport({ icon: "data:image/png;base64,QUFB" });
+    mockDoc.addImage.mockClear();
+
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 }); // second table on page 1
+    expect(mockDoc.addImage).toHaveBeenCalledTimes(1);
+    expect(mockDoc.addImage.mock.calls[0][0]).toBeInstanceOf(Uint8Array);
+    expect(mockDoc.addImage.mock.calls[0][1]).toBe("PNG");
+    // Right-aligned inside the 40pt margin (100x50 image -> 96x48 box).
+    expect(mockDoc.addImage.mock.calls[0][2]).toBe(842 - 40 - 96);
+    expect(mockDoc.addImage.mock.calls[0][3]).toBe(24);
+
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 2 });
+    expect(mockDoc.addImage).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the crest when the club has no icon and never fails on a bad one", () => {
+    runExport({ icon: null });
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
+    expect(mockDoc.addImage).not.toHaveBeenCalled();
+
+    mockDoc.addImage.mockClear();
+    runExport({ icon: "data:image/gif;base64,QUFB" });
+    mockCaptured.didDrawPage({ doc: mockDoc, pageNumber: 1 });
+    expect(mockDoc.addImage).not.toHaveBeenCalled();
+  });
+});
+
+describe("exportAllSeriesPdf", () => {
+  const seriesEntry = (name, boats = 2) => ({
+    id: name,
+    name,
+    data: {
+      race_count: 3,
+      discards: 1,
+      standings: Array.from({ length: boats }, (_, i) => ({
+        rank: i + 1, boat_name: `Boat ${i + 1}`, sail_no: String(i + 1), net: i + 1,
+      })),
+    },
+  });
+
+  const runAll = (series) => exportAllSeriesPdf({
+    clubName: "Club", className: "Fleet", year: 2026, series, icon: null, adverts: [],
+  });
+
+  beforeEach(() => {
+    mockCaptured = null;
+    mockCalls = [];
+    autoTable.mockImplementation((_doc, opts) => { mockCaptured = opts; mockCalls.push(opts); });
+    jsPDF.mockImplementation(() => mockDoc);
+    mockDoc.splitTextToSize.mockImplementation((t) => [String(t)]);
+    mockDoc.getImageProperties.mockImplementation(() => ({ width: 100, height: 50 }));
+    mockDoc.addPage.mockClear();
+    mockDoc.save.mockClear();
+  });
+
+  it("condenses four series onto one page in a two-by-two grid", () => {
+    runAll(["Spring", "Summer", "Autumn", "Winter"].map((n) => seriesEntry(n)));
+
+    expect(mockDoc.addPage).not.toHaveBeenCalled();
+    expect(autoTable).toHaveBeenCalledTimes(4);
+    // Two columns, two rows: exactly two distinct start positions each way.
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(2);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
+    // Every panel is half the printable width with a clear gap between them.
+    const [first, second] = mockCalls;
+    expect(first.startY).toBe(second.startY);
+    expect(second.margin.left).toBeGreaterThan(first.margin.left);
+    expect(first.head[0]).toEqual(["#", "Boat", "Net"]);
+    expect(mockDoc.save).toHaveBeenCalledWith("Fleet-All-Series-2026.pdf");
+  });
+
+  it("continues onto a further page when there are more than four series", () => {
+    runAll(["A", "B", "C", "D", "E"].map((n) => seriesEntry(n)));
+
+    expect(mockDoc.addPage).toHaveBeenCalledTimes(1);
+    expect(autoTable).toHaveBeenCalledTimes(5);
+    // The fifth series opens the next page's first panel.
+    expect(mockCalls[4].margin.left).toBe(mockCalls[0].margin.left);
+    expect(mockCalls[4].startY).toBe(mockCalls[0].startY);
+  });
+
+  it("caps a big fleet with a '+N more' row instead of overflowing the panel", () => {
+    runAll([seriesEntry("Spring", 80), seriesEntry("Autumn", 80)]);
+
+    const body = mockCalls[0].body;
+    expect(body.length).toBeLessThanOrEqual(30);
+    expect(body[body.length - 1][0].content).toMatch(/^\+\d+ more$/);
+  });
+
+  it("ignores series with no standings and does nothing when none remain", () => {
+    runAll([{ id: "empty", name: "Empty", data: { standings: [] } }]);
+    expect(autoTable).not.toHaveBeenCalled();
+    expect(mockDoc.save).not.toHaveBeenCalled();
   });
 });

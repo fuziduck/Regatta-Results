@@ -53,7 +53,7 @@ jest.mock("@/components/Breadcrumbs", () => ({ items = [] }) => (
       : <span key={index} data-testid={`crumb-${item.label}`}>{item.label}</span>))}
   </nav>
 ));
-jest.mock("@/lib/exportPdf", () => ({ exportSeriesPdf: jest.fn(), exportOverallPdf: jest.fn() }));
+jest.mock("@/lib/exportPdf", () => ({ exportSeriesPdf: jest.fn(), exportOverallPdf: jest.fn(), exportAllSeriesPdf: jest.fn() }));
 jest.mock("@/lib/analytics", () => ({
   SAILSCORE_EVENTS: { VIEW_CLASS: "view-class", VIEW_SERIES: "view-series", VIEW_RESULTS: "view-results", VIEW_REGATTA: "view-regatta", DOWNLOAD_RESULTS_PDF: "download-results-pdf", DOWNLOAD_SERIES_PDF: "download-series-pdf" },
   trackEvent: jest.fn(),
@@ -266,6 +266,34 @@ test("a late series response from the previous class cannot reset a pending seri
     for (let i = 0; i < 6; i += 1) await Promise.resolve();
   });
   expect(container.querySelector("main h3")?.textContent).toBe("Early Autumn Series");
+});
+
+test("the overall view downloads every series that makes up the championship", async () => {
+  mockApi.overallStandings.mockResolvedValue({
+    standings: [{ boat_id: "boat-1" }],
+    series_names: ["Spring", "Autumn"],
+  });
+  mockApi.seriesStandings.mockImplementation((seriesId) => Promise.resolve({
+    series_name: allSeries.find((item) => item.id === seriesId)?.name,
+    standings: [{ boat_id: "boat-1", rank: 1, net: 3 }],
+  }));
+
+  await renderPage();
+
+  const button = container.querySelector('[data-testid="export-all-series-pdf"]');
+  expect(button).not.toBeNull();
+  expect(button.disabled).toBe(false);
+  await act(async () => {
+    button.click();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  });
+  await flush();
+
+  const { exportAllSeriesPdf } = require("@/lib/exportPdf");
+  expect(exportAllSeriesPdf).toHaveBeenCalledTimes(1);
+  expect(exportAllSeriesPdf.mock.calls[0][0].series.map((s) => s.name)).toEqual(["Spring", "Autumn"]);
+  // The individual series standings button still downloads one series.
+  expect(container.querySelector('[data-testid="export-overall-pdf"]')).not.toBeNull();
 });
 
 test("a slow class list shows a loading indicator, never the 'no classes' empty state", async () => {
