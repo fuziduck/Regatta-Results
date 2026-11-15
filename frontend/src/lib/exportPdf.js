@@ -428,56 +428,110 @@ export function exportOverallPdf({ clubName, className, year, data, icon, advert
 }
 
 // The compact "all series" export behind an overall championship: every related
-// series is a condensed # / Boat / Net column, so up to four series sit side by
-// side on one landscape page. Every scored boat is always printed — a long
-// fleet continues on the next page, its column marked "(cont.)", rather than
+// series is printed with its full race-by-race standings table (# / Boat /
+// every race / Total / Net). Two tables sit side by side per row, so up to four
+// series share one landscape page. Every scored boat is always printed — a long
+// fleet continues on the next page, its table marked "(cont.)", rather than
 // being cut off.
-const SERIES_COLUMNS = 4;
-const COLUMN_GAP = 12;
-const COLUMN_HEADING_HEIGHT = 16;
-const COLUMN_HEAD_HEIGHT = 13.5;
-const COLUMN_ROW_HEIGHT = 12; // conservative: one condensed standings row
+const GRID = {
+  columns: 2,
+  perPage: 4,
+  gapX: 14,
+  gapY: 14,
+  headingHeight: 13,
+  headHeight: 9.5,
+  rowHeight: 9.6, // conservative: one condensed race-by-race row
+};
 
-// Every scored boat in a series, one row each. Rating divisions are tagged in
-// the boat cell, so each row stays identifiable after a page break.
-function seriesColumnRows(data) {
+// One row per scored boat, with the same race columns the series' own PDF
+// shows. Rating divisions (or scoring-mode splits) tag the boat so each row
+// stays identifiable after a page break.
+function seriesPanelRows(data, columns) {
   const tables = divisionTables(data).filter((t) => t.standings?.length);
   const split = tables.length > 1;
   return tables.flatMap((table) => table.standings.map((row) => [
     String(row.rank),
     split ? `${table.division_name} · ${row.boat_name}` : row.boat_name,
+    ...columns.map((col) => (col.scoreIndex == null ? "" : (row.scores || [])[col.scoreIndex] || "")),
+    String(row.total),
     String(row.net),
   ]));
 }
 
-// One series column: its name, race count and the next slice of its boats.
-function drawSeriesColumn(doc, entry, rows, { x, width, contentTop, continued, sponsors, logo, drawnLogoPages }) {
+// The race-column headers for a series: R1, R2 … with an abandoned race still
+// numbered and marked ABD, exactly as the standalone series export prints it.
+function seriesColumnLabels(columns) {
+  return columns.map((col) => {
+    const label = col.mini_name || (col.race_number != null ? `R${col.race_number}` : "");
+    return col.abandoned ? `${label} ABD` : label;
+  });
+}
+
+// One series table: its name, race/discard summary and the next slice of its
+// boats, placed at an explicit position on the current page.
+function drawSeriesPanel(doc, panel, { x, top, width, contentTop, continued, sponsors, logo, drawnLogoPages }) {
   const pageW = doc.internal.pageSize.getWidth();
-  const label = `${entry.name || "Series"}${continued ? " (cont.)" : ""}`;
+  const rows = panel.rows;
+  const raceCount = panel.columns.length;
+  const label = `${panel.entry.name || "Series"}${continued ? " (cont.)" : ""}`;
+  const races = Number(panel.entry.data?.race_count);
+  const discards = Number(panel.entry.data?.discards);
+  const note = [
+    Number.isFinite(races) ? `${races} race${races === 1 ? "" : "s"}` : null,
+    Number.isFinite(discards) && discards > 0 ? `${discards} discard${discards === 1 ? "" : "s"}` : null,
+  ].filter(Boolean).join(" · ");
+
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(9.5);
+  doc.setFontSize(8.5);
   doc.setTextColor(...OCEAN);
-  doc.text(doc.splitTextToSize(label, width - 44)[0] || "", x, contentTop + 10);
-  const races = Number(entry.data?.race_count);
-  if (!continued && Number.isFinite(races)) {
+  doc.text(doc.splitTextToSize(label, width - 78)[0] || "", x, top + 9);
+  if (note) {
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
+    doc.setFontSize(6.2);
     doc.setTextColor(...MUTED);
-    doc.text(`${races} race${races === 1 ? "" : "s"}`, x + width, contentTop + 10, { align: "right" });
+    doc.text(note, x + width, top + 9, { align: "right" });
   }
+
+  // Fixed rank/total/net widths; the boat column takes about a third and every
+  // race column shares what is left.
+  const rankW = 13;
+  const totalW = 20;
+  const netW = 20;
+  const flexible = width - rankW - totalW - netW;
+  const boatW = raceCount
+    ? Math.max(54, Math.min(Math.round(width * 0.3), flexible - raceCount * 8))
+    : flexible;
+  const raceW = raceCount ? (flexible - boatW) / raceCount : 0;
+  const firstRace = 2;
+  const totalAt = firstRace + raceCount;
+  const netAt = totalAt + 1;
+
   autoTable(doc, {
-    startY: contentTop + COLUMN_HEADING_HEIGHT,
+    startY: top + GRID.headingHeight,
     tableWidth: width,
     margin: { top: contentTop, right: pageW - x - width, bottom: FOOTER_BAND_HEIGHT + 40, left: x },
-    head: [["#", "Boat", "Net"]],
+    head: [["#", "Boat", ...panel.labels, "Total", "Net"]],
     body: rows,
     theme: "striped",
-    headStyles: { fillColor: OCEAN, fontSize: 7, cellPadding: 1.6, halign: "center" },
-    styles: { fontSize: 6.8, cellPadding: 1.6, valign: "middle", overflow: "ellipsize" },
+    headStyles: { fillColor: OCEAN, fontSize: 6, cellPadding: 1, halign: "center" },
+    styles: { fontSize: 5.8, cellPadding: 1, valign: "middle", overflow: "ellipsize" },
     columnStyles: {
-      0: { cellWidth: 18, halign: "center", fontStyle: "bold" },
-      1: { cellWidth: width - 48 },
-      2: { cellWidth: 30, halign: "center", fontStyle: "bold", textColor: OCEAN },
+      0: { cellWidth: rankW, halign: "center", fontStyle: "bold" },
+      1: { cellWidth: boatW },
+      ...Object.fromEntries(panel.columns.map((_, j) => [firstRace + j, { cellWidth: raceW, halign: "center" }])),
+      [totalAt]: { cellWidth: totalW, halign: "center", fontStyle: "bold" },
+      [netAt]: { cellWidth: netW, halign: "center" },
+    },
+    didParseCell: (d) => {
+      const col = d.column.index;
+      if (col < firstRace || col >= totalAt) return;
+      const s = d.cell.raw;
+      if (!s || typeof s !== "object") return; // empty / TBC cells
+      d.cell.text = [fmtScore(s)];
+      const style = raceCellStyle(s);
+      if (style.textColor) d.cell.styles.textColor = style.textColor;
+      if (style.fontStyle) d.cell.styles.fontStyle = style.fontStyle;
+      if (style.fillColor) d.cell.styles.fillColor = style.fillColor;
     },
     didDrawPage: (d) => {
       if (d.doc) drawPageChrome(d.doc, { sponsors, logo, drawnLogoPages, pageNumber: d.pageNumber });
@@ -496,21 +550,34 @@ export function exportAllSeriesPdf({ clubName, className, year, series, icon, ad
   const pageH = doc.internal.pageSize.getHeight();
   const drawHeader = () => header(doc, { clubName, className, title: "All Series", year, logo, competitionLabel });
 
-  // Header height is the same on every page, so the rows each page can hold are
-  // worked out once, conservatively, from the first page.
+  const panels = usable.map((entry) => {
+    const columns = standingsColumns(entry.data);
+    return {
+      entry,
+      columns,
+      labels: seriesColumnLabels(columns),
+      rows: seriesPanelRows(entry.data, columns),
+    };
+  });
+
+  // Header height is the same on every page, so the grid is worked out from
+  // the first page's header.
   const contentTop = drawHeader();
-  const bodyHeight = pageH - FOOTER_BAND_HEIGHT - 40 - contentTop;
-  const rowsPerPage = Math.max(1, Math.floor(
-    (bodyHeight - COLUMN_HEADING_HEIGHT - COLUMN_HEAD_HEIGHT) / COLUMN_ROW_HEIGHT,
-  ));
+  const gridBottom = pageH - FOOTER_BAND_HEIGHT - 40;
   let firstPage = true;
 
-  // Four series across each spread; a longer season keeps flowing on new pages.
-  for (let start = 0; start < usable.length; start += SERIES_COLUMNS) {
-    const group = usable.slice(start, start + SERIES_COLUMNS);
-    const groupRows = group.map((entry) => seriesColumnRows(entry.data));
-    const columnWidth = (pageW - 80 - COLUMN_GAP * (group.length - 1)) / group.length;
-    const pages = Math.max(...groupRows.map((rows) => Math.ceil(rows.length / rowsPerPage)));
+  // Four tables per spread (two columns, two rows); a longer season keeps
+  // flowing on new pages.
+  for (let start = 0; start < panels.length; start += GRID.perPage) {
+    const group = panels.slice(start, start + GRID.perPage);
+    const gridColumns = group.length === 1 ? 1 : GRID.columns;
+    const gridRows = group.length > GRID.columns ? 2 : 1;
+    const panelWidth = (pageW - 80 - GRID.gapX * (gridColumns - 1)) / gridColumns;
+    const panelHeight = (gridBottom - contentTop - GRID.gapY * (gridRows - 1)) / gridRows;
+    const rowsPerPanel = Math.max(2, Math.floor(
+      (panelHeight - GRID.headingHeight - GRID.headHeight) / GRID.rowHeight,
+    ));
+    const pages = Math.max(...group.map((panel) => Math.ceil(panel.rows.length / rowsPerPanel)));
 
     for (let chunk = 0; chunk < pages; chunk++) {
       if (!firstPage) {
@@ -518,10 +585,14 @@ export function exportAllSeriesPdf({ clubName, className, year, series, icon, ad
         drawHeader();
       }
       firstPage = false;
-      group.forEach((entry, i) => {
-        drawSeriesColumn(doc, entry, groupRows[i].slice(chunk * rowsPerPage, (chunk + 1) * rowsPerPage), {
-          x: 40 + i * (columnWidth + COLUMN_GAP),
-          width: columnWidth,
+      group.forEach((panel, i) => {
+        drawSeriesPanel(doc, {
+          ...panel,
+          rows: panel.rows.slice(chunk * rowsPerPanel, (chunk + 1) * rowsPerPanel),
+        }, {
+          x: 40 + (i % gridColumns) * (panelWidth + GRID.gapX),
+          top: contentTop + Math.floor(i / gridColumns) * (panelHeight + GRID.gapY),
+          width: panelWidth,
           contentTop,
           continued: chunk > 0,
           sponsors,

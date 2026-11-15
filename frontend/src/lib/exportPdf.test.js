@@ -287,8 +287,14 @@ describe("exportAllSeriesPdf", () => {
     data: {
       race_count: 3,
       discards: 1,
+      races: [{ race_number: 1 }, { race_number: 2 }, { race_number: 3 }],
       standings: Array.from({ length: boats }, (_, i) => ({
-        rank: i + 1, boat_name: `Boat ${i + 1}`, sail_no: String(i + 1), net: i + 1,
+        rank: i + 1, boat_name: `Boat ${i + 1}`, sail_no: String(i + 1), net: i + 1, total: i + 3,
+        scores: [
+          { points: 1, code: "FINISHED", discarded: false },
+          { points: 2, code: "FINISHED", discarded: false },
+          { points: 3, code: "FINISHED", discarded: false },
+        ],
       })),
     },
   });
@@ -308,17 +314,32 @@ describe("exportAllSeriesPdf", () => {
     mockDoc.save.mockClear();
   });
 
-  it("condenses four series side by side onto one page", () => {
+  it("condenses four series, with every race column, onto one page", () => {
     runAll(["Spring", "Summer", "Autumn", "Winter"].map((n) => seriesEntry(n)));
 
     expect(mockDoc.addPage).not.toHaveBeenCalled();
     expect(autoTable).toHaveBeenCalledTimes(4);
-    // Four columns on the same page, each with its own left edge.
-    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(4);
-    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(1);
-    expect(mockCalls[1].margin.left).toBeGreaterThan(mockCalls[0].margin.left);
-    expect(mockCalls[0].head[0]).toEqual(["#", "Boat", "Net"]);
+    // A two-by-two grid: two left edges and two starting rows.
+    expect(new Set(mockCalls.map((c) => c.margin.left)).size).toBe(2);
+    expect(new Set(mockCalls.map((c) => c.startY)).size).toBe(2);
+    // Each table carries the series' races, not just the net score.
+    expect(mockCalls[0].head[0]).toEqual(["#", "Boat", "R1", "R2", "R3", "Total", "Net"]);
+    expect(mockCalls[0].body[0]).toHaveLength(7);
     expect(mockDoc.save).toHaveBeenCalledWith("Fleet-All-Series-2026.pdf");
+  });
+
+  it("styles race cells and shows points for each race", () => {
+    runAll([seriesEntry("Spring")]);
+
+    const opts = mockCalls[0];
+    const cell = { raw: { points: 2, code: "FINISHED", discarded: false }, text: [], styles: {} };
+    opts.didParseCell({ column: { index: 3 }, cell });
+    expect(cell.text).toEqual(["2"]);
+    expect(cell.styles.fillColor).toBeDefined(); // podium silver
+    // Total and Net are not race cells.
+    const total = { raw: "3", text: [], styles: {} };
+    opts.didParseCell({ column: { index: 5 }, cell: total });
+    expect(total.text).toEqual([]);
   });
 
   it("continues onto a further page when there are more than four series", () => {
@@ -334,14 +355,13 @@ describe("exportAllSeriesPdf", () => {
   it("prints every boat, continuing a long fleet on later pages", () => {
     runAll([seriesEntry("Spring", 80), seriesEntry("Autumn", 80)]);
 
-    // 29 rows fit a page, so 80 boats take three pages — none are dropped.
+    // 37 rows fit a page, so 80 boats take three pages — none are dropped.
     expect(mockDoc.addPage).toHaveBeenCalledTimes(2);
     expect(autoTable).toHaveBeenCalledTimes(6);
     const printed = mockCalls.flatMap((c) => c.body);
     expect(printed.length).toBe(160);
-    expect(printed.some((row) => String(row[0]?.content || "").includes("more"))).toBe(false);
-    // Each continuation page is labelled as such.
-    expect(mockCalls[2].body[0][1]).toBe("Boat 30");
+    // Each continuation page carries the next slice of the same table.
+    expect(mockCalls[2].body[0][1]).toBe("Boat 38");
   });
 
   it("ignores series with no standings and does nothing when none remain", () => {
